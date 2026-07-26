@@ -4,6 +4,54 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 113 | 2026-07-25
+
+Scope: reconnect a registered client session to its healthy retained service
+browser instead of auto-launching an unrelated profile.
+
+Actions:
+
+- Reproduced the `last30days` X adapter failure below the content worker.
+- Proved access planning and workspace acquisition selected
+  `session:last30days-facebook`.
+- Proved the next registered-session `tab_list` command attempted to launch
+  the default profile and collided with `auracall-corel`.
+- Added a same-session retained-browser resolver before ordinary-command
+  auto-launch.
+- Kept acquisition actions on the existing shared-profile fresh-tab path and
+  made reconnected client teardown detach rather than close the browser.
+- Rebuilt and installed the runtime through the executable handoff publisher.
+- Ran one bounded no-navigation X authentication readback through the repaired
+  installed session.
+
+Validation:
+
+- focused retained-session and existing shared-profile Rust tests
+- Rust format and clippy
+- CDP stream derivation tests
+- `pnpm test:route-confusion-gates`
+- `pnpm test:service-cdp-tab-streaming-live`
+- installed SHA convergence and `agent-browser install doctor --json`
+- installed registered-session X auth evaluation without navigation
+
+Result:
+
+- The installed `last30days-facebook` session reconnects to
+  `session:last30days-facebook`.
+- The existing X tab reports authenticated with no login form, checkpoint, or
+  restriction.
+- Browser PID `1669680`, the retained CDP endpoint, RDP provider, shared
+  display, and Guacamole route `guacamole:4` remained intact.
+- The runtime publisher reported a separate missing-handoff-file failure for
+  `auracall-corel`; subsequent doctor passed, but its duplicate listener
+  inventory remains out-of-scope follow-up.
+
+Graphiti:
+
+- Discovery found prior shared-profile attach/reuse context in
+  `agent_browser_main`.
+- Closeout memory should use this note after the source commit is durable.
+
 ## Turn 112 | 2026-07-25
 
 Scope: repair the X workspace tile so its retained remote-headed browser opens
