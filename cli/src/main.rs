@@ -3210,6 +3210,7 @@ mod tests {
             devtools_reachable: true,
             ws_url: Some("ws://127.0.0.1:9222/devtools/browser/test".to_string()),
             targets: vec![],
+            launch_record: None,
         };
 
         assert_eq!(

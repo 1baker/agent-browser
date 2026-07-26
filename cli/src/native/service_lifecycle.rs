@@ -49,6 +49,37 @@ pub(crate) struct ProfileSelection {
     pub(crate) reason: ProfileSelectionReason,
 }
 
+/// One deterministic profile-discovery candidate, ordered from best to worst.
+///
+/// Discovery callers use the complete ranked set so they can explain
+/// alternatives without silently turning a generic browser-build default into
+/// an identity match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProfileSelectionCandidate {
+    pub(crate) profile_id: String,
+    pub(crate) reason: ProfileSelectionReason,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProfileDiscoveryRequest {
+    pub(crate) selection: ProfileSelectionRequest,
+    pub(crate) profile_ids: Vec<String>,
+    pub(crate) profile_names: Vec<String>,
+    pub(crate) hostnames: Vec<String>,
+    pub(crate) authentication_states: Vec<String>,
+    pub(crate) freshness_states: Vec<String>,
+    pub(crate) tags: Vec<String>,
+    pub(crate) free_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProfileDiscoveryCandidate {
+    pub(crate) profile_id: String,
+    pub(crate) reason: String,
+    pub(crate) matched_field: String,
+    pub(crate) matched_identity: String,
+}
+
 pub(crate) fn service_profile_id(
     profile: Option<&str>,
     runtime_profile: Option<&str>,
@@ -65,18 +96,29 @@ pub(crate) fn select_service_profile_for_request(
     service_state: &ServiceState,
     request: &ProfileSelectionRequest,
 ) -> Option<ProfileSelection> {
-    select_service_profile_for_request_id(service_state, request)
-        .map(|(profile_id, reason)| ProfileSelection { profile_id, reason })
+    rank_service_profiles_for_request(service_state, request, true)
+        .into_iter()
+        .next()
+        .map(|candidate| ProfileSelection {
+            profile_id: candidate.profile_id,
+            reason: candidate.reason,
+        })
 }
 
-fn select_service_profile_for_request_id(
+/// Rank profiles for an identity request.
+///
+/// `include_browser_build_default` is reserved for launch planning, where a
+/// generic profile may safely host a new identity. Search and discovery
+/// surfaces must pass `false` so an unknown identity produces `not_found`.
+pub(crate) fn rank_service_profiles_for_request(
     service_state: &ServiceState,
     request: &ProfileSelectionRequest,
-) -> Option<(String, ProfileSelectionReason)> {
+    include_browser_build_default: bool,
+) -> Vec<ProfileSelectionCandidate> {
     let effective_request = effective_profile_selection_request(service_state, request);
     let normalized_target_service_ids =
         normalized_profile_request_targets(service_state, &effective_request);
-    service_state
+    let mut candidates = service_state
         .profiles
         .iter()
         .filter(|(_, profile)| {
@@ -85,10 +127,63 @@ fn select_service_profile_for_request_id(
         .filter_map(|(id, profile)| {
             let rank =
                 profile_selection_rank(profile, &effective_request, &normalized_target_service_ids);
-            rank.reason().map(|reason| (rank, id.clone(), reason))
+            rank.reason()
+                .filter(|reason| {
+                    include_browser_build_default
+                        || *reason != ProfileSelectionReason::BrowserBuildDefault
+                })
+                .map(|reason| (rank, id.clone(), reason))
         })
-        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)))
-        .map(|(_, id, reason)| (id, reason))
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    candidates
+        .into_iter()
+        .map(|(_, profile_id, reason)| ProfileSelectionCandidate { profile_id, reason })
+        .collect()
+}
+
+/// Rank catalog profiles without launching a browser or substituting a
+/// generic browser-build default.
+pub(crate) fn discover_service_profiles(
+    service_state: &ServiceState,
+    request: &ProfileDiscoveryRequest,
+) -> Vec<ProfileDiscoveryCandidate> {
+    let effective_request = effective_profile_selection_request(service_state, &request.selection);
+    let normalized_targets = normalized_profile_request_targets(service_state, &effective_request);
+    let mut candidates = service_state
+        .profiles
+        .iter()
+        .filter(|(_, profile)| {
+            profile_allows_service(profile, effective_request.service_name.as_deref())
+        })
+        .filter_map(|(id, profile)| {
+            let selection_rank =
+                profile_selection_rank(profile, &effective_request, &normalized_targets);
+            let (catalog_rank, evidence) = profile_catalog_rank(
+                id,
+                profile,
+                request,
+                &effective_request,
+                &normalized_targets,
+                selection_rank,
+            )?;
+            Some((
+                catalog_rank,
+                id.clone(),
+                ProfileDiscoveryCandidate {
+                    profile_id: id.clone(),
+                    reason: evidence.0.to_string(),
+                    matched_field: evidence.1.to_string(),
+                    matched_identity: evidence.2,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    candidates
+        .into_iter()
+        .map(|(_, _, candidate)| candidate)
+        .collect()
 }
 
 pub(crate) fn upsert_service_profile_and_session(
@@ -245,15 +340,16 @@ pub(crate) fn profile_lease_telemetry(
 }
 
 fn profile_allows_service(profile: &BrowserProfile, service_name: Option<&str>) -> bool {
+    let Some(service_name) = service_name else {
+        return true;
+    };
     if profile.shared_service_ids.is_empty() {
         return true;
     }
-    service_name.is_some_and(|service_name| {
-        profile
-            .shared_service_ids
-            .iter()
-            .any(|allowed| allowed == service_name)
-    })
+    profile
+        .shared_service_ids
+        .iter()
+        .any(|allowed| allowed == service_name)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -283,6 +379,252 @@ impl ProfileSelectionRank {
             None
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct ProfileCatalogRank {
+    authenticated_target_matches: usize,
+    account_matches: usize,
+    exact_profile_id_matches: usize,
+    exact_profile_name_matches: usize,
+    alias_matches: usize,
+    login_matches: usize,
+    origin_matches: usize,
+    target_matches: usize,
+    tag_matches: usize,
+    authentication_state_matches: usize,
+    freshness_state_matches: usize,
+    caller_service_match: bool,
+    free_text_match: bool,
+    browser_build_match: bool,
+    persistent: bool,
+}
+
+fn profile_catalog_rank(
+    profile_id: &str,
+    profile: &BrowserProfile,
+    request: &ProfileDiscoveryRequest,
+    selection_request: &ProfileSelectionRequest,
+    target_service_ids: &[String],
+    selection_rank: ProfileSelectionRank,
+) -> Option<(ProfileCatalogRank, (&'static str, &'static str, String))> {
+    let exact_profile_id = first_case_insensitive_match(&request.profile_ids, &[profile_id]);
+    let exact_profile_name =
+        first_case_insensitive_match(&request.profile_names, &[profile.name.as_str()]);
+    let alias_match = first_case_insensitive_match(
+        request
+            .profile_names
+            .iter()
+            .chain(request.profile_ids.iter())
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        &profile
+            .aliases
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let login_match = first_case_insensitive_match(
+        target_service_ids,
+        &profile
+            .login_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let origin_match = first_origin_match(&request.hostnames, &profile.origins);
+    let target_match = first_case_insensitive_match(
+        target_service_ids,
+        &profile
+            .target_service_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let account_match = first_case_insensitive_match(
+        &selection_request.account_ids,
+        &profile
+            .account_ids
+            .iter()
+            .chain(profile.account_labels.iter())
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let authenticated_match = first_case_insensitive_match(
+        target_service_ids,
+        &profile
+            .authenticated_service_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    let tag_match = first_case_insensitive_match(
+        &request.tags,
+        &profile.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let authentication_state_match =
+        profile_authentication_state_match(profile, &request.authentication_states);
+    let freshness_state_match = profile_freshness_state_match(profile, &request.freshness_states);
+    let free_text_match = request
+        .free_text
+        .as_deref()
+        .filter(|query| profile_matches_free_text(profile_id, profile, query))
+        .map(str::to_string);
+    let has_identity_query = !target_service_ids.is_empty()
+        || !selection_request.account_ids.is_empty()
+        || selection_request.service_name.is_some()
+        || !request.profile_ids.is_empty()
+        || !request.profile_names.is_empty()
+        || !request.hostnames.is_empty()
+        || !request.authentication_states.is_empty()
+        || !request.freshness_states.is_empty()
+        || !request.tags.is_empty()
+        || request.free_text.is_some();
+    let browser_build_catalog_match = selection_rank.browser_build_match && !has_identity_query;
+
+    let evidence = if let Some(value) = authenticated_match.as_ref() {
+        (
+            "authenticated_target",
+            "authenticatedServiceIds",
+            value.clone(),
+        )
+    } else if let Some(value) = account_match.as_ref() {
+        ("account_match", "accountLabels", value.clone())
+    } else if let Some(value) = exact_profile_id.as_ref() {
+        ("profile_id", "id", value.clone())
+    } else if let Some(value) = exact_profile_name.as_ref() {
+        ("profile_name", "name", value.clone())
+    } else if let Some(value) = alias_match.as_ref() {
+        ("alias", "aliases", value.clone())
+    } else if let Some(value) = login_match.as_ref() {
+        ("login_id", "loginIds", value.clone())
+    } else if let Some(value) = origin_match.as_ref() {
+        ("origin", "origins", value.clone())
+    } else if let Some(value) = target_match.as_ref() {
+        ("target_match", "targetServiceIds", value.clone())
+    } else if let Some(value) = tag_match.as_ref() {
+        ("tag", "tags", value.clone())
+    } else if let Some(value) = authentication_state_match.as_ref() {
+        ("authentication_state", "authenticationState", value.clone())
+    } else if let Some(value) = freshness_state_match.as_ref() {
+        ("freshness_state", "targetReadiness", value.clone())
+    } else if selection_rank.caller_service_match {
+        (
+            "service_allow_list",
+            "sharedServiceIds",
+            selection_request.service_name.clone().unwrap_or_default(),
+        )
+    } else if let Some(value) = free_text_match.as_ref() {
+        ("free_text", "safeMetadata", value.clone())
+    } else if browser_build_catalog_match {
+        (
+            "browser_build",
+            "browserBuild",
+            selection_request
+                .browser_build
+                .map(|build| format!("{build:?}").to_lowercase())
+                .unwrap_or_default(),
+        )
+    } else {
+        return None;
+    };
+
+    Some((
+        ProfileCatalogRank {
+            authenticated_target_matches: selection_rank.authenticated_target_matches,
+            account_matches: usize::from(account_match.is_some()),
+            exact_profile_id_matches: usize::from(exact_profile_id.is_some()),
+            exact_profile_name_matches: usize::from(exact_profile_name.is_some()),
+            alias_matches: usize::from(alias_match.is_some()),
+            login_matches: usize::from(login_match.is_some()),
+            origin_matches: usize::from(origin_match.is_some()),
+            target_matches: selection_rank.target_matches,
+            tag_matches: usize::from(tag_match.is_some()),
+            authentication_state_matches: usize::from(authentication_state_match.is_some()),
+            freshness_state_matches: usize::from(freshness_state_match.is_some()),
+            caller_service_match: selection_rank.caller_service_match,
+            free_text_match: free_text_match.is_some(),
+            browser_build_match: browser_build_catalog_match,
+            persistent: profile.persistent,
+        },
+        evidence,
+    ))
+}
+
+fn first_case_insensitive_match<T: AsRef<str>>(
+    requested: &[T],
+    available: &[&str],
+) -> Option<String> {
+    requested.iter().find_map(|requested| {
+        let requested = requested.as_ref().trim();
+        available
+            .iter()
+            .any(|available| requested.eq_ignore_ascii_case(available.trim()))
+            .then(|| requested.to_string())
+    })
+}
+
+fn first_origin_match(hostnames: &[String], origins: &[String]) -> Option<String> {
+    hostnames.iter().find_map(|hostname| {
+        let hostname = hostname.trim().to_ascii_lowercase();
+        origins
+            .iter()
+            .any(|origin| {
+                url::Url::parse(origin)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+                    .is_some_and(|origin_host| origin_host == hostname)
+            })
+            .then_some(hostname)
+    })
+}
+
+fn profile_authentication_state_match(
+    profile: &BrowserProfile,
+    requested: &[String],
+) -> Option<String> {
+    requested.iter().find_map(|state| {
+        let matches = match state.trim().to_ascii_lowercase().as_str() {
+            "authenticated" => !profile.authenticated_service_ids.is_empty(),
+            "configured" => !profile.target_service_ids.is_empty(),
+            "unknown" => {
+                profile.authenticated_service_ids.is_empty() && profile.target_readiness.is_empty()
+            }
+            _ => false,
+        };
+        matches.then(|| state.clone())
+    })
+}
+
+fn profile_freshness_state_match(profile: &BrowserProfile, requested: &[String]) -> Option<String> {
+    requested.iter().find_map(|requested| {
+        profile
+            .target_readiness
+            .iter()
+            .filter_map(|row| serde_json::to_value(row.state).ok())
+            .filter_map(|state| state.as_str().map(str::to_string))
+            .any(|state| state.eq_ignore_ascii_case(requested.trim()))
+            .then(|| requested.clone())
+    })
+}
+
+fn profile_matches_free_text(profile_id: &str, profile: &BrowserProfile, query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return false;
+    }
+    std::iter::once(profile_id)
+        .chain(std::iter::once(profile.name.as_str()))
+        .chain(profile.description.as_deref())
+        .chain(profile.aliases.iter().map(String::as_str))
+        .chain(profile.origins.iter().map(String::as_str))
+        .chain(profile.login_ids.iter().map(String::as_str))
+        .chain(profile.account_labels.iter().map(String::as_str))
+        .chain(profile.target_service_ids.iter().map(String::as_str))
+        .chain(profile.shared_service_ids.iter().map(String::as_str))
+        .chain(profile.tags.iter().map(String::as_str))
+        .any(|value| value.to_ascii_lowercase().contains(&query))
 }
 
 fn profile_selection_rank(
@@ -482,6 +824,109 @@ mod tests {
         let selected = selected.expect("authenticated profile should be selected");
         assert_eq!(selected.profile_id, "authenticated");
         assert_eq!(selected.reason, ProfileSelectionReason::AuthenticatedTarget);
+    }
+
+    #[test]
+    fn test_profile_discovery_considers_shared_profile_without_caller_service() {
+        let mut service_state = ServiceState::default();
+        service_state.profiles.insert(
+            "shared-authenticated".to_string(),
+            BrowserProfile {
+                id: "shared-authenticated".to_string(),
+                name: "Shared authenticated".to_string(),
+                target_service_ids: vec!["x".to_string()],
+                authenticated_service_ids: vec!["x".to_string()],
+                shared_service_ids: vec!["last30days".to_string()],
+                persistent: true,
+                ..BrowserProfile::default()
+            },
+        );
+
+        let selected = select_service_profile_for_request(
+            &service_state,
+            &ProfileSelectionRequest {
+                service_name: None,
+                target_service_ids: vec!["x".to_string()],
+                account_ids: Vec::new(),
+                target_url: None,
+                browser_build: None,
+            },
+        )
+        .expect("shared profile should remain discoverable without a caller service");
+
+        assert_eq!(selected.profile_id, "shared-authenticated");
+        assert_eq!(selected.reason, ProfileSelectionReason::AuthenticatedTarget);
+    }
+
+    #[test]
+    fn test_profile_discovery_does_not_return_generic_default_for_unknown_identity() {
+        let mut service_state = ServiceState {
+            default_browser_build: Some(BrowserBuild::StealthcdpChromium),
+            ..ServiceState::default()
+        };
+        service_state.profiles.insert(
+            "stealth-default".to_string(),
+            BrowserProfile {
+                id: "stealth-default".to_string(),
+                name: "Stealth default".to_string(),
+                browser_build: Some(BrowserBuild::StealthcdpChromium),
+                persistent: true,
+                ..BrowserProfile::default()
+            },
+        );
+
+        let candidates = rank_service_profiles_for_request(
+            &service_state,
+            &ProfileSelectionRequest {
+                service_name: None,
+                target_service_ids: vec!["unknown-site".to_string()],
+                account_ids: Vec::new(),
+                target_url: None,
+                browser_build: None,
+            },
+            false,
+        );
+
+        assert!(
+            candidates.is_empty(),
+            "identity discovery must report not_found instead of a browser default"
+        );
+    }
+
+    #[test]
+    fn test_profile_discovery_free_text_miss_does_not_fall_back_to_browser_build() {
+        let mut service_state = ServiceState {
+            default_browser_build: Some(BrowserBuild::StealthcdpChromium),
+            ..ServiceState::default()
+        };
+        service_state.profiles.insert(
+            "social".to_string(),
+            BrowserProfile {
+                id: "social".to_string(),
+                name: "Authenticated social profile".to_string(),
+                browser_build: Some(BrowserBuild::StealthcdpChromium),
+                tags: vec!["social".to_string()],
+                persistent: true,
+                ..BrowserProfile::default()
+            },
+        );
+
+        let candidates = discover_service_profiles(
+            &service_state,
+            &ProfileDiscoveryRequest {
+                selection: ProfileSelectionRequest {
+                    browser_build: Some(BrowserBuild::StealthcdpChromium),
+                    ..ProfileSelectionRequest::default()
+                },
+                free_text: Some("definitely-not-social".to_string()),
+                ..ProfileDiscoveryRequest::default()
+            },
+        );
+
+        assert!(
+            candidates.is_empty(),
+            "an unmatched free-text identity must report not_found"
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::os::unix::process::ExitStatusExt;
 
 use crate::runtime_profile::{
     list_runtime_profiles, read_devtools_port as read_runtime_devtools_port, resolve_profile,
-    write_runtime_state, RuntimeProfileSummary, RuntimeState,
+    write_runtime_state, RuntimeLaunchRecord, RuntimeProfileSummary, RuntimeState,
 };
 
 use crate::native::service_store::{JsonServiceStateStore, ServiceStateStore};
@@ -953,6 +953,19 @@ pub fn launch_chrome_detached(options: &LaunchOptions) -> Result<ManualChromeLau
             },
             devtools_port,
             ws_url: None,
+            launch_record: Some(RuntimeLaunchRecord {
+                target_url: options.args.first().cloned(),
+                browser_family: options.expected_browser_family.clone(),
+                browser_build: options.expected_browser_family.clone(),
+                display: options.display.clone(),
+                started_at: time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .ok(),
+                last_observed_at: time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .ok(),
+                ..RuntimeLaunchRecord::default()
+            }),
         });
     }
 
@@ -1367,6 +1380,7 @@ fn try_launch_chrome(
             } else {
                 None
             },
+            launch_record: None,
         });
     }
 
@@ -3488,6 +3502,7 @@ mod tests {
             launch_mode: "manual-attachable".to_string(),
             devtools_port: Some(9222),
             ws_url: Some("ws://127.0.0.1:9222/devtools/browser/test".to_string()),
+            launch_record: None,
         })
         .unwrap();
         let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());

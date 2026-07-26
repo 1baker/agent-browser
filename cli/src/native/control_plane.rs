@@ -205,6 +205,8 @@ impl ControlPlaneHandle {
         reconcile_service_state(&mut service_state).await;
         persist_reconciled_service_state(&before, &service_state);
         let profile_allocations = service_profile_allocations(&service_state);
+        let manual_browsers =
+            super::service_status_projection::manual_runtime_browser_projection(&service_state);
         let retained_display_allocations = retained_display_allocation_summary(&service_state);
         let browser_session_authority = browser_session_authority_snapshot(&service_state);
         let (service_state, closed_tab_projection) =
@@ -219,6 +221,7 @@ impl ControlPlaneHandle {
             "data": {
                 "control_plane": self.status_payload(waiting_profile_lease_job_count),
                 "profileAllocations": profile_allocations,
+                "manualBrowsers": manual_browsers,
                 "retainedDisplayAllocations": retained_display_allocations,
                 "browserSessionAuthority": browser_session_authority,
                 "closedTabProjection": closed_tab_projection,

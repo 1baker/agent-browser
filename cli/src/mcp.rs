@@ -42,7 +42,7 @@ const INCIDENT_ACTIVITY_PREFIX: &str = "agent-browser://incidents/";
 const INCIDENT_ACTIVITY_SUFFIX: &str = "/activity";
 const ACCESS_PLAN_TEMPLATE: &str = "agent-browser://access-plan{?serviceName,agentName,taskName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,sitePolicyId,challengeId,readinessProfileId,runtimeProfile,browserBuild,browserHost,viewStreamProvider,controlInputProvider,displayIsolation}";
 const PROFILE_LOOKUP_RESOURCE: &str = "agent-browser://profiles/lookup";
-const PROFILE_LOOKUP_TEMPLATE: &str = "agent-browser://profiles/lookup{?serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,readinessProfileId,browserBuild}";
+const PROFILE_LOOKUP_TEMPLATE: &str = "agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,browserBuild}";
 const PROFILE_ALLOCATION_TEMPLATE: &str = "agent-browser://profiles/{profile_id}/allocation";
 const PROFILE_READINESS_TEMPLATE: &str = "agent-browser://profiles/{profile_id}/readiness";
 const PROFILE_SEEDING_HANDOFF_TEMPLATE: &str =
@@ -275,7 +275,7 @@ fn service_mcp_resource_templates() -> Vec<Value> {
             "uriTemplate": PROFILE_LOOKUP_TEMPLATE,
             "name": "Service profile lookup",
             "mimeType": "application/json",
-            "description": "No-launch profile selector by service and target identity"
+            "description": "Deterministic no-launch profile and login catalog search with ranked evidence, readiness, holder allocation, provenance, and structured not_found"
         }),
         json!({
             "uriTemplate": PROFILE_READINESS_TEMPLATE,

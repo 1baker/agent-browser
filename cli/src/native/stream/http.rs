@@ -24,7 +24,7 @@ use crate::native::service_contracts::{
     SERVICE_REQUEST_ACTIONS, SERVICE_REQUEST_HTTP_ROUTE,
 };
 use crate::native::service_lifecycle::{
-    select_service_profile_for_request, ProfileSelectionRequest,
+    discover_service_profiles, ProfileDiscoveryRequest, ProfileSelectionRequest,
 };
 use crate::native::service_model::{
     service_profile_allocations, service_profile_seeding_handoff, service_profile_sources,
@@ -2861,6 +2861,13 @@ pub(crate) fn service_profile_lookup_response_for_state(
     let mut target_url = None;
     let mut readiness_profile_id = None;
     let mut browser_build = None;
+    let mut profile_ids = Vec::new();
+    let mut profile_names = Vec::new();
+    let mut hostnames = Vec::new();
+    let mut authentication_states = Vec::new();
+    let mut freshness_states = Vec::new();
+    let mut tags = Vec::new();
+    let mut free_text = None;
 
     for (key, value) in query_params(query) {
         match key.as_str() {
@@ -2890,6 +2897,26 @@ pub(crate) fn service_profile_lookup_response_for_state(
             "browserBuild" | "browser_build" | "browser-build" => {
                 browser_build = parse_browser_build(&value)?;
             }
+            "profileId" | "profile_id" | "profile-id" | "profile" => {
+                append_identity_values(&mut profile_ids, &value);
+            }
+            "profileName" | "profile_name" | "profile-name" => {
+                append_identity_values(&mut profile_names, &value);
+            }
+            "hostname" | "host" => append_identity_values(&mut hostnames, &value),
+            "authenticationState"
+            | "authentication_state"
+            | "authentication-state"
+            | "authState"
+            | "auth_state"
+            | "auth-state" => {
+                append_identity_values(&mut authentication_states, &value);
+            }
+            "freshnessState" | "freshness_state" | "freshness-state" | "freshness" => {
+                append_identity_values(&mut freshness_states, &value);
+            }
+            "tag" | "tags" => append_identity_values(&mut tags, &value),
+            "q" | "query" | "search" => free_text = non_empty(value),
             "" => {}
             _ => {
                 return Err(format!(
@@ -2904,6 +2931,27 @@ pub(crate) fn service_profile_lookup_response_for_state(
     target_service_ids.dedup();
     account_ids.sort();
     account_ids.dedup();
+    profile_ids.sort();
+    profile_ids.dedup();
+    profile_names.sort();
+    profile_names.dedup();
+    hostnames.sort();
+    hostnames.dedup();
+    authentication_states.sort();
+    authentication_states.dedup();
+    freshness_states.sort();
+    freshness_states.dedup();
+    tags.sort();
+    tags.dedup();
+    if let Some(hostname) = target_url
+        .as_deref()
+        .and_then(|value| url::Url::parse(value).ok())
+        .and_then(|url| url.host_str().map(str::to_string))
+    {
+        hostnames.push(hostname);
+        hostnames.sort();
+        hostnames.dedup();
+    }
     if let Some(site_policy_id) = target_url
         .as_deref()
         .and_then(|url| service_site_policy_id_for_url(service_state, url))
@@ -2923,16 +2971,24 @@ pub(crate) fn service_profile_lookup_response_for_state(
         target_url: target_url.clone(),
         browser_build,
     };
-    let selection = select_service_profile_for_request(service_state, &request);
+    let discovery_request = ProfileDiscoveryRequest {
+        selection: request.clone(),
+        profile_ids: profile_ids.clone(),
+        profile_names: profile_names.clone(),
+        hostnames: hostnames.clone(),
+        authentication_states: authentication_states.clone(),
+        freshness_states: freshness_states.clone(),
+        tags: tags.clone(),
+        free_text: free_text.clone(),
+    };
+    let candidates = discover_service_profiles(service_state, &discovery_request);
+    let selection = candidates.first();
     let selected_profile = selection
-        .as_ref()
         .and_then(|selection| service_state.profiles.get(&selection.profile_id))
         .cloned();
-    let readiness_id = readiness_profile_id.clone().or_else(|| {
-        selection
-            .as_ref()
-            .map(|selection| selection.profile_id.clone())
-    });
+    let readiness_id = readiness_profile_id
+        .clone()
+        .or_else(|| selection.map(|selection| selection.profile_id.clone()));
     let readiness_profile = readiness_id
         .as_deref()
         .and_then(|profile_id| service_state.profiles.get(profile_id));
@@ -2950,8 +3006,107 @@ pub(crate) fn service_profile_lookup_response_for_state(
     let readiness_summary = readiness_summary(readiness.as_ref());
     let seeding_handoff =
         seeding_handoff_for_readiness(service_state, readiness.as_ref(), &readiness_summary);
+    let allocations = service_profile_allocations(service_state);
+    let ranked_profiles = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, candidate)| {
+            let profile = service_state.profiles.get(&candidate.profile_id)?.clone();
+            let allocation = allocations
+                .iter()
+                .find(|allocation| allocation.profile_id == candidate.profile_id)
+                .cloned();
+            let has_manual_seed_requirement = profile.target_readiness.iter().any(|readiness| {
+                readiness.manual_seeding_required
+                    || readiness.state
+                        == crate::native::service_model::ProfileReadinessState::NeedsManualSeeding
+            });
+            let has_conflicting_holder = allocation.as_ref().is_some_and(|allocation| {
+                !allocation.conflict_session_ids.is_empty()
+                    || !allocation.exclusive_holder_session_ids.is_empty()
+            });
+            let has_live_browser = allocation
+                .as_ref()
+                .is_some_and(|allocation| !allocation.browser_summaries.is_empty());
+            let has_attachable_browser = allocation.as_ref().is_some_and(|allocation| {
+                allocation
+                    .browser_summaries
+                    .iter()
+                    .any(|browser| browser.has_cdp_endpoint)
+            });
+            let route_available = allocation.as_ref().is_some_and(|allocation| {
+                allocation.browser_ids.iter().any(|browser_id| {
+                    service_state
+                        .browsers
+                        .get(browser_id)
+                        .is_some_and(|browser| !browser.view_streams.is_empty())
+                })
+            });
+            let next_action = if has_conflicting_holder {
+                "inspect_holder"
+            } else if has_attachable_browser {
+                "add_tab"
+            } else if has_live_browser && route_available {
+                "view"
+            } else if has_manual_seed_requirement {
+                "seed"
+            } else {
+                "launch"
+            };
+            let service_action = match next_action {
+                "add_tab" => "tab_new",
+                "view" => "remote_view_open",
+                "seed" => "cdp_free_launch",
+                "inspect_holder" => "diagnostics",
+                _ => "navigate",
+            };
+            let recommended_url = target_url
+                .clone()
+                .or_else(|| profile.origins.first().cloned());
+            let recommendation = json!({
+                "action": next_action,
+                "routeAvailable": route_available,
+                "serviceRequest": {
+                    "action": service_action,
+                    "runtimeProfile": candidate.profile_id,
+                    "profileId": candidate.profile_id,
+                    "url": recommended_url,
+                    "targetServiceIds": target_service_ids,
+                    "accountIds": account_ids,
+                    "serviceName": service_name,
+                },
+                "dashboardUrl": format!(
+                    "/?profile-id={}&profile-action={}",
+                    urlencoding::encode(&candidate.profile_id),
+                    next_action
+                ),
+            });
+            Some(json!({
+                "rank": index + 1,
+                "profileId": candidate.profile_id,
+                "profile": profile,
+                "profileSource": profile_source_value(service_state, &candidate.profile_id),
+                "reason": candidate.reason,
+                "matchedField": candidate.matched_field,
+                "matchedIdentity": candidate.matched_identity,
+                "allocation": allocation,
+                "recommendation": recommendation,
+            }))
+        })
+        .collect::<Vec<_>>();
+    let selected_recommendation = ranked_profiles
+        .first()
+        .and_then(|candidate| candidate.get("recommendation"))
+        .cloned();
+    let status = if selection.is_some() {
+        "matched"
+    } else {
+        "not_found"
+    };
 
     Ok(json!({
+        "schemaVersion": "service-profile-discovery.v1",
+        "status": status,
         "query": {
             "serviceName": service_name,
             "targetServiceIds": target_service_ids,
@@ -2959,27 +3114,41 @@ pub(crate) fn service_profile_lookup_response_for_state(
             "url": target_url,
             "readinessProfileId": readiness_profile_id,
             "browserBuild": browser_build,
+            "profileIds": profile_ids,
+            "profileNames": profile_names,
+            "hostnames": hostnames,
+            "authenticationStates": authentication_states,
+            "freshnessStates": freshness_states,
+            "tags": tags,
+            "search": free_text,
         },
+        "rankedProfiles": ranked_profiles,
+        "selectedRecommendation": selected_recommendation,
         "selectedProfile": selected_profile.clone(),
-        "selectedProfileSource": selection.as_ref().map(|selection| {
+        "selectedProfileSource": selection.map(|selection| {
             profile_source_value(service_state, &selection.profile_id)
         }),
-        "selectedProfileMatch": selection.as_ref().map(|selection| {
-            let (matched_field, matched_identity) = selected_profile
-                .as_ref()
-                .map(|profile| service_profile_match_details(profile, &request, selection.reason))
-                .unwrap_or((None, None));
+        "selectedProfileMatch": selection.map(|selection| {
             json!({
                 "profileId": selection.profile_id,
                 "profile": selected_profile.clone(),
                 "reason": selection.reason,
-                "matchedField": matched_field,
-                "matchedIdentity": matched_identity,
+                "matchedField": selection.matched_field,
+                "matchedIdentity": selection.matched_identity,
             })
         }),
         "readiness": readiness,
         "readinessSummary": readiness_summary,
         "seedingHandoff": seeding_handoff,
+        "notFound": (selection.is_none()).then(|| json!({
+            "code": "profile_not_found",
+            "message": "No managed browser profile matched the requested identity.",
+            "nextActions": [
+                "Review ranked identity inputs and profile catalog metadata.",
+                "Register or seed a dedicated profile before requesting launch.",
+                "Use an access plan only after choosing an explicit profile."
+            ]
+        })),
     }))
 }
 
@@ -4035,6 +4204,10 @@ mod tests {
 
         assert_eq!(response["query"]["serviceName"], "JournalDownloader");
         assert_eq!(response["query"]["targetServiceIds"][0], "acs");
+        assert_eq!(response["schemaVersion"], "service-profile-discovery.v1");
+        assert_eq!(response["status"], "matched");
+        assert_eq!(response["rankedProfiles"][0]["rank"], 1);
+        assert_eq!(response["rankedProfiles"][0]["profileId"], "authenticated");
         assert_eq!(response["selectedProfile"]["id"], "authenticated");
         assert_eq!(
             response["selectedProfileMatch"]["profileId"],
@@ -4055,8 +4228,119 @@ mod tests {
             "fresh"
         );
         assert_eq!(response["readinessSummary"]["needsManualSeeding"], false);
+        assert_eq!(response["selectedRecommendation"]["action"], "launch");
+        assert_eq!(
+            response["selectedRecommendation"]["serviceRequest"]["action"],
+            "navigate"
+        );
         assert_ne!(response["selectedProfile"]["id"], "target-only");
         assert_ne!(response["selectedProfile"]["id"], "other-service");
+    }
+
+    #[test]
+    fn service_profile_lookup_discovers_shared_profile_without_service_name() {
+        let mut service_state = ServiceState::default();
+        service_state.profiles.insert(
+            "last30days-social".to_string(),
+            BrowserProfile {
+                id: "last30days-social".to_string(),
+                name: "Last 30 days social".to_string(),
+                target_service_ids: vec!["facebook".to_string(), "x".to_string()],
+                authenticated_service_ids: vec!["facebook".to_string(), "x".to_string()],
+                shared_service_ids: vec!["last30days".to_string()],
+                persistent: true,
+                ..BrowserProfile::default()
+            },
+        );
+
+        let response =
+            service_profile_lookup_response_for_state(Some("target-service-id=x"), &service_state)
+                .expect("profile lookup response should be built");
+
+        assert_eq!(response["status"], "matched");
+        assert_eq!(response["selectedProfile"]["id"], "last30days-social");
+        assert_eq!(
+            response["selectedProfileMatch"]["reason"],
+            "authenticated_target"
+        );
+    }
+
+    #[test]
+    fn service_profile_lookup_reports_not_found_without_silent_default() {
+        let mut service_state = ServiceState {
+            default_browser_build: Some(BrowserBuild::StealthcdpChromium),
+            ..ServiceState::default()
+        };
+        service_state.profiles.insert(
+            "stealth-default".to_string(),
+            BrowserProfile {
+                id: "stealth-default".to_string(),
+                name: "Stealth default".to_string(),
+                browser_build: Some(BrowserBuild::StealthcdpChromium),
+                persistent: true,
+                ..BrowserProfile::default()
+            },
+        );
+
+        let response = service_profile_lookup_response_for_state(
+            Some("target-service-id=unknown-site"),
+            &service_state,
+        )
+        .expect("profile lookup response should be built");
+
+        assert_eq!(response["status"], "not_found");
+        assert!(response["rankedProfiles"].as_array().unwrap().is_empty());
+        assert!(response["selectedProfile"].is_null());
+        assert_eq!(response["notFound"]["code"], "profile_not_found");
+    }
+
+    #[test]
+    fn service_profile_lookup_ranks_catalog_alias_hostname_name_and_tag_matches() {
+        let mut service_state = ServiceState::default();
+        service_state.profiles.insert(
+            "last30days-facebook".to_string(),
+            BrowserProfile {
+                id: "last30days-facebook".to_string(),
+                name: "Last30days social authenticated profile".to_string(),
+                description: Some("Shared social login profile".to_string()),
+                aliases: vec!["Twitter".to_string()],
+                origins: vec!["https://x.com".to_string()],
+                login_ids: vec!["x".to_string()],
+                account_labels: vec!["social-work".to_string()],
+                target_service_ids: vec![
+                    "facebook".to_string(),
+                    "linkedin".to_string(),
+                    "x".to_string(),
+                ],
+                authenticated_service_ids: vec!["x".to_string()],
+                tags: vec!["last30days".to_string()],
+                persistent: true,
+                ..BrowserProfile::default()
+            },
+        );
+
+        for (query, reason) in [
+            (
+                "profile-name=Last30days%20social%20authenticated%20profile",
+                "profile_name",
+            ),
+            ("profile-name=Twitter", "alias"),
+            ("hostname=x.com", "origin"),
+            ("tag=last30days", "tag"),
+            ("search=social%20login", "free_text"),
+        ] {
+            let response = service_profile_lookup_response_for_state(Some(query), &service_state)
+                .expect("catalog lookup response should be built");
+            assert_eq!(response["status"], "matched", "query={query}");
+            assert_eq!(
+                response["selectedProfile"]["id"], "last30days-facebook",
+                "query={query}"
+            );
+            assert_eq!(
+                response["selectedProfileMatch"]["reason"], reason,
+                "query={query}"
+            );
+        }
     }
 
     #[test]
@@ -4105,6 +4389,11 @@ mod tests {
         assert_eq!(
             response["seedingHandoff"]["command"],
             "agent-browser --runtime-profile target-only runtime login https://accounts.google.com"
+        );
+        assert_eq!(response["selectedRecommendation"]["action"], "seed");
+        assert_eq!(
+            response["selectedRecommendation"]["serviceRequest"]["action"],
+            "cdp_free_launch"
         );
     }
 

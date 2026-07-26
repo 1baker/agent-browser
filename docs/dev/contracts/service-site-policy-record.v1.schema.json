@@ -6,7 +6,18 @@
   "type": "object",
   "required": [
     "id",
+    "name",
+    "description",
+    "aliases",
     "originPattern",
+    "origins",
+    "loginIds",
+    "accountLabels",
+    "recommendedProfileId",
+    "adapterServiceIds",
+    "tags",
+    "freshnessContract",
+    "troubleshooting",
     "browserHost",
     "browserBuild",
     "viewStream",
@@ -25,8 +36,62 @@
     "id": {
       "type": "string"
     },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": ["string", "null"]
+    },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "originPattern": {
       "type": "string"
+    },
+    "origins": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "loginIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "accountLabels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "recommendedProfileId": {
+      "type": ["string", "null"]
+    },
+    "adapterServiceIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "freshnessContract": {
+      "type": ["string", "null"]
+    },
+    "troubleshooting": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "browserHost": {
       "oneOf": [

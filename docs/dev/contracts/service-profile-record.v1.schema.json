@@ -7,6 +7,11 @@
   "required": [
     "id",
     "name",
+    "description",
+    "aliases",
+    "origins",
+    "loginIds",
+    "accountLabels",
     "profileOrigin",
     "profileClass",
     "userDataDir",
@@ -33,6 +38,34 @@
     },
     "name": {
       "type": "string"
+    },
+    "description": {
+      "type": ["string", "null"]
+    },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "origins": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "loginIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "accountLabels": {
+      "description": "Safe human-facing account labels. Credentials and authentication artifacts are prohibited.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "profileOrigin": {
       "description": "Ownership boundary for the profile user-data directory and cleanup policy.",

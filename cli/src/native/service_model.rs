@@ -2033,10 +2033,17 @@ pub fn assert_service_status_response_contract(value: &serde_json::Value) {
     assert_record_fields(
         "service status response",
         value,
-        &["service_state", "profileAllocations"],
+        &[
+            "control_plane",
+            "service_state",
+            "profileAllocations",
+            "manualBrowsers",
+        ],
         &["serviceState"],
     );
     assert!(value["service_state"].is_object());
+    assert!(value["control_plane"].is_object());
+    assert!(value["manualBrowsers"].is_array());
     if let Some(launch_config) = value.get("launchConfig") {
         assert_record_fields(
             "service status launch config",
@@ -2507,24 +2514,34 @@ impl ServiceState {
             .collect();
     }
 
-    /// Expire active session leases whose `expiresAt` is at or before `observed_at`.
+    /// Expire active session leases whose deadline has passed or whose recorded
+    /// browser ownership no longer resolves to any retained browser.
     ///
     /// Expiry is explicit instead of hidden inside `refresh_derived_views()` so
     /// snapshot reads stay deterministic. The retained browser and tab records
     /// are preserved while the expired session is removed from active browser
     /// ownership.
     pub fn expire_stale_session_leases(&mut self, observed_at: &str) -> Vec<String> {
-        let expired_session_ids =
-            self.sessions
-                .iter()
-                .filter(|(_, session)| {
-                    !is_inactive_lease(session.lease)
-                        && session.expires_at.as_deref().is_some_and(|expires_at| {
-                            service_timestamp_is_due(expires_at, observed_at)
-                        })
-                })
-                .map(|(id, _)| id.clone())
-                .collect::<Vec<_>>();
+        let expired_session_ids = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| {
+                if is_inactive_lease(session.lease) {
+                    return false;
+                }
+                let deadline_expired = session
+                    .expires_at
+                    .as_deref()
+                    .is_some_and(|expires_at| service_timestamp_is_due(expires_at, observed_at));
+                let browser_ownership_orphaned = !session.browser_ids.is_empty()
+                    && session
+                        .browser_ids
+                        .iter()
+                        .all(|browser_id| !self.browsers.contains_key(browser_id));
+                deadline_expired || browser_ownership_orphaned
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
         if expired_session_ids.is_empty() {
             return expired_session_ids;
         }
@@ -4633,6 +4650,19 @@ pub struct ControlPlaneSnapshot {
 pub struct BrowserProfile {
     pub id: String,
     pub name: String,
+    /// Safe, human-readable catalog description. Do not place credentials or
+    /// private authentication artifacts in this field.
+    pub description: Option<String>,
+    /// Alternate human-facing names used by deterministic profile discovery.
+    pub aliases: Vec<String>,
+    /// Website origins associated with this profile, such as
+    /// `https://x.com`.
+    pub origins: Vec<String>,
+    /// Login identity labels supported by this profile.
+    pub login_ids: Vec<String>,
+    /// Safe account labels intended for operator search. Raw secrets and
+    /// authentication material are not allowed.
+    pub account_labels: Vec<String>,
     /// Ownership boundary for this profile's user-data directory and cleanup.
     pub profile_origin: ProfileOrigin,
     /// Product-level profile class used for reuse and cleanup decisions.
@@ -5693,7 +5723,29 @@ impl Default for SiteMonitor {
 #[serde(default, rename_all = "camelCase")]
 pub struct SitePolicy {
     pub id: String,
+    /// Human-readable catalog name for this website or login surface.
+    pub name: String,
+    /// Safe catalog description shown during discovery.
+    pub description: Option<String>,
+    /// Alternate names used by deterministic site and profile discovery.
+    pub aliases: Vec<String>,
     pub origin_pattern: String,
+    /// Additional canonical origins for this site.
+    pub origins: Vec<String>,
+    /// Login identity labels served by this site.
+    pub login_ids: Vec<String>,
+    /// Safe account labels supported by this site policy.
+    pub account_labels: Vec<String>,
+    /// Preferred registered profile for operator launch workflows.
+    pub recommended_profile_id: Option<String>,
+    /// Service or adapter clients known to consume this login.
+    pub adapter_service_ids: Vec<String>,
+    /// Searchable catalog tags.
+    pub tags: Vec<String>,
+    /// Bounded probe or freshness contract identifier.
+    pub freshness_contract: Option<String>,
+    /// Safe bounded troubleshooting guidance.
+    pub troubleshooting: Vec<String>,
     pub browser_host: Option<BrowserHost>,
     /// Optional browser build or engine variant preference for this site.
     pub browser_build: Option<BrowserBuild>,
@@ -5715,7 +5767,18 @@ impl Default for SitePolicy {
     fn default() -> Self {
         Self {
             id: String::new(),
+            name: String::new(),
+            description: None,
+            aliases: Vec::new(),
             origin_pattern: String::new(),
+            origins: Vec::new(),
+            login_ids: Vec::new(),
+            account_labels: Vec::new(),
+            recommended_profile_id: None,
+            adapter_service_ids: Vec::new(),
+            tags: Vec::new(),
+            freshness_contract: None,
+            troubleshooting: Vec::new(),
             browser_host: None,
             browser_build: None,
             view_stream: None,
@@ -6246,6 +6309,7 @@ mod tests {
             challenge_policy: ChallengePolicy::AvoidFirst,
             allowed_challenge_providers: vec!["manual".to_string()],
             notes: None,
+            ..SitePolicy::default()
         };
 
         let value = serde_json::to_value(policy).unwrap();
@@ -7639,11 +7703,17 @@ mod tests {
             .is_some());
         assert_service_status_response_contract(&json!({
             "control_plane": {
+                "worker_state": "ready",
+                "browser_health": "ready",
+                "queue_depth": 0,
+                "queue_capacity": 64,
                 "waiting_profile_lease_job_count": 0,
+                "service_job_timeout_ms": null,
                 "service_monitor_interval_ms": 60000
             },
             "service_state": {},
             "profileAllocations": [],
+            "manualBrowsers": [],
         }));
 
         for (schema, field, label) in collection_schemas {
@@ -9559,6 +9629,16 @@ mod tests {
                         ..BrowserSession::default()
                     },
                 ),
+                (
+                    "orphaned-session".to_string(),
+                    BrowserSession {
+                        id: "orphaned-session".to_string(),
+                        profile_id: Some("shared-profile".to_string()),
+                        lease: LeaseState::Exclusive,
+                        browser_ids: vec!["missing-browser".to_string()],
+                        ..BrowserSession::default()
+                    },
+                ),
             ]),
             tabs: BTreeMap::from([
                 (
@@ -9607,8 +9687,18 @@ mod tests {
 
         let expired = state.expire_stale_session_leases("2026-06-19T22:45:00Z");
 
-        assert_eq!(expired, vec!["expired-session".to_string()]);
+        assert_eq!(
+            expired,
+            vec![
+                "expired-session".to_string(),
+                "orphaned-session".to_string()
+            ]
+        );
         assert_eq!(state.sessions["expired-session"].lease, LeaseState::Expired);
+        assert_eq!(
+            state.sessions["orphaned-session"].lease,
+            LeaseState::Expired
+        );
         assert_eq!(
             state.sessions["expired-session"]
                 .last_lease_observed_at

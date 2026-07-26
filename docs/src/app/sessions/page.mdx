@@ -67,6 +67,21 @@ agent-browser runtime login https://example.com --attachable
 agent-browser runtime attach
 ```
 
+Detached manual browsers remain present in the service inventory even without
+a DevTools port. Read <code>manualBrowsers</code> from
+<code>agent-browser service status --json</code> to get the runtime profile,
+profile path, PID, target URL, display, browser family and build, remote-view
+route, automation availability, and next safe action. The dashboard renders
+the same rows as detected manual workspaces and only enables controls the live
+browser can support.
+
+When a command finds an older daemon executable during development,
+agent-browser prepares an authenticated handoff, starts the current
+executable, and resumes the same browser PID and DevTools endpoint. Missing
+handoff authority fails closed. Reconciliation also expires active session
+leases whose recorded browser ownership no longer exists, preventing stale
+session rows from holding a profile indefinitely.
+
 Do not use <code>--attachable</code> for the initial sign-in on Google, Gmail, or similar SSO flows. Google can reject sign-in when DevTools is present during the login ceremony. Sign in with detached <code>runtime login</code>, close Chrome, then relaunch the same runtime profile with <code>--attachable</code> for automation:
 
 ```bash

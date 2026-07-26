@@ -31,6 +31,7 @@ import {
   type WorkspaceProfileActionabilityAction,
   type WorkspaceNodeGroup,
   type WorkspaceNodeInput,
+  type WorkspaceManualBrowser,
   type WorkspaceServiceBrowser,
   type WorkspaceServiceIncident,
   type WorkspaceServiceJob,
@@ -120,6 +121,7 @@ type ServiceStatusData = {
     browserCapabilityRegistry?: LauncherBrowserCapabilityRegistry;
   };
   profileAllocations?: WorkspaceServiceProfileAllocation[];
+  manualBrowsers?: WorkspaceManualBrowser[];
   browserSessionAuthority?: WorkspaceNodeInput["browserSessionAuthority"];
 };
 
@@ -136,6 +138,38 @@ type ApiResponse<T> = {
   data?: T;
   error?: string | null;
 };
+
+type ProfileDiscoveryCandidate = {
+  rank: number;
+  profileId: string;
+  reason: string;
+  matchedField: string;
+  matchedIdentity: string;
+  recommendation?: {
+    action?: "launch" | "add_tab" | "view" | "seed" | "wait" | "inspect_holder" | string;
+    routeAvailable?: boolean;
+    serviceRequest?: Record<string, unknown>;
+    dashboardUrl?: string;
+  } | null;
+};
+
+type ProfileDiscoveryResponse = {
+  status: "matched" | "not_found";
+  rankedProfiles: ProfileDiscoveryCandidate[];
+  notFound?: {
+    message?: string;
+    nextActions?: string[];
+  } | null;
+};
+
+function discoveryActionLabel(action?: string | null, targetUrl?: string): string {
+  if (action === "add_tab") return targetUrl ? "Open website in new tab" : "Add tab";
+  if (action === "view") return "View or control";
+  if (action === "seed") return "Seed login";
+  if (action === "wait") return "Wait for holder";
+  if (action === "inspect_holder") return "Inspect holder";
+  return targetUrl ? "Open website" : "Open browser";
+}
 
 const BROWSER_OPTIONS: { id: string; label: string; engine?: string; provider?: string }[] = [
   { id: "chrome", label: "Chrome", engine: "chrome" },
@@ -639,30 +673,6 @@ function launcherRowMatchesFilter(row: LauncherEligibilityRow, filter: LauncherR
   return row.status === "blocked";
 }
 
-function launcherRowSearchText(row: LauncherEligibilityRow): string {
-  return [
-    row.profileName,
-    row.profileId,
-    row.browserBuild,
-    row.browserHost,
-    row.browserHostId,
-    row.browserId,
-    row.executableId,
-    row.capabilityId,
-    row.launchAction,
-    row.reason,
-    row.reasonSource,
-    row.serviceReason,
-    row.evidenceSummary,
-    ...row.targetServiceIds,
-    ...row.loginIds,
-    ...row.accountIds,
-    ...row.serviceNames,
-    ...row.agentNames,
-    ...row.taskNames,
-  ].filter(Boolean).join(" ").toLowerCase();
-}
-
 function LauncherEligibilityPanel({
   preview,
   planningRowId,
@@ -676,6 +686,10 @@ function LauncherEligibilityPanel({
   launchingRowId,
   launchError,
   launchResult,
+  discoveryQuery,
+  discovery,
+  discoveryLoading,
+  discoveryError,
   onSelect,
   onPlan,
   onTargetUrlChange,
@@ -683,6 +697,7 @@ function LauncherEligibilityPanel({
   onViewStreamProviderChange,
   onControlInputProviderChange,
   onLaunch,
+  onDiscoveryQueryChange,
 }: {
   preview: LauncherEligibilityPreview;
   planningRowId: string | null;
@@ -696,6 +711,10 @@ function LauncherEligibilityPanel({
   launchingRowId: string | null;
   launchError: string;
   launchResult: { jobId: string | null; action: string; request: LauncherServiceRequest } | null;
+  discoveryQuery: string;
+  discovery: ProfileDiscoveryResponse | null;
+  discoveryLoading: boolean;
+  discoveryError: string;
   onSelect: (row: LauncherEligibilityRow) => void;
   onPlan: (row: LauncherEligibilityRow) => void;
   onTargetUrlChange: (value: string) => void;
@@ -703,19 +722,29 @@ function LauncherEligibilityPanel({
   onViewStreamProviderChange: (value: LauncherViewStreamPreference) => void;
   onControlInputProviderChange: (value: LauncherControlInputPreference) => void;
   onLaunch: (row: LauncherEligibilityRow) => void;
+  onDiscoveryQueryChange: (value: string) => void;
 }) {
   const rows = preview.rows;
   const [rowFilter, setRowFilter] = useState<LauncherRowFilter>("all");
-  const [rowQuery, setRowQuery] = useState("");
   const [visibleRowCount, setVisibleRowCount] = useState(LAUNCHER_ROW_WINDOW);
+  const discoveryByProfileId = useMemo(
+    () => new Map((discovery?.rankedProfiles ?? []).map((candidate) => [candidate.profileId, candidate])),
+    [discovery],
+  );
   const filteredRows = useMemo(() => {
-    const query = rowQuery.trim().toLowerCase();
-    return rows.filter((row) => launcherRowMatchesFilter(row, rowFilter) &&
-      (query ? launcherRowSearchText(row).includes(query) : true));
-  }, [rowFilter, rowQuery, rows]);
+    const query = discoveryQuery.trim().toLowerCase();
+    const filtered = rows.filter((row) => launcherRowMatchesFilter(row, rowFilter) && (
+      !query || discoveryByProfileId.has(row.profileId)
+    ));
+    return filtered.sort((left, right) => {
+      const leftRank = discoveryByProfileId.get(left.profileId)?.rank ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = discoveryByProfileId.get(right.profileId)?.rank ?? Number.MAX_SAFE_INTEGER;
+      return leftRank - rightRank;
+    });
+  }, [discovery, discoveryByProfileId, discoveryQuery, rowFilter, rows]);
   const visibleRows = filteredRows.slice(0, visibleRowCount);
   const hiddenRowCount = Math.max(0, filteredRows.length - visibleRows.length);
-  const selectedRow = rows.find((row) => row.id === selectedRowId) ?? filteredRows[0] ?? rows[0] ?? null;
+  const selectedRow = filteredRows.find((row) => row.id === selectedRowId) ?? filteredRows[0] ?? null;
   const selectedPosture = launcherAccessPlanPosture(selectedAccessPlan);
   const canLaunchSelected = Boolean(
     selectedRow &&
@@ -741,7 +770,7 @@ function LauncherEligibilityPanel({
   };
   useEffect(() => {
     setVisibleRowCount(LAUNCHER_ROW_WINDOW);
-  }, [rowFilter, rowQuery, rows.length]);
+  }, [discoveryQuery, rowFilter, rows.length]);
   useEffect(() => {
     if (selectedRowId && filteredRows.some((row) => row.id === selectedRowId)) return;
     if (filteredRows[0]) onSelect(filteredRows[0]);
@@ -772,12 +801,12 @@ function LauncherEligibilityPanel({
           <Search className="size-3.5" />
           <span className="sr-only">Filter browser and profile combinations</span>
           <input
-            value={rowQuery}
-            onChange={(event) => setRowQuery(event.target.value)}
-            placeholder="Filter profile, browser, service, account"
+            value={discoveryQuery}
+            onChange={(event) => onDiscoveryQueryChange(event.target.value)}
+            placeholder="Search X, x.com, Twitter, profile, login, account, or tag"
           />
-          {rowQuery && (
-            <button type="button" onClick={() => setRowQuery("")} aria-label="Clear launcher filter">
+          {discoveryLoading ? <Loader2 className="size-3 animate-spin" /> : discoveryQuery && (
+            <button type="button" onClick={() => onDiscoveryQueryChange("")} aria-label="Clear launcher search">
               <X className="size-3" />
             </button>
           )}
@@ -798,6 +827,12 @@ function LauncherEligibilityPanel({
           ))}
         </div>
       </div>
+      {discoveryError && <p className="workspace-launcher-error">{discoveryError}</p>}
+      {discoveryQuery && discovery?.status === "not_found" && (
+        <p className="workspace-launcher-empty">
+          {discovery.notFound?.message ?? "No managed browser profile matched this search."}
+        </p>
+      )}
       {planError && <p className="workspace-launcher-error">{planError}</p>}
       <div className="workspace-launcher-rows">
         {rows.length === 0 ? (
@@ -828,7 +863,11 @@ function LauncherEligibilityPanel({
                 <span>{launcherRemoteViewLabel(row)}</span>
                 <span>{row.launchAction}</span>
               </div>
-              <p className="workspace-launcher-reason">{row.reason}</p>
+              <p className="workspace-launcher-reason">
+                {discoveryByProfileId.has(row.profileId)
+                  ? `${discoveryByProfileId.get(row.profileId)?.reason}: ${discoveryByProfileId.get(row.profileId)?.matchedField}=${discoveryByProfileId.get(row.profileId)?.matchedIdentity}`
+                  : row.reason}
+              </p>
               <div className="workspace-launcher-facts">
                 <span>{launcherIdentityLabel(row)}</span>
                 <span>{row.evidenceSummary}</span>
@@ -909,7 +948,7 @@ function LauncherEligibilityPanel({
               title={launchBlockedReason || "Queue service launch request"}
             >
               {launchingRowId === selectedRow.id ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-              Launch
+              {discoveryActionLabel(discoveryByProfileId.get(selectedRow.profileId)?.recommendation?.action, targetUrl)}
             </button>
           </div>
           <div className="workspace-launcher-select-grid">
@@ -1320,6 +1359,11 @@ export function WorkspaceNavigator() {
     action: string;
     request: LauncherServiceRequest;
   } | null>(null);
+  const [profileDiscoveryQuery, setProfileDiscoveryQuery] = useState("");
+  const deferredProfileDiscoveryQuery = useDeferredValue(profileDiscoveryQuery);
+  const [profileDiscovery, setProfileDiscovery] = useState<ProfileDiscoveryResponse | null>(null);
+  const [profileDiscoveryLoading, setProfileDiscoveryLoading] = useState(false);
+  const [profileDiscoveryError, setProfileDiscoveryError] = useState("");
   const [serviceError, setServiceError] = useState("");
   const [workspaceActionLoadingId, setWorkspaceActionLoadingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -1396,6 +1440,39 @@ export function WorkspaceNavigator() {
     }
   }, [newSessionName, newSessionOpen, sessions]);
 
+  useEffect(() => {
+    const search = deferredProfileDiscoveryQuery.trim();
+    if (!newSessionOpen || !search) {
+      setProfileDiscovery(null);
+      setProfileDiscoveryLoading(false);
+      setProfileDiscoveryError("");
+      return;
+    }
+    let cancelled = false;
+    setProfileDiscoveryLoading(true);
+    setProfileDiscoveryError("");
+    const params = new URLSearchParams({ query: search });
+    void fetchWithTimeout(`${serviceBase(activePort)}/profiles/lookup?${params.toString()}`)
+      .then(async (response) => {
+        const json = (await response.json()) as ApiResponse<ProfileDiscoveryResponse>;
+        if (!json.success || !json.data) {
+          throw new Error(json.error || "Profile discovery failed");
+        }
+        if (!cancelled) setProfileDiscovery(json.data);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setProfileDiscovery(null);
+        setProfileDiscoveryError(error instanceof Error ? error.message : "Profile discovery unavailable");
+      })
+      .finally(() => {
+        if (!cancelled) setProfileDiscoveryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePort, deferredProfileDiscoveryQuery, newSessionOpen]);
+
   const workspaceInput = useMemo<WorkspaceNodeInput>(() => {
     const daemonTabsByPort: Record<number, ReturnType<typeof getTabsForSession>> = {};
     const daemonEngineByPort: Record<number, string> = {};
@@ -1412,6 +1489,7 @@ export function WorkspaceNavigator() {
       serviceSessions: Object.values(serviceState?.sessions ?? {}),
       serviceTabs: Object.values(serviceState?.tabs ?? {}),
       profileAllocations: serviceStatus?.profileAllocations ?? [],
+      manualBrowsers: serviceStatus?.manualBrowsers ?? [],
       jobs: Object.values(serviceState?.jobs ?? {}),
       incidents: serviceState?.incidents ?? [],
       browserSessionAuthority: serviceStatus?.browserSessionAuthority ?? null,
@@ -1974,6 +2052,10 @@ export function WorkspaceNavigator() {
               launchingRowId={launcherLaunchLoadingId}
               launchError={launcherLaunchError}
               launchResult={launcherLaunchResult}
+              discoveryQuery={profileDiscoveryQuery}
+              discovery={profileDiscovery}
+              discoveryLoading={profileDiscoveryLoading}
+              discoveryError={profileDiscoveryError}
               onSelect={selectLauncherRow}
               onPlan={(row) => void fetchLauncherAccessPlan(row)}
               onTargetUrlChange={setLauncherTargetUrl}
@@ -1981,6 +2063,7 @@ export function WorkspaceNavigator() {
               onViewStreamProviderChange={setLauncherViewStreamProvider}
               onControlInputProviderChange={setLauncherControlInputProvider}
               onLaunch={(row) => void submitLauncherRequest(row)}
+              onDiscoveryQueryChange={setProfileDiscoveryQuery}
             />
             {createError && (
               <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">

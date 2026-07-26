@@ -40,6 +40,7 @@ try {
   const smokeUrl = 'data:text/html,<title>Runtime Handoff Smoke</title><h1>Runtime Handoff Smoke</h1>';
   runAgent(['--profile', profilePath, 'open', smokeUrl]);
   const before = runtimeReadback();
+  browserPid = before.browserPid;
 
   let transition;
   if (options.publish) {
@@ -52,7 +53,10 @@ try {
     const handoff = published.handoffs?.resumed?.find(
       (entry) => entry.sessionName === sessionName,
     );
-    assert(handoff, `Publish did not report resumed session '${sessionName}'`);
+    assert(
+      handoff,
+      `Publish did not report resumed session '${sessionName}': ${JSON.stringify(published.handoffs)}`,
+    );
     transition = {
       mode: 'publish',
       publishedExecutable: published.installBin,

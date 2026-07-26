@@ -31,6 +31,23 @@ pub struct RuntimeState {
     pub devtools_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ws_url: Option<String>,
+    /// Authoritative launch metadata retained even when the browser has no CDP
+    /// endpoint. This keeps manual authentication browsers discoverable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_record: Option<RuntimeLaunchRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RuntimeLaunchRecord {
+    pub target_url: Option<String>,
+    pub browser_family: Option<String>,
+    pub browser_build: Option<String>,
+    pub display: Option<String>,
+    pub remote_view_route_id: Option<String>,
+    pub remote_view_url: Option<String>,
+    pub started_at: Option<String>,
+    pub last_observed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,6 +75,7 @@ pub struct RuntimeStatus {
     pub devtools_reachable: bool,
     pub ws_url: Option<String>,
     pub targets: Vec<RuntimeTarget>,
+    pub launch_record: Option<RuntimeLaunchRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -73,7 +91,33 @@ pub struct RuntimeProfileSummary {
     pub headed: Option<bool>,
     pub launch_mode: Option<String>,
     pub devtools_port: Option<u16>,
+    pub devtools_reachable: bool,
     pub ws_url: Option<String>,
+    pub launch_record: Option<RuntimeLaunchRecord>,
+}
+
+/// Operator inventory row for a live headed runtime browser that may have no
+/// CDP endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualRuntimeBrowser {
+    pub id: String,
+    pub runtime_profile: String,
+    pub profile_path: String,
+    pub pid: u32,
+    pub browser_family: Option<String>,
+    pub browser_build: Option<String>,
+    pub display: Option<String>,
+    pub launch_mode: String,
+    pub target_url: Option<String>,
+    pub devtools_port: Option<u16>,
+    pub automation_available: bool,
+    pub remote_view_route_id: Option<String>,
+    pub remote_view_url: Option<String>,
+    pub remote_control_available: bool,
+    pub next_safe_action: String,
+    pub started_at: Option<String>,
+    pub last_observed_at: Option<String>,
 }
 
 pub fn looks_like_path(value: &str) -> bool {
@@ -268,8 +312,9 @@ pub fn runtime_status_with_user_data_dir(
         launch_mode: state.as_ref().map(|s| s.launch_mode.clone()),
         devtools_port,
         devtools_reachable,
-        ws_url: state.and_then(|s| s.ws_url),
+        ws_url: state.as_ref().and_then(|s| s.ws_url.clone()),
         targets,
+        launch_record: state.and_then(|s| s.launch_record),
     })
 }
 
@@ -333,11 +378,58 @@ pub fn list_runtime_profiles(
             headed: status.headed,
             launch_mode: status.launch_mode,
             devtools_port: status.devtools_port,
+            devtools_reachable: status.devtools_reachable,
             ws_url: status.ws_url,
+            launch_record: status.launch_record,
         });
     }
 
     Ok(items)
+}
+
+/// Discover live manual runtime browsers from authoritative runtime-state
+/// records without requiring CDP attachment.
+pub fn list_manual_runtime_browsers() -> Result<Vec<ManualRuntimeBrowser>, String> {
+    let mut browsers = list_runtime_profiles(&[], None)?
+        .into_iter()
+        .filter_map(|profile| {
+            let launch_mode = profile.launch_mode.clone()?;
+            if !profile.browser_alive || !launch_mode.starts_with("manual") {
+                return None;
+            }
+            let pid = profile.browser_pid?;
+            let launch = profile.launch_record.unwrap_or_default();
+            let automation_available =
+                profile.devtools_port.is_some() && profile.devtools_reachable;
+            Some(ManualRuntimeBrowser {
+                id: format!("manual-runtime:{}:{pid}", profile.runtime_profile),
+                runtime_profile: profile.runtime_profile,
+                profile_path: profile.user_data_dir,
+                pid,
+                browser_family: launch.browser_family,
+                browser_build: launch.browser_build,
+                display: launch.display,
+                launch_mode,
+                target_url: launch.target_url,
+                devtools_port: profile.devtools_port,
+                automation_available,
+                remote_view_route_id: launch.remote_view_route_id,
+                remote_view_url: launch.remote_view_url.clone(),
+                remote_control_available: launch.remote_view_url.is_some(),
+                next_safe_action: if automation_available {
+                    "reuse_or_add_tab".to_string()
+                } else if launch.remote_view_url.is_some() {
+                    "open_remote_view_or_finish_login_then_close".to_string()
+                } else {
+                    "finish_login_then_close_or_relaunch_attachable".to_string()
+                },
+                started_at: launch.started_at,
+                last_observed_at: launch.last_observed_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    browsers.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(browsers)
 }
 
 fn fetch_runtime_targets(port: u16) -> Result<Vec<RuntimeTarget>, String> {
@@ -644,6 +736,7 @@ mod tests {
             launch_mode: "automation".to_string(),
             devtools_port: Some(9),
             ws_url: Some("ws://127.0.0.1:9/devtools/browser/stale".to_string()),
+            launch_record: None,
         })
         .unwrap();
 
@@ -699,5 +792,54 @@ mod tests {
         assert!(!disk.configured);
 
         let _ = fs::remove_dir_all(&disk_root);
+    }
+
+    #[test]
+    fn test_list_manual_runtime_browsers_keeps_non_cdp_browser_visible() {
+        let runtime_profile = format!(
+            "testmanual{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+        );
+        let user_data_dir = env::temp_dir().join(format!("{}-user-data", runtime_profile));
+        write_runtime_state(&RuntimeState {
+            runtime_profile: runtime_profile.clone(),
+            user_data_dir: user_data_dir.display().to_string(),
+            browser_pid: std::process::id(),
+            headed: true,
+            launch_mode: "manual_detached_login".to_string(),
+            devtools_port: None,
+            ws_url: None,
+            launch_record: Some(RuntimeLaunchRecord {
+                target_url: Some("https://x.com/".to_string()),
+                browser_family: Some("chrome".to_string()),
+                browser_build: Some("stock_chrome".to_string()),
+                display: Some(":11".to_string()),
+                started_at: Some("2026-07-25T12:00:00Z".to_string()),
+                last_observed_at: Some("2026-07-25T12:01:00Z".to_string()),
+                ..RuntimeLaunchRecord::default()
+            }),
+        })
+        .unwrap();
+
+        let browsers = list_manual_runtime_browsers().unwrap();
+        let browser = browsers
+            .iter()
+            .find(|browser| browser.runtime_profile == runtime_profile)
+            .expect("manual runtime browser should remain in the operator inventory");
+
+        assert_eq!(browser.pid, std::process::id());
+        assert_eq!(browser.target_url.as_deref(), Some("https://x.com/"));
+        assert_eq!(browser.display.as_deref(), Some(":11"));
+        assert!(!browser.automation_available);
+        assert_eq!(
+            browser.next_safe_action,
+            "finish_login_then_close_or_relaunch_attachable"
+        );
+
+        let _ = clear_runtime_state(&runtime_profile);
+        let _ = fs::remove_dir_all(user_data_dir);
     }
 }

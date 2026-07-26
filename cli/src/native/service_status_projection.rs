@@ -2,9 +2,49 @@ use std::collections::HashSet;
 
 use serde::Serialize;
 
+use crate::runtime_profile::ManualRuntimeBrowser;
+
 use super::service_model::{ServiceState, TabLifecycle};
 
 pub const ORDINARY_CLOSED_TAB_CAP: usize = 50;
+
+/// Builds the response-only inventory for live manual runtime browsers.
+///
+/// Manual browsers can intentionally have no CDP endpoint, so they must be
+/// projected from runtime-profile state instead of inferred from service
+/// browser records. Remote-view metadata is joined from the service authority
+/// when the browser's display has a governed route.
+pub fn manual_runtime_browser_projection(state: &ServiceState) -> Vec<ManualRuntimeBrowser> {
+    let mut manual_browsers =
+        crate::runtime_profile::list_manual_runtime_browsers().unwrap_or_default();
+    for manual_browser in &mut manual_browsers {
+        let display_allocation_id = manual_browser.display.as_deref().and_then(|display| {
+            state
+                .display_allocations
+                .values()
+                .find(|allocation| allocation.display_name.as_deref() == Some(display))
+                .map(|allocation| allocation.id.as_str())
+        });
+        let route = state.remote_view_routes.values().find(|route| {
+            display_allocation_id.is_some()
+                && route.display_allocation_id.as_deref() == display_allocation_id
+        });
+        if let Some(route) = route {
+            manual_browser.remote_view_route_id = Some(route.id.clone());
+            manual_browser.remote_view_url = route
+                .frame_url
+                .clone()
+                .or_else(|| route.external_url.clone());
+            manual_browser.remote_control_available =
+                !route.read_only && route.control_input.is_some();
+            if manual_browser.remote_view_url.is_some() {
+                manual_browser.next_safe_action =
+                    "open_remote_view_or_finish_login_then_close".to_string();
+            }
+        }
+    }
+    manual_browsers
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

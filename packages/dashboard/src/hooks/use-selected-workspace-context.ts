@@ -18,6 +18,7 @@ import type {
 } from "@/types";
 import type {
   WorkspaceServiceBrowser,
+  WorkspaceManualBrowser,
   WorkspaceBrowserSessionAuthority,
   WorkspaceServiceIncident,
   WorkspaceServiceJob,
@@ -36,6 +37,7 @@ type ServiceStatusData = {
     incidents?: WorkspaceServiceIncident[];
   };
   profileAllocations?: WorkspaceServiceProfileAllocation[];
+  manualBrowsers?: WorkspaceManualBrowser[];
   browserSessionAuthority?: WorkspaceBrowserSessionAuthority | null;
 };
 
@@ -140,6 +142,7 @@ export function useSelectedWorkspaceContext(enabled = true): UseSelectedWorkspac
     serviceSessions: Object.values(serviceStatus?.service_state?.sessions ?? {}),
     serviceTabs: Object.values(serviceStatus?.service_state?.tabs ?? {}),
     profileAllocations: serviceStatus?.profileAllocations ?? [],
+    manualBrowsers: serviceStatus?.manualBrowsers ?? [],
     jobs: Object.values(serviceStatus?.service_state?.jobs ?? {}),
     incidents: serviceStatus?.service_state?.incidents ?? [],
     resources: serviceResources?.resources ?? [],

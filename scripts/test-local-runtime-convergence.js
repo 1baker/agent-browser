@@ -107,6 +107,18 @@ assert.match(
 
 assert.match(
   script,
+  /test:rdp-guac-route-pool-readiness[\s\S]*reconcile_service_state[\s\S]*'--json',[\s\S]*'service',[\s\S]*'reconcile'[\s\S]*readDoctors\('after_route_pool'/,
+  'apply mode must reconcile retained service ownership before evaluating final profile and route health',
+);
+
+assert.match(
+  script,
+  /spawnSync\(command, commandArgs,[\s\S]*maxBuffer: 16 \* 1024 \* 1024/,
+  'runtime convergence must capture large reconcile responses without ENOBUFS',
+);
+
+assert.match(
+  script,
   /routeDisplayRecoveryRequired\(afterRoutePool\.remoteView\.nextAction\)[\s\S]*open:rdp-route-displays[\s\S]*after_route_display_restore/,
   'apply mode must restore missing RDP route displays and verify the result',
 );
@@ -145,6 +157,12 @@ assert.match(
   publisher,
   /data\.browserPid !== prepared\.browserPid[\s\S]*data\.cdpUrl !== prepared\.cdpUrl/,
   'local publishing must verify browser PID and CDP endpoint continuity',
+);
+
+assert.match(
+  publisher,
+  /function runAgentJson[\s\S]*maxBuffer: 16 \* 1024 \* 1024,[\s\S]*timeout: 30_000/,
+  'local publishing must bound compatibility probes while retaining large structured responses',
 );
 
 assert.match(

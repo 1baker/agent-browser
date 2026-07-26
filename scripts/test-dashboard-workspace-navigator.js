@@ -360,8 +360,20 @@ assert.match(
 
 assert.match(
   navigator,
-  /const LAUNCHER_ROW_WINDOW = 48;[\s\S]*const filteredRows = useMemo[\s\S]*launcherRowSearchText\(row\)\.includes\(query\)[\s\S]*const visibleRows = filteredRows\.slice\(0, visibleRowCount\)[\s\S]*workspace-launcher-show-more/,
-  'Workspace launcher must filter and incrementally render large browser/profile sets without changing full-count summaries',
+  /const LAUNCHER_ROW_WINDOW = 48;[\s\S]*discoveryByProfileId\.has\(row\.profileId\)[\s\S]*const visibleRows = filteredRows\.slice\(0, visibleRowCount\)[\s\S]*workspace-launcher-show-more/,
+  'Workspace launcher must apply server-ranked profile discovery and incrementally render large browser/profile sets without changing full-count summaries',
+);
+
+assert.match(
+  navigator,
+  /fetchWithTimeout\(`\$\{serviceBase\(activePort\)\}\/profiles\/lookup\?\$\{params\.toString\(\)\}`\)[\s\S]*setProfileDiscovery\(json\.data\)/,
+  'Workspace launcher identity search must use the service profile lookup contract as its authority',
+);
+
+assert.match(
+  navigator,
+  /Open website in new tab[\s\S]*View or control[\s\S]*Seed login[\s\S]*Inspect holder/,
+  'Workspace launcher must render concrete server-recommended profile actions',
 );
 
 assert.match(

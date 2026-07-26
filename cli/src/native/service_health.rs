@@ -1475,12 +1475,39 @@ pub fn merge_reconciled_service_state(
     }
 
     for (id, reconciled_session) in &reconciled.sessions {
+        let lease_changed_after_reconcile_started = before
+            .sessions
+            .get(id)
+            .zip(target.sessions.get(id))
+            .is_some_and(|(before_session, target_session)| {
+                target_session.lease != before_session.lease
+                    || target_session.browser_ids != before_session.browser_ids
+                    || target_session.expires_at != before_session.expires_at
+                    || target_session.last_lease_observed_at
+                        != before_session.last_lease_observed_at
+            });
         let target_session = target
             .sessions
             .entry(id.clone())
             .or_insert_with(|| reconciled_session.clone());
         target_session.browser_ids = reconciled_session.browser_ids.clone();
         target_session.tab_ids = reconciled_session.tab_ids.clone();
+        if !lease_changed_after_reconcile_started {
+            target_session.lease = reconciled_session.lease;
+            target_session.last_lease_observed_at =
+                reconciled_session.last_lease_observed_at.clone();
+        }
+    }
+    let inactive_session_ids = target
+        .sessions
+        .iter()
+        .filter(|(_, session)| matches!(session.lease, LeaseState::Released | LeaseState::Expired))
+        .map(|(id, _)| id.clone())
+        .collect::<BTreeSet<_>>();
+    for browser in target.browsers.values_mut() {
+        browser
+            .active_session_ids
+            .retain(|session_id| !inactive_session_ids.contains(session_id));
     }
     for id in before.sessions.keys() {
         if reconciled.sessions.contains_key(id) {
@@ -1678,6 +1705,7 @@ async fn reconcile_live_browser_targets(state: &mut ServiceState) {
 pub struct RemoteViewReconcileRepair {
     pub unavailable_route_pool_entries: usize,
     pub restored_route_pool_entries: usize,
+    pub released_route_pool_entries: usize,
     pub orphaned_display_allocations: usize,
     pub orphaned_routes: usize,
     pub released_viewer_leases: usize,
@@ -1690,6 +1718,7 @@ impl RemoteViewReconcileRepair {
         json!({
             "unavailableRoutePoolEntries": self.unavailable_route_pool_entries,
             "restoredRoutePoolEntries": self.restored_route_pool_entries,
+            "releasedRoutePoolEntries": self.released_route_pool_entries,
             "orphanedDisplayAllocations": self.orphaned_display_allocations,
             "orphanedRoutes": self.orphaned_routes,
             "releasedViewerLeases": self.released_viewer_leases,
@@ -1697,9 +1726,12 @@ impl RemoteViewReconcileRepair {
             "clearedControllerLeases": self.cleared_controller_leases,
             "repaired": self.unavailable_route_pool_entries
                 + self.restored_route_pool_entries
+                + self.released_route_pool_entries
                 + self.orphaned_display_allocations
                 + self.orphaned_routes,
-            "released": self.released_viewer_leases + self.expired_viewer_leases,
+            "released": self.released_route_pool_entries
+                + self.released_viewer_leases
+                + self.expired_viewer_leases,
             "skippedUnsafe": 0,
         })
     }
@@ -1918,6 +1950,31 @@ fn reconcile_remote_view_state_with_display_probe(
         .iter()
         .map(|(id, route)| (id.clone(), route.state.clone()))
         .collect::<BTreeMap<_, _>>();
+
+    for entry in state.route_pool.values_mut() {
+        if entry.state == "unavailable" {
+            continue;
+        }
+        let Some(route_id) = entry.current_route_allocation_id.clone() else {
+            continue;
+        };
+        let route_state = route_states.get(&route_id).map(String::as_str);
+        if !matches!(route_state, Some("orphaned" | "released" | "failed")) {
+            continue;
+        }
+        entry.state = "available".to_string();
+        entry.current_route_allocation_id = None;
+        entry.readiness = Some(json!({
+            "state": "ready",
+            "component": "route_ownership",
+            "reason": "orphaned_route_released",
+            "routePoolEntryId": entry.id,
+            "releasedRouteId": route_id,
+            "releasedRouteState": route_state,
+            "updatedAt": now,
+        }));
+        repair.released_route_pool_entries += 1;
+    }
 
     for lease in state.viewer_leases.values_mut() {
         if !viewer_lease_is_reconcile_active(lease) {
@@ -2954,6 +3011,71 @@ mod tests {
     }
 
     #[test]
+    fn merge_reconciled_service_state_persists_expired_lease_without_overwriting_renewal() {
+        let before = ServiceState {
+            browsers: BTreeMap::from([(
+                "browser-1".to_string(),
+                BrowserProcess {
+                    id: "browser-1".to_string(),
+                    active_session_ids: vec!["session-1".to_string()],
+                    ..BrowserProcess::default()
+                },
+            )]),
+            sessions: BTreeMap::from([(
+                "session-1".to_string(),
+                BrowserSession {
+                    id: "session-1".to_string(),
+                    lease: LeaseState::Exclusive,
+                    browser_ids: vec!["browser-missing".to_string()],
+                    last_lease_observed_at: Some("2026-07-25T00:00:00Z".to_string()),
+                    ..BrowserSession::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+        let mut reconciled = before.clone();
+        let reconciled_session = reconciled.sessions.get_mut("session-1").unwrap();
+        reconciled_session.lease = LeaseState::Expired;
+        reconciled_session.last_lease_observed_at = Some("2026-07-25T00:01:00Z".to_string());
+
+        let mut unchanged_target = before.clone();
+        merge_reconciled_service_state(&mut unchanged_target, &before, &reconciled);
+        assert_eq!(
+            unchanged_target.sessions["session-1"].lease,
+            LeaseState::Expired
+        );
+        assert_eq!(
+            unchanged_target.sessions["session-1"]
+                .last_lease_observed_at
+                .as_deref(),
+            Some("2026-07-25T00:01:00Z")
+        );
+        assert!(unchanged_target.browsers["browser-1"]
+            .active_session_ids
+            .is_empty());
+
+        let mut renewed_target = before.clone();
+        let renewed_session = renewed_target.sessions.get_mut("session-1").unwrap();
+        renewed_session.lease = LeaseState::HumanTakeover;
+        renewed_session.last_lease_observed_at = Some("2026-07-25T00:02:00Z".to_string());
+        merge_reconciled_service_state(&mut renewed_target, &before, &reconciled);
+        assert_eq!(
+            renewed_target.sessions["session-1"].lease,
+            LeaseState::HumanTakeover
+        );
+        assert_eq!(
+            renewed_target.sessions["session-1"]
+                .last_lease_observed_at
+                .as_deref(),
+            Some("2026-07-25T00:02:00Z")
+        );
+        assert_eq!(
+            renewed_target.browsers["browser-1"].active_session_ids,
+            vec!["session-1".to_string()]
+        );
+    }
+
+    #[test]
     fn merge_reconciled_service_state_preserves_newer_remote_view_release() {
         let allocation_id = "remote-view-display:13".to_string();
         let route_id = "guacamole:3".to_string();
@@ -3112,14 +3234,25 @@ mod tests {
                         ..BrowserProcess::default()
                     },
                 )]),
-                sessions: BTreeMap::from([(
-                    "session-1".to_string(),
-                    BrowserSession {
-                        id: "session-1".to_string(),
-                        browser_ids: vec!["browser-1".to_string()],
-                        ..BrowserSession::default()
-                    },
-                )]),
+                sessions: BTreeMap::from([
+                    (
+                        "session-1".to_string(),
+                        BrowserSession {
+                            id: "session-1".to_string(),
+                            browser_ids: vec!["browser-1".to_string()],
+                            ..BrowserSession::default()
+                        },
+                    ),
+                    (
+                        "session-orphaned".to_string(),
+                        BrowserSession {
+                            id: "session-orphaned".to_string(),
+                            lease: LeaseState::Exclusive,
+                            browser_ids: vec!["browser-missing".to_string()],
+                            ..BrowserSession::default()
+                        },
+                    ),
+                ]),
                 site_policies: BTreeMap::from([(
                     "google".to_string(),
                     SitePolicy {
@@ -3138,6 +3271,14 @@ mod tests {
 
         let persisted = store.load().unwrap();
         assert_eq!(summary.browser_count, 1);
+        assert_eq!(
+            summary.expired_session_leases,
+            vec!["session-orphaned".to_string()]
+        );
+        assert_eq!(
+            persisted.sessions["session-orphaned"].lease,
+            LeaseState::Expired
+        );
         assert_eq!(
             persisted
                 .reconciliation
@@ -3330,6 +3471,17 @@ mod tests {
                     ..RemoteViewRoute::default()
                 },
             )]),
+            route_pool: BTreeMap::from([(
+                "route-pool-1".to_string(),
+                RoutePoolEntry {
+                    id: "route-pool-1".to_string(),
+                    route_id: "route-1".to_string(),
+                    state: "checked_out".to_string(),
+                    current_route_allocation_id: Some("route-1".to_string()),
+                    target: json!({ "displayName": ":11" }),
+                    ..RoutePoolEntry::default()
+                },
+            )]),
             viewer_leases: BTreeMap::from([(
                 "lease-1".to_string(),
                 ViewerLease {
@@ -3348,6 +3500,11 @@ mod tests {
         assert_eq!(summary.browser_count, 0);
         assert_eq!(state.display_allocations["display-1"].state, "orphaned");
         assert_eq!(state.remote_view_routes["route-1"].state, "orphaned");
+        assert_eq!(state.route_pool["route-pool-1"].state, "available");
+        assert_eq!(
+            state.route_pool["route-pool-1"].current_route_allocation_id,
+            None
+        );
         assert_eq!(state.viewer_leases["lease-1"].state, "disconnected");
         assert!(state.remote_view_routes["route-1"]
             .viewer_lease_ids
@@ -3359,6 +3516,7 @@ mod tests {
         let remote_view = &state.events.last().unwrap().details.as_ref().unwrap()["remoteView"];
         assert_eq!(remote_view["orphanedDisplayAllocations"], 1);
         assert_eq!(remote_view["orphanedRoutes"], 1);
+        assert_eq!(remote_view["releasedRoutePoolEntries"], 1);
         assert_eq!(remote_view["releasedViewerLeases"], 1);
         assert_eq!(remote_view["clearedControllerLeases"], 1);
     }

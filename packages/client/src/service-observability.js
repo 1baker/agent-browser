@@ -562,6 +562,13 @@ export async function getServiceProfileForIdentity({ readinessProfileId, ...opti
         siteId: options.siteId,
         targetServiceId: options.targetServiceId,
         accountId: options.accountId,
+        profileId: options.profileId,
+        profileName: options.profileName,
+        hostname: options.hostname,
+        authenticationState: options.authenticationState,
+        freshnessState: options.freshnessState,
+        tag: options.tag,
+        search: options.search,
         browserBuild: options.browserBuild,
         url: options.url,
         loginIds: options.loginIds?.join(','),
@@ -2536,6 +2543,8 @@ function profileIdentityRank(profile, request) {
     /** @type {Record<string, unknown>} */ (profile).browserBuild === request.browserBuild;
   const browserBuildDefault =
     browserBuildMatch &&
+    request.identitySet.size === 0 &&
+    !(typeof request.serviceName === 'string' && request.serviceName.length > 0) &&
     profileArrayFieldLength(profile, 'targetServiceIds') === 0 &&
     profileArrayFieldLength(profile, 'authenticatedServiceIds') === 0 &&
     profileArrayFieldLength(profile, 'accountIds') === 0 &&

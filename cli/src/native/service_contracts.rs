@@ -50,7 +50,7 @@ pub const SERVICE_PROFILE_SEEDING_HANDOFF_UPDATE_MCP_TOOL_NAME: &str =
 pub const SERVICE_PROFILE_ALLOCATION_MCP_RESOURCE_TEMPLATE: &str =
     "agent-browser://profiles/{profile_id}/allocation";
 pub const SERVICE_PROFILE_LOOKUP_MCP_RESOURCE_TEMPLATE: &str =
-    "agent-browser://profiles/lookup{?serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,readinessProfileId,runtimeProfile,browserBuild}";
+    "agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,runtimeProfile,browserBuild}";
 pub const SERVICE_PROFILE_READINESS_MCP_RESOURCE_TEMPLATE: &str =
     "agent-browser://profiles/{profile_id}/readiness";
 pub const SERVICE_PROFILE_SEEDING_HANDOFF_MCP_RESOURCE_TEMPLATE: &str =
@@ -355,8 +355,27 @@ pub fn service_contracts_metadata() -> Value {
                 "client": {
                     "package": "@agent-browser/client/service-observability",
                     "helpers": ["lookupServiceProfile", "getServiceProfileForIdentity"],
-                    "selectionOrder": ["authenticatedServiceIds", "accountIds", "targetServiceIds", "sharedServiceIds", "browserBuild"],
+                    "selectionOrder": [
+                        "authenticatedServiceIds",
+                        "accountIdsOrLabels",
+                        "profileId",
+                        "profileName",
+                        "aliases",
+                        "loginIds",
+                        "origins",
+                        "targetServiceIds",
+                        "tags",
+                        "authenticationState",
+                        "freshnessState",
+                        "sharedServiceIds",
+                        "safeMetadata",
+                        "browserBuild"
+                    ],
                 },
+                "cli": {
+                    "command": "agent-browser service profiles lookup"
+                },
+                "responseFields": ["schemaVersion", "status", "query", "rankedProfiles", "selectedProfile", "selectedProfileSource", "selectedProfileMatch", "readiness", "readinessSummary", "seedingHandoff", "notFound"],
             },
             "serviceAccessPlanResponse": {
                 "version": SERVICE_REQUEST_CONTRACT_VERSION,

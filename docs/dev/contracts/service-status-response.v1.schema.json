@@ -7,6 +7,7 @@
   "required": [
     "service_state",
     "profileAllocations",
+    "manualBrowsers",
     "closedTabProjection"
   ],
   "properties": {
@@ -49,6 +50,43 @@
       "type": "array",
       "items": {
         "$ref": "service-profiles-response.v1.schema.json#/$defs/profileAllocation"
+      }
+    },
+    "manualBrowsers": {
+      "description": "Live detached headed runtime browsers that remain operator-visible even when no CDP endpoint is available.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "runtimeProfile",
+          "profilePath",
+          "pid",
+          "launchMode",
+          "automationAvailable",
+          "remoteControlAvailable",
+          "nextSafeAction"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "runtimeProfile": { "type": "string" },
+          "profilePath": { "type": "string" },
+          "pid": { "type": "integer", "minimum": 1 },
+          "browserFamily": { "type": ["string", "null"] },
+          "browserBuild": { "type": ["string", "null"] },
+          "display": { "type": ["string", "null"] },
+          "launchMode": { "type": "string" },
+          "targetUrl": { "type": ["string", "null"] },
+          "devtoolsPort": { "type": ["integer", "null"], "minimum": 1 },
+          "automationAvailable": { "type": "boolean" },
+          "remoteViewRouteId": { "type": ["string", "null"] },
+          "remoteViewUrl": { "type": ["string", "null"] },
+          "remoteControlAvailable": { "type": "boolean" },
+          "nextSafeAction": { "type": "string" },
+          "startedAt": { "type": ["string", "null"] },
+          "lastObservedAt": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
       }
     },
     "closedTabProjection": {

@@ -26,6 +26,7 @@ export type SelectedWorkspaceSource =
   | "service-browser"
   | "service-session"
   | "daemon-session"
+  | "manual-runtime"
   | "profile"
   | "none";
 

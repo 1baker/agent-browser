@@ -121,6 +121,11 @@ export interface ServiceJobRecord {
 export interface ServiceProfileRecord {
   id: string;
   name: string;
+  description: string | null;
+  aliases: string[];
+  origins: string[];
+  loginIds: string[];
+  accountLabels: string[];
   profileOrigin: 'agent_browser_owned' | 'external_byop' | 'external_observed' | string;
   profileClass: 'default' | 'managed_one_time' | 'durable_named' | 'operator_supplied' | string;
   userDataDir: string | null;
@@ -478,7 +483,18 @@ export interface ServiceMonitorFilters {
 
 export interface ServiceSitePolicyRecord {
   id: string;
+  name: string;
+  description: string | null;
+  aliases: string[];
   originPattern: string | null;
+  origins: string[];
+  loginIds: string[];
+  accountLabels: string[];
+  recommendedProfileId: string | null;
+  adapterServiceIds: string[];
+  tags: string[];
+  freshnessContract: string | null;
+  troubleshooting: string[];
   [key: string]: unknown;
 }
 
@@ -625,10 +641,32 @@ export interface ServiceBrowserSessionAuthoritySnapshot {
   [key: string]: unknown;
 }
 
+export interface ServiceManualRuntimeBrowser {
+  id: string;
+  runtimeProfile: string;
+  profilePath: string;
+  pid: number;
+  browserFamily: string | null;
+  browserBuild: string | null;
+  display: string | null;
+  launchMode: string;
+  targetUrl: string | null;
+  devtoolsPort: number | null;
+  automationAvailable: boolean;
+  remoteViewRouteId: string | null;
+  remoteViewUrl: string | null;
+  remoteControlAvailable: boolean;
+  nextSafeAction: string;
+  startedAt: string | null;
+  lastObservedAt: string | null;
+  [key: string]: unknown;
+}
+
 export interface ServiceStatusResponse {
   control_plane?: ServiceControlPlaneStatus;
   service_state: Record<string, unknown>;
   profileAllocations: ServiceProfileAllocation[];
+  manualBrowsers?: ServiceManualRuntimeBrowser[];
   retainedDisplayAllocations?: ServiceRetainedDisplayAllocationSummary;
   browserSessionAuthority?: ServiceBrowserSessionAuthoritySnapshot;
   launchConfig?: {
@@ -916,6 +954,7 @@ export interface ServiceReconcileResponse {
   remoteViewRepair: {
     unavailableRoutePoolEntries: number;
     restoredRoutePoolEntries: number;
+    releasedRoutePoolEntries: number;
     orphanedDisplayAllocations: number;
     orphanedRoutes: number;
     releasedViewerLeases: number;
@@ -2055,6 +2094,20 @@ export interface ServiceProfileIdentityMatchOptions {
   targetServiceIds?: string[];
   /** Additional desired account identities. */
   accountIds?: string[];
+  /** Exact registered profile ID. */
+  profileId?: string;
+  /** Exact profile name or catalog alias. */
+  profileName?: string;
+  /** Website hostname, for example "x.com". */
+  hostname?: string;
+  /** Requested authentication catalog state. */
+  authenticationState?: string;
+  /** Requested target freshness state. */
+  freshnessState?: string;
+  /** Exact catalog tag. */
+  tag?: string;
+  /** Free-text search across safe profile catalog metadata. */
+  search?: string;
 }
 
 export interface ServiceProfileIdentityMatchResult {
@@ -2174,21 +2227,71 @@ export interface ServiceProfileLookupQuery {
   url: string | null;
   readinessProfileId: string | null;
   browserBuild: 'stock_chrome' | 'stealthcdp_chromium' | 'cdp_free_headed' | string | null;
+  profileIds: string[];
+  profileNames: string[];
+  hostnames: string[];
+  authenticationStates: string[];
+  freshnessStates: string[];
+  tags: string[];
+  search: string | null;
   [key: string]: unknown;
 }
 
 export interface ServiceProfileLookupMatch {
   profileId: string;
   profile: ServiceProfileRecord;
-  reason: 'authenticated_target' | 'account_match' | 'target_match' | 'service_allow_list' | 'browser_build_default';
-  matchedField: 'authenticatedServiceIds' | 'accountIds' | 'targetServiceIds' | 'sharedServiceIds' | 'browserBuild' | null;
+  reason:
+    | 'authenticated_target'
+    | 'account_match'
+    | 'profile_id'
+    | 'profile_name'
+    | 'alias'
+    | 'login_id'
+    | 'origin'
+    | 'target_match'
+    | 'tag'
+    | 'authentication_state'
+    | 'freshness_state'
+    | 'service_allow_list'
+    | 'free_text'
+    | 'browser_build'
+    | string;
+  matchedField: string | null;
   matchedIdentity: string | null;
   [key: string]: unknown;
 }
 
+export interface ServiceProfileLookupCandidate extends ServiceProfileLookupMatch {
+  rank: number;
+  profileSource: ServiceProfileSourceRecord;
+  allocation: ServiceProfileAllocation | null;
+  recommendation: {
+    action: 'launch' | 'add_tab' | 'view' | 'seed' | 'wait' | 'inspect_holder' | string;
+    routeAvailable: boolean;
+    serviceRequest: Record<string, unknown>;
+    dashboardUrl: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface ServiceProfileLookupNotFound {
+  code: 'profile_not_found' | string;
+  message: string;
+  nextActions: string[];
+  [key: string]: unknown;
+}
+
 export interface ServiceProfileLookupResponse {
+  /** Versioned deterministic discovery contract shared by CLI, HTTP, and MCP. */
+  schemaVersion: 'service-profile-discovery.v1' | string;
+  /** Explicit discovery result. Unknown identities return not_found and never a generic default. */
+  status: 'matched' | 'not_found';
   /** Normalized lookup query after login, site, and target aliases have been folded together. */
   query: ServiceProfileLookupQuery;
+  /** Every matching profile in deterministic best-first order. */
+  rankedProfiles: ServiceProfileLookupCandidate[];
+  /** Copyable action recommendation for the selected profile. */
+  selectedRecommendation: ServiceProfileLookupCandidate['recommendation'] | null;
   /** Server-selected profile, or null when agent-browser has no suitable managed profile. */
   selectedProfile: ServiceProfileRecord | null;
   /** Provenance for the selected profile after config, runtime observation, and persisted state are layered. */
@@ -2201,6 +2304,8 @@ export interface ServiceProfileLookupResponse {
   readinessSummary: ServiceProfileReadinessSummary;
   /** Operator-ready detached profile seeding handoff when readiness requires manual seeding. */
   seedingHandoff: ServiceProfileSeedingHandoffResponse | null;
+  /** Structured miss details and safe next actions when status is not_found. */
+  notFound: ServiceProfileLookupNotFound | null;
   [key: string]: unknown;
 }
 

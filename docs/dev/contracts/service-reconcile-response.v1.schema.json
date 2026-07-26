@@ -40,6 +40,7 @@
       "required": [
         "unavailableRoutePoolEntries",
         "restoredRoutePoolEntries",
+        "releasedRoutePoolEntries",
         "orphanedDisplayAllocations",
         "orphanedRoutes",
         "releasedViewerLeases",
@@ -55,6 +56,10 @@
           "minimum": 0
         },
         "restoredRoutePoolEntries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "releasedRoutePoolEntries": {
           "type": "integer",
           "minimum": 0
         },

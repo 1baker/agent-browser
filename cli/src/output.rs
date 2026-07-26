@@ -1392,6 +1392,38 @@ fn format_service_profiles_text(data: &serde_json::Value) -> Option<String> {
     Some(lines.join("\n"))
 }
 
+fn format_service_profile_lookup_text(data: &serde_json::Value) -> Option<String> {
+    let status = value_str(data, "status", "unknown");
+    let candidates = data.get("rankedProfiles")?.as_array()?;
+    let mut lines = vec![format!(
+        "Profile lookup: status={status} candidates={}",
+        candidates.len()
+    )];
+    for candidate in candidates {
+        lines.push(format!(
+            "  rank={} profile={} reason={} matched_field={} matched_identity={}",
+            candidate
+                .get("rank")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            value_str(candidate, "profileId", "unknown"),
+            value_str(candidate, "reason", "unknown"),
+            value_str(candidate, "matchedField", "none"),
+            value_str(candidate, "matchedIdentity", "none"),
+        ));
+    }
+    if candidates.is_empty() {
+        lines.push(format!(
+            "  {}",
+            data.get("notFound")
+                .and_then(|value| value.get("message"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("No managed browser profile matched.")
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
 fn format_service_profile_seeding_handoff_text(data: &serde_json::Value) -> Option<String> {
     let profile = value_str(data, "profileId", "unknown-profile");
     let target = value_str(data, "targetServiceId", "unknown-target");
@@ -2642,6 +2674,12 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
         }
         if action == Some("service_profiles") {
             if let Some(output) = format_service_profiles_text(data) {
+                println!("{}", output);
+                return;
+            }
+        }
+        if action == Some("service_profile_lookup") {
+            if let Some(output) = format_service_profile_lookup_text(data) {
                 println!("{}", output);
                 return;
             }
@@ -5419,6 +5457,7 @@ Usage:
   agent-browser service browser-capability guide [--browser-build <stock_chrome|stealthcdp_chromium|cdp_free_headed>] [--target-service-id <id>] [--site-id <id>] [--login-id <id>] [--account-id <id>] [--service-name <name>] [--task-name <name>] [--reason <text>]
   agent-browser service browser-capability prefer --browser-build <stock_chrome|stealthcdp_chromium|cdp_free_headed> --preferred-executable-id <id> [--id <binding-id>] [--target-service-id <id>] [--site-id <id>] [--login-id <id>] [--account-id <id>] [--service-name <name>] [--task-name <name>] [--preferred-host-id <id>] [--preferred-capability-id <id>] [--priority <n>] [--reason <text>]
   agent-browser service profiles
+  agent-browser service profiles lookup [--search <text>] [--hostname <host>] [--profile-id <id>] [--profile-name <name>] [--service-name <name>] [--target-service-id <id>] [--site-id <id>] [--login-id <id>] [--account-id <id>] [--authentication-state <state>] [--freshness-state <state>] [--tag <tag>] [--url <url>] [--browser-build <build>]
   agent-browser service sessions
   agent-browser service browsers
   agent-browser service tabs
@@ -5458,6 +5497,7 @@ Commands:
   browser-capability prefer
                         Persist an advisory browserPreferenceBindings row for a primary browser on a site, account, service, or task filter
   profiles              Show retained service profile records and derived allocation state
+  profiles lookup       Rank catalog profiles by identity, hostname, alias, account, auth, freshness, tag, and free text without launching
   profiles <id> seeding-handoff [target]
                         Show the detached runtime-login command and operator steps for profile seeding
   profiles <id> verify-seeding <target>
@@ -5546,7 +5586,7 @@ Notes:
   - Persisted browser records are probed for dead PIDs, unreachable CDP endpoints, and failed target-list probes.
   - Non-ready browsers close their known tabs during reconciliation so stale tab state does not look active.
   - Reconciliation emits a reconciliation event with details.action=session_tab_ownership_repaired when it removes stale session/tab ownership links.
-  - The reconciliation snapshot records lastReconciledAt, browserCount, changedBrowsers, and lastError. service_reconcile responses also include expiredSessionLeases, expiredSessionLeaseCount, and remoteViewRepair counts for route-pool entries invalidated or restored from live X11 socket evidence plus orphaned remote-view displays, routes, viewer leases, and controller leases repaired during reconcile.
+  - The reconciliation snapshot records lastReconciledAt, browserCount, changedBrowsers, and lastError. service_reconcile responses also include expiredSessionLeases, expiredSessionLeaseCount, and remoteViewRepair counts for route-pool entries invalidated or restored from live X11 socket evidence, stale route checkouts released after their owner becomes orphaned, plus orphaned remote-view displays, routes, viewer leases, and controller leases repaired during reconcile.
   - The bounded events log records reconciliation summaries, browser launch metadata including profileSelectionReason and profileLeaseDisposition when known, browser health transitions, browser recovery starts, profile lease wait transitions, and tab lifecycle changes.
   - Event filters match kind, browser ID, profile ID, session ID, service name, agent name, task name, and RFC 3339 timestamps before applying --limit.
   - The stream server exposes named browser control endpoints at /api/browser/url, /api/browser/title, /api/browser/tabs, /api/browser/navigate, /api/browser/back, /api/browser/forward, /api/browser/reload, /api/browser/new-tab, /api/browser/switch-tab, /api/browser/close-tab, /api/browser/viewport, /api/browser/user-agent, /api/browser/media, /api/browser/timezone, /api/browser/locale, /api/browser/geolocation, /api/browser/permissions, /api/browser/cookies/get, /api/browser/cookies/set, /api/browser/cookies/clear, /api/browser/storage/get, /api/browser/storage/set, /api/browser/storage/clear, /api/browser/console, /api/browser/errors, /api/browser/set-content, /api/browser/headers, /api/browser/offline, /api/browser/dialog, /api/browser/clipboard, /api/browser/upload, /api/browser/download, /api/browser/wait-for-download, /api/browser/pdf, /api/browser/response-body, /api/browser/har/start, /api/browser/har/stop, /api/browser/route, /api/browser/unroute, /api/browser/requests, /api/browser/request-detail, /api/browser/snapshot, /api/browser/screenshot, /api/browser/click, /api/browser/fill, /api/browser/wait, /api/browser/type, /api/browser/press, /api/browser/hover, /api/browser/select, /api/browser/get-text, /api/browser/get-value, /api/browser/is-visible, /api/browser/get-attribute, /api/browser/get-html, /api/browser/get-styles, /api/browser/count, /api/browser/get-box, /api/browser/is-enabled, /api/browser/is-checked, /api/browser/check, /api/browser/uncheck, /api/browser/scroll, /api/browser/scroll-into-view, /api/browser/focus, and /api/browser/clear.
@@ -5643,7 +5683,9 @@ Notes:
   - MCP tools include service_access_plan, service_request, service_job_cancel, service_incidents, service_remedies_apply, service_trace, service_profile_upsert, service_profile_freshness_update, service_profile_seeding_handoff_update, service_profile_delete, service_session_upsert, service_session_delete, service_site_policy_upsert, service_site_policy_delete, service_monitor_upsert, service_monitor_delete, service_monitors_run_due, service_monitor_pause, service_monitor_resume, service_monitor_reset_failures, service_monitor_triage, service_provider_upsert, service_provider_delete, service_browser_capability_registry_upsert, browser_navigate, browser_requests, browser_request_detail, browser_headers, browser_offline, browser_cookies_get, browser_cookies_set, browser_cookies_clear, browser_storage_get, browser_storage_set, browser_storage_clear, browser_user_agent, browser_viewport, browser_geolocation, browser_permissions, browser_timezone, browser_locale, browser_media, browser_dialog, browser_upload, browser_download, browser_wait_for_download, browser_har_start, browser_har_stop, browser_route, browser_unroute, browser_console, browser_errors, browser_pdf, browser_response_body, browser_clipboard, browser_back, browser_forward, browser_reload, browser_tab_new, browser_tab_switch, browser_tab_close, browser_set_content, browser_command, browser_snapshot, browser_get_url, browser_get_title, browser_tabs, browser_screenshot, browser_click, browser_fill, browser_wait, browser_type, browser_press, browser_hover, browser_select, browser_get_text, browser_get_value, browser_get_attribute, browser_get_html, browser_get_styles, browser_count, browser_get_box, browser_is_visible, browser_is_enabled, browser_check, browser_is_checked, browser_uncheck, browser_scroll, browser_scroll_into_view, browser_focus, and browser_clear.
   - service_request accepts one intent object with serviceName, agentName, taskName, siteId/loginId/accountId/url, targetServiceId, browserBuild, profile or runtimeProfile hints, top-level browserId/sessionName reuse route hints, profileLeasePolicy, profileLeaseWaitTimeoutMs, action, params, and jobTimeoutMs, then queues the browser command through the same service-owned control path. Top-level browserId/sessionName route ordinary commands to an existing daemon lane selected by access-plan profileReuse; params.browserId/params.sessionName remain action parameters. Direct launches that select a profile already backed by a live retained browser are rejected unless they use those route hints or allowDuplicateProfileLane=true for reviewed isolation or throwaway work. Use action=external_byop_adopt with a registered external_byop profile and exactly one explicit cdpUrl or cdpPort when an already-running Chrome lane should become retained attached_existing browser/session/tab state before the next access plan. Use action=probe with a valid serviceTabHandle, timeoutMs, maxReturnBytes, and a provider-neutral probe.detectors recipe for bounded identity, account, readiness, or page-state evidence; supported generic detector types are url_title, selector_text, evaluate, and client_evidence. Optional probe.recordFreshness merges target/account freshness evidence into the selected service profile. Use action=tab_handle_refresh with a current or stale serviceTabHandle, optional desiredUrl, and repairPolicy=reject_only, reuse_compatible, open_if_missing, or replace_duplicates when a client needs structured stale-tab evidence, a refreshed generic handle, or one compatible target with duplicate cleanup before follow-on work. Use action=tab_handle_release with a serviceTabHandle when a client is finished with a leased shared-profile tab; release best-effort closes that exact physical target when the routed live browser owns it, marks only that retained tab closed in service state, and preserves the browser process plus session route for other clients. Use action=ui_action with a valid serviceTabHandle, timeoutMs, optional maxTextBytes, and a bounded uiAction.steps recipe for generic find, focus, fill, type, select, menu_select, click, wait, clear, or guarded dialog steps; clients supply website-specific selectors and instructions while agent-browser owns handle validation, caps, trace, and per-step evidence. Use action=network_capture with a valid serviceTabHandle, timeoutMs, and bounded networkCapture.maxEvents for capped network evidence; metadata is default, headers are redacted unless allowlisted, and response bodies require captureBodies=true plus maxBodyBytes. Use action=file_transfer with a valid serviceTabHandle, timeoutMs, and a fileTransfer upload and/or download recipe for service-owned file input and download capture; uploads require selector or labelText, files, allowedPaths, and maxFiles, while downloads require selector, directory, allowedDirectories, and optional maxBytes. Use action=view_focus with params.targetId plus params.index when both are known, or params.index alone as the fallback, plus params.maximize before opening a dashboard remote-view iframe for a retained tab. Use action=view_takeover with params.browserId, params.sessionName, params.streamId, params.provider, and params.openMode when a single-active-viewer RDP or Guacamole connection should be taken over or reconnected while preserving the browser process and session. Use action=service_remote_view_route_preflight to get a no-launch fastPreflight response with ready, partial, stale, or blocked component evidence before route-bound launch. Use action=service_remote_view_browser_reattach to show a retained RDP browser again without launching Chrome or acquiring its profile, and action=service_remote_view_route_switch to bind that browser to another available or parkable Guacamole route; route switch returns routeSwitchParking when it parks another live browser route because no route-pool entry was available. Use service_viewer_lease_request, service_viewer_lease_heartbeat, service_viewer_lease_release, and service_controller_lease_takeover for explicit remote-view observer and controller leases. Use action=cdp_free_launch when the request should launch and track a headed browser without a DevTools port. Its response includes unsupportedCommands for service request actions that still require CDP; software clients can use summarizeServiceCdpFreeLaunchAvailability for API, MCP, or dashboard control availability.
   - HTTP GET /api/service/contracts and MCP agent-browser://contracts expose matching service request schema IDs, contract versions, routes, MCP tool names, and supported actions for compatibility checks. Contracts include no-launch remote-view allocation collections for display allocations, remote-view routes, route pool entries, and viewer leases.
-  - HTTP GET /api/service/profiles/lookup and MCP agent-browser://profiles/lookup{?serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,readinessProfileId,browserBuild} apply the authoritative service profile selector for serviceName plus targetServiceId, siteId, loginId, accountId, url, browserBuild, or their array aliases and return the selected profile, reason, readiness, readiness summary, and seedingHandoff when manual seeding is required.
+  - CLI service profiles lookup, HTTP GET /api/service/profiles/lookup, and MCP agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,browserBuild} rank the authoritative profile catalog and return match evidence plus launch, add-tab, view, seed, wait, or holder-inspection guidance. Identity searches never fall back to an unrelated generic browser-build default.
+  - Service status includes manualBrowsers for live detached headed runtime launches, including PID, profile path, target URL, display, browser family/build, CDP availability, remote-view route, and the next safe operator action.
+  - Reconciliation expires active session leases whose recorded browser ownership no longer exists, so stale retained sessions cannot continue to hold a profile.
   - HTTP GET /api/service/profiles/<id>/readiness and MCP agent-browser://profiles/{profile_id}/readiness return one profile's no-launch targetReadiness rows for software clients and agents that do not need allocation details.
   - HTTP GET /api/service/profiles/<id>/allocation and MCP agent-browser://profiles/{profile_id}/allocation return one profile's lease, holder, conflict, recommended-action, and readiness state without fetching the full profile collection.
   - HTTP GET /api/service/profiles/<id>/seeding-handoff and MCP agent-browser://profiles/{profile_id}/seeding-handoff{?targetServiceId,siteId,loginId} return the exact detached runtime-login command, setup URL, operator steps, and warnings derived from one profile's targetReadiness rows. HTTP POST /api/service/profiles/<id>/seeding-handoff and MCP service_profile_seeding_handoff_update persist lifecycle changes through the same service worker.

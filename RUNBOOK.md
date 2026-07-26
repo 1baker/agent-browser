@@ -4,6 +4,58 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 111 | 2026-07-25
+
+Scope: open, implement, validate, and close P77 profile discovery and manual
+browser launch UX.
+
+Actions:
+
+- Kept the source note unchanged and converted its requirements into Plan
+  0077.
+- Audited current launcher, profile selector, HTTP, MCP, generated client,
+  runtime state, resource discovery, and workspace inventory surfaces.
+- Confirmed that the existing dashboard launcher and profile lookup are
+  implementation inputs rather than satisfactory product behavior.
+- Reproduced a no-launch selector defect where an X query chose
+  `stealthcdp-default` by browser-build fallback instead of the exact
+  authenticated `last30days-facebook` profile.
+- Implemented one deterministic selector/catalog contract, one authoritative
+  manual-browser runtime projection, a dedicated workspace class, and a
+  server-backed dashboard workflow.
+- Added CLI, HTTP, MCP, generated-client, and dashboard discovery parity with
+  explicit ranked evidence and structured `not_found`.
+- Added executable handoff so local runtime publication replaces daemons while
+  preserving active browser PIDs, ports, targets, and streams.
+- Tightened stale session lease expiration and merge persistence, repaired
+  orphaned Route B pool checkouts, and made convergence run the real service
+  reconcile action.
+- Published the installed runtime and proved manual no-CDP visibility through
+  both CLI status and the authenticated dashboard API.
+- Recorded privacy boundaries, live acceptance criteria, and the explicit
+  non-delegation reason.
+
+Validation:
+
+- Rust format, clippy, focused selector, status, lifecycle, route, model, and
+  contract tests.
+- Service client generation and API/MCP parity.
+- Dashboard workspace, navigator, selected-context, launcher, docs, and
+  production build checks.
+- Live exact X and unmatched free-text lookup, detached no-CDP inventory and
+  cleanup, executable handoff, Route B open, install doctor, remote-view
+  doctor, and local runtime convergence.
+
+Result:
+
+- P77 is closed.
+- Exact X lookup selected `last30days-facebook` by authenticated-target
+  evidence; a free-text miss returned structured `not_found`.
+- Five active sessions survived final daemon replacement with their browser
+  PIDs and CDP endpoints unchanged.
+- Final convergence reported zero stale runtimes, current authoritative
+  listeners, ready remote control, and no install issues.
+
 ## Turn 110 | 2026-07-19
 
 Scope: complete P76 source, contract, installed-runtime, and closeout gates.

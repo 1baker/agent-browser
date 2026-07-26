@@ -67,7 +67,7 @@ for `GET /api/service/profiles/<id>/allocation` and MCP
 `serviceProfileReadinessResponse` for `GET /api/service/profiles/<id>/readiness`
 and MCP `agent-browser://profiles/{profile_id}/readiness`, and
 `serviceProfileLookupResponse` for `GET /api/service/profiles/lookup` and MCP
-`agent-browser://profiles/lookup{?serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,readinessProfileId,runtimeProfile,browserBuild}`,
+`agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,browserBuild}`,
 plus
 `serviceAccessPlanResponse` for `GET /api/service/access-plan`, MCP
 `service_access_plan`, and MCP `agent-browser://access-plan`, and
@@ -235,7 +235,7 @@ to run the recipe returned by `getServiceAccessPlan()` directly.
     </tr>
     <tr>
       <td><code>GET /api/service/profiles/lookup</code></td>
-      <td><code>agent-browser://profiles/lookup{?serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,readinessProfileId,runtimeProfile,browserBuild}</code></td>
+      <td><code>agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,browserBuild}</code></td>
       <td>Narrow profile selector when the caller does not need the full access plan</td>
     </tr>
     <tr>
@@ -591,13 +591,15 @@ handoff closed but unverified once that PID exits.
 
 `service-profile-lookup-response.v1.schema.json` describes the response
 envelope returned by HTTP `GET /api/service/profiles/lookup` and MCP
-`agent-browser://profiles/lookup{?serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,readinessProfileId,runtimeProfile,browserBuild}`
-when a caller wants agent-browser to apply the authoritative service profile
-selector for a service name plus site, login, account, or URL identity without fetching the
-full profile collection. `selectedProfileMatch` includes `matchedField` and
-`matchedIdentity` so clients can explain whether the match came from
-`authenticatedServiceIds`, `accountIds`, `targetServiceIds`,
-`sharedServiceIds`, or `browserBuild`. When
+`agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,browserBuild}`
+when a caller wants agent-browser to rank the authoritative profile catalog
+without fetching the full profile collection. `rankedProfiles` and
+`selectedProfileMatch` include `matchedField` and `matchedIdentity` for
+authenticated target, account or label, profile ID or name, alias, login,
+origin or hostname, tag, auth or freshness state, caller service, free text,
+and browser-build matches. Identity searches never substitute an unrelated
+generic build default. Each ranked row includes allocation evidence and a
+launch, add-tab, view, seed, wait, or holder-inspection recommendation. When
 `readinessSummary.manualSeedingRequired` is true, `seedingHandoff` contains the
 same operator-ready command and warnings as the explicit profile seeding
 handoff endpoint.

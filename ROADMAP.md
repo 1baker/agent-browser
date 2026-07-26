@@ -6,6 +6,45 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P77 | Profile Discovery And Manual Browser Launch UX
+
+State: CLOSED
+Current state: P77 completed the 2026-07-25 profile-discovery and manual
+browser requirement as one coordinated selector, catalog, lifecycle,
+inventory, dashboard, runtime-handoff, and stale-state interlock lane.
+
+### Current State
+
+- Plan
+  `docs/dev/plans/0077-2026-07-25-profile-discovery-and-manual-browser-launch-ux-plan.md`
+  is complete.
+- The source note remains unchanged at
+  `docs/dev/notes/2026-07-25-profile-discovery-and-manual-browser-launch-ux.md`.
+- Exact X lookup selects `last30days-facebook` by authenticated-target
+  evidence, while an unmatched identity returns structured `not_found`.
+- CLI, HTTP, MCP, generated client, and dashboard share the same ranked
+  discovery and recommendation contract.
+- Detached no-CDP runtime-login browsers remain visible in service status and
+  the workspace rail with accurate unsupported-automation controls.
+- Runtime publication hands active browser processes and ports to fresh
+  daemons, while the convergence interlock expires stale leases, repairs route
+  pool drift, and verifies current executable listeners.
+
+### Evidence
+
+- `docs/dev/notes/2026-07-25-profile-discovery-and-manual-browser-launch-ux.md`
+- `docs/dev/plans/0077-2026-07-25-profile-discovery-and-manual-browser-launch-ux-plan.md`
+- `cli/src/native/service_lifecycle.rs`
+- `cli/src/native/stream/http.rs`
+- `cli/src/runtime_profile.rs`
+- `packages/dashboard/src/components/workspace-navigator.tsx`
+
+### Next Recommendation
+
+Keep future profile, manual-browser, and dashboard-launch changes within the
+Plan 0077 selector precedence, no-CDP inventory, access-plan routing,
+one-process-per-profile, runtime-handoff, and stale-state interlock contracts.
+
 ## P76 | Clipboard Target Recovery And Interaction Performance
 
 State: CLOSED

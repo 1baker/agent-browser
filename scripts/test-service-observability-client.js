@@ -1108,6 +1108,25 @@ async function main() {
     matchedField: null,
     matchedIdentity: null,
   });
+  assert.deepEqual(
+    findServiceProfileForIdentity(
+      [{
+        id: 'generic-build-default',
+        browserBuild: 'stock_chrome',
+        authenticatedServiceIds: [],
+        targetServiceIds: [],
+        accountIds: [],
+        sitePolicyIds: [],
+      }],
+      { loginId: 'missing', browserBuild: 'stock_chrome' },
+    ),
+    {
+      profile: null,
+      reason: null,
+      matchedField: null,
+      matchedIdentity: null,
+    },
+  );
 
   const profileLookup = createFetchRecorder((url) => {
     assert.equal(

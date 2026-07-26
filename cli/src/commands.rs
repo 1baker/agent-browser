@@ -73,6 +73,7 @@ pub fn gen_id() -> String {
 }
 
 const SERVICE_PROFILE_VERIFY_SEEDING_USAGE: &str = "service profiles <profile-id> verify-seeding <target-service-id> [--state <fresh|stale|seeded_unknown_freshness|blocked_by_attached_devtools>] [--evidence <text>] [--account-id <id>] [--account-ids <id,id>] [--last-verified-at <rfc3339>] [--freshness-expires-at <rfc3339>] [--no-authenticated-service-update]";
+const SERVICE_PROFILE_LOOKUP_USAGE: &str = "service profiles lookup [--search <text>] [--hostname <host>] [--profile-id <id>] [--profile-name <name>] [--service-name <name>] [--target-service-id <id>] [--site-id <id>] [--login-id <id>] [--account-id <id>] [--authentication-state <state>] [--freshness-state <state>] [--tag <tag>] [--url <url>] [--readiness-profile-id <id>] [--browser-build <stock_chrome|stealthcdp_chromium|cdp_free_headed>]";
 
 const SERVICE_BROWSER_CAPABILITY_PREFLIGHT_USAGE: &str = "service browser-capability preflight --browser-build <stock_chrome|stealthcdp_chromium|cdp_free_headed> [--target-service-id <id>] [--site-id <id>] [--login-id <id>] [--account-id <id>] [--url <url>] [--runtime-profile <id>] [--profile <path>] [--service-name <name>] [--agent-name <name>] [--task-name <name>] [--headed|--headless] [--cdp-free]";
 
@@ -81,6 +82,63 @@ const SERVICE_BROWSER_CAPABILITY_GUIDE_USAGE: &str = "service browser-capability
 const SERVICE_BROWSER_CAPABILITY_PREFER_USAGE: &str = "service browser-capability prefer --browser-build <stock_chrome|stealthcdp_chromium|cdp_free_headed> --preferred-executable-id <id> [--id <binding-id>] [--target-service-id <id>] [--site-id <id>] [--login-id <id>] [--account-id <id>] [--service-name <name>] [--task-name <name>] [--preferred-host-id <id>] [--preferred-capability-id <id>] [--priority <n>] [--reason <text>]";
 
 const SERVICE_ACCESS_PLAN_USAGE: &str = "service access-plan [--service-name <name>] [--agent-name <name>] [--task-name <name>] [--target-service-id <id>] [--site-id <id>] [--login-id <id>] [--account-id <id>] [--url <url>] [--site-policy-id <id>] [--challenge-id <id>] [--readiness-profile-id <id>] [--runtime-profile <id>] [--browser-build <stock_chrome|stealthcdp_chromium|cdp_free_headed>] [--browser-host <local_headless|local_headed|docker_headed|remote_headed|cloud_provider|attached_existing>] [--view-stream-provider <cdp_screencast|chrome_tab_webrtc|virtual_display_webrtc|novnc|rdp_gateway|external_url>] [--control-input-provider <cdp_input|webrtc_input|vnc_input|manual_attached_desktop>] [--display-isolation <private_virtual_display|shared_display|ambient_display>]";
+
+fn parse_service_profile_lookup(
+    id: String,
+    rest: &[&str],
+    flags: &Flags,
+) -> Result<Value, ParseError> {
+    let mut cmd = json!({
+        "id": id,
+        "action": "service_profile_lookup",
+        "serviceState": flags.service_state.clone(),
+    });
+    let mut i = 2;
+    while i < rest.len() {
+        let (field, label) = match rest[i] {
+            "--service-name" => ("serviceName", "--service-name"),
+            "--target-service-id" | "--target-service" => {
+                ("targetServiceId", "--target-service-id")
+            }
+            "--site-id" => ("siteId", "--site-id"),
+            "--login-id" => ("loginId", "--login-id"),
+            "--account-id" => ("accountId", "--account-id"),
+            "--profile-id" => ("profileId", "--profile-id"),
+            "--profile-name" => ("profileName", "--profile-name"),
+            "--hostname" => ("hostname", "--hostname"),
+            "--authentication-state" => ("authenticationState", "--authentication-state"),
+            "--freshness-state" => ("freshnessState", "--freshness-state"),
+            "--tag" => ("tag", "--tag"),
+            "--search" | "--query" => ("query", "--search"),
+            "--url" => ("url", "--url"),
+            "--readiness-profile-id" => ("readinessProfileId", "--readiness-profile-id"),
+            "--browser-build" => ("browserBuild", "--browser-build"),
+            flag => {
+                return Err(ParseError::InvalidValue {
+                    message: format!("Unknown flag for service profiles lookup: {}", flag),
+                    usage: SERVICE_PROFILE_LOOKUP_USAGE,
+                });
+            }
+        };
+        let Some(value) = rest.get(i + 1) else {
+            return Err(ParseError::InvalidValue {
+                message: format!("Missing value for {}", label),
+                usage: SERVICE_PROFILE_LOOKUP_USAGE,
+            });
+        };
+        if field == "browserBuild"
+            && crate::native::service_model::BrowserBuild::parse_label(value).is_none()
+        {
+            return Err(ParseError::InvalidValue {
+                message: format!("Invalid --browser-build value: {}", value),
+                usage: SERVICE_PROFILE_LOOKUP_USAGE,
+            });
+        }
+        cmd[field] = json!(value);
+        i += 2;
+    }
+    Ok(cmd)
+}
 
 const REMOTE_VIEW_OPEN_USAGE: &str = "remote-view open [url] [--url <url>] [--runtime-profile <id>] [--browser-build <stock_chrome|stealthcdp_chromium|cdp_free_headed>] [--view-stream-provider <rdp_gateway>] [--provider <rdp_gateway>] [--profile <path>] [--route-pool-entry-id <id>] [--route-pool-entry-json <json>] [--route-id <id>] [--display <name>] [--display-allocation-id <id>] [--browser-id <id>] [--session-name <name>] [--service-name <name>] [--agent-name <name>] [--task-name <name>] [--dry-run]";
 
@@ -2498,6 +2556,9 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                 }),
             },
             Some("profiles") => {
+                if rest.get(1) == Some(&"lookup") {
+                    return parse_service_profile_lookup(id, &rest, flags);
+                }
                 if rest.len() >= 3 && rest[2] == "seeding-handoff" {
                     if rest.len() > 4 {
                         return Err(ParseError::InvalidValue {
@@ -7623,6 +7684,23 @@ mod tests {
         let cmd = parse_command(&args("service profiles"), &default_flags()).unwrap();
 
         assert_eq!(cmd["action"], "service_profiles");
+        assert!(cmd["serviceState"].is_object());
+    }
+
+    #[test]
+    fn test_service_profile_lookup() {
+        let cmd = parse_command(
+            &args(
+                "service profiles lookup --target-service-id x --account-id work --url https://x.com",
+            ),
+            &default_flags(),
+        )
+        .unwrap();
+
+        assert_eq!(cmd["action"], "service_profile_lookup");
+        assert_eq!(cmd["targetServiceId"], "x");
+        assert_eq!(cmd["accountId"], "work");
+        assert_eq!(cmd["url"], "https://x.com");
         assert!(cmd["serviceState"].is_object());
     }
 

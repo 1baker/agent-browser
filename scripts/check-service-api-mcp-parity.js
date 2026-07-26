@@ -532,10 +532,10 @@ const serviceResourceSurface = [
     ],
   },
   {
-    resource: 'agent-browser://profiles/lookup{?serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,readinessProfileId,runtimeProfile,browserBuild}',
+    resource: 'agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,browserBuild}',
     route: '/api/service/profiles/lookup',
     docsNeedles: [
-      'agent-browser://profiles/lookup{?serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,readinessProfileId,runtimeProfile,browserBuild}',
+      'agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,browserBuild}',
       '/api/service/profiles/lookup',
       'getServiceProfileForIdentity',
     ],
@@ -553,7 +553,7 @@ const serviceResourceSurface = [
     contractNeedles: [
       'service-profile-lookup-response.v1.schema.json',
       'GET /api/service/profiles/lookup',
-      'agent-browser://profiles/lookup{?serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,readinessProfileId,runtimeProfile,browserBuild}',
+      'agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,browserBuild}',
     ],
   },
 ];

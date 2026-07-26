@@ -108,6 +108,11 @@ try {
       '--',
       '--report-only',
     ]);
+    runOptionalStep('reconcile_service_state', agentBrowserCommand, [
+      '--json',
+      'service',
+      'reconcile',
+    ]);
     let afterRoutePool = readDoctors('after_route_pool', { required: false });
     if (repairConfirmedStaleDaemons(afterRoutePool.install, 'after_route_pool')) {
       afterRoutePool = readDoctors('after_route_pool_stale_repair', { required: false });
@@ -435,6 +440,7 @@ function runOptionalStep(name, command, commandArgs) {
 function runStep(name, command, commandArgs, { capture = false, required = true } = {}) {
   const result = spawnSync(command, commandArgs, {
     encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
     stdio: capture ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
   });
   const step = {

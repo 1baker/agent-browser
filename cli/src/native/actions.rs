@@ -330,6 +330,7 @@ pub(crate) fn action_skips_browser_launch(action: &str) -> bool {
             | "service_incident_activity"
             | "service_trace"
             | "service_profiles"
+            | "service_profile_lookup"
             | "service_profile_seeding_handoff"
             | "service_sessions"
             | "service_browsers"
@@ -4657,6 +4658,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "service_incident_activity" => handle_service_incident_activity(cmd).await,
         "service_trace" => handle_service_trace(cmd).await,
         "service_profiles" => handle_service_profiles(cmd).await,
+        "service_profile_lookup" => handle_service_profile_lookup(cmd).await,
         "service_profile_seeding_handoff" => handle_service_profile_seeding_handoff(cmd).await,
         "service_sessions" => handle_service_sessions(cmd).await,
         "service_browsers" => handle_service_browsers(cmd).await,
@@ -17227,8 +17229,23 @@ async fn handle_service_status(cmd: &Value) -> Result<Value, String> {
     service_state.refresh_profile_readiness();
 
     let profile_allocations = service_profile_allocations(&service_state);
+    let manual_browsers =
+        super::service_status_projection::manual_runtime_browser_projection(&service_state);
     let retained_display_allocations = retained_display_allocation_summary(&service_state);
     let browser_session_authority = browser_session_authority_snapshot(&service_state);
+    let control_plane = service_state
+        .control_plane
+        .as_ref()
+        .expect("service status always creates a control-plane snapshot");
+    let control_plane = json!({
+        "worker_state": control_plane.worker_state,
+        "browser_health": control_plane.browser_health,
+        "queue_depth": control_plane.queue_depth,
+        "queue_capacity": control_plane.queue_capacity,
+        "waiting_profile_lease_job_count": control_plane.waiting_profile_lease_job_count,
+        "service_job_timeout_ms": control_plane.service_job_timeout_ms,
+        "service_monitor_interval_ms": control_plane.service_monitor_interval_ms,
+    });
     let launch_config = cmd
         .get("launchConfig")
         .cloned()
@@ -17244,8 +17261,10 @@ async fn handle_service_status(cmd: &Value) -> Result<Value, String> {
     inject_browser_process_stats(&mut service_state_json);
 
     Ok(json!({
+        "control_plane": control_plane,
         "service_state": service_state_json,
         "profileAllocations": profile_allocations,
+        "manualBrowsers": manual_browsers,
         "retainedDisplayAllocations": retained_display_allocations,
         "browserSessionAuthority": browser_session_authority,
         "closedTabProjection": closed_tab_projection,
@@ -17820,6 +17839,46 @@ async fn handle_service_profiles(cmd: &Value) -> Result<Value, String> {
         "profileAllocations": profile_allocations,
         "count": count,
     }))
+}
+
+/// Resolve a profile identity query without launching or mutating a browser.
+async fn handle_service_profile_lookup(cmd: &Value) -> Result<Value, String> {
+    let mut service_state = cmd
+        .get("serviceState")
+        .cloned()
+        .map(serde_json::from_value::<ServiceState>)
+        .transpose()
+        .map_err(|err| format!("Invalid serviceState: {}", err))?
+        .unwrap_or_default();
+    service_state.refresh_profile_readiness();
+
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    for (field, parameter) in [
+        ("serviceName", "serviceName"),
+        ("targetServiceId", "targetServiceId"),
+        ("siteId", "siteId"),
+        ("loginId", "loginId"),
+        ("accountId", "accountId"),
+        ("profileId", "profileId"),
+        ("profileName", "profileName"),
+        ("hostname", "hostname"),
+        ("authenticationState", "authenticationState"),
+        ("freshnessState", "freshnessState"),
+        ("tag", "tag"),
+        ("query", "query"),
+        ("url", "url"),
+        ("readinessProfileId", "readinessProfileId"),
+        ("browserBuild", "browserBuild"),
+    ] {
+        if let Some(value) = cmd.get(field).and_then(Value::as_str) {
+            query.append_pair(parameter, value);
+        }
+    }
+    let query = query.finish();
+    stream::service_profile_lookup_response_for_state(
+        (!query.is_empty()).then_some(query.as_str()),
+        &service_state,
+    )
 }
 
 async fn handle_service_profile_seeding_handoff(cmd: &Value) -> Result<Value, String> {
@@ -27118,6 +27177,7 @@ mod tests {
             launch_mode: "automation".to_string(),
             devtools_port: Some(9333),
             ws_url: Some("ws://127.0.0.1:9333/devtools/browser/test".to_string()),
+            launch_record: None,
         })
         .expect("runtime state should be written");
 
@@ -27152,6 +27212,7 @@ mod tests {
             launch_mode: "automation".to_string(),
             devtools_port: None,
             ws_url: None,
+            launch_record: None,
         })
         .expect("runtime state should be written");
 
@@ -28324,6 +28385,39 @@ mod tests {
         assert_eq!(
             result["data"]["profileAllocations"][0]["serviceNames"][0],
             "JournalDownloader"
+        );
+        assert!(state.browser.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_service_profile_lookup_via_actions_is_ranked_and_no_launch() {
+        let mut state = DaemonState::new();
+        let cmd = json!({
+            "action": "service_profile_lookup",
+            "id": "svc-profile-lookup-1",
+            "targetServiceId": "x",
+            "serviceState": {
+                "profiles": {
+                    "social": {
+                        "id": "social",
+                        "name": "Social",
+                        "targetServiceIds": ["x"],
+                        "authenticatedServiceIds": ["x"],
+                        "sharedServiceIds": ["last30days"],
+                        "persistent": true
+                    }
+                }
+            }
+        });
+
+        let result = execute_command(&cmd, &mut state).await;
+
+        assert_eq!(result["success"], true);
+        assert_eq!(result["data"]["status"], "matched");
+        assert_eq!(result["data"]["rankedProfiles"][0]["profileId"], "social");
+        assert_eq!(
+            result["data"]["rankedProfiles"][0]["reason"],
+            "authenticated_target"
         );
         assert!(state.browser.is_none());
     }

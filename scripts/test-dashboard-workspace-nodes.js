@@ -1690,4 +1690,36 @@ for (const [id, state] of [
   assert.equal(workspaceNodeLiveControlEligibility(node).canControl, false);
 }
 
+const manualNodes = deriveWorkspaceNodes({
+  manualBrowsers: [
+    {
+      id: 'manual-runtime:last30days-facebook:592914',
+      runtimeProfile: 'last30days-facebook',
+      profilePath: '/tmp/last30days-facebook/user-data',
+      pid: 592914,
+      browserFamily: 'chromium',
+      browserBuild: 'stealthcdp_chromium',
+      display: ':10',
+      launchMode: 'manual',
+      targetUrl: 'https://x.com',
+      devtoolsPort: null,
+      automationAvailable: false,
+      remoteViewRouteId: 'rdp-route-a',
+      remoteViewUrl: 'https://agent-browser.example.test/guacamole/#/client/route-a',
+      remoteControlAvailable: true,
+      nextSafeAction: 'open_remote_view_or_finish_login_then_close',
+    },
+  ],
+});
+const manualNode = byId(manualNodes, 'manual-runtime:last30days-facebook:592914');
+assert.equal(manualNode.inventoryClass, 'manual-runtime-browser');
+assert.equal(manualNode.source, 'manual-runtime');
+assert.equal(manualNode.profileId, 'last30days-facebook');
+assert.equal(manualNode.process?.pid, 592914);
+assert.equal(manualNode.primaryTab?.url, 'https://x.com');
+assert.equal(manualNode.inventoryPlacement?.lane, 'detected');
+assert.equal(action(manualNode, 'view').enabled, true);
+assert.equal(action(manualNode, 'control').enabled, true);
+assert.equal(manualNode.actions.some((item) => item.id === 'add-tab'), false);
+
 console.log('Dashboard workspace node contract smoke passed');

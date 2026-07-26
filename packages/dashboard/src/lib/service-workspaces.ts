@@ -29,6 +29,7 @@ export type WorkspaceInventoryClass =
   | "service-owned-view-only-browser"
   | "service-owned-diagnostic-browser"
   | "detected-non-owned-browser"
+  | "manual-runtime-browser"
   | "viewer-client"
   | "retained-history"
   | "service-owned-session"
@@ -38,6 +39,7 @@ export type WorkspaceNodeSource =
   | "service-browser"
   | "service-session"
   | "daemon-session"
+  | "manual-runtime"
   | "profile";
 
 export type WorkspaceNodeRole = "target-browser" | "viewer-client";
@@ -396,6 +398,26 @@ export type WorkspaceResourceRecord = {
   };
 };
 
+export type WorkspaceManualBrowser = {
+  id: string;
+  runtimeProfile: string;
+  profilePath: string;
+  pid: number;
+  browserFamily?: string | null;
+  browserBuild?: string | null;
+  display?: string | null;
+  launchMode: string;
+  targetUrl?: string | null;
+  devtoolsPort?: number | null;
+  automationAvailable: boolean;
+  remoteViewRouteId?: string | null;
+  remoteViewUrl?: string | null;
+  remoteControlAvailable: boolean;
+  nextSafeAction: string;
+  startedAt?: string | null;
+  lastObservedAt?: string | null;
+};
+
 export type WorkspaceBrowserSessionAuthorityVerdict = {
   key?: string | null;
   browserId?: string | null;
@@ -421,6 +443,7 @@ export type WorkspaceNodeInput = {
   jobs?: WorkspaceServiceJob[];
   incidents?: WorkspaceServiceIncident[];
   resources?: WorkspaceResourceRecord[];
+  manualBrowsers?: WorkspaceManualBrowser[];
   browserSessionAuthority?: WorkspaceBrowserSessionAuthority | null;
   includeRetained?: boolean;
   includeHidden?: boolean;
@@ -488,6 +511,7 @@ export function deriveWorkspaceNodes(input: WorkspaceNodeInput): WorkspaceNode[]
   const profileAllocations = input.profileAllocations ?? [];
   const jobs = input.jobs ?? [];
   const incidents = input.incidents ?? [];
+  const manualBrowsers = input.manualBrowsers ?? [];
   const authorityVerdictsByBrowserId = browserAuthorityVerdictsByBrowserId(input.browserSessionAuthority);
   const ownershipDiagnostics = deriveWorkspaceOwnershipDiagnostics({
     serviceBrowsers,
@@ -619,6 +643,14 @@ export function deriveWorkspaceNodes(input: WorkspaceNodeInput): WorkspaceNode[]
     daemonNamesWithNodes.add(session.session);
   }
 
+  for (const manualBrowser of manualBrowsers) {
+    if (manualBrowser.runtimeProfile && profileIdsWithNodes.has(manualBrowser.runtimeProfile)) {
+      continue;
+    }
+    nodes.push(applyWorkspaceInventoryPlacement(createManualBrowserWorkspaceNode(manualBrowser)));
+    if (manualBrowser.runtimeProfile) profileIdsWithNodes.add(manualBrowser.runtimeProfile);
+  }
+
   for (const allocation of profileAllocations) {
     if (profileIdsWithNodes.has(allocation.profileId)) continue;
     const relatedJobs = jobs.filter((job) => jobMatches({ job, allocation }));
@@ -663,7 +695,10 @@ export function workspaceInventoryPlacementForNode(node: WorkspaceNode): Workspa
     node.source === "service-browser" ||
     node.source === "daemon-session"
   );
-  const hasDetectedViableTarget = node.inventoryClass === "detected-non-owned-browser" &&
+  const hasDetectedViableTarget = (
+    node.inventoryClass === "detected-non-owned-browser" ||
+    node.inventoryClass === "manual-runtime-browser"
+  ) &&
     node.live &&
     !node.retained &&
     Boolean(
@@ -880,6 +915,121 @@ export function deriveWorkspaceOwnershipDiagnostics(input: Pick<WorkspaceNodeInp
   }
 
   return diagnostics;
+}
+
+function createManualBrowserWorkspaceNode(browser: WorkspaceManualBrowser): WorkspaceNode {
+  const viewable = Boolean(browser.remoteViewUrl);
+  const controllable = viewable && browser.remoteControlAvailable;
+  const viewStream: WorkspaceNodeViewStream | null = viewable
+    ? {
+        provider: "rdp_gateway",
+        url: browser.remoteViewUrl ?? null,
+        routeId: browser.remoteViewRouteId ?? null,
+        embeddable: true,
+        controllable,
+        readOnly: !controllable,
+        controlInput: controllable ? "manual_attached_desktop" : null,
+        operatorVisibleState: controllable ? "controllable" : "view-only",
+        operatorVisibleReason: "Manual runtime browser is controlled through its remote desktop.",
+        routeSummary: browser.remoteViewRouteId
+          ? `route=${browser.remoteViewRouteId}`
+          : "manual runtime remote view",
+      }
+    : null;
+  const actions: WorkspaceNodeAction[] = [
+    {
+      id: "view",
+      label: "View",
+      enabled: viewable,
+      reason: viewable ? null : "No remote-view route is currently available.",
+    },
+    {
+      id: "control",
+      label: "Control",
+      enabled: controllable,
+      reason: controllable
+        ? null
+        : "Control is available only through an active controllable remote desktop.",
+    },
+    {
+      id: "inspect",
+      label: "Inspect",
+      enabled: true,
+      reason: browser.automationAvailable
+        ? "Attachable runtime metadata is available."
+        : "Automation is unavailable until this browser closes or is relaunched attachably.",
+    },
+  ];
+
+  return {
+    id: browser.id,
+    source: "manual-runtime",
+    role: "target-browser",
+    roleReason: "Authoritative runtime-state record for a live manual browser.",
+    group: "detected",
+    inventoryClass: "manual-runtime-browser",
+    state: controllable ? "controllable" : viewable ? "view-only" : "active",
+    label: browser.runtimeProfile,
+    secondaryLabel: [
+      "Manual",
+      `PID ${browser.pid}`,
+      browser.browserFamily ?? browser.browserBuild,
+      browser.display,
+    ].filter(Boolean).join(" · "),
+    sortLabel: browser.runtimeProfile,
+    health: "ready",
+    attentionReason: browser.automationAvailable
+      ? null
+      : `Automation unavailable. Next safe action: ${browser.nextSafeAction}.`,
+    retained: false,
+    live: true,
+    profileId: browser.runtimeProfile,
+    browserBuild: browser.browserBuild ?? browser.browserFamily ?? null,
+    host: browser.display ? "remote_headed" : "local_headed",
+    process: {
+      pid: browser.pid,
+      running: true,
+      cdpPort: browser.devtoolsPort ?? null,
+      streamPort: portFromUrl(browser.remoteViewUrl),
+    },
+    ownership: {},
+    primaryTab: browser.targetUrl
+      ? {
+          id: `${browser.id}:manual-target`,
+          title: browser.targetUrl,
+          url: browser.targetUrl,
+          lifecycle: "manual",
+          active: true,
+        }
+      : null,
+    viewStream,
+    routeBoundOwnership: browser.remoteViewRouteId
+      ? {
+          state: "diagnostic",
+          routeId: browser.remoteViewRouteId,
+          reason: "Manual runtime browser route is correlated without CDP.",
+        }
+      : null,
+    profileActionability: null,
+    takeover: null,
+    diagnostics: [],
+    counts: {
+      tabs: browser.targetUrl ? 1 : 0,
+      serviceSessions: 0,
+      jobs: 0,
+      incidents: 0,
+    },
+    relatedIds: {
+      browserIds: [],
+      serviceSessionIds: [],
+      daemonSessionNames: [],
+      tabIds: [],
+      profileIds: [browser.runtimeProfile],
+      jobIds: [],
+      incidentIds: [],
+    },
+    actions,
+  };
 }
 
 function createBrowserWorkspaceNode({
