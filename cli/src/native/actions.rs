@@ -3857,6 +3857,73 @@ fn shared_profile_attach_target_for_auto_launch(
     })
 }
 
+fn retained_session_attach_target_for_auto_launch(
+    command: &Value,
+    session_id: &str,
+) -> Option<SharedProfileAttachTarget> {
+    let action = command.get("action").and_then(Value::as_str)?;
+    if matches!(
+        action,
+        "launch" | "cdp_free_launch" | "open" | "navigate" | "tab_new"
+    ) {
+        return None;
+    }
+    if optional_command_string(command, "sessionName")
+        .is_some_and(|requested| requested != session_id)
+    {
+        return None;
+    }
+
+    let repository = LockedServiceStateRepository::default_json().ok()?;
+    let service_state = repository.load_snapshot().ok()?;
+    let requested_browser_id = optional_command_string(command, "browserId");
+    let current_browser_id = service_browser_id(session_id);
+    let mut candidates = service_state
+        .browsers
+        .values()
+        .filter(|browser| service_browser_health_counts_as_live(browser.health))
+        .filter(|browser| {
+            browser.id == current_browser_id
+                || browser
+                    .active_session_ids
+                    .iter()
+                    .any(|owner_session_id| owner_session_id == session_id)
+        })
+        .filter(|browser| {
+            requested_browser_id
+                .as_deref()
+                .is_none_or(|requested| requested == browser.id)
+        })
+        .filter_map(|browser| {
+            let runtime_profile = browser.profile_id.as_deref()?.trim();
+            let cdp_endpoint = browser.cdp_endpoint.as_deref()?.trim();
+            if runtime_profile.is_empty() || cdp_endpoint.is_empty() {
+                return None;
+            }
+            Some((
+                browser,
+                runtime_profile.to_string(),
+                cdp_endpoint.to_string(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        let left_current = left.0.id == current_browser_id;
+        let right_current = right.0.id == current_browser_id;
+        right_current
+            .cmp(&left_current)
+            .then_with(|| left.0.id.cmp(&right.0.id))
+    });
+    let (browser, runtime_profile, cdp_endpoint) = candidates.into_iter().next()?;
+    Some(SharedProfileAttachTarget {
+        browser_id: browser.id.clone(),
+        runtime_profile,
+        cdp_endpoint,
+        browser_pid: browser.pid,
+        owner_session_ids: browser.active_session_ids.clone(),
+    })
+}
+
 fn shared_profile_auto_launch_acquisition_evidence(
     command: &Value,
     session_id: &str,
@@ -3967,6 +4034,22 @@ async fn attach_shared_profile_browser_for_auto_launch(
         ServiceBrowserHealth::Ready,
         Some(metadata),
     );
+    Ok(())
+}
+
+async fn attach_retained_service_session_browser_for_auto_launch(
+    state: &mut DaemonState,
+    target: &SharedProfileAttachTarget,
+) -> Result<(), String> {
+    state.reset_input_state();
+    state.attached_runtime_profile = Some(target.runtime_profile.clone());
+    state.attached_browser_pid = target.browser_pid;
+    state.close_behavior = CloseBehavior::Detach;
+    state.browser = Some(BrowserManager::connect_cdp(&target.cdp_endpoint).await?);
+    state.subscribe_to_browser_events();
+    state.start_fetch_handler();
+    state.start_dialog_handler();
+    state.update_stream_client().await;
     Ok(())
 }
 
@@ -4906,6 +4989,11 @@ async fn auto_launch(state: &mut DaemonState, command: &Value) -> Result<(), Str
         options.viewport_size = Some(server.viewport().await);
     }
     let engine = env::var("AGENT_BROWSER_ENGINE").ok();
+    if let Some(target) = retained_session_attach_target_for_auto_launch(command, &state.session_id)
+    {
+        attach_retained_service_session_browser_for_auto_launch(state, &target).await?;
+        return Ok(());
+    }
     let retained_remote_headed = retained_remote_headed_launch_hint(&state.session_id, command);
     let (service_host, selection_reason, browser_capability_launch, effective_command) =
         apply_auto_launch_command_hints(&mut options, command, retained_remote_headed.as_ref());
@@ -26758,6 +26846,112 @@ mod tests {
             target.owner_session_ids,
             vec!["facebook-operator".to_string()]
         );
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_retained_session_attach_target_reconnects_registered_tab_list_client() {
+        let guard = EnvGuard::new(&["HOME"]);
+        let home = unique_socket_dir("retained-session-attach-target-home");
+        fs::create_dir_all(&home).expect("test home should be created");
+        guard.set("HOME", home.to_str().expect("test home should be utf-8"));
+
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        store
+            .save(&ServiceState {
+                browsers: BTreeMap::from([
+                    (
+                        "session:auracall-corel".to_string(),
+                        BrowserProcess {
+                            id: "session:auracall-corel".to_string(),
+                            profile_id: Some("default".to_string()),
+                            health: ServiceBrowserHealth::Ready,
+                            cdp_endpoint: Some(
+                                "ws://127.0.0.1:45015/devtools/browser/default".to_string(),
+                            ),
+                            active_session_ids: vec!["auracall-corel".to_string()],
+                            ..BrowserProcess::default()
+                        },
+                    ),
+                    (
+                        "session:last30days-facebook".to_string(),
+                        BrowserProcess {
+                            id: "session:last30days-facebook".to_string(),
+                            profile_id: Some("last30days-facebook".to_string()),
+                            host: ServiceBrowserHost::RemoteHeaded,
+                            health: ServiceBrowserHealth::Ready,
+                            display_isolation: Some("shared_display".to_string()),
+                            pid: Some(42),
+                            cdp_endpoint: Some(
+                                "ws://127.0.0.1:36753/devtools/browser/social".to_string(),
+                            ),
+                            active_session_ids: vec!["last30days-facebook".to_string()],
+                            ..BrowserProcess::default()
+                        },
+                    ),
+                ]),
+                ..ServiceState::default()
+            })
+            .expect("service state should be persisted");
+
+        let target = retained_session_attach_target_for_auto_launch(
+            &json!({"action": "tab_list"}),
+            "last30days-facebook",
+        )
+        .expect("registered session should reconnect to its retained browser");
+
+        assert_eq!(target.browser_id, "session:last30days-facebook");
+        assert_eq!(target.runtime_profile, "last30days-facebook");
+        assert_eq!(
+            target.cdp_endpoint,
+            "ws://127.0.0.1:36753/devtools/browser/social"
+        );
+        assert_eq!(target.browser_pid, Some(42));
+        assert_eq!(
+            target.owner_session_ids,
+            vec!["last30days-facebook".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_retained_session_attach_target_does_not_cross_session_ownership() {
+        let guard = EnvGuard::new(&["HOME"]);
+        let home = unique_socket_dir("retained-session-cross-owner-home");
+        fs::create_dir_all(&home).expect("test home should be created");
+        guard.set("HOME", home.to_str().expect("test home should be utf-8"));
+
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        store
+            .save(&ServiceState {
+                browsers: BTreeMap::from([(
+                    "session:last30days-facebook".to_string(),
+                    BrowserProcess {
+                        id: "session:last30days-facebook".to_string(),
+                        profile_id: Some("last30days-facebook".to_string()),
+                        health: ServiceBrowserHealth::Ready,
+                        cdp_endpoint: Some(
+                            "ws://127.0.0.1:36753/devtools/browser/social".to_string(),
+                        ),
+                        active_session_ids: vec!["last30days-facebook".to_string()],
+                        ..BrowserProcess::default()
+                    },
+                )]),
+                ..ServiceState::default()
+            })
+            .expect("service state should be persisted");
+
+        assert!(retained_session_attach_target_for_auto_launch(
+            &json!({
+                "action": "tab_list",
+                "browserId": "session:last30days-facebook",
+                "sessionName": "last30days-facebook"
+            }),
+            "unrelated-client",
+        )
+        .is_none());
 
         let _ = fs::remove_dir_all(&home);
     }
