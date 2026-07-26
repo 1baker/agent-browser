@@ -25,6 +25,7 @@ import {
   workspaceViewportReadinessStatusLabel,
   workspaceViewportUxStateLabel,
 } from '../packages/dashboard/src/lib/workspace-viewport-state.ts';
+import { serviceBrowserForWorkspaceSelection } from '../packages/dashboard/src/lib/workspace-browser-selection.ts';
 
 const dashboardPage = readFileSync('packages/dashboard/src/app/page.tsx', 'utf8');
 const workspaceNavigator = readFileSync('packages/dashboard/src/components/workspace-navigator.tsx', 'utf8');
@@ -55,6 +56,34 @@ const rdpGatewayStream = {
   remoteReadiness: { state: 'ready' },
   readOnly: false,
 };
+
+const linkedRdpBrowser = {
+  id: 'session:last30days-facebook',
+  activeSessionIds: ['last30days-facebook'],
+  viewStreams: [rdpGatewayStream],
+};
+assert.equal(
+  serviceBrowserForWorkspaceSelection(
+    [linkedRdpBrowser],
+    {
+      workspaceId: 'daemon-session:last30days-facebook',
+      browserId: null,
+      sessionId: 'last30days-facebook',
+    },
+  ),
+  linkedRdpBrowser,
+);
+assert.equal(
+  serviceBrowserForWorkspaceSelection(
+    [linkedRdpBrowser],
+    {
+      workspaceId: 'daemon-session:last30days-facebook',
+      browserId: null,
+      sessionId: null,
+    },
+  ),
+  linkedRdpBrowser,
+);
 
 assert.equal(viewStreamLabel(rdpGatewayStream), 'rdp gateway');
 assert.equal(controlInputLabel(rdpGatewayStream), 'manual attached desktop');
@@ -584,8 +613,8 @@ assert.match(
 
 assert.match(
   workspaceViewport,
-  /view === "workspace:control"[\s\S]*view === "workspace:view"[\s\S]*browserIdFromSelection[\s\S]*daemonSessionFromSelection[\s\S]*daemonBrowserFromSession[\s\S]*primaryViewStream[\s\S]*chooseWorkspaceViewportBrowser[\s\S]*isBlankWorkspaceViewportTab[\s\S]*workspaceViewportTabScore[\s\S]*daemonSessionNameForBrowser[\s\S]*const params = targetId[\s\S]*sessionName[\s\S]*action: "view_focus"[\s\S]*taskName: "workspace-viewport-control"[\s\S]*params,/,
-  'Workspace remote viewport must restore URL selection, synthesize daemon streams, choose a recoverable browser, choose a live non-blank service-owned target, and queue view_focus before control embedding',
+  /view === "workspace:control"[\s\S]*view === "workspace:view"[\s\S]*daemonSessionFromSelection[\s\S]*daemonBrowserFromSession[\s\S]*primaryViewStream[\s\S]*chooseWorkspaceViewportBrowser[\s\S]*isBlankWorkspaceViewportTab[\s\S]*workspaceViewportTabScore[\s\S]*daemonSessionNameForBrowser[\s\S]*const serviceBrowser = viewportSelection[\s\S]*serviceBrowserForWorkspaceSelection[\s\S]*const browser = chooseWorkspaceViewportBrowser\(serviceBrowser, selectedContextBrowser \?\? daemonBrowser\)[\s\S]*const params = targetId[\s\S]*sessionName[\s\S]*action: "view_focus"[\s\S]*taskName: "workspace-viewport-control"[\s\S]*params,/,
+  'Workspace remote viewport must restore URL selection, resolve daemon-session URLs back to linked service browsers, synthesize fallback daemon streams, choose a live non-blank service-owned target, and queue view_focus before control embedding',
 );
 
 assert.match(

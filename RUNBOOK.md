@@ -4,6 +4,53 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 112 | 2026-07-25
+
+Scope: repair the X workspace tile so its retained remote-headed browser opens
+through Guacamole/RDP instead of an unrelated CDP snapshot.
+
+Actions:
+
+- Reproduced the failure with the exact dashboard selection
+  `daemon-session:last30days-facebook`.
+- Traced the selection path to `WorkspaceRemoteViewport`: only an explicit
+  browser ID could resolve a retained service browser, so a daemon-session
+  selection synthesized a CDP browser and let that snapshot win.
+- Added one deterministic workspace-selection resolver that maps explicit
+  browser IDs first and selected daemon sessions second.
+- Made a linked retained service browser authoritative over a selected CDP
+  snapshot while preserving CDP as the fallback for sessions with no linked
+  service browser.
+- Tightened the dashboard runtime smoke with an explicit expected-provider
+  assertion so a Guacamole route cannot pass by rendering a CDP canvas.
+- Recovered the retained X browser on the existing
+  `last30days-facebook` profile and Route A Guacamole allocation after stale
+  runtime evidence was reconciled.
+- Published the dashboard bundle and converged the installed user-scoped
+  runtime.
+
+Validation:
+
+- `pnpm test:dashboard-view-streams`
+- `pnpm test:dashboard-workspace-navigator`
+- `pnpm test:route-confusion-gates`
+- `pnpm build:dashboard`
+- `node --check scripts/smoke-local-dashboard-runtime.js`
+- installed dashboard smoke with `--workspace-session
+  last30days-facebook --expect-workspace-provider rdp_gateway`
+- `agent-browser install doctor --json`
+
+Result:
+
+- The X tile resolves to `browser:session:last30days-facebook`.
+- The rendered viewport is the Guacamole iframe for `guacamole:4`; no CDP
+  canvas is present.
+- The retained browser reports `rdp_gateway`,
+  `manual_attached_desktop`, `remote_headed`, and ready operator visibility.
+- The live and installed dashboard hashes match, runtime convergence reports
+  zero stale runtimes, and install doctor reports no issues.
+- This proves provider and route correctness, not X authentication state.
+
 ## Turn 111 | 2026-07-25
 
 Scope: open, implement, validate, and close P77 profile discovery and manual

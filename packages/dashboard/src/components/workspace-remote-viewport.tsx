@@ -44,6 +44,7 @@ import {
   type WorkspaceViewportPreflightState,
   type WorkspaceViewportTarget,
 } from "@/lib/workspace-viewport-controller";
+import { serviceBrowserForWorkspaceSelection } from "@/lib/workspace-browser-selection";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { StreamMessage } from "@/types";
@@ -532,12 +533,6 @@ function readWorkspaceViewportSelection(): WorkspaceViewportSelection | null {
   if (!mode) return null;
   const selection = readDashboardWorkspaceUrlSelection();
   return mode === "tile" || dashboardWorkspaceSelectionHasValue(selection) ? { mode, selection } : null;
-}
-
-function browserIdFromSelection(selection: DashboardWorkspaceUrlSelection): string | null {
-  if (selection.browserId) return selection.browserId;
-  if (selection.workspaceId?.startsWith("browser:")) return selection.workspaceId.slice("browser:".length);
-  return null;
 }
 
 function daemonSessionFromSelection(
@@ -1418,13 +1413,17 @@ export function WorkspaceRemoteViewport({
     return () => window.clearInterval(timer);
   }, [fetchServiceStatus, viewportSelection]);
 
-  const browserId = viewportSelection ? browserIdFromSelection(viewportSelection.selection) : null;
-  const serviceBrowser = browserId ? serviceStatus?.service_state?.browsers?.[browserId] ?? null : null;
+  const serviceBrowser = viewportSelection
+    ? serviceBrowserForWorkspaceSelection(
+        Object.values(serviceStatus?.service_state?.browsers ?? {}),
+        viewportSelection.selection,
+      )
+    : null;
   const selectedContextBrowser = isCdpSnapshotStream(selectedWorkspaceContext?.stream)
     ? workspaceViewportBrowserFromSelectedContext(selectedWorkspaceContext)
     : null;
   const daemonBrowser = daemonBrowserFromSession(daemonSessionFromSelection(sessions, viewportSelection?.selection));
-  const browser = selectedContextBrowser ?? chooseWorkspaceViewportBrowser(serviceBrowser, daemonBrowser);
+  const browser = chooseWorkspaceViewportBrowser(serviceBrowser, selectedContextBrowser ?? daemonBrowser);
   const tabs = useMemo(() => Object.values(serviceStatus?.service_state?.tabs ?? {}), [serviceStatus]);
   const tabSelection = browser?.id && viewportSelection
     ? selectedTabForBrowser(tabs, browser.id, viewportSelection.selection)

@@ -274,8 +274,55 @@ agent-browser --json \
 
 ## Current Operator Guidance
 
-Until this is fixed, do not use a failed live `open` probe as proof that a
-non-default runtime profile is logged out. Check the requested profile identity
-first with `runtime status`, service browser rows, or a direct profile database
-inspection that redacts values. If the live command routes to another profile,
-treat the page result as invalid for the requested identity.
+The original explicit-profile routing failure is covered by Plan 0069. Still
+check the requested profile identity with `runtime status`, service browser
+rows, or a direct profile database inspection that redacts values. If any live
+command reports another profile, treat the page result as invalid for the
+requested identity and reopen this failure class.
+
+## 2026-07-25 Dashboard Tile Regression
+
+The X workspace tile later exposed a separate presentation-routing failure.
+The retained browser was correctly modeled as:
+
+```text
+browserId=session:last30days-facebook
+sessionId=last30days-facebook
+profileId=last30days-facebook
+browserHost=remote_headed
+viewStreamProvider=rdp_gateway
+controlInputProvider=manual_attached_desktop
+routeId=guacamole:4
+```
+
+However, the dashboard URL selected it through the workspace identity
+`daemon-session:last30days-facebook`. `WorkspaceRemoteViewport` only resolved
+a retained service browser from an explicit browser ID, then synthesized a
+daemon/CDP browser for the session selection. The selected CDP snapshot also
+took precedence over any retained service-browser evidence. The result was a
+CDP tile for an RDP-owned browser.
+
+The repair adds a deterministic selection resolver:
+
+1. honor an explicit selected browser ID;
+2. otherwise match the selected daemon session against retained service
+   browser `activeSessionIds`;
+3. prefer that linked retained service browser;
+4. use the selected CDP snapshot only when no linked service browser exists.
+
+The installed runtime smoke now accepts
+`--expect-workspace-provider rdp_gateway` or `cdp_screencast`. The X proof used
+the RDP expectation and reported:
+
+```text
+selectedWorkspaceId=browser:session:last30days-facebook
+frameSrc=http://127.0.0.1:8092/guacamole/#/client/NABjAHBvc3RncmVzcWw=
+hasCdpCanvas=false
+readinessStatus=ready
+provider=rdp_gateway
+route=guacamole:4
+```
+
+This proof establishes correct profile/browser/provider selection and
+operator-visible route readiness. It does not establish the current X login
+state.

@@ -18,6 +18,7 @@ const options = {
   consoleProbe: false,
   session: `local-dashboard-runtime-smoke-${process.pid}`,
   workspaceSession: '',
+  expectWorkspaceProvider: '',
 };
 
 for (let index = 0; index < args.length; index += 1) {
@@ -48,6 +49,8 @@ for (let index = 0; index < args.length; index += 1) {
     options.consoleProbe = true;
   } else if (arg === '--workspace-session') {
     options.workspaceSession = requiredValue(args, ++index, arg);
+  } else if (arg === '--expect-workspace-provider') {
+    options.expectWorkspaceProvider = requiredValue(args, ++index, arg);
   } else if (arg === '--help' || arg === '-h') {
     printHelp();
     process.exit(0);
@@ -221,6 +224,17 @@ JSON.stringify({
     }
     if (options.workspaceSession && (!finalState.viewport || (!finalState.frameSrc && !finalState.hasCdpCanvas))) {
       throw new Error(`Workspace route did not render an embedded viewport: ${JSON.stringify(finalState)}`);
+    }
+    if (options.expectWorkspaceProvider === 'rdp_gateway') {
+      if (!finalState.frameSrc?.includes('/guacamole/') || finalState.hasCdpCanvas) {
+        throw new Error(`Workspace route did not render the expected Guacamole RDP viewport: ${JSON.stringify(finalState)}`);
+      }
+    } else if (options.expectWorkspaceProvider === 'cdp_screencast') {
+      if (!finalState.hasCdpCanvas || finalState.frameSrc) {
+        throw new Error(`Workspace route did not render the expected CDP screencast viewport: ${JSON.stringify(finalState)}`);
+      }
+    } else if (options.expectWorkspaceProvider) {
+      throw new Error(`Unsupported expected workspace provider: ${options.expectWorkspaceProvider}`);
     }
     if (options.workspaceSession) {
       currentPhase = 'open workspace right pane';
@@ -658,6 +672,8 @@ Options:
   --browser-profile <path>    Use an isolated runtime profile for the smoke browser.
   --browser-host <host>       Pass a browser host to agent-browser for the smoke browser.
   --workspace-session <name>  Open a workspace viewport route for a daemon session.
+  --expect-workspace-provider <rdp_gateway|cdp_screencast>
+                              Require the selected workspace to render through that provider.
   --console-probe             On a workspace route, select Console and require a scoped redacted probe row.
   --skip-browser              Only run HTTP and bundle marker checks.
   --skip-chat                 Do not run contextual Chat checks on workspace route smoke.
