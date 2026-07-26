@@ -50,6 +50,9 @@ Result:
 - The live and installed dashboard hashes match, runtime convergence reports
   zero stale runtimes, and install doctor reports no issues.
 - This proves provider and route correctness, not X authentication state.
+- The Graphiti closeout write remains pending because its bounded provider
+  readiness probe timed out; no write was queued while the provider was
+  degraded.
 
 ## Turn 111 | 2026-07-25
 
