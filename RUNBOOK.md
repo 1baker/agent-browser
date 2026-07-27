@@ -4,6 +4,48 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 115 | 2026-07-27
+
+Scope: bind P78 planning to commit, push, validation, and durable-memory
+receipts.
+
+Actions:
+
+- Preserved `6d5cc908` as the coherent P78 roadmap, plan, and diagnostic
+  runbook commit.
+- Pushed the commit to `origin/main` and verified local, tracking, and remote
+  refs agree.
+- Queued one source-backed Graphiti closeout in `agent_browser_main` after the
+  provider readiness probe passed.
+- Did not provision route fixtures, open route displays, invoke convergence
+  apply, retry remote-view acquisition, or launch a browser.
+
+Validation:
+
+- `node scripts/test-local-runtime-convergence.js` passed.
+- `node scripts/test-rdp-guac-postgres-hardening.js` passed.
+- `git diff --check` passed.
+- local `HEAD`, `origin/main`, and the remote main ref agreed at
+  `6d5cc908f1849970085d0ad059fbebfcdf8b9652`.
+
+Result:
+
+- P78 remains `PLANNED` and awaits explicit Plan 0078 Packet A authorization.
+- Both agent-browser and the coordinating last30days Plan 0012 authority are
+  durably pushed and clean.
+
+Graphiti:
+
+- job `6022b120-eb35-4bd9-8a50-0079a40b3782` completed in one attempt;
+- episode `2e3a6d86-3d53-40b0-b4c9-0db6398d9264` is visible in
+  `agent_browser_main` and passed the read-after-write check;
+- the source description binds the episode to Plan 0078 commit `6d5cc908`.
+
+Next recommendation:
+
+- explicitly authorize Plan 0078 Packet A before any source or live route
+  repair.
+
 ## Turn 114 | 2026-07-27
 
 Scope: diagnose the post-reboot Guacamole route-preflight failure and create a
