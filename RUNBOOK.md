@@ -4,6 +4,65 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 114 | 2026-07-27
+
+Scope: diagnose the post-reboot Guacamole route-preflight failure and create a
+bounded implementation plan without mutating the live route substrate.
+
+Actions:
+
+- Reproduced the blocker with the report-only route-pool readiness and
+  route-display inspection commands.
+- Proved the current Guacamole database has zero connection and permission
+  rows, while the retained route service state still refers to historical
+  routes.
+- Bound the data loss to PostgreSQL `initdb` at 2026-07-27 11:46:23 UTC; the
+  reason the bind-mounted data directory was empty remains unresolved.
+- Traced the remote-view acquisition preflight and confirmed it correctly
+  fails before browser creation when no display allocation or available
+  route-pool entry exists.
+- Traced the convergence controller and found that it ensures the schema but
+  has no remedy branch for
+  `provision_second_guacamole_rdp_connection`; its display-recovery predicate
+  recognizes only three later display-session actions.
+- Opened planned P78/Plan 0078 for an idempotent existing-user route-fixture
+  remedy, deterministic coverage, documentation, one separately authorized
+  live recovery attempt, and installed interlock proof.
+- Did not provision routes, open displays, retry remote-view acquisition,
+  launch a browser, inspect authentication, or run a source canary.
+
+Validation:
+
+- `pnpm --silent test:rdp-guac-route-pool-readiness -- --report-only`
+  deterministically reported zero RDP connections and the provisioning next
+  action.
+- `pnpm --silent inspect:rdp-route-displays` reported no candidate route
+  displays.
+- Direct read-only Guacamole database counts reported zero connections and
+  zero connection permissions.
+- Current convergence receipt is unsuccessful, retains the provisioning next
+  action, and contains no selected remedy.
+- CodeGraph source tracing bound the missing action coverage to
+  `routeDisplayRecoveryRequired()` and the apply sequence in
+  `scripts/converge-local-runtime.js`.
+
+Result:
+
+- P78 is `PLANNED` and awaits explicit execution authorization.
+- The failure class is route-fixture recovery, not application-browser or
+  source authentication.
+- The next safe action is Plan 0078 Packet A; no live repair is authorized by
+  this planning turn.
+
+Graphiti:
+
+- Discovery in `agent_browser_main` supplied advisory history for prior
+  post-reboot display reconciliation and earlier two-route live proof.
+- Current repo source, runtime doctors, database counts, and retained
+  convergence evidence remain authoritative.
+- A closeout write should occur only after this planning slice has a durable
+  commit.
+
 ## Turn 113 | 2026-07-25
 
 Scope: reconnect a registered client session to its healthy retained service

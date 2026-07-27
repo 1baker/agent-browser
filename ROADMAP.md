@@ -6,6 +6,40 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P78 | Guacamole Route Fixture Recovery Interlock
+
+State: PLANNED
+Current state: the 2026-07-27 post-reboot route failure is diagnosed and a
+bounded repair plan is ready for review; no repair mutation is authorized.
+
+### Current State
+
+- Guacamole PostgreSQL reinitialized at 2026-07-27 11:46:23 UTC and currently
+  contains zero route connections or connection permissions.
+- The recurring runtime interlock ensures the schema and can restore missing
+  route displays, but it does not select a remedy for the doctor's
+  `provision_second_guacamole_rdp_connection` action.
+- The remote-view acquisition preflight correctly rejects launch while no
+  display allocation or available route-pool entry exists.
+- Plan
+  `docs/dev/plans/0078-2026-07-27-guacamole-route-fixture-recovery-interlock-plan.md`
+  owns the deterministic controller repair, fixture-backed regression,
+  documentation, one separately authorized live recovery attempt, and
+  installed interlock proof.
+
+### Evidence
+
+- `~/.agent-browser/convergence/local-runtime-latest.json`
+- `scripts/converge-local-runtime.js`
+- `scripts/test-local-runtime-convergence.js`
+- `docs/dev/notes/2026-07-22-rdp-boot-readiness-failure.md`
+
+### Next Recommendation
+
+Review and explicitly authorize Plan 0078 Packet A. Do not retry route open,
+launch an application browser, or diagnose source authentication until the
+route substrate is repaired and the remote-view doctor reports ready control.
+
 ## P77 | Profile Discovery And Manual Browser Launch UX
 
 State: CLOSED
