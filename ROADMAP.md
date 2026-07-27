@@ -10,15 +10,16 @@ bounded implementation and validation plans remain under `docs/dev/plans/`.
 
 State: BLOCKED
 Current state: the deterministic controller repair and documentation are
-implemented, but the single authorized live attempt stopped before route
-mutation because the existing-user sync command rejected an unsupported
-`--apply` argument. The command contract is corrected and tested; a replacement
-live attempt is not yet authorized.
+implemented. The authorized replacement live attempt created the two expected
+Guacamole route records and permissions, then failed because XRDP reattached
+both same-user connections to display `:10` instead of allocating route B's
+display `:11`.
 
 ### Current State
 
-- Guacamole PostgreSQL reinitialized at 2026-07-27 11:46:23 UTC and currently
-  contains zero route connections or connection permissions.
+- Guacamole PostgreSQL reinitialized at 2026-07-27 11:46:23 UTC. Deterministic
+  recovery now created two route connections and their required read
+  permissions.
 - The recurring runtime interlock ensures the schema and can restore missing
   route displays. The repaired controller now selects the exact
   `provision_second_guacamole_rdp_connection` remedy, runs the guarded
@@ -26,8 +27,13 @@ live attempt is not yet authorized.
   restoration.
 - The remote-view acquisition preflight correctly rejects launch while no
   display allocation or available route-pool entry exists.
-- The retained live-attempt receipt records the rejected argument and no route
-  mutation. Current readiness still reports zero Guacamole RDP connections.
+- The retained replacement-attempt receipt records successful fixture
+  provisioning and `restore_rdp_route_displays` status 1. Current readiness
+  reports route A ready on `:10` and route B blocked because `:11` has no X11
+  socket.
+- XRDP 0.9.24 runs `Policy=Default`. Its logs show route B reconnecting to
+  route A's `:10` session, so the configured 24 and 32 color-depth distinction
+  does not isolate these same-user routes on the installed runtime.
 - No usable PostgreSQL backup was found. Repeated initialization events remain
   unexplained and require a separate durability packet after route recovery.
 - Plan
@@ -45,10 +51,11 @@ live attempt is not yet authorized.
 
 ### Next Recommendation
 
-Review the corrected apply-by-default invocation and explicitly authorize one
-replacement Plan 0078 Packet C live attempt. Do not retry route open, launch an
-application browser, or diagnose source authentication until the route
-substrate is repaired and the remote-view doctor reports ready control.
+Open a new bounded route-isolation plan that reviews the existing route-specific
+users against a reviewed XRDP session-policy alternative. Do not rerun route
+sync or display restoration, launch an application browser, or diagnose source
+authentication until one isolation mechanism is explicitly authorized and
+validated.
 
 ## P77 | Profile Discovery And Manual Browser Launch UX
 

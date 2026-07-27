@@ -1,7 +1,7 @@
 # Plan 0078: Guacamole Route Fixture Recovery Interlock
 
 Date: 2026-07-27
-Status: Blocked after one authorized live attempt; corrected retry requires new authorization
+Status: Blocked after replacement live attempt; XRDP collapsed both routes onto one display
 Lane: P78
 Source incident: last30days Plan 0012 post-reboot route preflight
 
@@ -154,7 +154,7 @@ gates.
 
 ### Packet C | Authorized live recovery
 
-Status: blocked after the single authorized attempt
+Status: blocked after the authorized replacement attempt
 
 - capture pre-mutation counts and current doctor/convergence receipts;
 - run one convergence apply attempt;
@@ -174,6 +174,14 @@ for `provision_rdp_guac_route_fixtures`; the database still has zero route
 connections. The controller, fixture test, and command example are corrected,
 but the hard bound prohibits a second live attempt without new operator
 authorization.
+
+The operator authorized one replacement attempt on 2026-07-27. Fixture
+provisioning then succeeded and created exactly two authorized Guacamole RDP
+connections with distinct configured target identities. Display restoration
+failed because XRDP attached both same-user connections to display `:10`
+instead of allocating display `:11`. The retained receipt records
+`restore_rdp_route_displays` status 1, and report-only readiness identifies
+`repair_rdp_route_display_session` for route B.
 
 ### Packet D | Installed interlock and closeout
 
@@ -253,10 +261,19 @@ Required live checks, only after explicit Packet C authorization:
 - Container history shows fresh initialization events on July 4, 15, 21, 26,
   and 27. No repo-owned script was found that removes the bind mount, so the
   recurring external cause remains unresolved.
-- Route fixtures remain at zero because the single authorized live attempt
-  failed argument validation before mutation.
-- Resume only after explicit authorization for one replacement Packet C live
-  attempt using the corrected apply-by-default sync invocation.
+- Route fixture recovery now has exactly two Guacamole RDP connections, the
+  required read grants, and two distinct configured target identities.
+- XRDP `Policy=Default` allocates by user and negotiated bit depth. Both
+  existing-user Guacamole connections were treated as the same session:
+  XRDP created display `:10` for route A, then logged route B as a reconnection
+  to display `:10`. Route B therefore has no `:11` X11 socket.
+- The configured Guacamole color depths of 24 and 32 did not create distinct
+  XRDP session-allocation keys on this installed XRDP 0.9.24 runtime.
+- The replacement live attempt is consumed. Do not rerun route sync or display
+  restoration under P78.
+- Resume only through a new bounded plan that chooses and validates an explicit
+  isolation mechanism, such as route-specific users or a reviewed XRDP session
+  policy change, before any further live mutation.
 
 Recommended durability follow-up: open a separate bounded packet for scheduled
 `pg_dump`, retention, and restore validation of the Guacamole database after

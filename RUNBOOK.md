@@ -4,6 +4,52 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 117 | 2026-07-27
+
+Scope: run the authorized replacement P78 Packet C attempt and diagnose the
+first residual failure.
+
+Actions:
+
+- Confirmed the recurring interlock timer remained enabled but inactive and
+  the pre-state still contained zero Guacamole routes.
+- Ran exactly one corrected convergence apply with publication skipped.
+- Provisioned two Guacamole RDP connections, their required read grants, and
+  distinct configured target identities.
+- Stopped after display restoration returned status 1. No second sync or
+  display-open attempt ran.
+- Diagnosed current route readiness, live XRDP processes, Guacamole and XRDP
+  logs, installed XRDP policy, and the retained convergence receipt.
+
+Validation:
+
+- Report-only route readiness finds two connections and complete permissions.
+- Route A has a live `:10` X11 socket.
+- Route B has no `:11` X11 socket.
+- XRDP logs show route A created display `:10`, then route B reconnected the
+  same user to display `:10`.
+- XRDP 0.9.24 is configured with `Policy=Default`, which allocates by user and
+  negotiated bit depth. The configured Guacamole 24 and 32 color-depth values
+  did not produce distinct live allocation keys.
+- The retained convergence receipt records successful fixture provisioning,
+  failed `restore_rdp_route_displays`, and final next action
+  `repair_rdp_route_display_session`.
+
+Result:
+
+- Packet C remains blocked after its authorized replacement attempt. Packet D
+  did not run.
+- The database route-fixture defect is repaired, but the existing-user
+  two-display isolation assumption is disproved on this runtime.
+- The timer remains paused and no application browser or authentication
+  surface was touched.
+
+Next recommendation:
+
+- open a new bounded isolation plan to choose between route-specific users and
+  a reviewed XRDP session-policy change before any further live display
+  mutation.
+
 ## Turn 116 | 2026-07-27
 
 Scope: execute P78 through its single authorized live recovery attempt.

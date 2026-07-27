@@ -77,7 +77,7 @@ The current database is recoverable only through deterministic fixture
 recreation, not historical restore. The recurring external reset cause remains
 unresolved.
 
-## Resume Gate
+## Historical Resume Gate
 
 Explicitly authorize one replacement Packet C live attempt using the corrected
 sync invocation. Keep the timer paused until that controlled attempt completes.
@@ -87,3 +87,35 @@ control readiness, install convergence, and one later recurring timer pass.
 
 Do not launch an application browser or inspect source authentication during
 this gate.
+
+This gate was consumed by the replacement attempt recorded below.
+
+## Replacement Attempt
+
+The operator authorized one replacement Packet C attempt on 2026-07-27. The
+corrected convergence command provisioned exactly two Guacamole RDP
+connections. Both connections have the required read grants, distinct
+configured target identity keys, reachable backends, and connection IDs 1 and
+2.
+
+The attempt then failed at `restore_rdp_route_displays` with status 1. XRDP
+created display `:10` for route A. When route B connected with the same
+`agent-browser-rdp` account, XRDP recorded a reconnection to the existing
+display `:10` instead of allocating display `:11`. Report-only readiness now
+reports route A's X11 socket ready and route B's expected `:11` socket missing,
+with next action `repair_rdp_route_display_session`.
+
+The host runs XRDP 0.9.24 with `Policy=Default`, which allocates sessions by
+user and negotiated bit depth. Although the two Guacamole connection records
+request color depths 24 and 32, the live XRDP allocation treated them as the
+same session key. The nominal color-depth distinction is therefore not a
+working isolation mechanism on this runtime.
+
+No second route sync or display-open attempt was made. The interlock timer
+remains enabled but inactive, no application browser was launched, and the
+retained receipt remains
+`~/.agent-browser/convergence/local-runtime-latest.json`.
+
+The next safe action is a new bounded isolation plan. It must review and choose
+between the already-present route-specific users and an explicit XRDP session
+policy before authorizing any further live display mutation.
