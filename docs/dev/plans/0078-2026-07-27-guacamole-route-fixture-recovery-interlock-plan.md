@@ -1,7 +1,7 @@
 # Plan 0078: Guacamole Route Fixture Recovery Interlock
 
 Date: 2026-07-27
-Status: Planned; awaiting explicit execution authorization
+Status: Blocked after one authorized live attempt; corrected retry requires new authorization
 Lane: P78
 Source incident: last30days Plan 0012 post-reboot route preflight
 
@@ -86,11 +86,12 @@ Add a narrow predicate for the doctor action
 runs:
 
 ```text
-pnpm sync:rdp-guac-existing-user-route-pool -- --apply
+pnpm sync:rdp-guac-existing-user-route-pool
 ```
 
 The existing script remains the only owner of route-row SQL and existing XRDP
-credential lookup. The convergence controller must not print, copy, or retain
+credential lookup. That command applies by default and accepts `--dry-run` as
+its only mode flag. The convergence controller must not print, copy, or retain
 the password.
 
 After the sync, the controller must rerun both doctors. It may proceed to
@@ -128,7 +129,7 @@ backup-system redesign.
 
 ### Packet A | Deterministic controller regression
 
-Status: awaiting authorization
+Status: completed
 
 - add a failing regression proving that the provisioning next action selects
   the existing guarded sync command;
@@ -141,7 +142,7 @@ owned source/test surfaces.
 
 ### Packet B | Contract and operator documentation
 
-Status: blocked on Packet A
+Status: completed
 
 - update the local-runtime convergence contract and post-reboot recovery note;
 - distinguish deterministic fixture recreation from database backup/restore;
@@ -153,7 +154,7 @@ gates.
 
 ### Packet C | Authorized live recovery
 
-Status: blocked on explicit operator authorization and Packets A-B
+Status: blocked after the single authorized attempt
 
 - capture pre-mutation counts and current doctor/convergence receipts;
 - run one convergence apply attempt;
@@ -166,9 +167,17 @@ Status: blocked on explicit operator authorization and Packets A-B
 Terminal condition: the full route substrate is ready, or the first typed
 failure is retained and live mutation stops.
 
+The 2026-07-27 authorized attempt stopped before route mutation because the
+plan supplied `--apply` to an existing-user sync command that applies by
+default and accepts only `--dry-run`. The retained receipt records status 2
+for `provision_rdp_guac_route_fixtures`; the database still has zero route
+connections. The controller, fixture test, and command example are corrected,
+but the hard bound prohibits a second live attempt without new operator
+authorization.
+
 ### Packet D | Installed interlock and closeout
 
-Status: blocked on Packet C
+Status: blocked on a successful Packet C retry
 
 - verify the installed timer uses the repaired source/runtime;
 - run one report-only readiness check after the recurring interlock interval;
@@ -234,6 +243,24 @@ Required live checks, only after explicit Packet C authorization:
   touched;
 - the PostgreSQL reset cause and backup availability are reported truthfully
   as proved, disproved, or unresolved.
+
+## Current Blocker And Resume Gate
+
+- No usable PostgreSQL dump, archive, snapshot unit, or documented restore
+  workflow was found for the Guacamole bind mount.
+- The packaged initialization SQL can recreate schema only; it cannot restore
+  route rows or permissions.
+- Container history shows fresh initialization events on July 4, 15, 21, 26,
+  and 27. No repo-owned script was found that removes the bind mount, so the
+  recurring external cause remains unresolved.
+- Route fixtures remain at zero because the single authorized live attempt
+  failed argument validation before mutation.
+- Resume only after explicit authorization for one replacement Packet C live
+  attempt using the corrected apply-by-default sync invocation.
+
+Recommended durability follow-up: open a separate bounded packet for scheduled
+`pg_dump`, retention, and restore validation of the Guacamole database after
+route recovery. That work is intentionally outside P78.
 
 ## Definition Of Done
 

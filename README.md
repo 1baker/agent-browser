@@ -1259,12 +1259,18 @@ restart-on-failure behavior, and starts at user login. Set
 port. The installer also enables `agent-browser-runtime-interlock.timer`. At
 boot and five minutes after each completed pass, the interlock runs bounded local convergence without
 replacing installed artifacts: it hands doctor-confirmed stale daemon sessions
-to the current executable without closing their browsers, reconciles retained service state, restores missing
-Guacamole/XRDP route displays, reapplies route-display access when required,
-and writes the latest receipt to
+to the current executable without closing their browsers, reconciles retained
+service state, recreates the supported existing-user Guacamole route fixtures
+when doctor reports that they are missing, restores missing Guacamole/XRDP
+route displays, reapplies route-display access when required, and writes the
+latest receipt to
 `~/.agent-browser/convergence/local-runtime-latest.json`. Set
 `AGENT_BROWSER_RUNTIME_INTERLOCK_INTERVAL` before installation to another
 systemd duration such as `5min` when a different cadence is needed.
+Fixture recovery uses the existing user-scoped XRDP secret and fails closed
+before display restoration when the schema is partial, the secret is missing,
+or the resulting route topology is not the supported two-route shape. This
+deterministic fixture recreation is not a PostgreSQL backup or restore.
 
 When changing dashboard source, remember that `pnpm build:dashboard` only
 refreshes `packages/dashboard/out`. The running user service serves the

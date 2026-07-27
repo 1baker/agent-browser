@@ -117,6 +117,17 @@ try {
     if (repairConfirmedStaleDaemons(afterRoutePool.install, 'after_route_pool')) {
       afterRoutePool = readDoctors('after_route_pool_stale_repair', { required: false });
     }
+    if (routeFixtureRecoveryRequired(afterRoutePool.remoteView.nextAction)) {
+      runStep('provision_rdp_guac_route_fixtures', pnpmCommand, [
+        'sync:rdp-guac-existing-user-route-pool',
+      ]);
+      afterRoutePool = readDoctors('after_route_fixture_provision', { required: false });
+      if (repairConfirmedStaleDaemons(afterRoutePool.install, 'after_route_fixture_provision')) {
+        afterRoutePool = readDoctors('after_route_fixture_provision_stale_repair', {
+          required: false,
+        });
+      }
+    }
     if (routeDisplayRecoveryRequired(afterRoutePool.remoteView.nextAction)) {
       runOptionalStep('restore_rdp_route_displays', pnpmCommand, [
         'open:rdp-route-displays',
@@ -396,6 +407,10 @@ function routeDisplayRecoveryRequired(nextAction) {
   ]).has(nextAction);
 }
 
+function routeFixtureRecoveryRequired(nextAction) {
+  return nextAction === 'provision_second_guacamole_rdp_connection';
+}
+
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -536,9 +551,10 @@ Dry-run by default. Reports install doctor, remote-view doctor, runtime
 inventory, and safe stale-daemon remedies. With --apply, synchronizes the local
 dashboard runtime, closes only agent-browser stale daemon sessions reported by
 doctor remedies through browser-preserving daemon handoff, ensures Guacamole
-Postgres schema state, restores missing RDP route displays, applies display
-grants only when doctor asks for them, writes an evidence JSON file, and reruns
-doctors.
+Postgres schema state, provisions the supported existing-user Guacamole route
+fixtures only when doctor asks for them, restores missing RDP route displays,
+applies display grants only when doctor asks for them, writes an evidence JSON
+file, and reruns doctors.
 
 Options:
   --apply                 Apply safe local repairs. Default is dry-run.

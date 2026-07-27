@@ -4,6 +4,64 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 116 | 2026-07-27
+
+Scope: execute P78 through its single authorized live recovery attempt.
+
+Actions:
+
+- Added a behavior-level fixture harness for empty route fixtures, dry-run
+  immutability, unrelated doctor actions, and doctor refresh ordering.
+- Added the exact typed fixture-provisioning remedy to local-runtime
+  convergence and updated README, CLI help, agent skill, docs site, and
+  post-reboot operator guidance.
+- Paused the enabled interlock timer to prevent a race with the controlled live
+  attempt.
+- Captured the empty pre-state and ran one authorized convergence apply with
+  installed doctors and binaries.
+- Stopped at the first typed failure. The existing-user sync rejected the
+  plan's unsupported `--apply` argument before changing Guacamole rows.
+- Corrected the controller, regression fixture, and plan example through the
+  packet's one review/rework cycle. Did not run a second live sync.
+- Audited backup truth. No usable PostgreSQL dump, archive, snapshot timer, or
+  documented restore workflow was found for the bind mount.
+
+Validation:
+
+- `pnpm test:local-runtime-convergence` failed before the controller remedy,
+  passed after it, failed again when the fixture enforced the real
+  apply-by-default sync contract, and passed after the rework.
+- `node --check scripts/converge-local-runtime.js` passed.
+- `node --check scripts/test-local-runtime-convergence-fixture.js` passed.
+- `pnpm test:rdp-guac-postgres-hardening` passed.
+- `cargo fmt --manifest-path cli/Cargo.toml -- --check` passed.
+- `cargo clippy --manifest-path cli/Cargo.toml -- -D warnings` passed.
+- `cargo test --manifest-path cli/Cargo.toml output -- --test-threads=1`
+  passed 34 focused tests.
+- `pnpm --dir docs build` passed.
+- The repo and installed agent-browser skill copies match.
+- `git diff --check` passed after closeout documentation.
+- The retained convergence receipt records
+  `provision_rdp_guac_route_fixtures` status 2 and contains no later display or
+  access steps.
+- Post-attempt report-only readiness still reports zero RDP connections.
+
+Result:
+
+- Packets A and B are complete.
+- Packet C is blocked after its single authorized attempt; Packet D remains
+  blocked.
+- The corrected live command has not run. A replacement Packet C attempt
+  requires new explicit authorization.
+- No application browser, authentication surface, source canary, or
+  last30days acquisition was touched.
+
+Next recommendation:
+
+- explicitly authorize one replacement Plan 0078 Packet C live attempt, then
+  complete installed timer proof and open a separate database durability
+  packet.
+
 ## Turn 115 | 2026-07-27
 
 Scope: bind P78 planning to commit, push, validation, and durable-memory

@@ -8,19 +8,28 @@ bounded implementation and validation plans remain under `docs/dev/plans/`.
 
 ## P78 | Guacamole Route Fixture Recovery Interlock
 
-State: PLANNED
-Current state: the 2026-07-27 post-reboot route failure is diagnosed and a
-bounded repair plan is ready for review; no repair mutation is authorized.
+State: BLOCKED
+Current state: the deterministic controller repair and documentation are
+implemented, but the single authorized live attempt stopped before route
+mutation because the existing-user sync command rejected an unsupported
+`--apply` argument. The command contract is corrected and tested; a replacement
+live attempt is not yet authorized.
 
 ### Current State
 
 - Guacamole PostgreSQL reinitialized at 2026-07-27 11:46:23 UTC and currently
   contains zero route connections or connection permissions.
 - The recurring runtime interlock ensures the schema and can restore missing
-  route displays, but it does not select a remedy for the doctor's
-  `provision_second_guacamole_rdp_connection` action.
+  route displays. The repaired controller now selects the exact
+  `provision_second_guacamole_rdp_connection` remedy, runs the guarded
+  apply-by-default existing-user sync, and refreshes doctors before display
+  restoration.
 - The remote-view acquisition preflight correctly rejects launch while no
   display allocation or available route-pool entry exists.
+- The retained live-attempt receipt records the rejected argument and no route
+  mutation. Current readiness still reports zero Guacamole RDP connections.
+- No usable PostgreSQL backup was found. Repeated initialization events remain
+  unexplained and require a separate durability packet after route recovery.
 - Plan
   `docs/dev/plans/0078-2026-07-27-guacamole-route-fixture-recovery-interlock-plan.md`
   owns the deterministic controller repair, fixture-backed regression,
@@ -36,9 +45,10 @@ bounded repair plan is ready for review; no repair mutation is authorized.
 
 ### Next Recommendation
 
-Review and explicitly authorize Plan 0078 Packet A. Do not retry route open,
-launch an application browser, or diagnose source authentication until the
-route substrate is repaired and the remote-view doctor reports ready control.
+Review the corrected apply-by-default invocation and explicitly authorize one
+replacement Plan 0078 Packet C live attempt. Do not retry route open, launch an
+application browser, or diagnose source authentication until the route
+substrate is repaired and the remote-view doctor reports ready control.
 
 ## P77 | Profile Discovery And Manual Browser Launch UX
 

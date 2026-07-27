@@ -318,17 +318,31 @@ pass:
    endpoint equality are required before the remedy passes.
 3. Confirms aged token-only runtime metadata across two observations, then
    removes it through the scoped close command.
-4. Ensures the Guacamole PostgreSQL dependency and route-pool fixtures.
-5. Opens both configured Guacamole route desktops when doctor reports missing
-   route display sessions.
-6. Re-runs both doctors and grants display access when requested.
-7. Writes the final result to
+4. Ensures the Guacamole PostgreSQL dependency and inspects route-pool
+   readiness.
+5. When doctor requests
+   `provision_second_guacamole_rdp_connection`, runs exactly one guarded
+   existing-user route-fixture sync and re-runs both doctors.
+6. Opens both configured Guacamole route desktops only after refreshed doctor
+   evidence reports missing route display sessions.
+7. Re-runs both doctors and grants display access when requested.
+8. Writes the final result to
    `~/.agent-browser/convergence/local-runtime-latest.json`.
 
 Intermediate doctor failures are repair inputs. Only the final doctor results
 decide whether the oneshot succeeds. Explicit binary and pnpm paths keep the
 interlock independent of an interactive shell environment, and a lock file
 prevents overlapping convergence passes.
+
+The fixture remedy recreates deterministic route records and permissions from
+the existing user-scoped XRDP secret. It is not database restoration. A
+partial schema, missing secret, failed sync, or unsupported resulting topology
+stops the pass before display restoration. The P78 audit found no usable
+PostgreSQL dump, archive, snapshot unit, or documented restore workflow for the
+bind mount. Container history shows fresh initialization events on July 4, 15,
+21, 26, and 27, but no repo-owned script removes the bind mount. Backup
+availability is therefore disproved for the inspected local surfaces, while
+the recurring external reset cause remains unresolved.
 
 A live boot-equivalent recovery started with both abstract X11 sockets absent.
 The installed interlock established displays `:10` and `:11`, restored both
