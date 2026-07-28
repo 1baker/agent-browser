@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { selectRouteDisplayName } from './lib/rdp-route-display-selection.js';
 
 const reportOnly = process.argv.includes('--report-only');
 const allowSharedTarget = process.argv.includes('--allow-shared-target');
@@ -585,9 +586,10 @@ const inferredRouteDisplays = inspectRouteDisplays();
 
 function routeTargetDisplayName(index) {
   const label = index === 0 ? 'A' : 'B';
-  return process.env[`AGENT_BROWSER_RDP_ROUTE_${label}_DISPLAY_NAME`] ||
-    inferredRouteDisplays[`AGENT_BROWSER_RDP_ROUTE_${label}_DISPLAY_NAME`] ||
-    null;
+  return selectRouteDisplayName({
+    configuredDisplayName: process.env[`AGENT_BROWSER_RDP_ROUTE_${label}_DISPLAY_NAME`],
+    inferredDisplayName: inferredRouteDisplays[`AGENT_BROWSER_RDP_ROUTE_${label}_DISPLAY_NAME`],
+  });
 }
 
 function routeTargetUser(connection, index) {

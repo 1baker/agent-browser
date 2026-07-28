@@ -6,6 +6,34 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P79 | Route-Specific Guacamole RDP Isolation Repair
+
+State: ACTIVE
+Current state: live evidence proves that XRDP 0.9.24 collapsed both managed
+same-user Guacamole routes onto display `:10`. The existing route-specific
+Linux users and guarded secrets are ready, so P79 owns an in-place migration
+of the two managed rows, convergence repair, live display authority, one
+controlled live attempt, and one recurring interlock proof.
+
+### Current State
+
+- Guacamole has two managed RDP connections and the required read permissions.
+- XRDP authenticated both connections but reconnected route B to route A's
+  display `:10`; route B has no distinct display socket.
+- The current 24/32 color-depth split is not an isolation mechanism on the
+  installed runtime.
+- Applying the older route-specific setup directly would create canonical rows
+  while leaving legacy rows, so a guarded in-place migration is required.
+- Plan
+  `docs/dev/plans/0079-2026-07-28-route-specific-guacamole-rdp-isolation-repair-plan.md`
+  owns the bounded diagnosis, implementation, live repair, and closeout.
+
+### Next Recommendation
+
+Execute P79 through its failing behavior tests and deterministic gates. Then
+make one authorized route-specific convergence attempt, stopping before any
+application browser or authentication work.
+
 ## P78 | Guacamole Route Fixture Recovery Interlock
 
 State: BLOCKED

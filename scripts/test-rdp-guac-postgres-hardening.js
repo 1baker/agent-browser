@@ -47,7 +47,7 @@ assert.match(
 
 for (const file of [
   'scripts/setup-rdp-guac-route-pool.sh',
-  'scripts/sync-rdp-guac-existing-user-route-pool.sh',
+  'scripts/sync-rdp-guac-route-specific-user-pool.sh',
   'scripts/setup-rdp-autologin-user.sh',
 ]) {
   const source = readFileSync(file, 'utf8');

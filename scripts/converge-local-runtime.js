@@ -117,9 +117,9 @@ try {
     if (repairConfirmedStaleDaemons(afterRoutePool.install, 'after_route_pool')) {
       afterRoutePool = readDoctors('after_route_pool_stale_repair', { required: false });
     }
-    if (routeFixtureRecoveryRequired(afterRoutePool.remoteView.nextAction)) {
+    if (routeSpecificMigrationRequired(afterRoutePool.remoteView.nextAction)) {
       runStep('provision_rdp_guac_route_fixtures', pnpmCommand, [
-        'sync:rdp-guac-existing-user-route-pool',
+        'sync:rdp-guac-route-specific-user-pool',
       ]);
       afterRoutePool = readDoctors('after_route_fixture_provision', { required: false });
       if (repairConfirmedStaleDaemons(afterRoutePool.install, 'after_route_fixture_provision')) {
@@ -407,8 +407,11 @@ function routeDisplayRecoveryRequired(nextAction) {
   ]).has(nextAction);
 }
 
-function routeFixtureRecoveryRequired(nextAction) {
-  return nextAction === 'provision_second_guacamole_rdp_connection';
+function routeSpecificMigrationRequired(nextAction) {
+  return new Set([
+    'provision_second_guacamole_rdp_connection',
+    'repair_rdp_route_display_session',
+  ]).has(nextAction);
 }
 
 function sleep(ms) {
@@ -551,8 +554,9 @@ Dry-run by default. Reports install doctor, remote-view doctor, runtime
 inventory, and safe stale-daemon remedies. With --apply, synchronizes the local
 dashboard runtime, closes only agent-browser stale daemon sessions reported by
 doctor remedies through browser-preserving daemon handoff, ensures Guacamole
-Postgres schema state, provisions the supported existing-user Guacamole route
-fixtures only when doctor asks for them, restores missing RDP route displays,
+Postgres schema state, provisions the supported Guacamole route fixtures with
+distinct route-specific users only when doctor asks for them, restores missing
+RDP route displays,
 applies display grants only when doctor asks for them, writes an evidence JSON
 file, and reruns doctors.
 

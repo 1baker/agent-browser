@@ -1260,17 +1260,18 @@ port. The installer also enables `agent-browser-runtime-interlock.timer`. At
 boot and five minutes after each completed pass, the interlock runs bounded local convergence without
 replacing installed artifacts: it hands doctor-confirmed stale daemon sessions
 to the current executable without closing their browsers, reconciles retained
-service state, recreates the supported existing-user Guacamole route fixtures
-when doctor reports that they are missing, restores missing Guacamole/XRDP
-route displays, reapplies route-display access when required, and writes the
-latest receipt to
+service state, recreates or migrates the supported Guacamole route fixtures
+with distinct route-specific users when doctor reports missing fixtures or a
+collapsed same-user display, restores missing Guacamole/XRDP route displays,
+reapplies route-display access when required, and writes the latest receipt to
 `~/.agent-browser/convergence/local-runtime-latest.json`. Set
 `AGENT_BROWSER_RUNTIME_INTERLOCK_INTERVAL` before installation to another
 systemd duration such as `5min` when a different cadence is needed.
-Fixture recovery uses the existing user-scoped XRDP secret and fails closed
-before display restoration when the schema is partial, the secret is missing,
-or the resulting route topology is not the supported two-route shape. This
-deterministic fixture recreation is not a PostgreSQL backup or restore.
+Fixture recovery uses the route-specific user-scoped XRDP secrets, migrates
+supported legacy rows in place, and fails closed before display restoration
+when the schema is partial, a secret or Linux user is missing, managed rows are
+ambiguous, or the resulting route topology is not the supported two-route
+shape. This deterministic fixture repair is not a PostgreSQL backup or restore.
 
 When changing dashboard source, remember that `pnpm build:dashboard` only
 refreshes `packages/dashboard/out`. The running user service serves the
@@ -2076,9 +2077,12 @@ If the Guacamole Postgres container exists but the initialized volume is empty,
 run `pnpm ensure:rdp-guac-postgres -- --apply` to import the Guacamole schema
 from the user-scoped init SQL and force a checkpoint before route-pool records
 are written. `pnpm setup:rdp-guac-route-pool`,
-`pnpm sync:rdp-guac-existing-user-route-pool`, and the legacy autologin setup
+`pnpm sync:rdp-guac-route-specific-user-pool`, and the legacy autologin setup
 run the same guard before mutating Guacamole records, write route records with
-`ON_ERROR_STOP`, and force a checkpoint after those route writes. The guard
+`ON_ERROR_STOP`, and force a checkpoint after those route writes. The old
+`sync:rdp-guac-existing-user-route-pool` spelling is a compatibility alias to
+the route-specific migration because the installed XRDP runtime disproved
+same-user color-depth isolation. The guard
 refuses to auto-import over a partial `guacamole_*` schema so a hard-stop or
 WSL crash does not hide possible database corruption.
 After opening both route sessions, run
@@ -2091,12 +2095,13 @@ XRDP-owned displays, run `pnpm grant:rdp-route-display-access -- --dry-run` to
 review the narrow local X grants, then run
 `pnpm grant:rdp-route-display-access -- --apply`. It uses the installed helper
 when available and falls back to interactive sudo otherwise.
-If the reusable `agent-browser-rdp` user already exists, use
-`pnpm sync:rdp-guac-existing-user-route-pool` instead of the sudo setup. It
-updates only Guacamole connection records, reads the existing XRDP credentials
-from the user-scoped secret file, and creates route A/B records with distinct
-RDP color depths so the current XRDP `Policy=Default` can allocate distinct
-sessions for the same user.
+When route-specific Linux users and secrets already exist, use
+`pnpm sync:rdp-guac-route-specific-user-pool` instead of the sudo setup. It
+migrates the exact supported legacy rows in place, configures distinct route
+usernames, removes stale color-depth isolation metadata, grants read access,
+and leaves unrelated Guacamole rows unchanged. It fails closed on mixed,
+duplicate, or ambiguous managed rows. Route readiness prefers live display
+allocation inferred from Xorg over persisted display hints.
 Use `pnpm test:rdp-guac-many-to-many-live` for the Slice H many-to-many gate.
 It prefers the installed `agent-browser` command and, when route variables are
 not already set, hydrates `AGENT_BROWSER_RDP_ROUTE_POOL_JSON` and route-display

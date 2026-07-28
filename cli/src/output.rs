@@ -5292,8 +5292,10 @@ Timeout handling:
 Runtime-health interlock:
   On Linux, bash scripts/install-dashboard-user-service.sh installs the
   dashboard plus a recurring user-scoped interlock. It closes only
-  doctor-proven stale daemon sessions, recreates supported missing Guacamole
-  route fixtures, and restores missing RDP route displays.
+  doctor-proven stale daemon sessions, recreates or migrates supported
+  Guacamole route fixtures to distinct route-specific users, and restores
+  missing RDP route displays. Live inferred display allocation takes
+  precedence over persisted display hints.
 
 Examples:
   agent-browser doctor windows-browser

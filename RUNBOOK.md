@@ -4,6 +4,46 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 118 | 2026-07-28
+
+Scope: diagnose the failed post-reboot agent-browser route substrate and open
+the authorized bounded repair.
+
+Actions:
+
+- Reproduced route readiness and confirmed that the two Guacamole RDP records
+  and read permissions exist, while route B's expected display socket does
+  not.
+- Correlated Guacamole, guacd, and XRDP evidence. Both routes authenticated,
+  but XRDP reconnected route B to the same user's display `:10`.
+- Confirmed XRDP 0.9.24 with sesman `Policy=Default`; the configured 24/32
+  color-depth distinction did not yield separate allocation keys.
+- Confirmed the existing route-specific users and secret keys are ready and
+  the route-specific setup isolation gate passes read-only.
+- Identified two additional repair requirements: migrate the existing legacy
+  rows in place to avoid four managed routes, and prefer live inferred display
+  allocation over stale configured display hints.
+- Opened P79 with one implementation/review cycle, one authorized live attempt,
+  explicit rollback/stops, and no application-browser or authentication scope.
+- Recorded subagent receipt `not_spawned`: this repair crosses one shared live
+  Guacamole/XRDP route substrate and needs one critical-path owner.
+
+Validation:
+
+- `pnpm --silent test:rdp-guac-route-pool-readiness -- --report-only`
+- `node scripts/inspect-rdp-route-displays.js --windows`
+- `pnpm --silent setup:rdp-guac-route-pool -- --dry-run`
+- Guacamole PostgreSQL route and permission readbacks
+- XRDP service configuration and journal readbacks
+
+Result:
+
+- Root cause is the same-user XRDP session collapse, not repository drift,
+  Guacamole authentication, application-browser behavior, or source-account
+  authentication.
+- P79 is active. Live state remains unchanged while failing behavior tests and
+  the guarded migration are implemented.
+
 ## Turn 117 | 2026-07-27
 
 Scope: run the authorized replacement P78 Packet C attempt and diagnose the

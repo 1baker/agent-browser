@@ -39,8 +39,9 @@ if (args.join(' ') === 'install doctor --json') {
 if (args.join(' ') === 'doctor remote-view --json') {
   let nextAction = 'provision_second_guacamole_rdp_connection';
   if (state.scenario === 'unrelated') nextAction = 'inspect_unrelated_runtime_state';
+  if (state.phase === 'collapsed') nextAction = 'repair_rdp_route_display_session';
   if (state.phase === 'provisioned') {
-    nextAction = 'open_two_rdp_route_sessions_for_existing_agent_browser_rdp_user_then_rerun_doctor';
+    nextAction = 'open_route_specific_rdp_sessions_then_rerun_doctor';
   } else if (state.phase === 'displays_open') {
     nextAction = 'grant_route_display_access';
   } else if (state.phase === 'ready') {
@@ -79,9 +80,9 @@ const action = args[0];
 if (action === 'ensure:rdp-guac-postgres' || action === 'test:rdp-guac-route-pool-readiness') {
   process.exit(0);
 }
-if (action === 'sync:rdp-guac-existing-user-route-pool') {
+if (action === 'sync:rdp-guac-route-specific-user-pool') {
   if (args.length !== 1) {
-    console.error('existing-user route sync is apply-by-default and accepts no apply flag');
+    console.error('route-specific user sync is apply-by-default and accepts no apply flag');
     process.exit(3);
   }
   state.phase = 'provisioned';
@@ -126,9 +127,9 @@ try {
   const syncIndexes = commandIndexes(
     recovered.commands,
     'pnpm',
-    'sync:rdp-guac-existing-user-route-pool',
+    'sync:rdp-guac-route-specific-user-pool',
   );
-  assert.deepEqual(syncIndexes.length, 1, 'fixture recovery must run exactly one guarded route sync');
+  assert.deepEqual(syncIndexes.length, 1, 'fixture recovery must run exactly one guarded route-specific sync');
   const syncIndex = syncIndexes[0];
   const reconcileIndex = commandIndexes(recovered.commands, 'agent-browser', '--json')[0];
   const doctorAfterSyncIndex = recovered.commands.findIndex(
@@ -146,6 +147,36 @@ try {
     syncIndex < doctorAfterSyncIndex && doctorAfterSyncIndex < displayRestoreIndex,
     'doctors must be rerun after fixture sync and before display restoration',
   );
+  assert.equal(
+    commandIndexes(recovered.commands, 'pnpm', 'sync:rdp-guac-existing-user-route-pool').length,
+    0,
+    'fixture recovery must not recreate the disproved same-user topology',
+  );
+
+  const collapsed = runScenario('collapsed-same-user-route', ['--apply', '--skip-publish', '--json'], {
+    phase: 'collapsed',
+  });
+  assert.equal(
+    collapsed.result.status,
+    0,
+    `same-user collapse must converge through route-specific migration: ${collapsed.result.stdout}${collapsed.result.stderr}`,
+  );
+  const collapsedSync = commandIndexes(
+    collapsed.commands,
+    'pnpm',
+    'sync:rdp-guac-route-specific-user-pool',
+  );
+  const collapsedRestore = commandIndexes(
+    collapsed.commands,
+    'pnpm',
+    'open:rdp-route-displays',
+  );
+  assert.equal(collapsedSync.length, 1, 'same-user collapse must run exactly one route-specific migration');
+  assert.equal(collapsedRestore.length, 1, 'same-user collapse must restore displays exactly once');
+  assert.ok(
+    collapsedSync[0] < collapsedRestore[0],
+    'same-user route migration must precede display restoration',
+  );
 
   const dryRun = runScenario('empty-route-fixtures-dry-run', ['--json']);
   assert.equal(dryRun.result.status, 1, 'dry-run must report the blocked empty-fixture state');
@@ -159,6 +190,11 @@ try {
     commandIndexes(unrelated.commands, 'pnpm', 'sync:rdp-guac-existing-user-route-pool').length,
     0,
     'an unrelated doctor action must not provision route fixtures',
+  );
+  assert.equal(
+    commandIndexes(unrelated.commands, 'pnpm', 'sync:rdp-guac-route-specific-user-pool').length,
+    0,
+    'an unrelated doctor action must not migrate route fixtures',
   );
 
   console.log('Local runtime convergence fixture behavior passed');
@@ -212,6 +248,7 @@ function assertNoMutations(commands, label) {
   const mutations = new Set([
     'ensure:rdp-guac-postgres',
     'sync:rdp-guac-existing-user-route-pool',
+    'sync:rdp-guac-route-specific-user-pool',
     'open:rdp-route-displays',
     'grant:rdp-route-display-access',
   ]);
