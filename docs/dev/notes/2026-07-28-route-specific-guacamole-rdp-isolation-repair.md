@@ -2,7 +2,7 @@
 
 Date: 2026-07-28
 Plan: P79
-Status: deterministic repair validated; live gate pending
+Status: complete
 
 ## Incident
 
@@ -60,9 +60,41 @@ diff -q skills/agent-browser/SKILL.md /home/ecochran76/.codex/shared/skills/agen
 `shellcheck` was not installed, so the behavior fixture and Bash strict mode
 remain the shell validation authorities.
 
-## Live Gate
+## Live Result
 
-The live gate is authorized but has not started at this checkpoint. It permits
-one migration/convergence attempt after capturing pre-state and closing only
-the two failed Guacamole viewer sessions. It stops before any application
-browser or source-authentication work.
+- Pre-state and post-state receipts are retained under
+  `~/.agent-browser/convergence/p79-2026-07-28/`.
+- The two failed viewer sessions were closed before migration.
+- The guarded transaction preserved connection ids `1` and `2`, renamed the
+  rows to `Agent Browser RDP Route A/B`, configured
+  `agent-browser-rdp-a/b`, deleted `color-depth`, and retained two read grants
+  on each route.
+- Display restoration opened route A on `:11` and route B on `:12`; both have
+  live abstract X11 sockets and display access.
+- The first aggregate result was unsuccessful even though migration and display
+  restoration succeeded. The installed doctor ran the readiness helper with
+  `scripts/` as cwd, and the helper used a cwd-relative inspector path. That
+  disabled live inference only through the doctor and exposed stale configured
+  display `:10`.
+- A failing cwd-independence regression was added. The helper now resolves the
+  inspector from `import.meta.url`; no second migration or display restoration
+  was run.
+- The installed doctor then reported route `:11`, remote control ready, and
+  many-to-many prerequisites ready. A read-only convergence pass succeeded.
+- The recurring interlock service completed at 2026-07-28 10:00:11 CDT with
+  result `success`, exit status 0, and no route fixture, display restoration,
+  or access-grant steps. The timer is enabled, active, and waiting.
+- `agent-browser install doctor` reports zero issues and seven converged
+  runtimes.
+- The installed binary was not replaced. The interlock uses the repaired repo
+  scripts from its configured working directory.
+- No application browser or source-authentication surface was opened.
+
+Source commits `2dcac761` and `641f45ae` are pushed to `origin/main`.
+
+## Residual Durability Risk
+
+No usable Guacamole PostgreSQL backup was found during P78. The cause of the
+repeated database reinitialization events is still unexplained. Backup,
+retention, restore validation, and reset attribution remain a separate bounded
+durability packet.

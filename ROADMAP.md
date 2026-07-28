@@ -8,31 +8,34 @@ bounded implementation and validation plans remain under `docs/dev/plans/`.
 
 ## P79 | Route-Specific Guacamole RDP Isolation Repair
 
-State: ACTIVE
-Current state: live evidence proves that XRDP 0.9.24 collapsed both managed
-same-user Guacamole routes onto display `:10`. The existing route-specific
-Linux users and guarded secrets are ready, so P79 owns an in-place migration
-of the two managed rows, convergence repair, live display authority, one
-controlled live attempt, and one recurring interlock proof.
+State: CLOSED
+Current state: the two managed Guacamole rows were migrated in place to
+distinct route-specific users, live displays `:11` and `:12` are ready, the
+single-route and many-to-many readiness surfaces are ready, and the recurring
+interlock completes successfully without duplicate or repeated route repair.
 
 ### Current State
 
-- Guacamole has two managed RDP connections and the required read permissions.
-- XRDP authenticated both connections but reconnected route B to route A's
-  display `:10`; route B has no distinct display socket.
-- The current 24/32 color-depth split is not an isolation mechanism on the
-  installed runtime.
-- Applying the older route-specific setup directly would create canonical rows
-  while leaving legacy rows, so a guarded in-place migration is required.
+- Guacamole has exactly two canonical managed RDP connections, preserving ids
+  `1` and `2`, using `agent-browser-rdp-a` and `agent-browser-rdp-b`.
+- The managed rows have no `color-depth` parameter and each retains two read
+  grants.
+- Route displays `:11` and `:12` have live X11 sockets and display access.
+- Route readiness, remote control, many-to-many prerequisites, install doctor,
+  and one read-only convergence pass report ready.
+- The user-scoped interlock service completed with result `success` and no
+  route mutation steps; the enabled timer is active and waiting.
+- Source commits `2dcac761` and `641f45ae` are pushed to `origin/main`.
 - Plan
   `docs/dev/plans/0079-2026-07-28-route-specific-guacamole-rdp-isolation-repair-plan.md`
   owns the bounded diagnosis, implementation, live repair, and closeout.
 
 ### Next Recommendation
 
-Execute P79 through its failing behavior tests and deterministic gates. Then
-make one authorized route-specific convergence attempt, stopping before any
-application browser or authentication work.
+Keep application-browser and source-authentication work behind its own
+authorization. Open a separate durability packet for Guacamole PostgreSQL
+backup, retention, restore validation, and the unexplained reinitialization
+events.
 
 ## P78 | Guacamole Route Fixture Recovery Interlock
 

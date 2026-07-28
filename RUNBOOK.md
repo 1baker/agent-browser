@@ -4,6 +4,62 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 119 | 2026-07-28
+
+Scope: execute and close P79 route-specific isolation repair.
+
+Actions:
+
+- Added red-green convergence coverage for missing fixtures and typed
+  same-user display collapse.
+- Added a guarded transaction that migrates exact supported legacy rows in
+  place, configures distinct route-specific users, removes `color-depth`,
+  preserves permissions, and fails closed on ambiguous topology.
+- Made the existing-user sync spelling a compatibility alias to the safe
+  route-specific migration.
+- Made live Xorg inference authoritative over persisted display hints.
+- Updated CLI help, README, docs site, agent skill, roadmap, plan, and
+  validation note; synchronized the installed shared agent skill.
+- Committed and pushed the reviewed implementation as `2dcac761`.
+- Captured live pre-state, closed only the two failed Guacamole viewer
+  sessions, and ran one guarded convergence apply.
+- Preserved Guacamole connection ids `1` and `2`, migrated to canonical route
+  names and users `agent-browser-rdp-a/b`, and opened displays `:11` and `:12`.
+- Diagnosed the final aggregate's residual false failure as a cwd-relative
+  inspector path, added a failing regression, fixed module-relative
+  resolution, and pushed `641f45ae`. No second migration or display
+  restoration was run.
+- Proved read-only convergence success, installed doctor success, one
+  successful recurring interlock pass with no route mutation steps, and an
+  enabled active waiting timer.
+
+Validation:
+
+- `pnpm test:local-runtime-convergence`
+- `pnpm test:rdp-guac-route-specific-user-sync`
+- `pnpm test:rdp-route-display-selection`
+- `pnpm test:rdp-guac-postgres-hardening`
+- `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+- `cargo clippy --manifest-path cli/Cargo.toml -- -D warnings`
+- `cargo test --manifest-path cli/Cargo.toml output -- --test-threads=1`
+- `pnpm --dir docs build`
+- `agent-browser doctor remote-view --json`
+- `agent-browser install doctor --json`
+- read-only `pnpm converge:local-runtime -- --skip-publish --json`
+- `systemctl --user start agent-browser-runtime-interlock.service`
+- exact Guacamole row, parameter, permission, Xorg, and X11 socket readbacks
+
+Result:
+
+- P79 is complete. Remote control and many-to-many prerequisites are ready,
+  route displays are isolated by user, and the recurring interlock is healthy.
+- Source and installed runtime are reported separately: `origin/main` includes
+  `641f45ae`; the binary was not replaced and install doctor reports seven
+  converged runtimes with zero issues.
+- No application browser or source-authentication state was touched.
+- Guacamole PostgreSQL reset attribution and backup/restore durability remain a
+  separate unresolved packet.
+
 ## Turn 118 | 2026-07-28
 
 Scope: diagnose the failed post-reboot agent-browser route substrate and open

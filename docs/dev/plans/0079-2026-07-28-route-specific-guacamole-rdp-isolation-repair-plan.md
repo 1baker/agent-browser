@@ -1,7 +1,7 @@
 # Plan 0079: Route-Specific Guacamole RDP Isolation Repair
 
 Date: 2026-07-28
-Status: Active
+Status: Complete
 Lane: P79
 Predecessor: P78
 Source incident: post-reboot agent-browser remote-view readiness failure
@@ -171,7 +171,7 @@ Terminal condition: deterministic gates pass and no live state has changed.
 
 ### Packet C | One controlled live repair
 
-Status: active and authorized by the user
+Status: completed
 
 - capture pre-mutation route rows, permissions, doctors, displays, and retained
   receipt;
@@ -187,7 +187,7 @@ is retained.
 
 ### Packet D | Recurring interlock and closeout
 
-Status: pending
+Status: completed
 
 - verify the installed unit invokes the repaired convergence surface;
 - run one interlock service pass and restore the enabled/active timer;
@@ -263,3 +263,29 @@ reintroduce the incident.
 - no application browser or authentication surface is touched;
 - the PostgreSQL reset cause and backup gap remain explicitly separate and
   unresolved.
+
+## Closeout
+
+- The guarded migration preserved connection ids `1` and `2`, renamed them to
+  the canonical route A/B names, assigned `agent-browser-rdp-a` and
+  `agent-browser-rdp-b`, removed `color-depth`, and retained two read grants
+  per route.
+- Guacamole opened route-specific Xorg displays `:11` and `:12`; the inspector,
+  route-pool readiness, single-route remote control, and many-to-many
+  prerequisites all report ready.
+- The first final doctor exposed a cwd-dependent inspector path: the doctor
+  ran the readiness helper from `scripts/`, while the helper tried to open
+  `scripts/inspect-rdp-route-displays.js` relative to that directory. A
+  red-green follow-up resolves the inspector from the module URL. No second
+  database migration or display restoration was run.
+- A read-only convergence pass then succeeded. The installed recurring
+  interlock service completed with result `success`, exit status 0, and no
+  route fixture, display restoration, or access-grant steps. Its timer is
+  enabled, active, and waiting.
+- Source commits `2dcac761` and `641f45ae` are pushed to `origin/main`.
+- The installed binary was not replaced. `agent-browser install doctor`
+  reports zero issues and seven converged runtimes; the installed interlock
+  executes the repaired repo scripts through its repo working directory.
+- No application browser or source-authentication surface was opened.
+- The recurring Guacamole PostgreSQL reinitialization cause and lack of a
+  validated backup remain a separate unresolved durability issue.
