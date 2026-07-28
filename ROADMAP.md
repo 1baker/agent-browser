@@ -6,6 +6,38 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P81 | Guacamole Route-Pool State Reconciliation
+
+State: CLOSED
+Current state: normal convergence now projects readiness-verified Guacamole
+routes into retained service state. Stable route A resolves to
+`guacamole:1/:11`, stable route B resolves to `guacamole:2/:12`, and the
+installed recurring interlock plus a no-launch route-open proof pass.
+
+### Current State
+
+- Readiness reports route A as `guacamole:1` on `:11` and route B as
+  `guacamole:2` on `:12`.
+- The failed Plan 0012 acquisition selected legacy `guacamole:4/:10` because
+  convergence discarded route-readiness JSON before reconciliation.
+- The repaired convergence path passes successful route-readiness JSON into
+  guarded service reconciliation, and installed retained state now matches
+  routes `1/:11` and `2/:12`.
+- Active conflicting allocations remain unchanged and are reported instead of
+  being redirected.
+- The applied convergence and the next scheduled interlock pass completed
+  successfully.
+- A no-launch stable-entry proof selected route A as `guacamole:1/:11` with no
+  browser launch, route checkout, or tab opening.
+- Plan
+  `docs/dev/plans/0081-2026-07-28-guacamole-route-pool-state-reconciliation-plan.md`
+  owns the source repair, installed no-launch proof, and closeout.
+
+### Next Recommendation
+
+Leave source authentication and canary work in Plan 0012. Authorize one fresh
+attempt only when the operator is ready; no request ID was consumed by P81.
+
 ## P80 | Guacamole PostgreSQL Durability Remediation
 
 State: CLOSED

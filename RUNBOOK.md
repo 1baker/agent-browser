@@ -4,6 +4,54 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 121 | 2026-07-28
+
+Scope: diagnose and repair post-reboot Guacamole route-selection state drift
+without launching a browser or consuming a Plan 0012 attempt.
+
+Actions:
+
+- Proved route readiness was current at `guacamole:1/:11` and
+  `guacamole:2/:12`, while retained stable entries still pointed at legacy
+  routes `guacamole:4/:10` and `guacamole:5/:11`.
+- Traced `remote-view open` to retained route-pool selection and proved local
+  convergence discarded the readiness JSON before health reconciliation.
+- Added red-green parser and reconciliation tests, including fail-closed
+  active-conflict and concurrent-checkout cases.
+- Added guarded authoritative route-pool refresh, structured response
+  evidence, schema and client alignment, and interlock projection.
+- Published the local `0.27.0` candidate through guarded daemon handoff after a
+  mode-0600 retained-state backup.
+- Ran one normal convergence apply and observed the next scheduled interlock
+  pass complete successfully.
+- Ran a stable-entry `remote-view open` dry run for
+  `last30days-facebook`; it selected `guacamole:1/:11` and requested no browser
+  launch, route checkout, or tab open.
+- Updated CLI help, README, docs site, agent skill, plan, roadmap, and a dated
+  validation note.
+
+Validation:
+
+- focused Rust parser and reconciliation tests
+- `pnpm test:local-runtime-convergence`
+- `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+- `cargo clippy --manifest-path cli/Cargo.toml -- -D warnings`
+- `pnpm test:route-confusion-gates`
+- `pnpm test:service-api-mcp-parity`
+- `pnpm test:service-client`
+- `pnpm --dir docs build`
+- applied convergence plus scheduled interlock receipt
+- install doctor, remote-view doctor, retained-state, and no-launch selector
+  readbacks
+
+Result:
+
+- P81 is complete. Retained route A is `guacamole:1/:11`; retained route B is
+  `guacamole:2/:12`; both are available with no allocation.
+- Installed and recurring runtime paths are healthy.
+- No browser, source authentication probe, source canary, or Plan 0012 request
+  ran. The next Plan 0012 attempt remains explicitly unauthorized.
+
 ## Turn 120 | 2026-07-28
 
 Scope: investigate and remediate repeated Guacamole PostgreSQL reinitialization.

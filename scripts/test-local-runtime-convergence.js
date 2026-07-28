@@ -107,8 +107,14 @@ assert.match(
 
 assert.match(
   script,
-  /test:rdp-guac-route-pool-readiness[\s\S]*reconcile_service_state[\s\S]*'--json',[\s\S]*'service',[\s\S]*'reconcile'[\s\S]*readDoctors\('after_route_pool'/,
+  /test:rdp-guac-route-pool-readiness[\s\S]*const reconcileArgs = \[[\s\S]*'--json',[\s\S]*'service',[\s\S]*'reconcile'[\s\S]*reconcile_service_state[\s\S]*reconcileArgs[\s\S]*readDoctors\('after_route_pool'/,
   'apply mode must reconcile retained service ownership before evaluating final profile and route health',
+);
+
+assert.match(
+  script,
+  /routePoolReadiness\.success === true[\s\S]*Array\.isArray\(routePoolReadiness\.routePoolJson\)[\s\S]*'--authoritative-route-pool-json'[\s\S]*JSON\.stringify\(authoritativeRoutePool\)/,
+  'apply mode must project readiness-verified route definitions into retained service state',
 );
 
 assert.match(

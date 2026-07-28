@@ -1025,6 +1025,15 @@ export interface ServiceReconcileResponse {
     skippedUnsafe: number;
     [key: string]: unknown;
   };
+  routePoolRefresh: {
+    requested: boolean;
+    authoritativeEntryCount: number;
+    insertedEntryIds: string[];
+    updatedEntryIds: string[];
+    unchangedEntryIds: string[];
+    skippedActiveConflictEntryIds: string[];
+    [key: string]: unknown;
+  };
   service_state: Record<string, unknown>;
   [key: string]: unknown;
 }

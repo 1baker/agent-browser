@@ -60,7 +60,17 @@ if (args.join(' ') === 'doctor remote-view --json') {
   process.exit(0);
 }
 
-if (args.join(' ') === '--json service reconcile') {
+if (args.slice(0, 3).join(' ') === '--json service reconcile') {
+  const routePoolFlagIndex = args.indexOf('--authoritative-route-pool-json');
+  if (routePoolFlagIndex < 0 || !args[routePoolFlagIndex + 1]) {
+    console.error('service reconcile omitted the authoritative route pool');
+    process.exit(3);
+  }
+  const routePool = JSON.parse(args[routePoolFlagIndex + 1]);
+  if (routePool[0]?.routeId !== 'guacamole:1') {
+    console.error('service reconcile received the wrong authoritative route pool');
+    process.exit(3);
+  }
   console.log(JSON.stringify({ success: true, data: {} }));
   process.exit(0);
 }
@@ -77,7 +87,20 @@ const state = JSON.parse(readFileSync(process.env.P78_FIXTURE_STATE, 'utf8'));
 appendFileSync(process.env.P78_FIXTURE_LOG, JSON.stringify({ command: 'pnpm', args }) + '\\n');
 
 const action = args[0];
-if (action === 'ensure:rdp-guac-postgres' || action === 'test:rdp-guac-route-pool-readiness') {
+if (action === 'ensure:rdp-guac-postgres') {
+  process.exit(0);
+}
+if (action === 'test:rdp-guac-route-pool-readiness') {
+  console.log(JSON.stringify({
+    success: true,
+    routePoolJson: [{
+      id: 'guacamole-rdp-a',
+      provider: 'rdp_gateway',
+      routeId: 'guacamole:1',
+      connectionId: '1',
+      target: { displayName: ':11' },
+    }],
+  }));
   process.exit(0);
 }
 if (action === 'sync:rdp-guac-route-specific-user-pool') {

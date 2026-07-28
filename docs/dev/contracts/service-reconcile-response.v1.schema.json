@@ -11,6 +11,7 @@
     "expiredSessionLeases",
     "expiredSessionLeaseCount",
     "remoteViewRepair",
+    "routePoolRefresh",
     "service_state"
   ],
   "properties": {
@@ -94,6 +95,51 @@
         "skippedUnsafe": {
           "type": "integer",
           "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "routePoolRefresh": {
+      "type": "object",
+      "required": [
+        "requested",
+        "authoritativeEntryCount",
+        "insertedEntryIds",
+        "updatedEntryIds",
+        "unchangedEntryIds",
+        "skippedActiveConflictEntryIds"
+      ],
+      "properties": {
+        "requested": {
+          "type": "boolean"
+        },
+        "authoritativeEntryCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "insertedEntryIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "updatedEntryIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unchangedEntryIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skippedActiveConflictEntryIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": true

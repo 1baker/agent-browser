@@ -103,16 +103,27 @@ try {
       '--',
       '--apply',
     ]);
-    runOptionalStep('rdp_guac_route_pool_readiness', pnpmCommand, [
+    const routePoolReadiness = runJsonStep('rdp_guac_route_pool_readiness', pnpmCommand, [
       'test:rdp-guac-route-pool-readiness',
       '--',
       '--report-only',
-    ]);
-    runOptionalStep('reconcile_service_state', agentBrowserCommand, [
+    ], { required: false });
+    const authoritativeRoutePool = routePoolReadiness.success === true &&
+      Array.isArray(routePoolReadiness.routePoolJson)
+      ? routePoolReadiness.routePoolJson
+      : [];
+    const reconcileArgs = [
       '--json',
       'service',
       'reconcile',
-    ]);
+    ];
+    if (authoritativeRoutePool.length > 0) {
+      reconcileArgs.push(
+        '--authoritative-route-pool-json',
+        JSON.stringify(authoritativeRoutePool),
+      );
+    }
+    runOptionalStep('reconcile_service_state', agentBrowserCommand, reconcileArgs);
     let afterRoutePool = readDoctors('after_route_pool', { required: false });
     if (repairConfirmedStaleDaemons(afterRoutePool.install, 'after_route_pool')) {
       afterRoutePool = readDoctors('after_route_pool_stale_repair', { required: false });

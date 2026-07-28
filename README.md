@@ -171,7 +171,7 @@ agent-browser stream status           # Show runtime streaming state and bound p
 agent-browser stream disable          # Stop runtime WebSocket streaming
 agent-browser service status          # Show service control-plane and configured service state
 agent-browser service watch           # Poll service health until interrupted
-agent-browser service reconcile       # Refresh persisted browser health records
+agent-browser service reconcile       # Refresh persisted browser health and route definitions
 agent-browser service resources       # Inspect correlated daemon, browser, and display processes
 agent-browser service gc              # Dry-run conservative resource cleanup candidates
 agent-browser service gc --apply --review-token <token> # Apply reviewed resource cleanup
@@ -2269,7 +2269,7 @@ The persisted service state includes a `reconciliation` snapshot with `lastRecon
 
 The persisted service state also includes bounded audit records for recent control-plane jobs in `jobs`, a derived `incidents` collection that groups retained incident signals by browser or service scope, plus an `events` log with reconciliation summaries, browser health transitions, browser recovery starts, profile lease wait transitions, ownership-repair details, and tab lifecycle changes such as discovered tabs, URL or title changes, and closed tabs. Job records track request action, priority, timestamps, final success or failure, requested remote-headed `displayIsolation`, and error text without storing large command payloads.
 
-Use `service reconcile` to run the persisted browser health and target probes intentionally without requesting a control-plane status snapshot. This command updates the same `reconciliation` snapshot, expires due or orphaned session leases without launching a browser, returns `expiredSessionLeases`, `expiredSessionLeaseCount`, and `remoteViewRepair` counts for route-pool entries invalidated or restored from live X11 socket evidence, stale route checkouts released after their owner becomes orphaned, plus remote-view display, route, viewer lease, and controller lease repairs, refreshes live tab records for reachable browser CDP endpoints, and appends service events.
+Use `service reconcile` to run the persisted browser health and target probes intentionally without requesting a control-plane status snapshot. This command updates the same `reconciliation` snapshot, expires due or orphaned session leases without launching a browser, returns `expiredSessionLeases`, `expiredSessionLeaseCount`, `remoteViewRepair`, and `routePoolRefresh`, refreshes live tab records for reachable browser CDP endpoints, and appends service events. The local runtime interlock passes the readiness-verified pool through `--authoritative-route-pool-json <json-array>` so stable route entries track current Guacamole connection and display assignments after a reboot. A conflicting active allocation is retained and reported in `skippedActiveConflictEntryIds` instead of being redirected.
 
 Use `service resources` or HTTP `GET /api/service/resources` to inspect the
 read-only resource monitor summary without launching a browser. Use

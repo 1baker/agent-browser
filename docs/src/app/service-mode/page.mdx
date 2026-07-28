@@ -49,6 +49,13 @@ agent-browser service access-plan --service-name CanvaCLI --agent-name codex --t
 agent-browser service browser-capability preflight --browser-build stealthcdp_chromium --target-service-id canva --runtime-profile canva-default --headed --service-name CanvaCLI --agent-name codex --task-name openCanvaWorkspace
 ```
 
+The local runtime interlock passes the readiness-verified route pool to
+<code>service reconcile --authoritative-route-pool-json &lt;json-array&gt;</code>.
+This refreshes stable retained route entries when Guacamole connection IDs or
+display assignments change after a reboot. Reconciliation reports the result
+as <code>routePoolRefresh</code> and skips a conflicting active allocation
+instead of redirecting an in-use desktop.
+
 Configured <code>service.browserCapabilityRegistry</code> records appear under
 <code>service_state.browserCapabilityRegistry</code> in service status JSON.
 Use this advisory no-launch view, HTTP

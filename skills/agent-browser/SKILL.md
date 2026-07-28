@@ -160,7 +160,11 @@ checked-out routes before launch planning. Agent-browser does not establish an
 XRDP login session automatically. Restore the route desktop, then run
 `agent-browser service status --json` or `agent-browser service reconcile
 --json` so the live socket can return the entry to `available` and clear its
-stale checkout.
+stale checkout. The local runtime interlock also supplies
+`--authoritative-route-pool-json` from the readiness report so retained stable
+route IDs follow current Guacamole connection and display assignments. Direct
+use of that flag requires a readiness-verified JSON array. Reconciliation skips
+a conflicting active allocation instead of redirecting it.
 
 When readiness reports a missing Guacamole schema, run
 `pnpm status:rdp-guac-postgres` first. It fails closed when Docker Desktop WSL

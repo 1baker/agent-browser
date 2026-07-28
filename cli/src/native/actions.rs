@@ -18154,6 +18154,8 @@ async fn handle_service_reconcile(cmd: &Value) -> Result<Value, String> {
         .unwrap_or_default();
     let before = service_state.clone();
     let summary = reconcile_service_state(&mut service_state).await;
+    let route_pool_refresh =
+        refresh_authoritative_route_pool(&mut service_state, cmd.get("authoritativeRoutePool"))?;
 
     let reconciled_state = service_state.clone();
     let repository = LockedServiceStateRepository::default_json()?;
@@ -18166,7 +18168,108 @@ async fn handle_service_reconcile(cmd: &Value) -> Result<Value, String> {
         "expiredSessionLeases": summary.expired_session_leases.clone(),
         "expiredSessionLeaseCount": summary.expired_session_leases.len(),
         "remoteViewRepair": summary.remote_view_repair.to_json(),
+        "routePoolRefresh": route_pool_refresh,
         "service_state": service_state,
+    }))
+}
+
+/// Refresh retained route definitions from a readiness-verified authoritative pool.
+///
+/// Active allocations keep their lease state. A conflicting active route is left
+/// unchanged so reconciliation cannot redirect an in-use desktop.
+fn refresh_authoritative_route_pool(
+    state: &mut ServiceState,
+    authoritative_route_pool: Option<&Value>,
+) -> Result<Value, String> {
+    let Some(authoritative_route_pool) = authoritative_route_pool else {
+        return Ok(json!({
+            "requested": false,
+            "authoritativeEntryCount": 0,
+            "insertedEntryIds": [],
+            "updatedEntryIds": [],
+            "unchangedEntryIds": [],
+            "skippedActiveConflictEntryIds": [],
+        }));
+    };
+    let values = authoritative_route_pool
+        .as_array()
+        .ok_or("Invalid authoritativeRoutePool: expected a JSON array of route-pool entries")?;
+    let mut seen_ids = BTreeSet::new();
+    let mut entries = Vec::with_capacity(values.len());
+    for value in values {
+        let mut entry = serde_json::from_value::<RoutePoolEntry>(value.clone())
+            .map_err(|err| format!("Invalid authoritativeRoutePool entry: {}", err))?;
+        if entry.id.trim().is_empty() {
+            return Err("Invalid authoritativeRoutePool entry: id is required".to_string());
+        }
+        if entry.route_id.trim().is_empty() {
+            return Err(format!(
+                "Invalid authoritativeRoutePool entry '{}': routeId is required",
+                entry.id
+            ));
+        }
+        if !seen_ids.insert(entry.id.clone()) {
+            return Err(format!(
+                "Invalid authoritativeRoutePool: duplicate entry id '{}'",
+                entry.id
+            ));
+        }
+        entry.current_route_allocation_id = None;
+        entry.state = "available".to_string();
+        entries.push(entry);
+    }
+
+    let mut inserted_entry_ids = Vec::new();
+    let mut updated_entry_ids = Vec::new();
+    let mut unchanged_entry_ids = Vec::new();
+    let mut skipped_active_conflict_entry_ids = Vec::new();
+    for authoritative in entries {
+        let existing = state.route_pool.get(&authoritative.id).cloned();
+        let active_conflict = existing.as_ref().is_some_and(|entry| {
+            matches!(entry.state.as_str(), "checked_out" | "pending")
+                && entry.route_id != authoritative.route_id
+        });
+        if active_conflict {
+            skipped_active_conflict_entry_ids.push(authoritative.id);
+            continue;
+        }
+
+        let replacement = if let Some(existing) = existing.as_ref().filter(|entry| {
+            matches!(entry.state.as_str(), "checked_out" | "pending")
+                && entry.route_id == authoritative.route_id
+        }) {
+            RoutePoolEntry {
+                state: existing.state.clone(),
+                current_route_allocation_id: existing.current_route_allocation_id.clone(),
+                ..authoritative
+            }
+        } else {
+            authoritative
+        };
+
+        match existing {
+            None => {
+                inserted_entry_ids.push(replacement.id.clone());
+                state.route_pool.insert(replacement.id.clone(), replacement);
+            }
+            Some(existing) if existing == replacement => {
+                unchanged_entry_ids.push(replacement.id);
+            }
+            Some(_) => {
+                updated_entry_ids.push(replacement.id.clone());
+                state.route_pool.insert(replacement.id.clone(), replacement);
+            }
+        }
+    }
+    state.refresh_derived_views();
+
+    Ok(json!({
+        "requested": true,
+        "authoritativeEntryCount": values.len(),
+        "insertedEntryIds": inserted_entry_ids,
+        "updatedEntryIds": updated_entry_ids,
+        "unchangedEntryIds": unchanged_entry_ids,
+        "skippedActiveConflictEntryIds": skipped_active_conflict_entry_ids,
     }))
 }
 
@@ -30172,6 +30275,179 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn test_service_reconcile_refreshes_stale_available_route_pool_definition() {
+        let home = unique_socket_dir("service-reconcile-authoritative-route-pool-home");
+        fs::create_dir_all(&home).unwrap();
+        let guard = EnvGuard::new(&["HOME"]);
+        guard.set("HOME", home.to_str().unwrap());
+        let mut state = DaemonState::new();
+        let cmd = json!({
+            "action": "service_reconcile",
+            "id": "svc-reconcile-authoritative-route-pool-1",
+            "serviceState": {
+                "routePool": {
+                    "guacamole-rdp-a": {
+                        "id": "guacamole-rdp-a",
+                        "provider": "rdp_gateway",
+                        "routeId": "guacamole:4",
+                        "connectionId": "4",
+                        "connectionName": "Agent Browser RDP Route A",
+                        "frameUrl": "http://127.0.0.1:8092/guacamole/#/client/legacy",
+                        "externalUrl": "https://example.test/guacamole/#/client/legacy",
+                        "target": {
+                            "displayName": ":10",
+                            "routeUser": "agent-browser-rdp-a"
+                        },
+                        "providerMode": "simultaneous_view",
+                        "state": "available",
+                        "currentRouteAllocationId": null
+                    }
+                }
+            },
+            "authoritativeRoutePool": [{
+                "id": "guacamole-rdp-a",
+                "provider": "rdp_gateway",
+                "routeId": "guacamole:1",
+                "connectionId": "1",
+                "connectionName": "Agent Browser RDP Route A",
+                "frameUrl": "http://127.0.0.1:8092/guacamole/#/client/current",
+                "externalUrl": "https://example.test/guacamole/#/client/current",
+                "target": {
+                    "displayName": ":11",
+                    "routeUser": "agent-browser-rdp-a"
+                },
+                "providerMode": "simultaneous_view",
+                "state": "available",
+                "currentRouteAllocationId": null,
+                "readiness": {
+                    "state": "ready"
+                }
+            }]
+        });
+
+        let result = execute_command(&cmd, &mut state).await;
+
+        assert_eq!(result["success"], true);
+        assert_eq!(
+            result["data"]["routePoolRefresh"]["updatedEntryIds"][0],
+            "guacamole-rdp-a"
+        );
+        assert_eq!(
+            result["data"]["service_state"]["routePool"]["guacamole-rdp-a"]["routeId"],
+            "guacamole:1"
+        );
+        assert_eq!(
+            result["data"]["service_state"]["routePool"]["guacamole-rdp-a"]["connectionId"],
+            "1"
+        );
+        assert_eq!(
+            result["data"]["service_state"]["routePool"]["guacamole-rdp-a"]["target"]
+                ["displayName"],
+            ":11"
+        );
+
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        let persisted = store.load().unwrap();
+        let route = &persisted.route_pool["guacamole-rdp-a"];
+        assert_eq!(route.route_id, "guacamole:1");
+        assert_eq!(route.connection_id.as_deref(), Some("1"));
+        assert_eq!(route.target["displayName"], ":11");
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn test_service_reconcile_does_not_replace_active_conflicting_route_pool_definition() {
+        let home = unique_socket_dir("service-reconcile-active-route-pool-home");
+        fs::create_dir_all(&home).unwrap();
+        let guard = EnvGuard::new(&["HOME"]);
+        guard.set("HOME", home.to_str().unwrap());
+        let mut state = DaemonState::new();
+        let cmd = json!({
+            "action": "service_reconcile",
+            "id": "svc-reconcile-active-route-pool-1",
+            "serviceState": {
+                "routePool": {
+                    "guacamole-rdp-a": {
+                        "id": "guacamole-rdp-a",
+                        "provider": "rdp_gateway",
+                        "routeId": "guacamole:4",
+                        "target": {"displayName": ":10"},
+                        "state": "checked_out",
+                        "currentRouteAllocationId": "guacamole:4"
+                    }
+                },
+                "remoteViewRoutes": {
+                    "guacamole:4": {
+                        "id": "guacamole:4",
+                        "provider": "rdp_gateway",
+                        "state": "ready"
+                    }
+                }
+            },
+            "authoritativeRoutePool": [{
+                "id": "guacamole-rdp-a",
+                "provider": "rdp_gateway",
+                "routeId": "guacamole:1",
+                "target": {"displayName": ":11"},
+                "readiness": {"state": "ready"}
+            }]
+        });
+
+        let result = execute_command(&cmd, &mut state).await;
+
+        assert_eq!(result["success"], true);
+        assert_eq!(
+            result["data"]["routePoolRefresh"]["skippedActiveConflictEntryIds"][0],
+            "guacamole-rdp-a"
+        );
+        assert_eq!(
+            result["data"]["service_state"]["routePool"]["guacamole-rdp-a"]["routeId"],
+            "guacamole:4"
+        );
+        assert_eq!(
+            result["data"]["service_state"]["routePool"]["guacamole-rdp-a"]
+                ["currentRouteAllocationId"],
+            "guacamole:4"
+        );
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_authoritative_route_pool_skips_conflicting_pending_entry_without_allocation_proof() {
+        let mut state = ServiceState {
+            route_pool: BTreeMap::from([(
+                "guacamole-rdp-a".to_string(),
+                RoutePoolEntry {
+                    id: "guacamole-rdp-a".to_string(),
+                    provider: ViewStreamProvider::RdpGateway,
+                    route_id: "guacamole:4".to_string(),
+                    state: "pending".to_string(),
+                    current_route_allocation_id: None,
+                    ..RoutePoolEntry::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+        let authoritative = json!([{
+            "id": "guacamole-rdp-a",
+            "provider": "rdp_gateway",
+            "routeId": "guacamole:1",
+            "target": {"displayName": ":11"}
+        }]);
+
+        let result = refresh_authoritative_route_pool(&mut state, Some(&authoritative)).unwrap();
+
+        assert_eq!(
+            result["skippedActiveConflictEntryIds"][0],
+            "guacamole-rdp-a"
+        );
+        assert_eq!(state.route_pool["guacamole-rdp-a"].route_id, "guacamole:4");
+        assert_eq!(state.route_pool["guacamole-rdp-a"].state, "pending");
     }
 
     #[test]

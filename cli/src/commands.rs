@@ -2311,11 +2311,63 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                 }
                 Ok(cmd)
             }
-            Some("reconcile") => Ok(json!({
-                "id": id,
-                "action": "service_reconcile",
-                "serviceState": flags.service_state.clone(),
-            })),
+            Some("reconcile") => {
+                let mut cmd = json!({
+                    "id": id,
+                    "action": "service_reconcile",
+                    "serviceState": flags.service_state.clone(),
+                });
+                let mut i = 1;
+                while i < rest.len() {
+                    match rest[i] {
+                        "--authoritative-route-pool-json" => {
+                            let Some(raw) = rest.get(i + 1) else {
+                                return Err(ParseError::InvalidValue {
+                                    message:
+                                        "Missing value for --authoritative-route-pool-json"
+                                            .to_string(),
+                                    usage:
+                                        "service reconcile [--authoritative-route-pool-json <json-array>]",
+                                });
+                            };
+                            let route_pool =
+                                serde_json::from_str::<Value>(raw).map_err(|err| {
+                                    ParseError::InvalidValue {
+                                        message: format!(
+                                            "Invalid --authoritative-route-pool-json value: {}",
+                                            err
+                                        ),
+                                        usage:
+                                            "service reconcile [--authoritative-route-pool-json <json-array>]",
+                                    }
+                                })?;
+                            if !route_pool.is_array() {
+                                return Err(ParseError::InvalidValue {
+                                    message:
+                                        "--authoritative-route-pool-json must be a JSON array"
+                                            .to_string(),
+                                    usage:
+                                        "service reconcile [--authoritative-route-pool-json <json-array>]",
+                                });
+                            }
+                            cmd["authoritativeRoutePool"] = route_pool;
+                            i += 1;
+                        }
+                        flag => {
+                            return Err(ParseError::InvalidValue {
+                                message: format!(
+                                    "Unknown flag for service reconcile: {}",
+                                    flag
+                                ),
+                                usage:
+                                    "service reconcile [--authoritative-route-pool-json <json-array>]",
+                            });
+                        }
+                    }
+                    i += 1;
+                }
+                Ok(cmd)
+            }
             Some("resources") => {
                 let mut action = "service_resources";
                 let mut i = 1;
@@ -7009,6 +7061,25 @@ mod tests {
         assert_eq!(
             cmd["serviceState"]["sitePolicies"]["google"]["manualLoginPreferred"],
             true
+        );
+    }
+
+    #[test]
+    fn test_service_reconcile_accepts_authoritative_route_pool_json() {
+        let cmd = parse_command(
+            &args(
+                r#"service reconcile --authoritative-route-pool-json [{"id":"guacamole-rdp-a","provider":"rdp_gateway","routeId":"guacamole:1","connectionId":"1","target":{"displayName":":11"},"state":"available"}]"#,
+            ),
+            &default_flags(),
+        )
+        .unwrap();
+
+        assert_eq!(cmd["action"], "service_reconcile");
+        assert_eq!(cmd["authoritativeRoutePool"][0]["id"], "guacamole-rdp-a");
+        assert_eq!(cmd["authoritativeRoutePool"][0]["routeId"], "guacamole:1");
+        assert_eq!(
+            cmd["authoritativeRoutePool"][0]["target"]["displayName"],
+            ":11"
         );
     }
 

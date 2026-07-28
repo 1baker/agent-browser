@@ -1566,16 +1566,16 @@ pub fn merge_reconciled_service_state(
     }
 
     for (id, reconciled_pool_entry) in &reconciled.route_pool {
-        let target_released_after_reconcile_started =
-            target.route_pool.get(id).is_some_and(|entry| {
-                entry.state == "available"
-                    && entry.current_route_allocation_id.is_none()
-                    && before
-                        .route_pool
-                        .get(id)
-                        .is_some_and(|before_entry| before_entry != entry)
+        let target_lease_changed_after_reconcile_started = before
+            .route_pool
+            .get(id)
+            .zip(target.route_pool.get(id))
+            .is_some_and(|(before_entry, target_entry)| {
+                target_entry.state != before_entry.state
+                    || target_entry.current_route_allocation_id
+                        != before_entry.current_route_allocation_id
             });
-        if target_released_after_reconcile_started {
+        if target_lease_changed_after_reconcile_started {
             continue;
         }
         target
@@ -3171,6 +3171,44 @@ mod tests {
         assert_eq!(
             target.route_pool[&pool_entry_id].current_route_allocation_id,
             None
+        );
+    }
+
+    #[test]
+    fn merge_reconciled_service_state_preserves_newer_route_pool_checkout() {
+        let entry_id = "guacamole-rdp-a".to_string();
+        let before = ServiceState {
+            route_pool: BTreeMap::from([(
+                entry_id.clone(),
+                RoutePoolEntry {
+                    id: entry_id.clone(),
+                    provider: ViewStreamProvider::RdpGateway,
+                    route_id: "guacamole:4".to_string(),
+                    state: "available".to_string(),
+                    ..RoutePoolEntry::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+
+        let mut reconciled = before.clone();
+        let reconciled_entry = reconciled.route_pool.get_mut(&entry_id).unwrap();
+        reconciled_entry.route_id = "guacamole:1".to_string();
+        reconciled_entry.state = "available".to_string();
+
+        let mut target = before.clone();
+        let target_entry = target.route_pool.get_mut(&entry_id).unwrap();
+        target_entry.state = "checked_out".to_string();
+        target_entry.current_route_allocation_id = Some("guacamole:4".to_string());
+
+        merge_reconciled_service_state(&mut target, &before, &reconciled);
+
+        let retained = &target.route_pool[&entry_id];
+        assert_eq!(retained.route_id, "guacamole:4");
+        assert_eq!(retained.state, "checked_out");
+        assert_eq!(
+            retained.current_route_allocation_id.as_deref(),
+            Some("guacamole:4")
         );
     }
 
