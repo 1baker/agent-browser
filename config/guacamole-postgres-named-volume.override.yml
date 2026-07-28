@@ -1,0 +1,10 @@
+services:
+  postgres:
+    volumes:
+      - agent-browser-guacamole-postgres-data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+
+volumes:
+  agent-browser-guacamole-postgres-data:
+    name: agent-browser-guacamole-postgres-data
+    external: true

@@ -6,6 +6,37 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P80 | Guacamole PostgreSQL Durability Remediation
+
+State: CLOSED
+Current state: the Docker Desktop WSL stale-bind root cause is proved and
+removed from the live PostgreSQL path. The current two-route database now runs
+from a Docker named volume with cluster-identity continuity, daily checksummed
+backups, and a passing isolated restore drill.
+
+### Current State
+
+- The former long-running container saw its declared WSL bind as `tmpfs`,
+  while the host and a fresh probe saw the retained ext4 directory. This mount
+  namespace split caused a new `initdb` after WSL restarts.
+- PostgreSQL now uses named volume
+  `agent-browser-guacamole-postgres-data` on ext4.
+- The restored database retains two canonical route rows, 22 parameters, and
+  four connection permissions.
+- Schema assurance fails closed on stale bind, cluster identity mismatch,
+  partial schema, or absent schema for a recorded identity.
+- The installed daily backup service and recurring runtime interlock both
+  complete successfully; their timers are enabled and active.
+- Plan
+  `docs/dev/plans/0080-2026-07-28-guacamole-postgres-durability-remediation-plan.md`
+  and the dated validation note own the causal evidence and recovery contract.
+
+### Next Recommendation
+
+Keep the old bind directory only as a forensic artifact until an explicit
+retention decision. Treat named-volume state as live authority and paired dump
+plus manifest files as recovery authority.
+
 ## P79 | Route-Specific Guacamole RDP Isolation Repair
 
 State: CLOSED

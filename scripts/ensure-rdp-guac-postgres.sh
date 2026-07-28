@@ -27,6 +27,7 @@ POSTGRES_CONTAINER="${AGENT_BROWSER_GUACAMOLE_POSTGRES_CONTAINER:-agent-browser-
 POSTGRES_SERVICE="${AGENT_BROWSER_GUACAMOLE_POSTGRES_SERVICE:-postgres}"
 POSTGRES_USER="${AGENT_BROWSER_GUACAMOLE_POSTGRES_USER:-guacamole_user}"
 POSTGRES_DB="${AGENT_BROWSER_GUACAMOLE_POSTGRES_DB:-guacamole_db}"
+IDENTITY_FILE="${AGENT_BROWSER_GUACAMOLE_IDENTITY_FILE:-$HOME/.agent-browser/state/guacamole-postgres-identity.json}"
 
 REQUIRED_TABLES=(
   guacamole_user
@@ -125,6 +126,8 @@ if ! wait_for_postgres; then
   exit 1
 fi
 
+bash "$(dirname "${BASH_SOURCE[0]}")/guacamole-postgres-durability.sh" status --require-continuity
+
 present_tables="$(query_present_tables || true)"
 missing_tables=()
 for required in "${REQUIRED_TABLES[@]}"; do
@@ -139,6 +142,9 @@ if [[ "${#missing_tables[@]}" == "0" ]]; then
   else
     compose exec -T "$POSTGRES_SERVICE" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -c "CHECKPOINT;" >/dev/null
     echo "Guacamole Postgres schema is ready; checkpoint completed."
+  fi
+  if [[ "$DRY_RUN" == "0" && ! -r "$IDENTITY_FILE" ]]; then
+    bash "$(dirname "${BASH_SOURCE[0]}")/guacamole-postgres-durability.sh" record-identity
   fi
   exit 0
 fi
@@ -155,6 +161,12 @@ if [[ "$relation_count" != "0" ]]; then
   echo "Missing table(s): ${missing_tables[*]}" >&2
   echo "Existing guacamole_* relation count: $relation_count" >&2
   echo "Back up $GUAC_DIR/data/postgres, inspect the database, then rerun after recovery." >&2
+  exit 1
+fi
+
+if [[ -r "$IDENTITY_FILE" ]]; then
+  echo "Guacamole schema is absent for a recorded database identity; refusing automatic schema import." >&2
+  echo "Run the verified backup and restore workflow before retrying." >&2
   exit 1
 fi
 
@@ -181,4 +193,5 @@ if [[ "${#missing_after[@]}" != "0" ]]; then
 fi
 
 compose exec -T "$POSTGRES_SERVICE" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -c "CHECKPOINT;" >/dev/null
+bash "$(dirname "${BASH_SOURCE[0]}")/guacamole-postgres-durability.sh" record-identity
 echo "Guacamole Postgres schema is ready; checkpoint completed."

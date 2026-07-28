@@ -4,6 +4,55 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 120 | 2026-07-28
+
+Scope: investigate and remediate repeated Guacamole PostgreSQL reinitialization.
+
+Actions:
+
+- Proved the running container retained a stale Docker Desktop WSL bind
+  attachment as `tmpfs`, while the declared host path remained on ext4 with a
+  different cluster identifier.
+- Added a red-capable durability contract, then implemented continuity status,
+  atomic checksummed custom-format backup, identity recording, retention, and
+  isolated restore drill.
+- Made schema assurance fail closed on stale mount, identity discontinuity,
+  partial schema, and absent schema for a recorded identity.
+- Captured and restore-drilled a current backup before migration.
+- Stopped Guacamole web access, migrated PostgreSQL to a named volume, restored
+  the verified dump, and required exact route and permission invariants before
+  restarting Guacamole.
+- Installed and ran the daily backup service, restored the recurring runtime
+  interlock, and retained the old bind directory.
+- Recorded subagent receipt `spawned`: independent read-only P80 review,
+  handle `/root/p80_independent_review`, with no runtime or file mutation. Its
+  first verdict found six consolidated durability gaps; the bounded
+  remediation pass fixed them and its re-review returned `PASS` with no
+  residual blocking findings.
+
+Validation:
+
+- `pnpm test:guacamole-postgres-durability`
+- `pnpm test:rdp-guac-postgres-hardening`
+- `pnpm ensure:rdp-guac-postgres -- --dry-run`
+- pre-migration and post-migration isolated restore drills
+- `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+- `cargo clippy --manifest-path cli/Cargo.toml -- -D warnings`
+- `pnpm --dir docs build`
+- named-volume mount, identity, route, parameter, and permission readbacks
+- installed backup service and timer readbacks
+- recurring interlock receipt
+- route-pool readiness, remote-view doctor, and install doctor
+
+Result:
+
+- P80 is complete. PostgreSQL uses the named volume on ext4, continuity is
+  ready, the database retains two routes, 22 parameters, and four permissions,
+  and a verified recovery artifact exists.
+- Backup and interlock services succeeded; both timers are enabled and active.
+- Remote control and many-to-many readiness remain ready.
+- No browser, source-authentication, or old-bind deletion occurred.
+
 ## Turn 119 | 2026-07-28
 
 Scope: execute and close P79 route-specific isolation repair.

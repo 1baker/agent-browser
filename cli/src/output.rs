@@ -5291,7 +5291,11 @@ Timeout handling:
 
 Runtime-health interlock:
   On Linux, bash scripts/install-dashboard-user-service.sh installs the
-  dashboard plus a recurring user-scoped interlock. It closes only
+  dashboard, a recurring user-scoped interlock, and a daily Guacamole
+  PostgreSQL backup timer. Use pnpm status:rdp-guac-postgres to verify mount
+  and cluster identity continuity, pnpm backup:rdp-guac-postgres for an
+  immediate checksummed dump, and pnpm drill:rdp-guac-postgres-restore for an
+  isolated restore proof. The interlock closes only
   doctor-proven stale daemon sessions, recreates or migrates supported
   Guacamole route fixtures to distinct route-specific users, and restores
   missing RDP route displays. Live inferred display allocation takes
@@ -6203,7 +6207,8 @@ Dashboard:
   dashboard start --port <n> Start on a specific port
   dashboard stop             Stop the dashboard server
   Linux repo installs can run bash scripts/install-dashboard-user-service.sh
-  to enable the dashboard and recurring runtime-health interlock.
+  to enable the dashboard, recurring runtime-health interlock, and daily
+  Guacamole PostgreSQL backup timer.
 
 Setup:
   install                    Install browser binaries

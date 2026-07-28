@@ -163,10 +163,29 @@ XRDP login session automatically. Restore the route desktop, then run
 stale checkout.
 
 When readiness reports a missing Guacamole schema, run
+`pnpm status:rdp-guac-postgres` first. It fails closed when Docker Desktop WSL
+has retained a stale bind as `tmpfs` or when the recorded PostgreSQL cluster
+identity changed. Use `pnpm backup:rdp-guac-postgres` for an atomic checksummed
+custom-format dump and `pnpm drill:rdp-guac-postgres-restore` for an isolated
+temporary-database restore proof. On Docker Desktop WSL, keep PostgreSQL on
+the named volume described by
+`config/guacamole-postgres-named-volume.override.yml`, not a WSL bind mount.
+Create its external volume with
+`docker volume create agent-browser-guacamole-postgres-data` before first use.
+Backup fails closed on continuity errors; use `--allow-stale-source` only for
+a reviewed one-time pre-migration capture.
+The dashboard service installer enables a daily persistent backup timer with
+14-backup default retention. It copies the helper under
+`~/.local/lib/agent-browser`, waits for PostgreSQL readiness, retries bounded
+startup failures, and honors a paired `.keep` retention marker.
+
+When continuity is ready and readiness reports a never-initialized missing
+Guacamole schema, run
 `pnpm ensure:rdp-guac-postgres -- --apply` before route-pool setup. It starts
 the user-scoped Guacamole Postgres service when needed, imports the packaged
 Guacamole schema only into an empty initialized database, forces a checkpoint,
-and refuses automatic repair over a partial `guacamole_*` schema. The
+and refuses automatic repair over a partial `guacamole_*` schema, recorded
+identity discontinuity, or absent schema for a recorded identity. The
 route-pool setup, route-specific user sync, and legacy autologin scripts call
 the same guard before writing Guacamole records, write route records with
 `ON_ERROR_STOP`, and force a checkpoint after those route writes. The

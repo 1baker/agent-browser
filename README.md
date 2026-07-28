@@ -1256,7 +1256,16 @@ bash scripts/install-dashboard-user-service.sh
 The service runs the bundled dashboard in foreground mode on port 4848, enables
 restart-on-failure behavior, and starts at user login. Set
 `AGENT_BROWSER_DASHBOARD_PORT` before running the script to choose another
-port. The installer also enables `agent-browser-runtime-interlock.timer`. At
+port. The installer also enables `agent-browser-runtime-interlock.timer` and
+`agent-browser-guacamole-postgres-backup.timer`. The backup timer creates one
+atomic, checksummed custom-format dump each day under
+`~/.agent-browser/backups/guacamole-postgres`, validates its restore catalog,
+and retains 14 dumps by default. Its helper is copied under
+`~/.local/lib/agent-browser`, waits for PostgreSQL readiness, retries bounded
+startup failures, and does not depend on a mutable checkout. A paired `.keep`
+file protects a dump from automatic retention. Set
+`AGENT_BROWSER_GUACAMOLE_BACKUP_RETENTION` to a positive integer to change that
+retention. At
 boot and five minutes after each completed pass, the interlock runs bounded local convergence without
 replacing installed artifacts: it hands doctor-confirmed stale daemon sessions
 to the current executable without closing their browsers, reconciles retained
@@ -1267,6 +1276,18 @@ reapplies route-display access when required, and writes the latest receipt to
 `~/.agent-browser/convergence/local-runtime-latest.json`. Set
 `AGENT_BROWSER_RUNTIME_INTERLOCK_INTERVAL` before installation to another
 systemd duration such as `5min` when a different cadence is needed.
+Run `pnpm status:rdp-guac-postgres` to verify cluster identity and mount
+continuity, `pnpm backup:rdp-guac-postgres` for an immediate backup, and
+`pnpm drill:rdp-guac-postgres-restore` for an isolated temporary-database
+restore proof. On Docker Desktop WSL, create
+`agent-browser-guacamole-postgres-data` with `docker volume create`, then use
+the named-volume override at
+`config/guacamole-postgres-named-volume.override.yml`; a long-running bind
+mount can retain a stale `tmpfs` attachment across WSL restarts. Schema
+assurance and recurring backup fail closed on that attachment or a recorded
+cluster-identity change. `--allow-stale-source` exists only for a reviewed
+one-time pre-migration capture.
+
 Fixture recovery uses the route-specific user-scoped XRDP secrets, migrates
 supported legacy rows in place, and fails closed before display restoration
 when the schema is partial, a secret or Linux user is missing, managed rows are
@@ -2073,7 +2094,9 @@ routes begin on a terminal-free desktop. This bootstrap only creates distinct
 RDP sessions; P03 is complete only after the many-to-many live gate proves
 Browser A and Browser B are actually visible through those routes at the same
 time.
-If the Guacamole Postgres container exists but the initialized volume is empty,
+First run `pnpm status:rdp-guac-postgres`. If the Guacamole Postgres container
+uses a durable mount, has no recorded identity discontinuity, and the
+initialized database has never contained a schema,
 run `pnpm ensure:rdp-guac-postgres -- --apply` to import the Guacamole schema
 from the user-scoped init SQL and force a checkpoint before route-pool records
 are written. `pnpm setup:rdp-guac-route-pool`,
@@ -2083,8 +2106,10 @@ run the same guard before mutating Guacamole records, write route records with
 `sync:rdp-guac-existing-user-route-pool` spelling is a compatibility alias to
 the route-specific migration because the installed XRDP runtime disproved
 same-user color-depth isolation. The guard
-refuses to auto-import over a partial `guacamole_*` schema so a hard-stop or
-WSL crash does not hide possible database corruption.
+refuses to auto-import over a partial `guacamole_*` schema, a stale Docker
+Desktop WSL bind attachment, a recorded cluster-identity change, or a wholly
+absent schema for a recorded identity. These gates prevent a restart from
+silently replacing recoverable database state with a blank schema.
 After opening both route sessions, run
 `pnpm inspect:rdp-route-displays` to map the route users to active XRDP display
 names and print `AGENT_BROWSER_RDP_ROUTE_A_DISPLAY_NAME` and
