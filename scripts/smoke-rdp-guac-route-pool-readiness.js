@@ -4,7 +4,10 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { selectRouteDisplayName } from './lib/rdp-route-display-selection.js';
+import {
+  routeDisplayInspectorPath,
+  selectRouteDisplayName,
+} from './lib/rdp-route-display-selection.js';
 
 const reportOnly = process.argv.includes('--report-only');
 const allowSharedTarget = process.argv.includes('--allow-shared-target');
@@ -557,7 +560,7 @@ function targetIdentityKey(connection) {
 }
 
 function inspectRouteDisplays() {
-  const result = commandResult(process.execPath, ['scripts/inspect-rdp-route-displays.js']);
+  const result = commandResult(process.execPath, [routeDisplayInspectorPath(import.meta.url)]);
   if (result.status !== 0) return {};
   try {
     const parsed = JSON.parse(result.stdout.trim());
