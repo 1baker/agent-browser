@@ -124,6 +124,9 @@ case "$cmd" in
     exit 0
     ;;
   *)
+    if [[ "$cmd" == "${AGENT_BROWSER_PRIVILEGED_HELPER:-}" && "${1:-}" == "verify-install" ]]; then
+      exit 0
+    fi
     AGENT_BROWSER_FAKE_ROOT=1 exec "$cmd" "$@"
     ;;
 esac

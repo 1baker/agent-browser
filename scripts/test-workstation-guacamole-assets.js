@@ -48,6 +48,11 @@ assert.equal(
   3,
   'all services must declare the validated image platform',
 )
+assert.match(
+  compose,
+  /guacd:\n[\s\S]*?healthcheck:\n[\s\S]*?interval: 5s\n[\s\S]*?start_period: 5s/,
+  'guacd must override the image five-minute health interval',
+)
 
 assert.match(
   compose,

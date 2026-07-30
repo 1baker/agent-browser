@@ -145,6 +145,58 @@ try {
     );
   }
 
+  const routeOpener = installedFiles.find(
+    (path) => basename(path) === 'open-rdp-guac-route-displays.js',
+  );
+  const routeOpenerSource = readFileSync(routeOpener, 'utf8');
+  assert.equal(
+    routeOpenerSource.includes('${args.join'),
+    false,
+    'route-opener failures must not echo reversible authentication arguments',
+  );
+  assert.match(
+    routeOpenerSource,
+    /'set',\s*'headers'/,
+    'Guacamole route sessions must apply header authentication before navigation',
+  );
+  assert.equal(
+    /'eval'|--base64|--stdin/.test(routeOpenerSource),
+    false,
+    'Guacamole authentication must not inject tokens through eval arguments or input',
+  );
+  assert.match(
+    routeOpenerSource,
+    /waitForRouteDisplay/,
+    'long-lived route navigation must require positive Xorg display proof',
+  );
+  assert.equal(
+    /if \(inspection\.success && displayName\)/.test(routeOpenerSource),
+    false,
+    'route A readiness must not deadlock on two-route global readiness',
+  );
+  assert.match(
+    routeOpenerSource,
+    /AGENT_BROWSER_REMOTE_VIEW_SCRIPT_ROOT/,
+    'the installed route opener must resolve its inspector from the installed script root',
+  );
+  assert.match(
+    routeOpenerSource,
+    /AGENT_BROWSER_GUACAMOLE_BASE_URL/,
+    'database-derived route URLs must use an explicit Guacamole base URL',
+  );
+  assert.equal(
+    /const baseUrl = process\.env\.AGENT_BROWSER_REMOTE_VIEW_URL/.test(routeOpenerSource),
+    false,
+    'a selected route viewer URL must never become the base for another route',
+  );
+  assert.match(
+    routeOpenerSource,
+    /agentBrowserTimeoutMs[^]*?\?\? 600000/,
+    'slow route-browser commands must retain the bounded ten-minute budget',
+  );
+  const installedBinaryInode = statSync(installedBinary).ino;
+  const routeOpenerInode = statSync(routeOpener).ino;
+
   const secondApply = runInstaller(installRoot, ['--apply', '--json']);
   assert.equal(
     secondApply.status,
@@ -156,6 +208,16 @@ try {
     treeManifest(installRoot),
     firstManifest,
     'a second apply must leave byte content and file modes unchanged',
+  );
+  assert.equal(
+    statSync(installedBinary).ino,
+    installedBinaryInode,
+    'a no-op second apply must preserve the installed binary inode',
+  );
+  assert.equal(
+    statSync(routeOpener).ino,
+    routeOpenerInode,
+    'a no-op second apply must preserve versioned support-file inodes',
   );
 
   writeFileSync(commandLog, '');

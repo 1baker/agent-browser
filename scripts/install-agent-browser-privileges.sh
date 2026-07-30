@@ -170,11 +170,10 @@ current_install_ready() {
   id -nG "$OPERATOR_USER" 2>/dev/null | tr ' ' '\n' | grep -Fx "$GROUP_NAME" >/dev/null || return 1
   [[ -x "$HELPER_PATH" ]] || return 1
   cmp -s "$HELPER_SOURCE" "$HELPER_PATH" || return 1
-  [[ -f "$SUDOERS_PATH" ]] || return 1
-  if [[ -r "$SUDOERS_PATH" ]]; then
-    expected_sudoers_content | diff -q - "$SUDOERS_PATH" >/dev/null 2>&1 || return 1
-  fi
-  sudo -n "$HELPER_PATH" check >/dev/null 2>&1 || return 1
+  sudo -n "$HELPER_PATH" verify-install \
+    --group "$GROUP_NAME" \
+    --sudoers "$SUDOERS_PATH" \
+    --sha256 "$EXPECTED_HELPER_SHA256" >/dev/null 2>&1 || return 1
   if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
     workstation_deps_ready || return 1
   fi
@@ -206,22 +205,21 @@ print_install_status() {
     echo "  helper: missing"
   fi
 
-  if [[ -f "$SUDOERS_PATH" ]]; then
-    if [[ -r "$SUDOERS_PATH" ]] && expected_sudoers_content | diff -q - "$SUDOERS_PATH" >/dev/null 2>&1; then
-      echo "  sudoers: ready"
-    elif [[ -r "$SUDOERS_PATH" ]]; then
-      echo "  sudoers: policy differs from expected rule"
-    else
-      echo "  sudoers: present but not readable by current user"
-    fi
+  if [[ -r "$SUDOERS_PATH" ]] && expected_sudoers_content | diff -q - "$SUDOERS_PATH" >/dev/null 2>&1; then
+    echo "  sudoers: ready"
+  elif [[ -e "$SUDOERS_PATH" ]]; then
+    echo "  sudoers: protected; helper verification required"
   else
-    echo "  sudoers: missing"
+    echo "  sudoers: protected or missing; helper verification required"
   fi
 
-  if [[ -x "$HELPER_PATH" ]] && sudo -n "$HELPER_PATH" check >/dev/null 2>&1; then
-    echo "  sudo helper check: ready"
+  if [[ -x "$HELPER_PATH" ]] && sudo -n "$HELPER_PATH" verify-install \
+    --group "$GROUP_NAME" \
+    --sudoers "$SUDOERS_PATH" \
+    --sha256 "$EXPECTED_HELPER_SHA256" >/dev/null 2>&1; then
+    echo "  sudo helper install verification: ready"
   else
-    echo "  sudo helper check: not ready"
+    echo "  sudo helper install verification: not ready"
   fi
 
   if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
@@ -252,12 +250,6 @@ if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
     echo "apt-get and apt-cache are required for workstation dependency installation." >&2
     exit 1
   fi
-  while IFS= read -r package_name; do
-    if ! apt-cache show "$package_name" >/dev/null 2>&1; then
-      echo "Required workstation package has no apt candidate: $package_name" >&2
-      exit 1
-    fi
-  done < <(workstation_packages)
 fi
 
 if [[ "$APPLY" != "1" ]]; then
@@ -309,6 +301,12 @@ sudo -v
 if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
   mapfile -t WORKSTATION_PACKAGES < <(workstation_packages)
   sudo -n apt-get update
+  for package_name in "${WORKSTATION_PACKAGES[@]}"; do
+    if ! apt-cache show "$package_name" >/dev/null 2>&1; then
+      echo "Required workstation package has no apt candidate after updating indexes: $package_name" >&2
+      exit 1
+    fi
+  done
   SIMULATION_OUTPUT="$(sudo -n apt-get install --simulate "${WORKSTATION_PACKAGES[@]}" 2>&1)" || {
     printf '%s\n' "$SIMULATION_OUTPUT" >&2
     echo "Workstation dependency simulation failed." >&2

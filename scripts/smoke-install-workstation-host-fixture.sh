@@ -173,6 +173,9 @@ case "$cmd" in
     exit 0
     ;;
   *)
+    if [[ "$cmd" == "${AGENT_BROWSER_PRIVILEGED_HELPER:-}" && "${1:-}" == "verify-install" ]]; then
+      exit 0
+    fi
     AGENT_BROWSER_FAKE_ROOT=1 exec "$cmd" "$@"
     ;;
 esac
@@ -238,7 +241,7 @@ if [[ "$second_command_count" != "$((first_command_count + 1))" ]]; then
   cat "$LOG" >&2
   exit 1
 fi
-if [[ "$(tail -n 1 "$LOG")" != SUDO\ -n\ "$HELPER_PATH"\ check ]]; then
+if [[ "$(tail -n 1 "$LOG")" != SUDO\ -n\ "$HELPER_PATH"\ verify-install* ]]; then
   echo "Unexpected idempotent rerun command." >&2
   tail -n 3 "$LOG" >&2
   exit 1

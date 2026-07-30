@@ -34,7 +34,7 @@
   "files": [
     {
       "path": "compose.yml",
-      "sha256": "4a7c20c440f56b50082053ae0aad065dfe916c588c5fb0c7e01741a6b84c4c21"
+      "sha256": "54acfa48eb13fb69d5e34cda72f1222567f6c7833c64c1d5234554f8bef30d56"
     },
     {
       "path": "environment.example",

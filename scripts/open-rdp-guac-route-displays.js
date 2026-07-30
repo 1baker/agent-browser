@@ -7,7 +7,9 @@ import { join } from 'node:path';
 const reportOnly = process.argv.includes('--report-only');
 const dryRun = process.argv.includes('--dry-run');
 const waitMs = numberArg('--wait-ms') ?? 8000;
-const agentBrowserTimeoutMs = numberArg('--agent-browser-timeout-ms') ?? 15000;
+const agentBrowserTimeoutMs = numberArg('--agent-browser-timeout-ms') ?? 600000;
+const routeNavigationTimeoutMs = numberArg('--route-navigation-timeout-ms') ?? 600000;
+const routeDisplayTimeoutMs = numberArg('--route-display-timeout-ms') ?? 600000;
 
 loadAgentBrowserEnv();
 
@@ -65,17 +67,20 @@ function agentBrowserCommand() {
     null;
 }
 
-function runAgentBrowser(args, label) {
+function runAgentBrowser(args, label, options = {}) {
   const command = agentBrowserCommand();
   if (!command) {
     throw new Error('agent_browser_command_missing: install agent-browser or set AGENT_BROWSER_ROUTE_DISPLAY_AGENT_BROWSER_CMD');
   }
-  const result = commandResult(command, args, { timeout: agentBrowserTimeoutMs });
+  const result = commandResult(command, args, {
+    timeout: agentBrowserTimeoutMs,
+    ...options,
+  });
   if (result.error) {
-    throw new Error(`${label} failed: ${command} ${args.join(' ')}\n${result.error.message}`.trim());
+    throw new Error(`${label} failed using ${command}\n${result.error.message}`.trim());
   }
   if (result.status !== 0) {
-    throw new Error(`${label} failed: ${command} ${args.join(' ')}\n${result.stdout}${result.stderr}`.trim());
+    throw new Error(`${label} failed using ${command}\n${result.stdout}${result.stderr}`.trim());
   }
   return parseJson(result.stdout, label);
 }
@@ -99,6 +104,66 @@ function routePoolFromEnv() {
 function routePoolFromDoctor() {
   const doctor = runAgentBrowser(['doctor', 'remote-view', '--json'], 'remote-view doctor');
   return doctor?.data?.guacamole?.routePool?.data?.routePoolJson || [];
+}
+
+function routePoolFromDatabase() {
+  const query = `
+SELECT connection_id, connection_name
+FROM guacamole_connection
+WHERE parent_id IS NULL
+  AND connection_name IN ('Agent Browser RDP Route A', 'Agent Browser RDP Route B')
+ORDER BY CASE connection_name
+  WHEN 'Agent Browser RDP Route A' THEN 1
+  WHEN 'Agent Browser RDP Route B' THEN 2
+END;
+`.trim();
+  const result = commandResult('docker', [
+    'exec',
+    'agent-browser-guacamole-postgres',
+    'psql',
+    '-U',
+    'guacamole_user',
+    '-d',
+    'guacamole_db',
+    '-At',
+    '-F',
+    '\t',
+    '-c',
+    query,
+  ]);
+  if (result.status !== 0) return null;
+  const rows = result.stdout.trim().split(/\r?\n/).filter(Boolean).map((line) => line.split('\t'));
+  if (rows.length !== 2 || rows.some(([id, name]) => !id || !name)) return null;
+  const agentHome = process.env.AGENT_BROWSER_HOME || join(process.env.HOME || '', '.agent-browser');
+  const guacamolePort = envFileValue(
+    join(agentHome, 'guacamole', '.env'),
+    'AGENT_BROWSER_GUACAMOLE_HTTP_PORT',
+  ) || '8092';
+  const baseUrl = process.env.AGENT_BROWSER_GUACAMOLE_BASE_URL ||
+    `http://127.0.0.1:${guacamolePort}/guacamole/`;
+  const dataSource = process.env.AGENT_BROWSER_GUACAMOLE_DATA_SOURCE || 'postgresql';
+  return rows.map(([connectionId, connectionName], index) => {
+    const clientId = Buffer.from(`${connectionId}\0c\0${dataSource}`, 'utf8').toString('base64');
+    const frameUrl = `${baseUrl.replace(/\/?$/, '/')}#/client/${clientId}`;
+    return {
+      id: `guacamole-rdp-${index === 0 ? 'a' : 'b'}`,
+      routeId: `guacamole:${connectionId}`,
+      connectionId,
+      connectionName,
+      frameUrl,
+      routeDescriptor: { localEmbedUrl: frameUrl },
+      target: {},
+    };
+  });
+}
+
+function envFileValue(path, key) {
+  if (!existsSync(path)) return null;
+  for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
+    const [candidate, ...rest] = line.split('=');
+    if (candidate?.trim() === key) return rest.join('=').trim().replace(/^['"]|['"]$/g, '');
+  }
+  return null;
 }
 
 function routeUrl(route) {
@@ -212,14 +277,34 @@ function requestGuacamoleToken(baseUrl, auth) {
   };
 }
 
-function base64(value) {
-  return Buffer.from(value, 'utf8').toString('base64');
-}
-
 function openRoute(route, index) {
   const label = routeLabel(index);
   const url = routeUrl(route);
   if (!url) throw new Error(`route_${label.toLowerCase()}_url_missing: ${JSON.stringify(route)}`);
+  const existingDisplay = inspectRouteDisplays().data?.routeSpecificUsers?.[label]?.displayName;
+  if (existingDisplay) {
+    return {
+      label,
+      session: null,
+      profile: null,
+      url,
+      authMode: 'existing_session',
+      displayName: existingDisplay,
+      openedSuccess: true,
+      reused: true,
+      login: {
+        success: true,
+        data: {
+          result: {
+            ok: true,
+            authMode: 'existing_session',
+            username: null,
+            dataSource: null,
+          },
+        },
+      },
+    };
+  }
   const token = acquireGuacamoleToken(url);
   if (!token.ok) {
     throw new Error(`guacamole_route_${label.toLowerCase()}_login_failed: ${JSON.stringify({
@@ -251,51 +336,81 @@ function openRoute(route, index) {
     '--args',
     '--no-sandbox',
     'open',
-    url,
+    'about:blank',
   ];
   const opened = runAgentBrowser(openArgs, `open Guacamole route ${label}`);
-  const script = `
-(async () => {
-  const payload = ${JSON.stringify(token.payload)};
-  localStorage.setItem("GUAC_AUTH", JSON.stringify(payload));
-  window.location.reload();
-  return { ok: true, authMode: ${JSON.stringify(token.authMode)}, username: payload.username, dataSource: payload.dataSource };
-})()
-`.trim();
-  const login = runAgentBrowser([
+  const headerUser = guacamoleHeaderUser();
+  if (token.authMode !== 'header' || !headerUser) {
+    throw new Error(`guacamole_route_${label.toLowerCase()}_header_auth_required`);
+  }
+  runAgentBrowser([
     '--json',
     '--session',
     session,
-    'eval',
-    '--base64',
-    base64(script),
-  ], `login Guacamole route ${label}`);
-  if (login?.data?.result?.ok !== true) {
-    throw new Error(`guacamole_route_${label.toLowerCase()}_login_failed: ${JSON.stringify(login?.data?.result || login)}`);
-  }
+    'set',
+    'headers',
+    JSON.stringify({ 'Remote-User': headerUser }),
+  ], `configure Guacamole header authentication for route ${label}`);
+  navigateRoute([
+    '--json',
+    '--session',
+    session,
+    'open',
+    url,
+  ], `reload authenticated Guacamole route ${label}`);
+  const displayName = waitForRouteDisplay(label);
   return {
     label,
     session,
     profile,
     url,
     authMode: token.authMode,
+    displayName,
     openedSuccess: opened.success === true,
+    reused: false,
     login: {
-      success: login.success === true,
+      success: true,
       data: {
         result: {
-          ok: login.data?.result?.ok === true,
-          authMode: login.data?.result?.authMode || token.authMode,
-          username: login.data?.result?.username || null,
-          dataSource: login.data?.result?.dataSource || null,
+          ok: true,
+          authMode: token.authMode,
+          username: token.payload?.username || headerUser,
+          dataSource: token.payload?.dataSource || null,
         },
       },
     },
   };
 }
 
+function navigateRoute(args, label) {
+  const command = agentBrowserCommand();
+  if (!command) {
+    throw new Error('agent_browser_command_missing: install agent-browser or set AGENT_BROWSER_ROUTE_DISPLAY_AGENT_BROWSER_CMD');
+  }
+  const result = commandResult(command, args, { timeout: routeNavigationTimeoutMs });
+  if (result.error?.code === 'ETIMEDOUT') return;
+  if (result.error) {
+    throw new Error(`${label} failed using ${command}\n${result.error.message}`.trim());
+  }
+  if (result.status !== 0) {
+    throw new Error(`${label} failed using ${command}\n${result.stdout}${result.stderr}`.trim());
+  }
+}
+
+function waitForRouteDisplay(label) {
+  const deadline = Date.now() + routeDisplayTimeoutMs;
+  do {
+    const inspection = inspectRouteDisplays();
+    const displayName = inspection.data?.routeSpecificUsers?.[label]?.displayName;
+    if (displayName) return displayName;
+    sleep(5000);
+  } while (Date.now() < deadline);
+  throw new Error(`route_${label.toLowerCase()}_display_timeout: no route-specific Xorg display appeared`);
+}
+
 function inspectRouteDisplays() {
-  const result = commandResult(process.execPath, ['scripts/inspect-rdp-route-displays.js', '--display-content']);
+  const scriptRoot = process.env.AGENT_BROWSER_REMOTE_VIEW_SCRIPT_ROOT || 'scripts';
+  const result = commandResult(process.execPath, [join(scriptRoot, 'inspect-rdp-route-displays.js'), '--display-content']);
   const parsed = parseJson(result.stdout, 'route display inspector');
   return {
     exitCode: result.status,
@@ -311,7 +426,7 @@ function sleep(ms) {
 
 let output;
 try {
-  const routes = (routePoolFromEnv() || routePoolFromDoctor()).slice(0, 2);
+  const routes = (routePoolFromEnv() || routePoolFromDatabase() || routePoolFromDoctor()).slice(0, 2);
   if (routes.length < 2) {
     throw new Error(`route_pool_missing: expected at least two route-pool entries, got ${routes.length}`);
   }

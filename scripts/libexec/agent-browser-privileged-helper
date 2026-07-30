@@ -9,6 +9,7 @@ Usage: agent-browser-privileged-helper <command> [options]
 
 Commands:
   check
+  verify-install --group <group> --sudoers <path> --sha256 <digest>
   status-json
   ensure-rdp-route-user --user <user>
   restart-xrdp
@@ -52,6 +53,58 @@ require_display_name() {
     echo "display must look like :10 or :10.0" >&2
     exit 2
   fi
+}
+
+verify_install() {
+  require_root
+  local group_name=""
+  local sudoers_path=""
+  local expected_sha256=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --group)
+        group_name="$(arg_value "$1" "${2:-}")"
+        shift 2
+        ;;
+      --sudoers)
+        sudoers_path="$(arg_value "$1" "${2:-}")"
+        shift 2
+        ;;
+      --sha256)
+        expected_sha256="$(arg_value "$1" "${2:-}")"
+        shift 2
+        ;;
+      *)
+        echo "Unknown verify-install argument: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  if [[ ! "$group_name" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    echo "verify-install requires a valid group" >&2
+    exit 2
+  fi
+  if [[ "$sudoers_path" != */sudoers.d/agent-browser ]]; then
+    echo "verify-install requires the agent-browser sudoers path" >&2
+    exit 2
+  fi
+  if [[ ! "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]; then
+    echo "verify-install requires a SHA-256 digest" >&2
+    exit 2
+  fi
+
+  local helper_path
+  helper_path="$(readlink -f "$0")"
+  [[ "$(stat -c '%U:%G:%a' "$helper_path")" == "root:root:755" ]]
+  [[ "$(sha256sum "$helper_path" | awk '{print $1}')" == "$expected_sha256" ]]
+  [[ -f "$sudoers_path" ]]
+  [[ "$(stat -c '%U:%G:%a' "$sudoers_path")" == "root:root:440" ]]
+  printf '# agent-browser narrow privileged helper\n%%%s ALL=(root) NOPASSWD: %s\n' \
+    "$group_name" "$helper_path" \
+    | cmp -s - "$sudoers_path"
+  echo "agent-browser privileged install verified"
 }
 
 display_socket_exists() {
@@ -211,6 +264,10 @@ case "${1:-}" in
   check)
     require_root
     echo "agent-browser privileged helper ready"
+    ;;
+  verify-install)
+    shift
+    verify_install "$@"
     ;;
   status-json)
     status_json

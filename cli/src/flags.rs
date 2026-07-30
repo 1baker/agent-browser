@@ -1324,7 +1324,10 @@ pub fn launch_config_status(flags: &Flags) -> Value {
         .site_policies
         .values()
         .any(|policy| policy.browser_build == Some(BrowserBuild::StealthcdpChromium));
-    let stealth_cdp_chromium_required = stealth_default || stealth_site_policy;
+    // Site policies select a browser build only when that site is requested.
+    // They must not make an otherwise healthy stock-Chrome installation fail
+    // global launch readiness.
+    let stealth_cdp_chromium_required = stealth_default;
     let executable_path_exists = flags
         .executable_path
         .as_ref()
@@ -1370,6 +1373,7 @@ pub fn launch_config_status(flags: &Flags) -> Value {
 
     json!({
         "defaultBrowserBuild": default_browser_build,
+        "stealthCdpChromiumSitePolicyConfigured": stealth_site_policy,
         "stealthCdpChromiumRequired": stealth_cdp_chromium_required,
         "stealthCdpChromiumReady": stealth_ready,
         "executablePath": flags.executable_path.clone(),
@@ -2582,6 +2586,58 @@ mod tests {
             linux_path["reason"],
             "stealthcdp_executable_not_on_windows_mount"
         );
+    }
+
+    #[test]
+    fn test_builtin_site_policy_does_not_require_stealth_for_global_launch_readiness() {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-browser-stock-launch-readiness-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+        ));
+        let home = dir.join("home");
+        fs::create_dir_all(&home).unwrap();
+        let config_path = dir.join("agent-browser.json");
+        fs::write(&config_path, "{}").unwrap();
+        let guard = EnvGuard::new(&[
+            "AGENT_BROWSER_EXECUTABLE_PATH",
+            "AGENT_BROWSER_STEALTHCDP_CHROMIUM_INSTALL_ROOT",
+            "AGENT_BROWSER_STEALTHCDP_CHROMIUM_MANIFEST_PATH",
+            "HOME",
+            "LOCALAPPDATA",
+        ]);
+        guard.remove("AGENT_BROWSER_EXECUTABLE_PATH");
+        guard.set(
+            "AGENT_BROWSER_STEALTHCDP_CHROMIUM_INSTALL_ROOT",
+            dir.join("missing-stealthcdp").to_str().unwrap(),
+        );
+        guard.set(
+            "AGENT_BROWSER_STEALTHCDP_CHROMIUM_MANIFEST_PATH",
+            dir.join("missing-stealthcdp-manifest.json")
+                .to_str()
+                .unwrap(),
+        );
+        guard.set("HOME", home.to_str().unwrap());
+        guard.remove("LOCALAPPDATA");
+
+        let mut flags = parse_flags(&args(&format!(
+            "--config {} service status",
+            config_path.display()
+        )));
+        flags.service_state.apply_builtin_site_policies();
+        let launch_config = launch_config_status(&flags);
+
+        assert_eq!(launch_config["defaultBrowserBuild"], Value::Null);
+        assert_eq!(
+            launch_config["stealthCdpChromiumSitePolicyConfigured"],
+            true
+        );
+        assert_eq!(launch_config["stealthCdpChromiumRequired"], false);
+        assert_eq!(launch_config["stealthCdpChromiumReady"], true);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

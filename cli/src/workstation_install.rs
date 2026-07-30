@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::env;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command, Output, Stdio};
 
@@ -145,6 +145,11 @@ fn run_workstation_install(args: &[String]) {
     }
 
     let mutated = if parsed.mode == InstallMode::Apply {
+        if !isolated_root {
+            if let Err(error) = quiesce_existing_user_units(&paths) {
+                fail(&error, parsed.json);
+            }
+        }
         match materialize_payload(&paths, &parsed) {
             Ok(()) => {
                 phases.extend(["payload-staged", "units-staged", "payload-committed"]);
@@ -287,6 +292,12 @@ fn reconcile_workstation() -> Result<WorkstationReconcileReport, String> {
     let command_env = workstation_command_env(&paths);
     let mut steps = Vec::new();
 
+    quiesce_existing_user_units(&paths)?;
+    steps.push(ReconcileStep {
+        name: "existing-user-units-quiesced",
+        success: true,
+    });
+
     run_required(
         paths
             .binary
@@ -397,8 +408,17 @@ fn reconcile_workstation() -> Result<WorkstationReconcileReport, String> {
             "--fail".to_string(),
             "--silent".to_string(),
             "--show-error".to_string(),
+            "--connect-timeout".to_string(),
+            "5".to_string(),
             "--max-time".to_string(),
-            "8".to_string(),
+            "30".to_string(),
+            "--retry".to_string(),
+            "6".to_string(),
+            "--retry-delay".to_string(),
+            "3".to_string(),
+            "--retry-max-time".to_string(),
+            "180".to_string(),
+            "--retry-all-errors".to_string(),
             "--request".to_string(),
             "POST".to_string(),
             "--header".to_string(),
@@ -1089,6 +1109,18 @@ fn activate_user_units(
         "systemctl",
         &[
             "--user",
+            "reset-failed",
+            "agent-browser-runtime-interlock.service",
+        ],
+        support_root,
+        command_env,
+        false,
+        "clear a prior bounded interlock failure",
+    )?;
+    run_required(
+        "systemctl",
+        &[
+            "--user",
             "enable",
             "--now",
             "agent-browser-dashboard.service",
@@ -1115,6 +1147,40 @@ fn activate_user_units(
         )?;
     }
     Ok(())
+}
+
+fn quiesce_existing_user_units(paths: &InstallPaths) -> Result<(), String> {
+    let managed_units = [
+        "agent-browser-dashboard.service",
+        "agent-browser-runtime-interlock.service",
+        "agent-browser-runtime-interlock.timer",
+        "agent-browser-guacamole-postgres-backup.timer",
+    ];
+    if !managed_units
+        .iter()
+        .any(|unit| paths.unit_dir.join(unit).is_file())
+    {
+        return Ok(());
+    }
+
+    run_required(
+        "systemctl",
+        &["--user", "daemon-reload"],
+        &paths.root,
+        &[],
+        false,
+        "reload existing workstation user units before reconciliation",
+    )?;
+    let mut args = vec!["--user", "stop"];
+    args.extend(managed_units);
+    run_required(
+        "systemctl",
+        &args,
+        &paths.root,
+        &[],
+        false,
+        "quiesce existing workstation user units before reconciliation",
+    )
 }
 
 fn verify_final_doctors(
@@ -1586,12 +1652,12 @@ fn render_units(
         (
             "agent-browser-runtime-interlock.service",
             format!(
-                "[Unit]\nDescription=agent-browser runtime health interlock\nAfter=agent-browser-dashboard.service network-online.target\nWants=agent-browser-dashboard.service network-online.target\n\n[Service]\nType=oneshot\n{runtime_environment}ExecStart={binary} install workstation reconcile --json\nTimeoutStartSec=5min\n"
+                "[Unit]\nDescription=agent-browser runtime health interlock\nAfter=agent-browser-dashboard.service network-online.target\nWants=agent-browser-dashboard.service network-online.target\n\n[Service]\nType=oneshot\n{runtime_environment}ExecStart={binary} install workstation reconcile --json\nTimeoutStartSec=15min\n"
             ),
         ),
         (
             "agent-browser-runtime-interlock.timer",
-            "[Unit]\nDescription=Periodically reconcile agent-browser runtime health\n\n[Timer]\nOnBootSec=20s\nOnUnitInactiveSec=5min\nAccuracySec=5s\nPersistent=true\nUnit=agent-browser-runtime-interlock.service\n\n[Install]\nWantedBy=timers.target\n".to_string(),
+            "[Unit]\nDescription=Periodically reconcile agent-browser runtime health\n\n[Timer]\nOnActiveSec=5min\nOnUnitInactiveSec=5min\nAccuracySec=5s\nPersistent=true\nUnit=agent-browser-runtime-interlock.service\n\n[Install]\nWantedBy=timers.target\n".to_string(),
         ),
         (
             "agent-browser-guacamole-postgres-backup.service",
@@ -1616,6 +1682,13 @@ fn inject_failure(phase: &str) -> Result<(), String> {
 }
 
 fn commit_directory(staged: &Path, destination: &Path) -> Result<(), String> {
+    if destination.exists() && directory_trees_match(staged, destination)? {
+        fs::remove_dir_all(staged).map_err(display_io(
+            "remove unchanged staged support directory",
+            staged,
+        ))?;
+        return Ok(());
+    }
     if destination.exists() {
         fs::remove_dir_all(destination).map_err(display_io(
             "replace installed support directory",
@@ -1633,6 +1706,13 @@ fn commit_directory(staged: &Path, destination: &Path) -> Result<(), String> {
 }
 
 fn replace_file(staged: &Path, destination: &Path) -> Result<(), String> {
+    if destination.exists() && files_match(staged, destination)? {
+        fs::remove_file(staged).map_err(display_io(
+            "remove unchanged staged workstation file",
+            staged,
+        ))?;
+        return Ok(());
+    }
     if destination.exists() {
         fs::remove_file(destination).map_err(display_io(
             "replace installed workstation file",
@@ -1641,6 +1721,106 @@ fn replace_file(staged: &Path, destination: &Path) -> Result<(), String> {
     }
     fs::rename(staged, destination)
         .map_err(display_io("commit installed workstation file", destination))
+}
+
+fn directory_trees_match(left: &Path, right: &Path) -> Result<bool, String> {
+    let left_metadata =
+        fs::symlink_metadata(left).map_err(display_io("inspect staged directory", left))?;
+    let right_metadata =
+        fs::symlink_metadata(right).map_err(display_io("inspect installed directory", right))?;
+    if !left_metadata.is_dir()
+        || !right_metadata.is_dir()
+        || !permissions_match(&left_metadata, &right_metadata)
+    {
+        return Ok(false);
+    }
+
+    let mut left_entries = directory_entry_names(left)?;
+    let mut right_entries = directory_entry_names(right)?;
+    left_entries.sort();
+    right_entries.sort();
+    if left_entries != right_entries {
+        return Ok(false);
+    }
+
+    for name in left_entries {
+        let left_entry = left.join(&name);
+        let right_entry = right.join(&name);
+        let left_type = fs::symlink_metadata(&left_entry)
+            .map_err(display_io("inspect staged support entry", &left_entry))?
+            .file_type();
+        let right_type = fs::symlink_metadata(&right_entry)
+            .map_err(display_io("inspect installed support entry", &right_entry))?
+            .file_type();
+        if left_type.is_dir() && right_type.is_dir() {
+            if !directory_trees_match(&left_entry, &right_entry)? {
+                return Ok(false);
+            }
+        } else if left_type.is_file() && right_type.is_file() {
+            if !files_match(&left_entry, &right_entry)? {
+                return Ok(false);
+            }
+        } else {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn directory_entry_names(path: &Path) -> Result<Vec<std::ffi::OsString>, String> {
+    fs::read_dir(path)
+        .map_err(display_io("read workstation directory", path))?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.file_name())
+                .map_err(|error| format!("Unable to read entry in {}: {error}", path.display()))
+        })
+        .collect()
+}
+
+fn files_match(left: &Path, right: &Path) -> Result<bool, String> {
+    let left_metadata =
+        fs::symlink_metadata(left).map_err(display_io("inspect staged file", left))?;
+    let right_metadata =
+        fs::symlink_metadata(right).map_err(display_io("inspect installed file", right))?;
+    if !left_metadata.is_file()
+        || !right_metadata.is_file()
+        || left_metadata.len() != right_metadata.len()
+        || !permissions_match(&left_metadata, &right_metadata)
+    {
+        return Ok(false);
+    }
+
+    let mut left_file = fs::File::open(left).map_err(display_io("open staged file", left))?;
+    let mut right_file = fs::File::open(right).map_err(display_io("open installed file", right))?;
+    let mut left_buffer = [0_u8; 64 * 1024];
+    let mut right_buffer = [0_u8; 64 * 1024];
+    loop {
+        let left_count = left_file
+            .read(&mut left_buffer)
+            .map_err(display_io("read staged file", left))?;
+        let right_count = right_file
+            .read(&mut right_buffer)
+            .map_err(display_io("read installed file", right))?;
+        if left_count != right_count || left_buffer[..left_count] != right_buffer[..right_count] {
+            return Ok(false);
+        }
+        if left_count == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn permissions_match(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        left.permissions().mode() == right.permissions().mode()
+    }
+    #[cfg(not(unix))]
+    {
+        left.permissions().readonly() == right.permissions().readonly()
+    }
 }
 
 fn display_io<'a>(action: &'static str, path: &'a Path) -> impl FnOnce(io::Error) -> String + 'a {
@@ -1740,10 +1920,14 @@ mod tests {
             Path::new("/home/test/.agent-browser/guacamole/secrets/guacamole.env"),
             4848,
         );
-        for (_, body) in units {
+        for (name, body) in units {
             assert!(!body.contains("pnpm"));
             assert!(!body.contains("WorkingDirectory="));
             assert!(!body.contains("workspace.local"));
+            if name == "agent-browser-runtime-interlock.timer" {
+                assert!(body.contains("OnActiveSec=5min"));
+                assert!(!body.contains("OnBootSec="));
+            }
         }
     }
 
@@ -1880,6 +2064,48 @@ mod tests {
                 0o600
             );
         }
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_payload_files_and_directories_keep_their_inodes() {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = env::temp_dir().join(format!(
+            "agent-browser-workstation-idempotency-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let staged = root.join("staged");
+        let installed = root.join("installed");
+        fs::create_dir_all(staged.join("nested")).unwrap();
+        fs::create_dir_all(installed.join("nested")).unwrap();
+        fs::write(staged.join("nested/asset"), "same").unwrap();
+        fs::write(installed.join("nested/asset"), "same").unwrap();
+
+        let installed_dir_inode = fs::metadata(&installed).unwrap().ino();
+        let installed_asset_inode = fs::metadata(installed.join("nested/asset")).unwrap().ino();
+        commit_directory(&staged, &installed).unwrap();
+
+        assert_eq!(fs::metadata(&installed).unwrap().ino(), installed_dir_inode);
+        assert_eq!(
+            fs::metadata(installed.join("nested/asset")).unwrap().ino(),
+            installed_asset_inode
+        );
+        assert!(!staged.exists());
+
+        let staged_file = root.join("staged-binary");
+        let installed_file = root.join("installed-binary");
+        fs::write(&staged_file, "same binary").unwrap();
+        fs::write(&installed_file, "same binary").unwrap();
+        let installed_file_inode = fs::metadata(&installed_file).unwrap().ino();
+        replace_file(&staged_file, &installed_file).unwrap();
+        assert_eq!(
+            fs::metadata(&installed_file).unwrap().ino(),
+            installed_file_inode
+        );
+        assert!(!staged_file.exists());
 
         fs::remove_dir_all(&root).unwrap();
     }

@@ -2498,7 +2498,26 @@ fn remote_view_privilege_status() -> serde_json::Value {
         .map(|groups| groups.iter().any(|group| group == &group_name))
         .unwrap_or(false);
     let helper_exists = Path::new(&helper_path).exists();
-    let sudoers_exists = Path::new(&sudoers_path).exists();
+    let helper_sha256 = sha256_bytes(REMOTE_VIEW_PRIVILEGED_HELPER.as_bytes());
+    let install_verification = command_output_summary(
+        "sudo",
+        &[
+            "-n",
+            &helper_path,
+            "verify-install",
+            "--group",
+            &group_name,
+            "--sudoers",
+            &sudoers_path,
+            "--sha256",
+            &helper_sha256,
+        ],
+    );
+    let sudoers_verified = install_verification
+        .get("success")
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let sudoers_exists = Path::new(&sudoers_path).exists() || sudoers_verified;
     let helper_check = command_output_summary("sudo", &["-n", &helper_path, "check"]);
     let helper_status = helper_status_output(command_output_summary(
         "sudo",
@@ -2588,6 +2607,8 @@ fn remote_view_privilege_status() -> serde_json::Value {
         "helperDesktopSession": helper_desktop_session,
         "sudoersPath": sudoers_path,
         "sudoersExists": sudoers_exists,
+        "sudoersVerified": sudoers_verified,
+        "installVerification": install_verification,
         "helperCheck": helper_check,
         "helperStatus": helper_status,
         "issues": issues,
