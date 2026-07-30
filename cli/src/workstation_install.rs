@@ -15,6 +15,14 @@ use std::process::exit;
 const INSTALL_SCHEMA_VERSION: &str = "agent-browser.workstation-install.v1";
 const DEFAULT_DASHBOARD_PORT: u16 = 4848;
 const DEFAULT_GUACAMOLE_PORT: u16 = 8092;
+const GUACAMOLE_COMPOSE: &str = include_str!("../assets/workstation/guacamole/compose.yml");
+const GUACAMOLE_ENVIRONMENT_EXAMPLE: &str =
+    include_str!("../assets/workstation/guacamole/environment.example");
+const GUACAMOLE_SCHEMA_GENERATOR: &str =
+    include_str!("../assets/workstation/guacamole/generate-initdb.sh");
+const GUACAMOLE_BUNDLE_MANIFEST: &str =
+    include_str!("../assets/workstation/guacamole/manifest.json");
+const GUACAMOLE_INITDB: &str = include_str!("../assets/workstation/guacamole/init/001-initdb.sql");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallMode {
@@ -37,6 +45,8 @@ struct WorkstationPaths {
     binary: String,
     support_dir: String,
     unit_dir: String,
+    guacamole_state_dir: String,
+    guacamole_secret_file: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,6 +113,8 @@ pub fn run_workstation_install(args: &[String]) {
             binary: paths.binary.display().to_string(),
             support_dir: paths.support_dir.display().to_string(),
             unit_dir: paths.unit_dir.display().to_string(),
+            guacamole_state_dir: paths.guacamole_state_dir.display().to_string(),
+            guacamole_secret_file: paths.guacamole_secret_file.display().to_string(),
         },
         phases,
         next_action: "workstation substrate provisioning is required before service activation",
@@ -197,6 +209,8 @@ struct InstallPaths {
     binary: PathBuf,
     support_dir: PathBuf,
     unit_dir: PathBuf,
+    guacamole_state_dir: PathBuf,
+    guacamole_secret_file: PathBuf,
 }
 
 fn workstation_root() -> Result<PathBuf, String> {
@@ -218,6 +232,8 @@ fn install_paths(root: &Path) -> InstallPaths {
             .join(".local/lib/agent-browser")
             .join(env!("CARGO_PKG_VERSION")),
         unit_dir: root.join(".config/systemd/user"),
+        guacamole_state_dir: root.join(".agent-browser/guacamole"),
+        guacamole_secret_file: root.join(".agent-browser/guacamole/secrets/guacamole.env"),
     }
 }
 
@@ -256,6 +272,7 @@ fn materialize_payload(paths: &InstallPaths, args: &WorkstationInstallArgs) -> R
             "Versioned agent-browser workstation support assets.\n",
         )
         .map_err(display_io("stage support readme", &staged_support))?;
+        materialize_guacamole_assets(&staged_support)?;
 
         let final_binary = paths.binary.display().to_string();
         for (name, content) in render_units(&final_binary, args.dashboard_port) {
@@ -278,20 +295,91 @@ fn materialize_payload(paths: &InstallPaths, args: &WorkstationInstallArgs) -> R
             let entry = entry.map_err(|error| format!("Unable to read staged unit: {error}"))?;
             replace_file(&entry.path(), &paths.unit_dir.join(entry.file_name()))?;
         }
+        ensure_workstation_state(paths, args)?;
         Ok(())
     })();
     let _ = fs::remove_dir_all(&staging);
     result
 }
 
+fn materialize_guacamole_assets(staged_support: &Path) -> Result<(), String> {
+    let guacamole_dir = staged_support.join("guacamole");
+    let init_dir = guacamole_dir.join("init");
+    fs::create_dir_all(&init_dir)
+        .map_err(display_io("create Guacamole asset staging", &init_dir))?;
+    let assets = [
+        ("compose.yml", GUACAMOLE_COMPOSE, false),
+        ("environment.example", GUACAMOLE_ENVIRONMENT_EXAMPLE, false),
+        ("generate-initdb.sh", GUACAMOLE_SCHEMA_GENERATOR, true),
+        ("manifest.json", GUACAMOLE_BUNDLE_MANIFEST, false),
+        ("init/001-initdb.sql", GUACAMOLE_INITDB, false),
+    ];
+    for (relative, content, executable) in assets {
+        let destination = guacamole_dir.join(relative);
+        fs::write(&destination, content)
+            .map_err(display_io("stage Guacamole support asset", &destination))?;
+        if executable {
+            set_executable(&destination)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_workstation_state(
+    paths: &InstallPaths,
+    args: &WorkstationInstallArgs,
+) -> Result<(), String> {
+    let secrets_dir = paths.guacamole_state_dir.join("secrets");
+    for directory in [
+        &paths.guacamole_state_dir,
+        &secrets_dir,
+        &paths.guacamole_state_dir.join("state"),
+        &paths.guacamole_state_dir.join("backups"),
+    ] {
+        fs::create_dir_all(directory)
+            .map_err(display_io("create Guacamole state directory", directory))?;
+        set_private_directory(directory)?;
+    }
+
+    let environment_file = paths.guacamole_state_dir.join(".env");
+    fs::write(
+        &environment_file,
+        format!(
+            "AGENT_BROWSER_GUACAMOLE_HTTP_PORT={}\n",
+            args.guacamole_port
+        ),
+    )
+    .map_err(display_io(
+        "write Guacamole listener environment",
+        &environment_file,
+    ))?;
+
+    if !paths.guacamole_secret_file.exists() {
+        let secret = format!(
+            "POSTGRES_PASSWORD={}{}\n",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        fs::write(&paths.guacamole_secret_file, secret).map_err(display_io(
+            "write protected Guacamole secrets",
+            &paths.guacamole_secret_file,
+        ))?;
+    }
+    set_private_file(&paths.guacamole_secret_file)?;
+    Ok(())
+}
+
 fn render_manifest(args: &WorkstationInstallArgs) -> String {
+    let guacamole_bundle: serde_json::Value = serde_json::from_str(GUACAMOLE_BUNDLE_MANIFEST)
+        .expect("embedded Guacamole bundle manifest must be valid JSON");
     serde_json::to_string_pretty(&serde_json::json!({
         "schemaVersion": "agent-browser.workstation-payload.v1",
         "version": env!("CARGO_PKG_VERSION"),
         "dashboardPort": args.dashboard_port,
         "guacamolePort": args.guacamole_port,
         "runtimeController": "installed-binary",
-        "sourceCheckoutRequired": false
+        "sourceCheckoutRequired": false,
+        "guacamoleBundle": guacamole_bundle
     }))
     .expect("static workstation manifest must serialize")
 }
@@ -374,6 +462,26 @@ fn set_executable(path: &Path) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))
             .map_err(display_io("set executable permissions on", path))?;
+    }
+    Ok(())
+}
+
+fn set_private_directory(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(display_io("set private directory permissions on", path))?;
+    }
+    Ok(())
+}
+
+fn set_private_file(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(display_io("set private file permissions on", path))?;
     }
     Ok(())
 }

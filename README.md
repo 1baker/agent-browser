@@ -70,9 +70,10 @@ already ready.
 
 The `v0.28.0` release-candidate lane adds
 `agent-browser install workstation`. Its current bounded packet plans or
-materializes the installed binary, versioned support manifest, dashboard
-service, runtime interlock, and PostgreSQL backup units without a source
-checkout or pnpm reference:
+materializes the installed binary, versioned support manifest, pinned local
+Guacamole Compose stack and schema, protected generated PostgreSQL credential,
+dashboard service, runtime interlock, and PostgreSQL backup units without a
+source checkout or pnpm reference:
 
 ```bash
 agent-browser install workstation --dry-run --json

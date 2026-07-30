@@ -131,6 +131,7 @@
     "install:privileges": "bash scripts/install-agent-browser-privileges.sh",
     "test:install-privileges-clean-fixture": "bash scripts/smoke-install-privileges-clean-fixture.sh",
     "test:workstation-install-fixture": "node scripts/test-workstation-install-fixture.js",
+    "test:workstation-guacamole-assets": "node scripts/test-workstation-guacamole-assets.js",
     "sync:rdp-guac-existing-user-route-pool": "bash scripts/sync-rdp-guac-existing-user-route-pool.sh",
     "sync:rdp-guac-route-specific-user-pool": "bash scripts/sync-rdp-guac-route-specific-user-pool.sh",
     "open:rdp-route-displays": "node scripts/open-rdp-guac-route-displays.js",
