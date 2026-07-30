@@ -2530,7 +2530,10 @@ mod tests {
         )));
         let launch_config = launch_config_status(&flags);
 
-        assert_eq!(flags.executable_path.as_deref(), chrome_path.to_str());
+        assert_eq!(
+            flags.executable_path.as_deref().map(Path::new),
+            Some(chrome_path.as_path())
+        );
         assert_eq!(flags.executable_path_source.as_deref(), Some("manifest"));
         assert_eq!(
             flags.service_state.default_browser_build,

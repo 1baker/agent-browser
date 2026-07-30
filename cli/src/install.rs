@@ -2090,7 +2090,25 @@ fn pid_is_running(pid: u32) -> bool {
     {
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle == 0 {
+            return false;
+        }
+        let mut exit_code = 0;
+        let read_ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+        unsafe {
+            CloseHandle(handle);
+        }
+        read_ok && exit_code == STILL_ACTIVE as u32
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         false

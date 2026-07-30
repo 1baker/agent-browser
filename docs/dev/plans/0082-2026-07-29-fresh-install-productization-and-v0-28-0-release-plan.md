@@ -411,6 +411,20 @@ Status: pending
   The same run also exposed a macOS test fixture whose socket path inherited
   the runner's long temporary root and exceeded `SUN_LEN`; the fixture now
   uses a short, unique Unix temporary path.
+- Exact-head fast CI run `30549724644` passed at `98316d14`. Full CI run
+  `30550334355` completed enough of the Windows suite to expose native-path
+  assertions, Unix-specific home isolation, and installer inventory's
+  fail-closed non-Unix process-liveness stub. Path assertions now compare
+  native paths, the repository isolation test is Unix-gated, and Windows
+  inventory uses the existing `windows-sys` dependency for live process
+  status. The native E2E lane passed 55 of 56 tests before proving a separate
+  recovery lifecycle regression: terminal-browser compaction preserved the
+  health event but removed the record required to emit recovery events on
+  relaunch. Recovery now reconstructs a bounded tombstone from that event
+  history, preserves trace context, and restores the expected
+  process-exited-to-ready sequence. Focused regressions, the real-browser
+  crash and relaunch E2E, formatting, strict Clippy, and the complete
+  serialized Rust CI harness pass locally.
 - Release remains no-go pending exact-head fast and full CI, release dry run,
   merge, publication, and public-asset reinstall.
 

@@ -4,6 +4,47 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 130 | 2026-07-30
+
+Scope: repair the next exact-head Windows and native E2E release defects.
+
+Actions:
+
+- Confirmed exact-head fast CI run `30549724644` fully green at commit
+  `98316d14`.
+- Dispatched full CI run `30550334355`. Windows found three native-path
+  assertions, two inventory classifications hidden by a non-Unix process
+  liveness stub, and one repository test whose `HOME` isolation is
+  Unix-specific.
+- Changed path fixtures to compare native paths, constrained the
+  Unix-specific repository isolation test, and implemented Windows process
+  liveness through the existing `windows-sys` dependency.
+- The native E2E lane passed 55 of 56 browser tests and exposed a lifecycle
+  regression after an intentional Chrome crash. Reconciliation preserved the
+  terminal health event and correctly removed operational browser state, but
+  relaunch could no longer reconstruct the recovery tombstone. Recovery now
+  rehydrates that bounded state from event history, preserves trace context,
+  emits the recovery sequence, and resolves through a fresh ready browser.
+
+Validation:
+
+- five focused cross-platform regressions
+- recovery-history unit regression
+- real-browser crash and automatic relaunch E2E
+- Rust formatting
+- strict Clippy with warnings denied
+- complete serialized Rust CI harness
+
+Result:
+
+- All focused regressions, the real-browser E2E, formatting, strict Clippy,
+  and the complete serialized Rust CI harness pass locally.
+- Full CI run `30550334355` remains valid Windows and E2E failure evidence for
+  commit `98316d14`. Matrix fail-fast cancelled both macOS lanes after those
+  failures.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 129 | 2026-07-30
 
 Scope: repair the next exact-head full-CI defect.

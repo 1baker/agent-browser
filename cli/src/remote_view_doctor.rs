@@ -2586,7 +2586,10 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "/tmp/agent-browser-scripts/smoke-rdp-guac-route-pool-readiness.js".to_string(),
+                script_root
+                    .join("smoke-rdp-guac-route-pool-readiness.js")
+                    .display()
+                    .to_string(),
                 "--report-only".to_string(),
                 "--allow-shared-target".to_string(),
             ]

@@ -109,6 +109,16 @@ release, and public-asset reinstall.
   display or fails closed with cleanup. The same run found a macOS daemon
   socket fixture exceeding `SUN_LEN`; that test now uses a short, unique Unix
   temporary path.
+- Exact-head fast CI run `30549724644` passed at `98316d14`. Full CI run
+  `30550334355` reached the complete Windows suite and exposed native-path
+  fixture assumptions, Unix-only home isolation, and an actual Windows
+  process-liveness gap in installer inventory. The path fixtures now compare
+  native paths, the repository test is Unix-gated, and Windows inventory uses
+  `windows-sys` to distinguish active processes. The native E2E lane also
+  exposed recovery tracing lost after intentional terminal-browser compaction.
+  Relaunch now reconstructs the bounded recovery tombstone from preserved
+  event history, retains trace context, and completes the
+  process-exited-to-ready recovery sequence.
 - The release remains no-go pending exact-head fast and full CI, the release
   dry run, merge, publication, and public-asset proof.
 - Plan
@@ -117,9 +127,9 @@ release, and public-asset reinstall.
 
 ### Next Recommendation
 
-Commit and push the private-display readiness repair, then require exact-head
-fast CI, manually dispatched full CI, and the release dry run before merging
-PR 7.
+Commit and push the Windows inventory and recovery-history repair, then
+require exact-head fast CI, manually dispatched full CI, and the release dry
+run before merging PR 7.
 
 ## P81 | Guacamole Route-Pool State Reconciliation
 
