@@ -306,9 +306,10 @@ Status: pending
   the exact PostgreSQL user postcondition.
 - The next clean continuation passed the repaired account gate and opened both
   route displays, then stopped on `systemctl reset-failed` because the newly
-  written interlock service was not loaded. Activation now loads the unit
-  state first, skips reset only for `not-found`, and keeps loaded-unit reset
-  failures fatal.
+  written interlock service was not loaded. A resumed run proved that
+  `systemctl show` can synthesize `LoadState=loaded` from a static unit file
+  even when the user manager has no loaded unit. Activation now resets only an
+  exact `is-failed` result and rejects unexpected systemd state output.
 - The resumed candidate then exposed an executable-handoff cleanup race. The
   retiring daemon removed the replacement daemon's socket and session metadata
   after the replacement rebound the shared session path. Daemon shutdown now

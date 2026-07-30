@@ -35,9 +35,9 @@ Actions:
   accepts only the exact database user postcondition.
 - The next clean continuation passed header creation and route opening, then
   failed while resetting a newly written interlock service that systemd had
-  not loaded yet. Activation now queries the unit load state first, skips only
-  an absent fresh unit, and preserves fail-closed reset behavior for loaded
-  units.
+  not loaded yet. A resumed run proved file-derived `LoadState=loaded` is not
+  manager-load evidence for a static unit. Activation now resets only an exact
+  `is-failed` result and rejects unexpected systemd state output.
 - The resumed candidate reached executable handoff, where the retiring daemon
   removed the replacement daemon's rebound Unix socket and session metadata.
   Shutdown now compares the socket device and inode before cleaning any shared

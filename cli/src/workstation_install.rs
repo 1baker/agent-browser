@@ -1309,7 +1309,7 @@ fn activate_user_units(
         false,
         "reload user service units",
     )?;
-    reset_failed_user_unit_if_loaded(
+    reset_failed_user_unit_if_failed(
         "agent-browser-runtime-interlock.service",
         support_root,
         command_env,
@@ -1346,20 +1346,20 @@ fn activate_user_units(
     Ok(())
 }
 
-fn reset_failed_user_unit_if_loaded(
+fn reset_failed_user_unit_if_failed(
     unit: &str,
     support_root: &Path,
     command_env: &[(String, String)],
 ) -> Result<(), String> {
-    let load_state = run_status(
+    let failed_state = run_status(
         "systemctl",
-        &["--user", "show", "--property=LoadState", "--value", unit],
+        &["--user", "is-failed", unit],
         support_root,
         command_env,
         false,
     )
     .map_err(|error| format!("inspect a prior bounded interlock failure: {error}"))?;
-    if !systemd_unit_is_loaded(&load_state.stdout) {
+    if !systemd_unit_is_failed(&failed_state.stdout)? {
         return Ok(());
     }
     run_required(
@@ -1372,8 +1372,15 @@ fn reset_failed_user_unit_if_loaded(
     )
 }
 
-fn systemd_unit_is_loaded(stdout: &[u8]) -> bool {
-    String::from_utf8_lossy(stdout).trim() == "loaded"
+fn systemd_unit_is_failed(stdout: &[u8]) -> Result<bool, String> {
+    match String::from_utf8_lossy(stdout).trim() {
+        "failed" => Ok(true),
+        "active" | "activating" | "deactivating" | "inactive" | "maintenance" | "reloading"
+        | "unknown" => Ok(false),
+        state => Err(format!(
+            "inspect a prior bounded interlock failure: unexpected systemd state '{state}'"
+        )),
+    }
 }
 
 /// Stops installed user units that could race with workstation reconciliation.
@@ -2355,11 +2362,11 @@ mod tests {
     }
 
     #[test]
-    fn systemd_reset_only_targets_a_loaded_unit() {
-        assert!(systemd_unit_is_loaded(b"loaded\n"));
-        assert!(!systemd_unit_is_loaded(b"not-found\n"));
-        assert!(!systemd_unit_is_loaded(b"masked\n"));
-        assert!(!systemd_unit_is_loaded(b""));
+    fn systemd_reset_only_targets_a_failed_unit() {
+        assert_eq!(systemd_unit_is_failed(b"failed\n"), Ok(true));
+        assert_eq!(systemd_unit_is_failed(b"inactive\n"), Ok(false));
+        assert_eq!(systemd_unit_is_failed(b"unknown\n"), Ok(false));
+        assert!(systemd_unit_is_failed(b"").is_err());
     }
 
     #[cfg(unix)]
