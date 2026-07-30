@@ -5056,6 +5056,7 @@ Examples:
 agent-browser install - Install browser binaries
 
 Usage: agent-browser install [--with-deps] [--with-remote-view-privileges]
+       agent-browser install workstation <--dry-run|--apply> [--json]
        agent-browser install stealthcdp-chromium [--force]
        agent-browser install doctor [--json]
 
@@ -5068,7 +5069,13 @@ Options:
   --with-remote-view-privileges
                        Install the agent-browser group, root-owned helper, and sudoers rule used by RDP/Guacamole desktop setup (Linux only)
   --force              Replace an existing chromium-stealthcdp artifact
-  --json               Output install doctor results as JSON
+  --dry-run            Plan workstation payload installation without mutation
+  --apply              Materialize the installed workstation payload
+  --dashboard-port <port>
+                       Set the workstation dashboard port (default: 4848)
+  --guacamole-port <port>
+                       Set the loopback Guacamole port (default: 8092)
+  --json               Output install or doctor results as JSON
 
 Examples:
   agent-browser install
@@ -5077,6 +5084,8 @@ Examples:
   agent-browser install doctor --json
   agent-browser install --with-deps
   agent-browser install --with-deps --with-remote-view-privileges
+  agent-browser install workstation --dry-run --json
+  agent-browser install workstation --apply --json
 "##
         }
 
@@ -6213,6 +6222,7 @@ Dashboard:
 
 Setup:
   install                    Install browser binaries
+  install workstation        Plan or apply the source-free Linux workstation payload
   install doctor             Check user-scoped install drift and launch readiness
   doctor windows-browser     Diagnose WSL to Windows browser CDP routing
   doctor remote-view         Diagnose Guacamole and RDP remote-view setup

@@ -14,6 +14,7 @@ agent-browser install  # Download Chrome from Chrome for Testing (first time)
 agent-browser install stealthcdp-chromium  # Optional preferred patched Chromium
 agent-browser install doctor  # Check binary drift and launch readiness
 agent-browser install --with-deps --with-remote-view-privileges  # Linux RDP/Guacamole desktop setup
+agent-browser install workstation --dry-run --json  # Preview source-free workstation payload
 ```
 
 This is the fastest option. Commands run through the native Rust CLI directly
@@ -70,6 +71,21 @@ installed helper's route desktop template as
 <code>remoteViewPrivileges.helperDesktopSession</code> and raises
 <code>remote_view_route_desktop_helper_stale</code> when that helper still
 starts a terminal-first route desktop.
+
+The <code>v0.28.0</code> release-candidate lane adds
+<code>agent-browser install workstation</code>. The current bounded packet can
+plan or materialize the installed binary, versioned support manifest, dashboard
+service, runtime interlock, and PostgreSQL backup units without a source
+checkout or pnpm reference:
+
+```bash
+agent-browser install workstation --dry-run --json
+agent-browser install workstation --apply --json
+```
+
+The JSON receipt remains <code>ready: false</code> until the later substrate
+provisioning packet completes. Do not activate the installed units from this
+intermediate release branch.
 
 For a persistent local dashboard and self-healing RDP route plane, run
 <code>bash scripts/install-dashboard-user-service.sh</code> from the checkout.

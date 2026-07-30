@@ -18,6 +18,7 @@ agent-browser install  # Download Chrome from Chrome for Testing (first time onl
 agent-browser install stealthcdp-chromium  # Optional preferred patched Chromium
 agent-browser install doctor  # Check user-scoped binary drift and launch readiness
 agent-browser install --with-deps --with-remote-view-privileges  # Linux RDP/Guacamole desktop setup
+agent-browser install workstation --dry-run --json  # Preview source-free workstation payload
 pnpm test:wsl-windows-chromium-profile-live  # Validate WSL Windows profile writes when doctor says available
 ```
 
@@ -66,6 +67,21 @@ authorizes the later dependency installation.
 Re-running the command on an already-provisioned machine exits before any
 privileged changes when the helper, sudoers policy, group, and membership are
 already ready.
+
+The `v0.28.0` release-candidate lane adds
+`agent-browser install workstation`. Its current bounded packet plans or
+materializes the installed binary, versioned support manifest, dashboard
+service, runtime interlock, and PostgreSQL backup units without a source
+checkout or pnpm reference:
+
+```bash
+agent-browser install workstation --dry-run --json
+agent-browser install workstation --apply --json
+```
+
+The JSON receipt remains `ready: false` until the later substrate-provisioning
+packet completes. Do not activate the installed units from this intermediate
+release branch.
 
 ### Install Doctor
 

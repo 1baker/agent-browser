@@ -1,0 +1,316 @@
+#!/usr/bin/env node
+
+import assert from 'node:assert/strict';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { basename, join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+const repoRoot = resolve(import.meta.dirname, '..');
+const fixtureRoot = mkdtempSync(join(tmpdir(), 'agent-browser-workstation-install-'));
+const fakeBin = join(fixtureRoot, 'bin');
+const commandLog = join(fixtureRoot, 'commands.jsonl');
+const installRoot = join(fixtureRoot, 'workstation');
+const failedInstallRoot = join(fixtureRoot, 'failed-workstation');
+const home = join(fixtureRoot, 'home');
+const xdgRoot = join(fixtureRoot, 'xdg');
+const agentBrowser = resolveAgentBrowser();
+
+const expectedUnits = new Set([
+  'agent-browser-dashboard.service',
+  'agent-browser-runtime-interlock.service',
+  'agent-browser-runtime-interlock.timer',
+  'agent-browser-guacamole-postgres-backup.service',
+  'agent-browser-guacamole-postgres-backup.timer',
+]);
+
+mkdirSync(fakeBin, { recursive: true });
+mkdirSync(home, { recursive: true });
+writeFileSync(commandLog, '');
+installCommandShim('systemctl');
+installCommandShim('sudo');
+
+try {
+  assertWorkstationInterface();
+  const beforeDryRun = treeManifest(fixtureRoot, ignoredFixturePaths());
+  const dryRun = runInstaller(installRoot, ['--dry-run', '--json']);
+  assert.equal(
+    dryRun.status,
+    0,
+    `workstation install dry-run must succeed:\n${dryRun.stdout}${dryRun.stderr}`,
+  );
+  assertJsonSuccess(dryRun.stdout, 'dry-run');
+  assert.deepEqual(
+    treeManifest(fixtureRoot, ignoredFixturePaths()),
+    beforeDryRun,
+    'dry-run must not mutate HOME, XDG paths, or the workstation install root',
+  );
+  assert.equal(
+    readFileSync(commandLog, 'utf8'),
+    '',
+    'dry-run must not invoke systemctl or sudo',
+  );
+
+  const firstApply = runInstaller(installRoot, ['--apply', '--json']);
+  assert.equal(
+    firstApply.status,
+    0,
+    `workstation install apply must succeed:\n${firstApply.stdout}${firstApply.stderr}`,
+  );
+  assertJsonSuccess(firstApply.stdout, 'first apply');
+  assert.ok(existsSync(installRoot), 'apply must create the isolated workstation root');
+
+  const firstManifest = treeManifest(installRoot);
+  assert.equal(
+    firstManifest.some((entry) => entry.type === 'symlink'),
+    false,
+    'a source-free payload must not contain symlinks back to external state',
+  );
+  const installedFiles = regularFiles(installRoot);
+  const installedBasenames = new Set(installedFiles.map((path) => basename(path)));
+  const installedBinary = installedFiles.find((path) => (
+    basename(path) === 'agent-browser'
+    && path.includes(`${join('.local', 'bin')}/`)
+  ));
+  assert.ok(installedBinary, 'apply must install the agent-browser executable');
+  assert.notEqual(
+    lstatSync(installedBinary).mode & 0o111,
+    0,
+    'the installed agent-browser payload must be executable',
+  );
+  for (const unit of expectedUnits) {
+    assert.ok(installedBasenames.has(unit), `apply must install ${unit}`);
+  }
+
+  const payloadFiles = installedFiles.filter((path) => (
+    path.includes(`${join('lib', 'agent-browser')}/`)
+    && !expectedUnits.has(basename(path))
+  ));
+  assert.ok(
+    payloadFiles.length > 0,
+    'apply must install at least one immutable runtime payload under lib/agent-browser',
+  );
+
+  const textArtifacts = installedFiles.filter((path) => (
+    expectedUnits.has(basename(path))
+    || /\.(?:json|service|sh|timer|txt|yaml|yml)$/.test(path)
+  ));
+  for (const path of textArtifacts) {
+    const source = readFileSync(path, 'utf8');
+    assert.equal(
+      source.includes(repoRoot),
+      false,
+      `${path} must not reference the source checkout`,
+    );
+    assert.equal(
+      /\bpnpm\b/i.test(source),
+      false,
+      `${path} must not require pnpm`,
+    );
+  }
+
+  const interlockUnit = installedFiles.find(
+    (path) => basename(path) === 'agent-browser-runtime-interlock.service',
+  );
+  const interlockSource = readFileSync(interlockUnit, 'utf8');
+  assert.match(
+    interlockSource,
+    /ExecStart=.+/,
+    'the installed interlock unit must declare an executable payload',
+  );
+  assert.equal(
+    /WorkingDirectory=/.test(interlockSource),
+    false,
+    'the installed interlock unit must not depend on a mutable working directory',
+  );
+  for (const path of installedFiles.filter((candidate) => candidate.endsWith('.service'))) {
+    const unitSource = readFileSync(path, 'utf8');
+    const execStart = unitSource.match(/^ExecStart=(.+)$/m)?.[1];
+    assert.ok(execStart, `${path} must declare ExecStart`);
+    assert.ok(
+      execStart.startsWith(installRoot),
+      `${path} must execute only the isolated installed payload`,
+    );
+  }
+
+  const secondApply = runInstaller(installRoot, ['--apply', '--json']);
+  assert.equal(
+    secondApply.status,
+    0,
+    `second workstation install apply must succeed:\n${secondApply.stdout}${secondApply.stderr}`,
+  );
+  assertJsonSuccess(secondApply.stdout, 'second apply');
+  assert.deepEqual(
+    treeManifest(installRoot),
+    firstManifest,
+    'a second apply must leave byte content and file modes unchanged',
+  );
+
+  writeFileSync(commandLog, '');
+  const failedApply = runInstaller(
+    failedInstallRoot,
+    ['--apply', '--json'],
+    { AGENT_BROWSER_WORKSTATION_FAIL_AFTER: 'units-staged' },
+  );
+  assert.notEqual(
+    failedApply.status,
+    0,
+    'failure injection after units-staged must return a nonzero status',
+  );
+  assert.equal(
+    regularFiles(failedInstallRoot).length,
+    0,
+    'a failed first apply must roll back all staged files',
+  );
+  assert.equal(
+    readFileSync(commandLog, 'utf8')
+      .split('\n')
+      .filter((line) => /\b(enable|start|restart)\b/.test(line))
+      .length,
+    0,
+    'a failed apply must not activate systemd units',
+  );
+
+  console.log('Workstation install source-free fixture passed');
+} finally {
+  rmSync(fixtureRoot, { recursive: true, force: true });
+}
+
+function resolveAgentBrowser() {
+  const configured = process.env.AGENT_BROWSER_FIXTURE_BIN;
+  const candidates = [
+    configured,
+    join(repoRoot, 'cli', 'target', 'debug', 'agent-browser'),
+    join(repoRoot, 'cli', 'target', 'release', 'agent-browser'),
+    join(repoRoot, 'bin', `agent-browser-${process.platform}-${process.arch}`),
+  ].filter(Boolean);
+  const candidate = candidates.find((path) => existsSync(path));
+  assert.ok(
+    candidate,
+    'Set AGENT_BROWSER_FIXTURE_BIN to the agent-browser binary under test',
+  );
+  return resolve(candidate);
+}
+
+function runInstaller(root, flags, extraEnv = {}) {
+  return spawnSync(agentBrowser, ['install', 'workstation', ...flags], {
+    cwd: fixtureRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: home,
+      XDG_CONFIG_HOME: join(xdgRoot, 'config'),
+      XDG_DATA_HOME: join(xdgRoot, 'data'),
+      XDG_STATE_HOME: join(xdgRoot, 'state'),
+      XDG_CACHE_HOME: join(xdgRoot, 'cache'),
+      XDG_RUNTIME_DIR: join(xdgRoot, 'runtime'),
+      PATH: `${fakeBin}:/usr/bin:/bin`,
+      AGENT_BROWSER_WORKSTATION_ROOT: root,
+      AGENT_BROWSER_WORKSTATION_COMMAND_LOG: commandLog,
+      ...extraEnv,
+    },
+  });
+}
+
+function assertWorkstationInterface() {
+  const help = spawnSync(agentBrowser, ['install', '--help'], {
+    cwd: fixtureRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: home,
+      PATH: `${fakeBin}:/usr/bin:/bin`,
+    },
+  });
+  assert.equal(
+    help.status,
+    0,
+    `install help must succeed before running the fixture:\n${help.stdout}${help.stderr}`,
+  );
+  assert.match(
+    `${help.stdout}${help.stderr}`,
+    /install workstation/,
+    'binary does not expose the required `agent-browser install workstation` interface',
+  );
+}
+
+function assertJsonSuccess(stdout, label) {
+  assert.ok(stdout.trim(), `${label} must emit JSON`);
+  let payload;
+  try {
+    payload = JSON.parse(stdout);
+  } catch (error) {
+    assert.fail(`${label} emitted invalid JSON: ${error.message}\n${stdout}`);
+  }
+  assert.equal(payload.success, true, `${label} JSON must report success`);
+}
+
+function installCommandShim(command) {
+  const path = join(fakeBin, command);
+  writeFileSync(path, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s' '${command}' >>"$AGENT_BROWSER_WORKSTATION_COMMAND_LOG"
+printf ' %q' "$@" >>"$AGENT_BROWSER_WORKSTATION_COMMAND_LOG"
+printf '\\n' >>"$AGENT_BROWSER_WORKSTATION_COMMAND_LOG"
+`);
+  chmodSync(path, 0o755);
+}
+
+function regularFiles(root) {
+  if (!existsSync(root)) return [];
+  const paths = [];
+  visit(root, (path) => {
+    if (lstatSync(path).isFile()) paths.push(path);
+  });
+  return paths.sort();
+}
+
+function treeManifest(root, ignored = new Set()) {
+  if (!existsSync(root)) return [];
+  const manifest = [];
+  visit(root, (path) => {
+    if (ignored.has(path)) return 'skip';
+    const stat = lstatSync(path);
+    const relative = path.slice(root.length + 1);
+    const entry = {
+      path: relative,
+      mode: stat.mode & 0o777,
+      type: stat.isDirectory() ? 'directory' : stat.isSymbolicLink() ? 'symlink' : 'file',
+    };
+    if (stat.isFile()) {
+      entry.sha256 = createHash('sha256').update(readFileSync(path)).digest('hex');
+    }
+    manifest.push(entry);
+  });
+  return manifest.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function visit(root, callback) {
+  if (!existsSync(root)) return;
+  for (const entry of readdirSync(root).sort()) {
+    const path = join(root, entry);
+    const decision = callback(path);
+    if (decision !== 'skip' && statSync(path).isDirectory()) {
+      visit(path, callback);
+    }
+  }
+}
+
+function ignoredFixturePaths() {
+  return new Set([
+    commandLog,
+    agentBrowser.startsWith(fixtureRoot) ? agentBrowser : '',
+  ]);
+}
