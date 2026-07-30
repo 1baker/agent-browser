@@ -828,7 +828,18 @@ fn available_disk_bytes(path: &Path) -> Option<u64> {
         return None;
     }
     let stats = unsafe { stats.assume_init() };
-    Some(stats.f_bavail.saturating_mul(stats.f_frsize))
+    Some(statvfs_available_bytes(stats.f_bavail, stats.f_frsize))
+}
+
+#[cfg(target_family = "unix")]
+fn statvfs_available_bytes<Blocks, Bytes>(available_blocks: Blocks, fragment_bytes: Bytes) -> u64
+where
+    Blocks: Into<u64>,
+    Bytes: Into<u64>,
+{
+    available_blocks
+        .into()
+        .saturating_mul(fragment_bytes.into())
 }
 
 #[cfg(not(target_family = "unix"))]
@@ -2375,6 +2386,13 @@ mod tests {
         assert!(workstation_disk_space_ready(Some(
             MIN_WORKSTATION_FREE_DISK_BYTES
         )));
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn statvfs_available_bytes_accepts_platform_integer_widths_and_saturates() {
+        assert_eq!(statvfs_available_bytes(3_u32, 4096_u64), 12_288);
+        assert_eq!(statvfs_available_bytes(u64::MAX, 2_u32), u64::MAX);
     }
 
     #[test]

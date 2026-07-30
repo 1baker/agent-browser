@@ -4,6 +4,41 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 127 | 2026-07-30
+
+Scope: run exact-head release CI and repair the first cross-platform defect.
+
+Actions:
+
+- Confirmed exact-head fast CI run `30541737279` fully green at commit
+  `0cbd1729`.
+- Dispatched full CI run `30542411936` against that exact commit. Its
+  Apple Silicon macOS Rust job failed compilation because
+  `statvfs.f_bavail` is 32-bit on that target while the byte calculation
+  assumed the Linux 64-bit field shape. Matrix fail-fast then cancelled the
+  Windows job.
+- Added a typed conversion helper that accepts both platform widths and
+  saturates the byte multiplication. Added regression coverage for mixed
+  32-bit and 64-bit inputs plus overflow.
+- Target-gated the `Path` import used only by Linux `/proc` process sampling,
+  removing the adjacent macOS warning.
+
+Validation:
+
+- Rust formatting
+- strict Clippy with warnings denied
+- complete serialized Rust CI harness
+- focused mixed-width and saturation regression
+
+Result:
+
+- The local portability repair is green.
+- Full CI run `30542411936` remains valid failure evidence for `0cbd1729`;
+  the repair requires a new exact-head fast run and a new manually dispatched
+  full run after commit and push.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 126 | 2026-07-30
 
 Scope: prove the rebuilt doctor-discovery candidate on the clean Ubuntu host

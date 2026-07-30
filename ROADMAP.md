@@ -88,6 +88,11 @@ release, and public-asset reinstall.
   use the generated lookup template and selection order, while the fixture
   handles the intentional offline status path. All ten no-launch smokes pass
   locally.
+- Exact-head fast CI run `30541737279` is fully green at `0cbd1729`.
+  Manually dispatched full CI run `30542411936` exposed a macOS Apple Silicon
+  integer-width mismatch in workstation disk preflight. The portable
+  conversion helper, saturation regression, and target-gated Linux import pass
+  formatting, strict Clippy, and the complete serialized Rust harness locally.
 - The release remains no-go pending exact-head fast and full CI, the release
   dry run, merge, publication, and public-asset proof.
 - Plan
@@ -96,8 +101,9 @@ release, and public-asset reinstall.
 
 ### Next Recommendation
 
-Commit and push the no-launch fixture repair, then require exact-head fast CI,
-manually dispatched full CI, and the release dry run before merging PR 7.
+Commit and push the cross-platform disk-preflight repair, then require
+exact-head fast CI, manually dispatched full CI, and the release dry run
+before merging PR 7.
 
 ## P81 | Guacamole Route-Pool State Reconciliation
 

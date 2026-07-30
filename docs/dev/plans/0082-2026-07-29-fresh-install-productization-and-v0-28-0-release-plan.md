@@ -378,6 +378,15 @@ Status: pending
   the no-launch fixture accepts the offline empty control-plane snapshot and
   creates minimal seed state when no daemon has written one. The complete
   ten-command no-launch packet passes locally.
+- Exact-head fast CI run `30541737279` passed every required job at commit
+  `0cbd1729`. Manually dispatched full CI run `30542411936` then reached its
+  cross-platform matrix and exposed a macOS Apple Silicon compile defect:
+  `statvfs.f_bavail` is 32-bit there while Linux exposes the field as 64-bit.
+  Filesystem byte calculation now converts platform field widths through a
+  typed helper before saturating multiplication. The adjacent Linux-only
+  `/proc` `Path` import is also target-gated. Formatting, strict Clippy, the
+  new width-and-overflow regression, and the complete serialized Rust harness
+  pass locally.
 - Release remains no-go pending exact-head fast and full CI, release dry run,
   merge, publication, and public-asset reinstall.
 
