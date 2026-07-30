@@ -26,15 +26,20 @@ release, and public-asset reinstall.
 - Three independent audits agree that the release is no-go until installer
   ownership, clean-host coverage, red CI, and workflow validation are repaired.
 - The target release is `v0.28.0` on branch `prepare-v0.28.0`.
+- The source-free payload, pinned Guacamole assets, one-sudo host preparation,
+  and binary-owned canonical route reconciliation are implemented on the
+  release branch with focused local fixtures green.
+- The release remains no-go pending disposable Ubuntu reboot and restore
+  evidence, independent audit, version metadata, full CI, and artifact proof.
 - Plan
   `docs/dev/plans/0082-2026-07-29-fresh-install-productization-and-v0-28-0-release-plan.md`
   owns the bounded implementation and release gates.
 
 ### Next Recommendation
 
-Repair the existing Rust Quality failures, add red source-free installation
-tests, then implement the binary-owned workstation installer before changing
-version metadata.
+Complete the disposable Ubuntu 24.04 install, reboot, restore, conflict, and
+idempotency harness against the candidate binary. Repair any convergence defect
+before starting version metadata and release gating.
 
 ## P81 | Guacamole Route-Pool State Reconciliation
 

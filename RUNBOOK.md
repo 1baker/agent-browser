@@ -4,6 +4,48 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 123 | 2026-07-29
+
+Scope: implement and locally validate the source-free workstation installer
+before disposable-host testing.
+
+Actions:
+
+- Hardened the release workflow around exact assets, embedded versions,
+  execution, checksums, and published-download verification.
+- Embedded the pinned Guacamole Compose stack, normalized schema, controller
+  helpers, binary, manifest, and systemd user units.
+- Added Ubuntu 24.04 amd64 host preflight, one initial sudo authorization,
+  noninteractive dependency and privilege work, service verification, and the
+  resumable group-refresh boundary.
+- Added installed reconciliation for Chrome, Guacamole, PostgreSQL continuity,
+  route users, canonical rows, readiness-selected XRDP displays,
+  readiness-authoritative service projection, unit activation, final doctors,
+  and a private receipt.
+- Added fail-closed validation for active legacy route conflicts and private,
+  idempotent generated secrets.
+- Updated the public install help, README, docs site, skill, roadmap, and Plan
+  0082 checkpoint to match the two-stage fresh-login contract.
+
+Validation:
+
+- 8 focused workstation Rust tests
+- focused installed-script-root doctor test
+- Rust format and strict Clippy
+- source-free payload fixture
+- embedded Guacamole asset fixture
+- workstation host-provision fixture
+- clean privilege fixture
+
+Result:
+
+- The source-free payload and local mocked host path are green.
+- The release remains no-go until a disposable Ubuntu host proves install,
+  reboot, canonical routes, backup restore, idempotency, and the remaining
+  release gates.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 122 | 2026-07-29
 
 Scope: open the fresh-install productization and formal `v0.28.0` release lane.

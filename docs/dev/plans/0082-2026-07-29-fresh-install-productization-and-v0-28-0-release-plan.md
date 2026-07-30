@@ -152,7 +152,7 @@ Status: completed
 
 ### Packet B | Baseline repair and red tests
 
-Status: in progress
+Status: completed
 
 - Repair the four existing Clippy failures without widening product behavior.
 - Add red tests for the public command contract, embedded asset manifest,
@@ -163,7 +163,7 @@ Status: in progress
 
 ### Packet C | Self-contained workstation installer
 
-Status: pending
+Status: in progress
 
 - Add command parsing, dry-run, apply, JSON receipt, and install phase model.
 - Embed versioned compose, schema, configuration, durability, and privileged
@@ -177,7 +177,7 @@ Status: pending
 
 ### Packet D | Binary-owned convergence
 
-Status: pending
+Status: in progress
 
 - Move recurring decision logic behind an installed CLI command.
 - Require successful route-readiness output before authoritative projection.
@@ -189,7 +189,7 @@ Status: pending
 
 ### Packet E | Clean-install and recovery harness
 
-Status: pending
+Status: in progress
 
 - Add fast isolated-HOME payload, mutation, prompt-meter, and failure-injection
   fixtures.
@@ -247,6 +247,28 @@ Status: pending
 - Store one compact source-backed Graphiti memory.
 - Commit and push closeout separately, then report release-tag and post-release
   documentation commit identities independently.
+
+## Implementation Checkpoint | 2026-07-29
+
+- Rust Quality is green on Rust 1.97 after the bounded baseline repairs.
+- The release workflow now verifies the exact seven-asset inventory, embedded
+  versions, minimum sizes, Linux execution, deterministic checksums, and
+  published downloads.
+- The release binary embeds the pinned Guacamole Compose, normalized schema,
+  versioned controller helpers, and source-free systemd user units.
+- Host preparation has an Ubuntu 24.04 amd64 preflight, apt removal guard,
+  exactly one `sudo -v` boundary, noninteractive privileged calls, required
+  service checks, and a resumable group-refresh stop.
+- Installed reconciliation now creates route users, starts the pinned stack,
+  records PostgreSQL continuity, opens readiness-selected distinct displays,
+  projects only canonical `guacamole:1` and `guacamole:2` routes, rejects
+  active legacy conflicts, activates user units, runs final doctors, and writes
+  a private receipt.
+- Focused Rust tests, strict Clippy, the source-free payload fixture, embedded
+  asset fixture, host-provision fixture, and privilege fixture pass locally.
+- Release remains no-go. The disposable Ubuntu reboot and restore proof,
+  independent final audit, version metadata, full CI, release dry run, and
+  public artifact reinstall remain open.
 
 ## Clean-Install Acceptance Matrix
 

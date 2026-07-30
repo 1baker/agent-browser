@@ -19,6 +19,7 @@ agent-browser install stealthcdp-chromium  # Optional preferred patched Chromium
 agent-browser install doctor  # Check user-scoped binary drift and launch readiness
 agent-browser install --with-deps --with-remote-view-privileges  # Linux RDP/Guacamole desktop setup
 agent-browser install workstation --dry-run --json  # Preview source-free workstation payload
+agent-browser install workstation --apply --json  # Install and reconcile a fresh Ubuntu workstation
 pnpm test:wsl-windows-chromium-profile-live  # Validate WSL Windows profile writes when doctor says available
 ```
 
@@ -69,20 +70,33 @@ privileged changes when the helper, sudoers policy, group, and membership are
 already ready.
 
 The `v0.28.0` release-candidate lane adds
-`agent-browser install workstation`. Its current bounded packet plans or
-materializes the installed binary, versioned support manifest, pinned local
-Guacamole Compose stack and schema, protected generated PostgreSQL credential,
-dashboard service, runtime interlock, and PostgreSQL backup units without a
-source checkout or pnpm reference:
+`agent-browser install workstation`. It plans or installs the binary,
+versioned support manifest, pinned local Guacamole Compose stack and schema,
+protected generated PostgreSQL and route credentials, dashboard service,
+runtime interlock, and PostgreSQL backup units without a source checkout or
+pnpm reference:
 
 ```bash
 agent-browser install workstation --dry-run --json
 agent-browser install workstation --apply --json
 ```
 
-The JSON receipt remains `ready: false` until the later substrate-provisioning
-packet completes. Do not activate the installed units from this intermediate
-release branch.
+The first apply uses one `sudo -v` authorization boundary for host preparation.
+If that adds the `agent-browser` or `docker` group to the current user, the
+command exits with status 75 and a `relogin_required` JSON state. Log out and
+back in or reboot, then rerun the same apply command. With both groups
+effective, apply starts the pinned stack, creates the two route users and
+canonical Guacamole rows, opens distinct XRDP displays selected by readiness,
+projects `guacamole:1` and `guacamole:2` into service state, and activates the
+user services only after the final doctors pass.
+
+`agent-browser install workstation reconcile --json` reruns the installed
+convergence controller without reinstalling the payload.
+`agent-browser install workstation backup --json` performs the same protected
+PostgreSQL backup operation used by the installed timer.
+
+This release-candidate branch remains a release no-go until its disposable
+Ubuntu install, reboot, restore, full CI, and release-artifact gates pass.
 
 ### Install Doctor
 
