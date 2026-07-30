@@ -3069,16 +3069,15 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_wsl_mounted_windows_profile_skips_unix_private_permissions() {
-        if cfg!(target_os = "linux") {
-            assert!(should_skip_private_dir_permissions(Path::new(
-                "/mnt/c/Users/ecoch/AppData/Local/Temp/profile"
-            )));
-            assert!(!should_skip_private_dir_permissions(Path::new(
-                "/home/ecoch/.agent-browser/profile"
-            )));
-        }
+        assert!(should_skip_private_dir_permissions(Path::new(
+            "/mnt/c/Users/ecoch/AppData/Local/Temp/profile"
+        )));
+        assert!(!should_skip_private_dir_permissions(Path::new(
+            "/home/ecoch/.agent-browser/profile"
+        )));
     }
 
     #[test]

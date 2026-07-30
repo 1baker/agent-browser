@@ -1518,7 +1518,7 @@ impl WorkstationLock {
             let stale = fs::read_to_string(&path)
                 .ok()
                 .and_then(|value| value.trim().parse::<i32>().ok())
-                .map(|pid| unsafe { libc::kill(pid, 0) != 0 })
+                .map(workstation_lock_pid_is_stale)
                 .unwrap_or(false);
             if stale {
                 fs::remove_file(&path)
@@ -1539,6 +1539,16 @@ impl WorkstationLock {
             .map_err(|error| format!("Unable to write workstation lock: {error}"))?;
         Ok(Self { path })
     }
+}
+
+#[cfg(unix)]
+fn workstation_lock_pid_is_stale(pid: i32) -> bool {
+    unsafe { libc::kill(pid, 0) != 0 }
+}
+
+#[cfg(not(unix))]
+fn workstation_lock_pid_is_stale(_pid: i32) -> bool {
+    false
 }
 
 impl Drop for WorkstationLock {

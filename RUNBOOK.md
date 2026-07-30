@@ -22,6 +22,14 @@ Actions:
   32-bit and 64-bit inputs plus overflow.
 - Target-gated the `Path` import used only by Linux `/proc` process sampling,
   removing the adjacent macOS warning.
+- Exact-head fast CI run `30543600554` passed at repair commit `2db64424`.
+- Full CI run `30544211166` moved Apple Silicon beyond the repaired compile
+  site, then the Windows test build found a Linux-only WSL helper referenced
+  through runtime `cfg!` and a Unix `libc::kill` call compiled inside
+  workstation lock recovery. Matrix fail-fast cancelled both macOS jobs.
+- Converted the WSL test to compile-time Linux gating and split stale-lock
+  probing into Unix and fail-closed non-Unix implementations. Target-gated the
+  adjacent Unix-only resource-monitor imports.
 
 Validation:
 
@@ -33,9 +41,10 @@ Validation:
 Result:
 
 - The local portability repair is green.
-- Full CI run `30542411936` remains valid failure evidence for `0cbd1729`;
-  the repair requires a new exact-head fast run and a new manually dispatched
-  full run after commit and push.
+- Full CI runs `30542411936` and `30544211166` remain valid macOS and Windows
+  failure evidence for their exact commits. The current repair requires a new
+  exact-head fast run and a new manually dispatched full run after commit and
+  push.
 - The operator-owned untracked `--full-page` file remains excluded and
   untouched.
 

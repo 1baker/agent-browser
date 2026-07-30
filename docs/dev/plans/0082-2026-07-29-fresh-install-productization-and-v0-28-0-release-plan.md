@@ -387,6 +387,14 @@ Status: pending
   `/proc` `Path` import is also target-gated. Formatting, strict Clippy, the
   new width-and-overflow regression, and the complete serialized Rust harness
   pass locally.
+- Exact-head fast CI run `30543600554` passed at repair commit `2db64424`.
+  Full CI run `30544211166` proved the Apple Silicon compile progressed past
+  disk preflight, then exposed three Windows compile errors before matrix
+  fail-fast cancelled both macOS jobs: a Linux-only WSL helper referenced from
+  a runtime-gated test, plus an unconditional Unix `libc::kill` call in
+  workstation lock recovery. The test now uses compile-time Linux gating, and
+  stale-lock process probing has fail-closed Unix and non-Unix implementations.
+  Adjacent Unix-only resource-monitor imports are target-gated.
 - Release remains no-go pending exact-head fast and full CI, release dry run,
   merge, publication, and public-asset reinstall.
 

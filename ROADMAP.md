@@ -93,6 +93,11 @@ release, and public-asset reinstall.
   integer-width mismatch in workstation disk preflight. The portable
   conversion helper, saturation regression, and target-gated Linux import pass
   formatting, strict Clippy, and the complete serialized Rust harness locally.
+- Exact-head fast CI run `30543600554` passed at `2db64424`. Full CI run
+  `30544211166` moved Apple Silicon past the repaired compile site, then found
+  two Windows portability boundaries: a runtime-gated Linux-only WSL test and
+  unconditional Unix process probing in workstation lock recovery. Both now
+  use compile-time target gates, with non-Unix lock probing failing closed.
 - The release remains no-go pending exact-head fast and full CI, the release
   dry run, merge, publication, and public-asset proof.
 - Plan
@@ -101,9 +106,9 @@ release, and public-asset reinstall.
 
 ### Next Recommendation
 
-Commit and push the cross-platform disk-preflight repair, then require
-exact-head fast CI, manually dispatched full CI, and the release dry run
-before merging PR 7.
+Commit and push the Windows compile-boundary repair, then require exact-head
+fast CI, manually dispatched full CI, and the release dry run before merging
+PR 7.
 
 ## P81 | Guacamole Route-Pool State Reconciliation
 

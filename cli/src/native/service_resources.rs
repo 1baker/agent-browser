@@ -3,8 +3,11 @@ use std::fs;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(unix)]
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
