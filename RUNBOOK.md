@@ -4,6 +4,39 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 128 | 2026-07-30
+
+Scope: continue exact-head cross-platform release gating.
+
+Actions:
+
+- Confirmed exact-head fast CI run `30545123372` fully green at commit
+  `a5423d6e`.
+- Dispatched full CI run `30545744595`. The Windows target compiled and ran
+  tests for nearly ten minutes before
+  `test_manifest_resolves_stealthcdp_executable_path` exited abnormally.
+- Traced the exit to a test fixture that interpolated a native Windows path
+  directly into JSON. Backslashes in the path became invalid JSON escape
+  sequences, and the explicit-config failure path correctly terminated.
+- Replaced string interpolation with structured JSON serialization so the
+  fixture remains valid on Unix and Windows.
+
+Validation:
+
+- focused manifest-resolution regression
+- Rust formatting
+- strict Clippy with warnings denied
+- complete serialized Rust CI harness
+
+Result:
+
+- The focused regression, formatting, strict Clippy, and complete serialized
+  Rust CI harness pass locally.
+- Full CI run `30545744595` is valid Windows failure evidence for commit
+  `a5423d6e`; its macOS jobs were cancelled by matrix fail-fast.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 127 | 2026-07-30
 
 Scope: run exact-head release CI and repair the first cross-platform defect.

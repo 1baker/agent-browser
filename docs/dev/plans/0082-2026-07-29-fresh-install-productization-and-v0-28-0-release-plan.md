@@ -395,6 +395,12 @@ Status: pending
   workstation lock recovery. The test now uses compile-time Linux gating, and
   stale-lock process probing has fail-closed Unix and non-Unix implementations.
   Adjacent Unix-only resource-monitor imports are target-gated.
+- Exact-head fast CI run `30545123372` passed at repair commit `a5423d6e`.
+  Full CI run `30545744595` then compiled and exercised the Windows suite for
+  nearly ten minutes before an explicit-config test exited abnormally. The
+  test interpolated a Windows path directly into JSON, so its backslashes
+  produced invalid escape sequences. The fixture now uses JSON serialization,
+  preserving the same production manifest-resolution coverage on every target.
 - Release remains no-go pending exact-head fast and full CI, release dry run,
   merge, publication, and public-asset reinstall.
 

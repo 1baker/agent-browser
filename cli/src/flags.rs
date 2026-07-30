@@ -2502,16 +2502,16 @@ mod tests {
         let config_path = dir.join("agent-browser.json");
         fs::write(
             &config_path,
-            format!(
-                r#"{{
-                  "service": {{
-                    "browserBuildManifests": {{
-                      "stealthcdp_chromium": {{ "manifestPath": "{}" }}
-                    }}
-                  }}
-                }}"#,
-                manifest_path.display()
-            ),
+            serde_json::to_string_pretty(&json!({
+                "service": {
+                    "browserBuildManifests": {
+                        "stealthcdp_chromium": {
+                            "manifestPath": manifest_path.display().to_string()
+                        }
+                    }
+                }
+            }))
+            .unwrap(),
         )
         .unwrap();
 

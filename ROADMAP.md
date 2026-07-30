@@ -98,6 +98,10 @@ release, and public-asset reinstall.
   two Windows portability boundaries: a runtime-gated Linux-only WSL test and
   unconditional Unix process probing in workstation lock recovery. Both now
   use compile-time target gates, with non-Unix lock probing failing closed.
+- Exact-head fast CI run `30545123372` passed at `a5423d6e`. Full CI run
+  `30545744595` compiled and ran the Windows suite until a manifest fixture
+  embedded a native Windows path into JSON without escaping backslashes. The
+  fixture now uses structured JSON serialization.
 - The release remains no-go pending exact-head fast and full CI, the release
   dry run, merge, publication, and public-asset proof.
 - Plan
@@ -106,9 +110,9 @@ release, and public-asset reinstall.
 
 ### Next Recommendation
 
-Commit and push the Windows compile-boundary repair, then require exact-head
-fast CI, manually dispatched full CI, and the release dry run before merging
-PR 7.
+Commit and push the cross-platform manifest-fixture repair, then require
+exact-head fast CI, manually dispatched full CI, and the release dry run
+before merging PR 7.
 
 ## P81 | Guacamole Route-Pool State Reconciliation
 
