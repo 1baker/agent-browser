@@ -482,40 +482,7 @@ fn reconcile_workstation_locked(
     let header_user = env::var("USER").unwrap_or_else(|_| "agent-browser".to_string());
     let guacamole_port = env_file_value(&guacamole_env, "AGENT_BROWSER_GUACAMOLE_HTTP_PORT")
         .unwrap_or_else(|| DEFAULT_GUACAMOLE_PORT.to_string());
-    run_required_owned(
-        "curl",
-        &[
-            "--fail".to_string(),
-            "--silent".to_string(),
-            "--show-error".to_string(),
-            "--connect-timeout".to_string(),
-            "5".to_string(),
-            "--max-time".to_string(),
-            "30".to_string(),
-            "--retry".to_string(),
-            "6".to_string(),
-            "--retry-delay".to_string(),
-            "3".to_string(),
-            "--retry-max-time".to_string(),
-            "180".to_string(),
-            "--retry-all-errors".to_string(),
-            "--request".to_string(),
-            "POST".to_string(),
-            "--header".to_string(),
-            format!("Remote-User: {header_user}"),
-            "--header".to_string(),
-            "Content-Type: application/x-www-form-urlencoded".to_string(),
-            "--data".to_string(),
-            String::new(),
-            "--output".to_string(),
-            "/dev/null".to_string(),
-            format!("http://127.0.0.1:{guacamole_port}/guacamole/api/tokens"),
-        ],
-        support_root,
-        &command_env,
-        true,
-        "create the local Guacamole header user",
-    )?;
+    ensure_guacamole_header_user(&header_user, &guacamole_port, support_root, &command_env)?;
     steps.push(ReconcileStep {
         name: "guacamole-header-user-ready",
         success: true,
@@ -615,6 +582,110 @@ fn reconcile_workstation_locked(
     };
     write_private_json(&receipt_path, &report)?;
     Ok(report)
+}
+
+fn ensure_guacamole_header_user(
+    header_user: &str,
+    guacamole_port: &str,
+    support_root: &Path,
+    command_env: &[(String, String)],
+) -> Result<(), String> {
+    if header_user.is_empty()
+        || !header_user
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._@-".contains(character))
+    {
+        return Err("Guacamole header user contains unsupported characters".to_string());
+    }
+
+    run_required_owned(
+        "curl",
+        &[
+            "--fail".to_string(),
+            "--silent".to_string(),
+            "--show-error".to_string(),
+            "--connect-timeout".to_string(),
+            "5".to_string(),
+            "--max-time".to_string(),
+            "10".to_string(),
+            "--retry".to_string(),
+            "30".to_string(),
+            "--retry-delay".to_string(),
+            "3".to_string(),
+            "--retry-max-time".to_string(),
+            "180".to_string(),
+            "--retry-all-errors".to_string(),
+            "--output".to_string(),
+            "/dev/null".to_string(),
+            format!("http://127.0.0.1:{guacamole_port}/guacamole/"),
+        ],
+        support_root,
+        command_env,
+        false,
+        "wait for the local Guacamole application",
+    )?;
+
+    // Header authentication may successfully create the PostgreSQL account
+    // while an overlapping first-start request returns a duplicate-key 500.
+    // Treat the database postcondition as authoritative, not the HTTP status.
+    let token_request = run_status_owned(
+        "curl",
+        &[
+            "--fail".to_string(),
+            "--silent".to_string(),
+            "--show-error".to_string(),
+            "--connect-timeout".to_string(),
+            "5".to_string(),
+            "--max-time".to_string(),
+            "30".to_string(),
+            "--request".to_string(),
+            "POST".to_string(),
+            "--header".to_string(),
+            format!("Remote-User: {header_user}"),
+            "--header".to_string(),
+            "Content-Type: application/x-www-form-urlencoded".to_string(),
+            "--data".to_string(),
+            String::new(),
+            "--output".to_string(),
+            "/dev/null".to_string(),
+            format!("http://127.0.0.1:{guacamole_port}/guacamole/api/tokens"),
+        ],
+        support_root,
+        command_env,
+        true,
+    );
+
+    let query = format!(
+        r#"PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT COUNT(*) FROM guacamole_entity e JOIN guacamole_user u ON u.entity_id = e.entity_id WHERE e.type::text = \$\$USER\$\$ AND e.name = \$\${header_user}\$\$;""#
+    );
+    let entity_output = run_status(
+        "docker",
+        &[
+            "exec",
+            "agent-browser-guacamole-postgres",
+            "sh",
+            "-c",
+            &query,
+        ],
+        support_root,
+        command_env,
+        false,
+    )
+    .map_err(|error| format!("verify the local Guacamole header user: {error}"))?;
+    if guacamole_header_user_ready(&entity_output.stdout) {
+        return Ok(());
+    }
+    if let Err(error) = token_request {
+        return Err(format!("create the local Guacamole header user: {error}"));
+    }
+    Err(
+        "Guacamole header authentication returned without materializing its database user"
+            .to_string(),
+    )
+}
+
+fn guacamole_header_user_ready(stdout: &[u8]) -> bool {
+    String::from_utf8_lossy(stdout).trim() == "1"
 }
 
 fn print_reconcile_report(report: &WorkstationReconcileReport, json: bool) {
@@ -939,6 +1010,17 @@ fn run_required_owned(
         sensitive,
         label,
     )
+}
+
+fn run_status_owned(
+    command: &str,
+    args: &[String],
+    current_dir: &Path,
+    command_env: &[(String, String)],
+    sensitive: bool,
+) -> Result<Output, String> {
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_status(command, &borrowed, current_dir, command_env, sensitive)
 }
 
 fn secret_values(secret_file: &Path) -> Result<std::collections::HashMap<String, String>, String> {
@@ -2239,6 +2321,14 @@ mod tests {
         assert!(workstation_disk_space_ready(Some(
             MIN_WORKSTATION_FREE_DISK_BYTES
         )));
+    }
+
+    #[test]
+    fn guacamole_header_user_postcondition_requires_exactly_one_database_user() {
+        assert!(guacamole_header_user_ready(b" 1\n"));
+        assert!(!guacamole_header_user_ready(b"0\n"));
+        assert!(!guacamole_header_user_ready(b"2\n"));
+        assert!(!guacamole_header_user_ready(b""));
     }
 
     #[cfg(unix)]
