@@ -674,6 +674,11 @@ fn inspect_route_display_access(route_displays: &Value) -> Value {
 fn inspect_viewer_prerequisites() -> Value {
     let client_a_env = env::var("AGENT_BROWSER_RDP_TEST_CLIENT_A_EXECUTABLE").ok();
     let client_b_env = env::var("AGENT_BROWSER_RDP_TEST_CLIENT_B_EXECUTABLE").ok();
+    // A source-free workstation installs Chrome under agent-browser's managed
+    // browser directory, which is intentionally not added to the shell PATH.
+    let installed_chrome = crate::install::find_installed_chrome()
+        .filter(|path| path.is_file())
+        .map(|path| path.display().to_string());
     let client_a = executable_candidate(
         client_a_env.as_deref(),
         &[
@@ -682,7 +687,8 @@ fn inspect_viewer_prerequisites() -> Value {
             "chromium",
             "chromium-browser",
         ],
-    );
+    )
+    .or_else(|| installed_chrome.clone());
     let client_b = executable_candidate(
         client_b_env.as_deref(),
         &[
@@ -693,6 +699,7 @@ fn inspect_viewer_prerequisites() -> Value {
             "chromium-browser",
         ],
     )
+    .or(installed_chrome)
     .or_else(|| client_a.clone());
     let identify = command_path("identify");
     let convert = command_path("convert");

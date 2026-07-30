@@ -44,6 +44,12 @@ Actions:
   removed the replacement daemon's rebound Unix socket and session metadata.
   Shutdown now compares the socket device and inode before cleaning any shared
   session artifact.
+- A new exact-candidate clean overlay passed the mutation-free dry run,
+  one-sudo host preparation, exit-75 relogin, reboot, zero-prompt route
+  convergence, unit activation, and install doctor. Final remote-view doctor
+  exposed missing `xdpyinfo` plus a legacy host-guacd readiness assumption.
+  Host packages now include display and visual-proof tools; readiness accepts
+  the pinned Guacd container and managed Chrome outside `PATH`.
 
 Validation:
 
@@ -57,6 +63,8 @@ Validation:
 - systemd unit-load/reset boundary unit test
 - retiring-daemon socket-ownership unit test
 - live runtime executable-handoff smoke
+- clean-overlay dry run, one-sudo, reboot, and zero-prompt continuation
+- container-backed Guacd and viewer-prerequisite readiness fixture
 
 Result:
 

@@ -222,6 +222,18 @@ if [[ "$(grep -c '^SUDO -n env DEBIAN_FRONTEND=noninteractive apt-get install ' 
   cat "$LOG" >&2
   exit 1
 fi
+if ! grep -q ' x11-utils ' "$LOG"; then
+  echo "Expected xdpyinfo provider x11-utils in the workstation dependency set." >&2
+  cat "$LOG" >&2
+  exit 1
+fi
+for package_name in imagemagick tesseract-ocr; do
+  if ! grep -q " $package_name " "$LOG"; then
+    echo "Expected viewer proof dependency $package_name in the workstation dependency set." >&2
+    cat "$LOG" >&2
+    exit 1
+  fi
+done
 if [[ ! -f "$STATE/member-$OPERATOR_USER-docker" || ! -f "$STATE/deps-installed" ]]; then
   echo "Expected Docker membership and installed dependency state." >&2
   exit 1

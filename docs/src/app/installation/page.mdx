@@ -97,6 +97,10 @@ pinned stack, creates the two route users and canonical Guacamole rows, opens
 distinct XRDP displays selected by readiness, projects
 <code>guacamole:1</code> and <code>guacamole:2</code> into service state, and
 activates the user services only after the final doctors pass.
+Host preparation includes <code>x11-utils</code>, ImageMagick, and Tesseract
+for display access and visual proof. Final readiness recognizes the pinned
+Compose Guacd container and the Chrome binary in agent-browser's managed
+browser directory.
 
 On rerun, apply first stops the managed dashboard, runtime interlock, and
 backup timer while it reconciles the installed payload and routes. It

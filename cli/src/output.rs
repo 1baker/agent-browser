@@ -5070,6 +5070,8 @@ requires at least 6 GiB free before sudo, payload staging, or package mutation.
 
 Workstation apply reruns stop the managed dashboard, runtime interlock, and
 backup timer during reconciliation, then reactivate them after final readiness.
+Host preparation includes display inspection and visual-proof tools. Final
+readiness accepts the pinned Compose guacd container and managed Chrome path.
 
 Options:
   -d, --with-deps      Also install system dependencies (Linux only)

@@ -318,6 +318,13 @@ Status: pending
   verifies the bound socket device and inode before removing any session
   artifact. The focused ownership regression and live executable-handoff smoke
   pass.
+- The next exact-candidate clean overlay passed dry run, one-sudo host
+  preparation, exit-75 relogin, reboot, effective groups, container and route
+  convergence, user-unit activation, and install doctor. Final remote-view
+  doctor then exposed missing `xdpyinfo` plus a legacy host-guacd assumption.
+  Host preparation now includes `x11-utils`, ImageMagick, and Tesseract;
+  readiness accepts the pinned running Guacd container and discovers managed
+  Chrome outside `PATH`.
 - Release remains no-go pending a rebuilt exact candidate, clean VM install and
   reboot, idempotency, restore and active-conflict proof, full CI, release dry
   run, merge, and public-asset reinstall.

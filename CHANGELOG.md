@@ -20,7 +20,7 @@
 ### Bug Fixes
 
 - **Post-reboot route selection** - Fixed retained route-state reconciliation so canonical route A and route B resolve to their current Guacamole connection IDs and distinct live displays instead of a legacy route (#7).
-- **Route viewer convergence** - Fixed route-specific user creation, Compose environment propagation, protected sudoers detection, cold Guacamole startup and header-account races, route-local display readiness, interlock collisions, and rerun URL construction (#7).
+- **Route viewer convergence** - Fixed route-specific user creation, Compose environment propagation, protected sudoers detection, cold Guacamole startup and header-account races, container-backed Guacd readiness, route-local display inspection and access, interlock collisions, and rerun URL construction (#7).
 - **Runtime and interaction recovery** - Fixed stale dashboard and daemon classification, executable-handoff socket cleanup ownership, registered-session reconnects, role locator matching, clipboard recovery, and hidden route visibility failures (#7).
 
 ### Documentation

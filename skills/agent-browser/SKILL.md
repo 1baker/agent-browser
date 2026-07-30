@@ -18,7 +18,9 @@ or package mutation; inspect `hostPlan.availableDiskBytes`,
 `minimumDiskBytes`, and `diskSpaceReady` in JSON output.
 Treat every non-ready result as a hard stop. The installer activates user units
 only after readiness-authoritative routes are projected and both final doctors
-pass. Reruns first stop the managed dashboard, runtime interlock, and backup
+pass. Host preparation includes `x11-utils`, ImageMagick, and Tesseract; the
+doctor recognizes the pinned Compose Guacd container and managed Chrome path.
+Reruns first stop the managed dashboard, runtime interlock, and backup
 timer while reconciliation is active, then reactivate them after final
 readiness. Use `agent-browser install workstation reconcile --json` for an
 explicit installed-controller recovery pass and `agent-browser install

@@ -49,6 +49,11 @@ release, and public-asset reinstall.
   executable handoff. Shutdown now removes Unix session artifacts only when
   the shared socket path still matches the daemon's original device and inode;
   the focused regression and live handoff smoke pass.
+- The next clean exact-candidate run passed through user-unit activation and
+  install doctor, then final remote-view doctor exposed missing `xdpyinfo` and
+  a legacy host-guacd assumption. The package set and doctor now cover display
+  inspection, visual-proof tools, pinned container-backed Guacd, and managed
+  Chrome outside `PATH`.
 - The release remains no-go pending a clean exact-candidate Ubuntu install,
   reboot, idempotent rerun, restore and active-conflict evidence, full CI, and
   release-artifact proof.

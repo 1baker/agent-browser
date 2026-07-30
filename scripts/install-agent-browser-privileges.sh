@@ -103,7 +103,10 @@ workstation_packages() {
     xrdp \
     xorgxrdp \
     openbox \
+    x11-utils \
     x11-xserver-utils \
+    imagemagick \
+    tesseract-ocr \
     curl \
     python3 \
     nodejs \
