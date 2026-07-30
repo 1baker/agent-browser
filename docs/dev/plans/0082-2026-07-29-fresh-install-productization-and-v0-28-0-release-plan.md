@@ -309,6 +309,12 @@ Status: pending
   written interlock service was not loaded. Activation now loads the unit
   state first, skips reset only for `not-found`, and keeps loaded-unit reset
   failures fatal.
+- The resumed candidate then exposed an executable-handoff cleanup race. The
+  retiring daemon removed the replacement daemon's socket and session metadata
+  after the replacement rebound the shared session path. Daemon shutdown now
+  verifies the bound socket device and inode before removing any session
+  artifact. The focused ownership regression and live executable-handoff smoke
+  pass.
 - Release remains no-go pending a rebuilt exact candidate, clean VM install and
   reboot, idempotency, restore and active-conflict proof, full CI, release dry
   run, merge, and public-asset reinstall.

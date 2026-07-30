@@ -21,6 +21,29 @@ use super::stream::StreamServer;
 const DAEMON_AUTH_TOKEN_ENV: &str = "AGENT_BROWSER_DAEMON_AUTH_TOKEN";
 const DAEMON_AUTH_FIELD: &str = "_agentBrowserAuthToken";
 
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UnixSocketIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+fn unix_socket_identity(path: &Path) -> Option<UnixSocketIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::metadata(path).ok()?;
+    Some(UnixSocketIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(unix)]
+fn unix_socket_path_is_owned(path: &Path, identity: UnixSocketIdentity) -> bool {
+    unix_socket_identity(path) == Some(identity)
+}
+
 fn secure_daemon_dir(path: &std::path::Path) {
     #[cfg(unix)]
     {
@@ -139,6 +162,8 @@ pub async fn run_daemon(session: &str) {
             process::exit(1);
         }
     };
+    #[cfg(unix)]
+    let socket_identity = unix_socket_identity(&socket_path);
 
     #[cfg(windows)]
     {
@@ -216,21 +241,31 @@ pub async fn run_daemon(session: &str) {
     )
     .await;
 
+    // A retiring executable-handoff daemon must not delete artifacts written
+    // by its replacement after the shared session path has been rebound.
     #[cfg(unix)]
-    {
+    let owns_session_artifacts =
+        socket_identity.is_some_and(|identity| unix_socket_path_is_owned(&socket_path, identity));
+    #[cfg(windows)]
+    let owns_session_artifacts = true;
+
+    #[cfg(unix)]
+    if owns_session_artifacts {
         let _ = fs::remove_file(&socket_path);
     }
     #[cfg(windows)]
     {
         let _ = fs::remove_file(socket_dir.join(format!("{}.port", session)));
     }
-    let _ = fs::remove_file(&pid_path);
-    let _ = fs::remove_file(&version_path);
-    let _ = fs::remove_file(&executable_sha_path);
-    let _ = fs::remove_file(&stream_path);
-    let _ = fs::remove_file(socket_dir.join(format!("{}.engine", session)));
-    let _ = fs::remove_file(socket_dir.join(format!("{}.provider", session)));
-    let _ = fs::remove_file(socket_dir.join(format!("{}.extensions", session)));
+    if owns_session_artifacts {
+        let _ = fs::remove_file(&pid_path);
+        let _ = fs::remove_file(&version_path);
+        let _ = fs::remove_file(&executable_sha_path);
+        let _ = fs::remove_file(&stream_path);
+        let _ = fs::remove_file(socket_dir.join(format!("{}.engine", session)));
+        let _ = fs::remove_file(socket_dir.join(format!("{}.provider", session)));
+        let _ = fs::remove_file(socket_dir.join(format!("{}.extensions", session)));
+    }
 
     if let Err(e) = result {
         let _ = writeln!(std::io::stderr(), "Daemon error: {}", e);
@@ -658,6 +693,42 @@ fn get_port_for_session(session: &str) -> u16 {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn retiring_daemon_does_not_own_replacement_socket_path() {
+        use std::os::unix::net::UnixListener;
+
+        let fixture_dir = std::env::temp_dir().join(format!(
+            "agent-browser-daemon-socket-ownership-{}-{}",
+            process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should follow Unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&fixture_dir).expect("fixture directory should be created");
+        let socket_path = fixture_dir.join("handoff.sock");
+
+        let retiring_listener =
+            UnixListener::bind(&socket_path).expect("retiring daemon socket should bind");
+        let retiring_identity =
+            unix_socket_identity(&socket_path).expect("retiring socket should have an identity");
+        assert!(unix_socket_path_is_owned(&socket_path, retiring_identity));
+
+        fs::remove_file(&socket_path).expect("retiring socket path should be unlinked");
+        let replacement_listener =
+            UnixListener::bind(&socket_path).expect("replacement daemon socket should bind");
+        assert!(
+            !unix_socket_path_is_owned(&socket_path, retiring_identity),
+            "retiring daemon must not own the replacement socket path"
+        );
+
+        drop(retiring_listener);
+        drop(replacement_listener);
+        fs::remove_file(&socket_path).expect("replacement socket path should be removed");
+        fs::remove_dir(&fixture_dir).expect("fixture directory should be removed");
+    }
 
     #[cfg(windows)]
     #[test]

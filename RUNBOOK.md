@@ -38,6 +38,10 @@ Actions:
   not loaded yet. Activation now queries the unit load state first, skips only
   an absent fresh unit, and preserves fail-closed reset behavior for loaded
   units.
+- The resumed candidate reached executable handoff, where the retiring daemon
+  removed the replacement daemon's rebound Unix socket and session metadata.
+  Shutdown now compares the socket device and inode before cleaning any shared
+  session artifact.
 
 Validation:
 
@@ -49,6 +53,8 @@ Validation:
 - disk-capacity boundary unit test and resized VM harness contract
 - Guacamole header-user postcondition unit test
 - systemd unit-load/reset boundary unit test
+- retiring-daemon socket-ownership unit test
+- live runtime executable-handoff smoke
 
 Result:
 

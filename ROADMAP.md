@@ -42,6 +42,10 @@ release, and public-asset reinstall.
 - The following clean continuation passed account and route opening, then
   exposed a systemd fresh-unit reset ordering defect. Activation now checks
   load state before resetting prior interlock failure state.
+- The resumed candidate exposed a retiring-daemon cleanup race during
+  executable handoff. Shutdown now removes Unix session artifacts only when
+  the shared socket path still matches the daemon's original device and inode;
+  the focused regression and live handoff smoke pass.
 - The release remains no-go pending a clean exact-candidate Ubuntu install,
   reboot, idempotent rerun, restore and active-conflict evidence, full CI, and
   release-artifact proof.
