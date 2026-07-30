@@ -341,39 +341,42 @@ async fn e2e_service_detects_browser_crash_and_recovers_on_next_command() {
             .await;
         assert_success(&probe);
 
-        if store
-            .load()
-            .unwrap()
-            .browsers
-            .get(browser_id)
-            .is_some_and(|browser| browser.health == ServiceBrowserHealth::ProcessExited)
-        {
+        if store.load().unwrap().events.iter().any(|event| {
+            event.kind == super::service_model::ServiceEventKind::BrowserHealthChanged
+                && event.browser_id.as_deref() == Some(browser_id)
+                && event.previous_health == Some(ServiceBrowserHealth::Ready)
+                && event.current_health == Some(ServiceBrowserHealth::ProcessExited)
+        }) {
             break;
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     let detected = store.load().unwrap();
-    let crashed_browser = detected
-        .browsers
-        .get(browser_id)
-        .expect("service browser record should exist after crash detection");
-    assert_eq!(crashed_browser.health, ServiceBrowserHealth::ProcessExited);
-    assert_eq!(crashed_browser.pid, Some(pid));
     assert!(
-        crashed_browser
-            .last_error
-            .as_deref()
+        !detected.browsers.contains_key(browser_id),
+        "terminated browser operational state should be removed after crash evidence is recorded"
+    );
+    let crash_event = detected
+        .events
+        .iter()
+        .find(|event| {
+            event.kind == super::service_model::ServiceEventKind::BrowserHealthChanged
+                && event.browser_id.as_deref() == Some(browser_id)
+                && event.previous_health == Some(ServiceBrowserHealth::Ready)
+                && event.current_health == Some(ServiceBrowserHealth::ProcessExited)
+        })
+        .expect("crash detection should preserve a browser health transition event");
+    assert!(
+        crash_event
+            .details
+            .as_ref()
+            .and_then(|details| details.get("currentError"))
+            .and_then(|error| error.as_str())
             .is_some_and(|error| error.contains("exited")),
         "crash detection should record an operator-readable error: {:?}",
-        crashed_browser.last_error
+        crash_event.details
     );
-    assert!(detected.events.iter().any(|event| {
-        event.kind == super::service_model::ServiceEventKind::BrowserHealthChanged
-            && event.browser_id.as_deref() == Some(browser_id)
-            && event.previous_health == Some(ServiceBrowserHealth::Ready)
-            && event.current_health == Some(ServiceBrowserHealth::ProcessExited)
-    }));
 
     let recovered = handle
         .submit(json!({

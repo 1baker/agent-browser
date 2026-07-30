@@ -18,6 +18,7 @@ mod upgrade;
 mod validation;
 mod windows_browser_doctor;
 mod windows_browser_setup;
+mod workstation_install;
 
 use serde_json::json;
 use std::env;
@@ -1569,6 +1570,10 @@ fn main() {
     if clean.first().map(|s| s.as_str()) == Some("install") {
         if clean.get(1).map(|s| s.as_str()) == Some("doctor") {
             run_install_doctor(&flags);
+            return;
+        }
+        if clean.get(1).map(|s| s.as_str()) == Some("workstation") {
+            workstation_install::run_workstation_command(&args);
             return;
         }
         if clean.get(1).map(|s| s.as_str()) == Some("stealthcdp-chromium") {

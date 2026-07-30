@@ -94,6 +94,40 @@ function selectRecommendations(files, base) {
     );
   }
 
+  if (files.some(isWorkstationInstallerSurface)) {
+    add(
+      'pnpm test:workstation-install-fixture',
+      'source-free workstation payload or installer behavior changed',
+    );
+    add(
+      'pnpm test:workstation-host-provision',
+      'workstation host provisioning or privilege boundary changed',
+    );
+    add(
+      'pnpm test:fresh-workstation-vm-harness',
+      'fresh workstation VM lifecycle harness changed',
+    );
+    add(
+      'pnpm test:workstation-guacamole-assets',
+      'embedded Guacamole workstation assets changed',
+    );
+    add(
+      'pnpm test:guacamole-postgres-durability',
+      'workstation PostgreSQL durability behavior changed',
+    );
+    add(
+      'pnpm test:rdp-guac-route-specific-user-sync',
+      'workstation route user projection changed',
+    );
+  }
+
+  if (files.some(isReleaseVerificationSurface)) {
+    add(
+      'bash scripts/release/test-verify-release-assets.sh',
+      'release asset, checksum, or changelog extraction behavior changed',
+    );
+  }
+
   const focusedRustTests = focusedRustTestCommands(files);
   if (focusedRustTests.length > 0) {
     for (const { command, reason } of focusedRustTests) {
@@ -322,6 +356,43 @@ function isRouteConfusionGateSurface(file) {
   );
 }
 
+function isWorkstationInstallerSurface(file) {
+  return (
+    file.startsWith('cli/assets/workstation/') ||
+    file === 'cli/src/flags.rs' ||
+    file === 'cli/src/install.rs' ||
+    file === 'cli/src/main.rs' ||
+    file === 'cli/src/output.rs' ||
+    file === 'cli/src/remote_view_doctor.rs' ||
+    file === 'cli/src/workstation_install.rs' ||
+    file === 'scripts/install-agent-browser-privileges.sh' ||
+    file === 'scripts/libexec/agent-browser-privileged-helper' ||
+    file === 'scripts/guacamole-postgres-durability.sh' ||
+    file === 'scripts/ensure-rdp-guac-postgres.sh' ||
+    file === 'scripts/inspect-rdp-route-displays.js' ||
+    file === 'scripts/open-rdp-guac-route-displays.js' ||
+    file === 'scripts/grant-rdp-route-display-access.sh' ||
+    file === 'scripts/sync-rdp-guac-route-specific-user-pool.sh' ||
+    file.startsWith('scripts/test-workstation-') ||
+    file === 'scripts/test-fresh-workstation-vm-harness.js' ||
+    file.startsWith('scripts/vm/') ||
+    file.startsWith('scripts/smoke-install-workstation-') ||
+    file === 'scripts/smoke-install-privileges-clean-fixture.sh' ||
+    file === 'scripts/test-guacamole-postgres-durability.js' ||
+    file === 'scripts/test-rdp-guac-postgres-hardening.js' ||
+    file === 'scripts/test-rdp-guac-route-specific-user-sync.js'
+  );
+}
+
+function isReleaseVerificationSurface(file) {
+  return (
+    file === '.github/workflows/release.yml' ||
+    file === 'CHANGELOG.md' ||
+    file === 'package.json' ||
+    file.startsWith('scripts/release/')
+  );
+}
+
 function focusedRustTestCommands(files) {
   const checks = [];
   const add = (command, reason) => {
@@ -329,6 +400,20 @@ function focusedRustTestCommands(files) {
       checks.push({ command, reason });
     }
   };
+
+  if (files.includes('cli/src/workstation_install.rs')) {
+    add(
+      'cargo test --manifest-path cli/Cargo.toml workstation_install -- --nocapture',
+      'workstation install, locking, manifest, or route projection behavior changed',
+    );
+  }
+
+  if (files.includes('cli/src/install.rs')) {
+    add(
+      'cargo test --manifest-path cli/Cargo.toml workstation_payload_status -- --nocapture',
+      'workstation payload doctor provenance changed',
+    );
+  }
 
   if (files.includes('cli/src/native/service_model.rs')) {
     add(

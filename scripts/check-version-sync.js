@@ -27,6 +27,19 @@ if (!cargoVersionMatch) {
 
 const cargoVersion = cargoVersionMatch[1];
 
+// Read the agent-browser package entry from Cargo.lock.
+const cargoLock = readFileSync(join(rootDir, 'cli/Cargo.lock'), 'utf-8');
+const cargoLockVersionMatch = cargoLock.match(
+  /\[\[package\]\]\s*\nname\s*=\s*"agent-browser"\s*\nversion\s*=\s*"([^"]*)"/,
+);
+
+if (!cargoLockVersionMatch) {
+  console.error('Could not find the agent-browser package version in cli/Cargo.lock');
+  process.exit(1);
+}
+
+const cargoLockVersion = cargoLockVersionMatch[1];
+
 // Read dashboard package.json version
 const dashboardPkg = JSON.parse(readFileSync(join(rootDir, 'packages/dashboard/package.json'), 'utf-8'));
 const dashboardVersion = dashboardPkg.version;
@@ -37,6 +50,9 @@ if (packageVersion !== cargoVersion) {
 }
 if (packageVersion !== dashboardVersion) {
   mismatches.push(`  packages/dashboard:          ${dashboardVersion}`);
+}
+if (packageVersion !== cargoLockVersion) {
+  mismatches.push(`  cli/Cargo.lock:              ${cargoLockVersion}`);
 }
 
 if (mismatches.length > 0) {

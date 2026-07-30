@@ -6,7 +6,7 @@ Download the native Rust binary from this fork's GitHub releases. Pick the asset
 for your platform from the latest release, then put it on your PATH.
 
 ```bash
-VERSION=v0.26.1
+VERSION=v0.28.0
 curl -L -o ~/.local/bin/agent-browser \
   https://github.com/CochranResearchGroup/agent-browser/releases/download/$VERSION/agent-browser-linux-x64
 chmod +x ~/.local/bin/agent-browser
@@ -14,6 +14,8 @@ agent-browser install  # Download Chrome from Chrome for Testing (first time)
 agent-browser install stealthcdp-chromium  # Optional preferred patched Chromium
 agent-browser install doctor  # Check binary drift and launch readiness
 agent-browser install --with-deps --with-remote-view-privileges  # Linux RDP/Guacamole desktop setup
+agent-browser install workstation --dry-run --json  # Preview source-free workstation payload
+agent-browser install workstation --apply --json  # Install and reconcile a fresh Ubuntu workstation
 ```
 
 This is the fastest option. Commands run through the native Rust CLI directly
@@ -70,6 +72,58 @@ installed helper's route desktop template as
 <code>remoteViewPrivileges.helperDesktopSession</code> and raises
 <code>remote_view_route_desktop_helper_stale</code> when that helper still
 starts a terminal-first route desktop.
+
+The <code>v0.28.0</code> release-candidate lane adds
+<code>agent-browser install workstation</code>. It plans or installs the
+binary, versioned support manifest, pinned local Guacamole Compose stack and
+schema, protected generated PostgreSQL and route credentials, dashboard
+service, runtime interlock, and PostgreSQL backup units without a source
+checkout or pnpm reference:
+
+```bash
+agent-browser install workstation --dry-run --json
+agent-browser install workstation --apply --json
+```
+
+The first apply uses one <code>sudo -v</code> authorization boundary for host
+preparation. Before authorization or payload staging, real-host preflight
+requires at least 6 GiB of free disk capacity. JSON output exposes
+<code>hostPlan.availableDiskBytes</code>, <code>minimumDiskBytes</code>, and
+<code>diskSpaceReady</code>. If preparation adds the <code>agent-browser</code> or
+<code>docker</code> group to the current user, the command exits with status 75
+and a <code>relogin_required</code> JSON state. Log out and back in or reboot,
+then rerun the same apply command. With both groups effective, apply starts the
+pinned stack, creates the two route users and canonical Guacamole rows, opens
+distinct XRDP displays selected by readiness, projects
+<code>guacamole:1</code> and <code>guacamole:2</code> into service state, and
+activates the user services only after the final doctors pass.
+Host preparation includes <code>x11-utils</code>, ImageMagick, Tesseract, and
+a path-scoped AppArmor policy that permits managed Chrome to create the user
+namespace required by its sandbox on Ubuntu 24.04. The installer does not
+disable the host restriction or add <code>--no-sandbox</code>. Final readiness
+recognizes the pinned Compose Guacd container and the Chrome binary in
+agent-browser's managed browser directory. Remote-view doctor reports the
+managed Chrome sandbox policy separately and refuses live-gate readiness when
+that policy is absent, inactive, or does not match the managed browser path.
+Standalone doctor runs discover their helper scripts from the installed
+versioned support root, so no checkout or ambient script-root override is
+required.
+
+On rerun, apply first stops the managed dashboard, runtime interlock, and
+backup timer while it reconciles the installed payload and routes. It
+reactivates those units only after final readiness succeeds.
+
+Use <code>agent-browser install workstation reconcile --json</code> to rerun
+the installed convergence controller without reinstalling the payload. Use
+<code>agent-browser install workstation backup --json</code> for the same
+protected PostgreSQL backup operation invoked by the installed timer.
+
+<code>agent-browser install doctor --json</code> verifies the installed
+binary, controller assets, Guacamole manifest, and Guacamole files against the
+SHA-256 provenance recorded during workstation installation.
+
+This release-candidate branch remains a release no-go until its disposable
+Ubuntu install, reboot, restore, full CI, and release-artifact gates pass.
 
 For a persistent local dashboard and self-healing RDP route plane, run
 <code>bash scripts/install-dashboard-user-service.sh</code> from the checkout.

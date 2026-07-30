@@ -34,6 +34,13 @@ const INSTALL_DOCTOR_SHORT_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const INSTALL_DOCTOR_SERVICE_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 const INSTALL_DOCTOR_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(25);
 static INSTALL_DOCTOR_COMMAND_OUTPUT_COUNTER: AtomicU64 = AtomicU64::new(0);
+const WORKSTATION_UNIT_NAMES: [&str; 5] = [
+    "agent-browser-dashboard.service",
+    "agent-browser-runtime-interlock.service",
+    "agent-browser-runtime-interlock.timer",
+    "agent-browser-guacamole-postgres-backup.service",
+    "agent-browser-guacamole-postgres-backup.timer",
+];
 
 enum InstallDoctorCommandResult {
     Output(Output),
@@ -805,7 +812,10 @@ pub fn run_install(with_deps: bool, with_remote_view_privileges: bool) {
 
     if is_linux {
         if with_remote_view_privileges {
-            install_remote_view_privileges();
+            if let Err(err) = install_remote_view_privileges(false, false) {
+                eprintln!("{} {err}", color::error_indicator());
+                exit(1);
+            }
         }
 
         if with_deps {
@@ -1091,8 +1101,10 @@ fn install_doctor_report(flags: &Flags) -> serde_json::Value {
     install_doctor_trace("runtime_convergence");
     let runtime_convergence =
         runtime_convergence_summary(&live_dashboard_runtime, &runtime_inventory);
+    install_doctor_trace("workstation_payload");
+    let workstation_payload = workstation_payload_status();
     install_doctor_trace("issues");
-    let issues = install_doctor_issues(InstallDoctorIssueInputs {
+    let mut issues = install_doctor_issues(InstallDoctorIssueInputs {
         current_executable: &current_executable,
         path_command: &path_command,
         pnpm_package_binary: &pnpm_package_binary,
@@ -1105,6 +1117,7 @@ fn install_doctor_report(flags: &Flags) -> serde_json::Value {
         runtime_inventory: &runtime_inventory,
         daemon_listener_inventory: &daemon_listener_inventory,
     });
+    issues.extend(workstation_payload_issues(&workstation_payload));
 
     json!({
         "success": issues.is_empty(),
@@ -1123,9 +1136,288 @@ fn install_doctor_report(flags: &Flags) -> serde_json::Value {
             "runtimeInventory": runtime_inventory,
             "daemonListenerInventory": daemon_listener_inventory,
             "runtimeConvergence": runtime_convergence,
+            "workstationPayload": workstation_payload,
             "issues": issues,
         }
     })
+}
+
+fn workstation_payload_status() -> serde_json::Value {
+    let root = std::env::var_os("AGENT_BROWSER_WORKSTATION_ROOT")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    workstation_payload_status_for_root(&root)
+}
+
+/// Reports source-free workstation presence and verifies installed SHA-256
+/// provenance without reading or returning protected secret values.
+fn workstation_payload_status_for_root(root: &Path) -> serde_json::Value {
+    let version = env!("CARGO_PKG_VERSION");
+    let support_dir = root.join(".local/lib/agent-browser").join(version);
+    let manifest_path = support_dir.join("manifest.json");
+    let installed_binary_path = root.join(".local/bin/agent-browser");
+    let unit_dir = root.join(".config/systemd/user");
+    let guacamole_manifest_path = support_dir.join("guacamole/manifest.json");
+    let secrets_path = root.join(".agent-browser/guacamole/secrets/guacamole.env");
+
+    let manifest_exists = manifest_path.is_file();
+    let manifest_result = fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok());
+    let manifest_parsed = manifest_result.is_some();
+    let manifest_version = manifest_result
+        .as_ref()
+        .and_then(|manifest| manifest.get("version"))
+        .and_then(Value::as_str);
+    let manifest_version_matches = manifest_version == Some(version);
+    let source_checkout_required = manifest_result
+        .as_ref()
+        .and_then(|manifest| manifest.get("sourceCheckoutRequired"))
+        .and_then(Value::as_bool);
+    let manifest_source_free = source_checkout_required == Some(false);
+    let expected_binary_sha256 = manifest_result
+        .as_ref()
+        .and_then(|manifest| manifest.pointer("/binary/sha256"))
+        .and_then(Value::as_str);
+
+    let installed_binary = binary_fingerprint(Some(installed_binary_path.clone()));
+    let installed_binary_exists = installed_binary
+        .get("exists")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let installed_binary_sha256 = installed_binary.get("sha256").and_then(Value::as_str);
+    let installed_binary_provenance_matches =
+        expected_binary_sha256.is_some() && expected_binary_sha256 == installed_binary_sha256;
+
+    let (controller_asset_files, controller_assets_ready) = workstation_payload_file_integrity(
+        &support_dir,
+        manifest_result
+            .as_ref()
+            .and_then(|manifest| manifest.pointer("/controllerAssets/files")),
+    );
+    let (guacamole_asset_files, guacamole_assets_ready) = workstation_payload_file_integrity(
+        &support_dir.join("guacamole"),
+        manifest_result
+            .as_ref()
+            .and_then(|manifest| manifest.pointer("/guacamoleBundle/files")),
+    );
+
+    let units = WORKSTATION_UNIT_NAMES
+        .iter()
+        .map(|name| {
+            let path = unit_dir.join(name);
+            let exists = path.is_file();
+            let expected_sha256 = manifest_result
+                .as_ref()
+                .and_then(|manifest| manifest.get("units"))
+                .and_then(Value::as_array)
+                .and_then(|units| {
+                    units
+                        .iter()
+                        .find(|unit| unit.get("name").and_then(Value::as_str) == Some(*name))
+                })
+                .and_then(|unit| unit.get("sha256"))
+                .and_then(Value::as_str);
+            let sha256 = if exists {
+                file_sha256(&path).ok()
+            } else {
+                None
+            };
+            let provenance_matches =
+                expected_sha256.is_some() && expected_sha256 == sha256.as_deref();
+            let source_free = fs::read_to_string(&path)
+                .ok()
+                .is_some_and(|contents| workstation_unit_is_source_free(&contents));
+            json!({
+                "name": name,
+                "path": path.display().to_string(),
+                "exists": exists,
+                "sourceFree": source_free,
+                "expectedSha256": expected_sha256,
+                "sha256": sha256,
+                "provenanceMatches": provenance_matches,
+            })
+        })
+        .collect::<Vec<_>>();
+    let units_ready = units.iter().all(|unit| {
+        unit.get("exists").and_then(Value::as_bool) == Some(true)
+            && unit.get("sourceFree").and_then(Value::as_bool) == Some(true)
+            && unit.get("provenanceMatches").and_then(Value::as_bool) == Some(true)
+    });
+
+    let guacamole_manifest_exists = guacamole_manifest_path.is_file();
+    let expected_guacamole_manifest_sha256 = manifest_result
+        .as_ref()
+        .and_then(|manifest| manifest.get("guacamoleBundleManifestSha256"))
+        .and_then(Value::as_str);
+    let guacamole_manifest_sha256 = if guacamole_manifest_exists {
+        file_sha256(&guacamole_manifest_path).ok()
+    } else {
+        None
+    };
+    let guacamole_manifest_matches = expected_guacamole_manifest_sha256.is_some()
+        && expected_guacamole_manifest_sha256 == guacamole_manifest_sha256.as_deref();
+    let secrets_exists = secrets_path.is_file();
+    let secrets_mode = private_file_mode(&secrets_path);
+    let secrets_mode_private = secrets_mode.map(|mode| mode & 0o077 == 0);
+
+    let presence = [
+        manifest_exists,
+        units
+            .iter()
+            .any(|unit| unit.get("exists").and_then(Value::as_bool) == Some(true)),
+        guacamole_manifest_exists,
+        secrets_exists,
+    ];
+    let any_present = presence.iter().any(|present| *present);
+    let ready = manifest_parsed
+        && manifest_version_matches
+        && manifest_source_free
+        && installed_binary_exists
+        && installed_binary_provenance_matches
+        && units_ready
+        && guacamole_manifest_exists
+        && guacamole_manifest_matches
+        && guacamole_assets_ready
+        && controller_assets_ready
+        && secrets_exists
+        && secrets_mode_private.unwrap_or(cfg!(not(unix)));
+    let state = if ready {
+        "installed"
+    } else if any_present {
+        "partial"
+    } else {
+        "absent"
+    };
+
+    json!({
+        "schemaVersion": "agent-browser.workstation-payload-status.v1",
+        "state": state,
+        "ready": ready,
+        "expectedVersion": version,
+        "supportPath": support_dir.display().to_string(),
+        "manifest": {
+            "path": manifest_path.display().to_string(),
+            "exists": manifest_exists,
+            "parsed": manifest_parsed,
+            "version": manifest_version,
+            "versionMatches": manifest_version_matches,
+            "sourceCheckoutRequired": source_checkout_required,
+            "sourceFree": manifest_source_free,
+            "binarySha256": expected_binary_sha256,
+        },
+        "installedBinary": installed_binary,
+        "installedBinaryProvenanceMatches": installed_binary_provenance_matches,
+        "units": units,
+        "controllerAssets": {
+            "ready": controller_assets_ready,
+            "files": controller_asset_files,
+        },
+        "guacamoleBundle": {
+            "manifestPath": guacamole_manifest_path.display().to_string(),
+            "manifestExists": guacamole_manifest_exists,
+            "manifestSha256": guacamole_manifest_sha256,
+            "expectedManifestSha256": expected_guacamole_manifest_sha256,
+            "manifestMatches": guacamole_manifest_matches,
+            "filesReady": guacamole_assets_ready,
+            "files": guacamole_asset_files,
+        },
+        "secrets": {
+            "path": secrets_path.display().to_string(),
+            "exists": secrets_exists,
+            "mode": secrets_mode.map(|mode| format!("{mode:04o}")),
+            "modePrivate": secrets_mode_private,
+        },
+    })
+}
+
+fn workstation_payload_file_integrity(base: &Path, entries: Option<&Value>) -> (Vec<Value>, bool) {
+    let Some(entries) = entries.and_then(Value::as_array) else {
+        return (Vec::new(), false);
+    };
+    if entries.is_empty() {
+        return (Vec::new(), false);
+    }
+
+    let files = entries
+        .iter()
+        .map(|entry| {
+            let relative = entry.get("path").and_then(Value::as_str);
+            let expected_sha256 = entry.get("sha256").and_then(Value::as_str);
+            let safe_relative = relative.is_some_and(|relative| {
+                let path = Path::new(relative);
+                !path.is_absolute()
+                    && path
+                        .components()
+                        .all(|component| matches!(component, std::path::Component::Normal(_)))
+            });
+            let path = relative
+                .filter(|_| safe_relative)
+                .map(|relative| base.join(relative));
+            let exists = path.as_ref().is_some_and(|path| path.is_file());
+            let actual_sha256 = path
+                .as_ref()
+                .filter(|path| path.is_file())
+                .and_then(|path| file_sha256(path).ok());
+            let matches = safe_relative
+                && expected_sha256.is_some()
+                && expected_sha256 == actual_sha256.as_deref();
+            json!({
+                "path": relative,
+                "safeRelativePath": safe_relative,
+                "exists": exists,
+                "expectedSha256": expected_sha256,
+                "sha256": actual_sha256,
+                "matches": matches,
+            })
+        })
+        .collect::<Vec<_>>();
+    let ready = files
+        .iter()
+        .all(|file| file.get("matches").and_then(Value::as_bool) == Some(true));
+    (files, ready)
+}
+
+fn workstation_unit_is_source_free(contents: &str) -> bool {
+    !contents.lines().any(|line| {
+        let normalized = line.trim().to_ascii_lowercase();
+        normalized.starts_with("workingdirectory=")
+            || normalized.contains("pnpm")
+            || normalized.contains("workspace.local")
+    })
+}
+
+#[cfg(unix)]
+fn private_file_mode(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+fn private_file_mode(_path: &Path) -> Option<u32> {
+    None
+}
+
+fn workstation_payload_issues(status: &serde_json::Value) -> Vec<serde_json::Value> {
+    if status.get("state").and_then(Value::as_str) != Some("partial") {
+        return Vec::new();
+    }
+    vec![json!({
+        "code": "workstation_payload_partial_or_drifted",
+        "message": "workstation payload artifacts are incomplete or drifted from the current source-free version",
+        "nextAction": "install_workstation_payload",
+        "remedy": {
+            "kind": "operator_command",
+            "command": "agent-browser install workstation --apply --json",
+            "argv": ["agent-browser", "install", "workstation", "--apply", "--json"],
+            "requiresInteractiveSudo": false,
+            "why": "Install or refresh the versioned source-free workstation payload, service units, Guacamole bundle, and protected state."
+        }
+    })]
 }
 
 fn install_doctor_trace(phase: &str) {
@@ -1798,7 +2090,25 @@ fn pid_is_running(pid: u32) -> bool {
     {
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle == 0 {
+            return false;
+        }
+        let mut exit_code = 0;
+        let read_ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+        unsafe {
+            CloseHandle(handle);
+        }
+        read_ok && exit_code == STILL_ACTIVE as u32
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         false
@@ -2323,7 +2633,26 @@ fn remote_view_privilege_status() -> serde_json::Value {
         .map(|groups| groups.iter().any(|group| group == &group_name))
         .unwrap_or(false);
     let helper_exists = Path::new(&helper_path).exists();
-    let sudoers_exists = Path::new(&sudoers_path).exists();
+    let helper_sha256 = sha256_bytes(REMOTE_VIEW_PRIVILEGED_HELPER.as_bytes());
+    let install_verification = command_output_summary(
+        "sudo",
+        &[
+            "-n",
+            &helper_path,
+            "verify-install",
+            "--group",
+            &group_name,
+            "--sudoers",
+            &sudoers_path,
+            "--sha256",
+            &helper_sha256,
+        ],
+    );
+    let sudoers_verified = install_verification
+        .get("success")
+        .and_then(|value| value.as_bool())
+        == Some(true);
+    let sudoers_exists = Path::new(&sudoers_path).exists() || sudoers_verified;
     let helper_check = command_output_summary("sudo", &["-n", &helper_path, "check"]);
     let helper_status = helper_status_output(command_output_summary(
         "sudo",
@@ -2413,6 +2742,8 @@ fn remote_view_privilege_status() -> serde_json::Value {
         "helperDesktopSession": helper_desktop_session,
         "sudoersPath": sudoers_path,
         "sudoersExists": sudoers_exists,
+        "sudoersVerified": sudoers_verified,
+        "installVerification": install_verification,
         "helperCheck": helper_check,
         "helperStatus": helper_status,
         "issues": issues,
@@ -3090,18 +3421,19 @@ fn install_linux_deps() {
     }
 }
 
-fn install_remote_view_privileges() {
-    println!(
-        "{}",
-        color::cyan("Installing remote-view privilege helper...")
-    );
+pub(crate) fn install_remote_view_privileges(
+    with_workstation_deps: bool,
+    quiet: bool,
+) -> Result<(), String> {
+    if !quiet {
+        println!(
+            "{}",
+            color::cyan("Installing remote-view privilege helper...")
+        );
+    }
 
     if !which_exists("bash") {
-        eprintln!(
-            "{} bash is required to install remote-view privileges.",
-            color::error_indicator()
-        );
-        exit(1);
+        return Err("bash is required to install remote-view privileges.".to_string());
     }
 
     let temp_root =
@@ -3119,47 +3451,50 @@ fn install_remote_view_privileges() {
         .and_then(|()| fs::write(&installer_path, REMOTE_VIEW_PRIVILEGE_INSTALLER))
         .and_then(|()| fs::write(&helper_path, REMOTE_VIEW_PRIVILEGED_HELPER))
     {
-        eprintln!(
-            "{} Failed to prepare remote-view privilege installer: {}",
-            color::error_indicator(),
-            err
-        );
         let _ = fs::remove_dir_all(&temp_root);
-        exit(1);
+        return Err(format!(
+            "Failed to prepare remote-view privilege installer: {err}"
+        ));
     }
 
-    let status = Command::new("bash")
+    let mut command = Command::new("bash");
+    command
         .arg(&installer_path)
         .arg("--apply")
         .env("AGENT_BROWSER_PRIVILEGED_HELPER_SOURCE", &helper_path)
-        .status();
+        .env(
+            "AGENT_BROWSER_PRIVILEGED_HELPER_SHA256",
+            sha256_bytes(REMOTE_VIEW_PRIVILEGED_HELPER.as_bytes()),
+        );
+    if with_workstation_deps {
+        command.arg("--with-workstation-deps");
+    }
+    let output = command
+        .output()
+        .map_err(|err| format!("Could not run remote-view privilege installer: {err}"))?;
 
     let _ = fs::remove_dir_all(&temp_root);
 
-    match status {
-        Ok(s) if s.success() => {
+    if output.status.success() {
+        if !quiet {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.is_empty() {
+                print!("{stdout}");
+            }
             println!(
                 "{} Remote-view privilege helper installed",
                 color::success_indicator()
             );
         }
-        Ok(s) => {
-            eprintln!(
-                "{} Remote-view privilege helper install failed with status {}",
-                color::error_indicator(),
-                s
-            );
-            exit(s.code().unwrap_or(1));
-        }
-        Err(err) => {
-            eprintln!(
-                "{} Could not run remote-view privilege installer: {}",
-                color::error_indicator(),
-                err
-            );
-            exit(1);
-        }
+        return Ok(());
     }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Err(format!(
+        "Remote-view privilege helper install failed with status {}: {}{}",
+        output.status, stdout, stderr
+    ))
 }
 
 fn which_exists(cmd: &str) -> bool {
@@ -3962,6 +4297,198 @@ mod tests {
     }
 
     #[test]
+    fn workstation_payload_status_reports_absent_without_issue() {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-browser-workstation-doctor-absent-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+        ));
+
+        let ordinary_binary = dir.join(".local/bin/agent-browser");
+        fs::create_dir_all(ordinary_binary.parent().unwrap()).unwrap();
+        fs::write(&ordinary_binary, "ordinary install").unwrap();
+
+        let status = workstation_payload_status_for_root(&dir);
+
+        assert_eq!(status["state"], "absent");
+        assert_eq!(status["ready"], false);
+        assert_eq!(status["installedBinary"]["exists"], true);
+        assert!(workstation_payload_issues(&status).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workstation_payload_status_reports_source_free_install_without_exposing_secrets() {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-browser-workstation-doctor-installed-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+        ));
+        let support_dir = dir
+            .join(".local/lib/agent-browser")
+            .join(env!("CARGO_PKG_VERSION"));
+        let unit_dir = dir.join(".config/systemd/user");
+        let binary_path = dir.join(".local/bin/agent-browser");
+        let secrets_path = dir.join(".agent-browser/guacamole/secrets/guacamole.env");
+        let controller_path = support_dir.join("scripts/controller.js");
+        let guacamole_asset_path = support_dir.join("guacamole/compose.yml");
+        let guacamole_manifest_path = support_dir.join("guacamole/manifest.json");
+        fs::create_dir_all(controller_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(guacamole_asset_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(&unit_dir).unwrap();
+        fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(secrets_path.parent().unwrap()).unwrap();
+        fs::write(&binary_path, "test binary").unwrap();
+        fs::write(&controller_path, "controller fixture").unwrap();
+        fs::write(&guacamole_asset_path, "compose fixture").unwrap();
+        fs::write(&guacamole_manifest_path, "{\"schemaVersion\":1}\n").unwrap();
+        let unit_entries = WORKSTATION_UNIT_NAMES
+            .iter()
+            .map(|name| {
+                let path = unit_dir.join(name);
+                let content = format!("[Service]\nExecStart={}\n", binary_path.display());
+                fs::write(&path, content).unwrap();
+                json!({
+                    "name": name,
+                    "sha256": file_sha256(&path).unwrap(),
+                })
+            })
+            .collect::<Vec<_>>();
+        fs::write(
+            support_dir.join("manifest.json"),
+            serde_json::to_vec(&json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "sourceCheckoutRequired": false,
+                "binary": {
+                    "sha256": file_sha256(&binary_path).unwrap(),
+                },
+                "controllerAssets": {
+                    "files": [{
+                        "path": "scripts/controller.js",
+                        "sha256": file_sha256(&controller_path).unwrap(),
+                    }],
+                },
+                "units": unit_entries,
+                "guacamoleBundleManifestSha256": file_sha256(
+                    &guacamole_manifest_path
+                ).unwrap(),
+                "guacamoleBundle": {
+                    "files": [{
+                        "path": "compose.yml",
+                        "sha256": file_sha256(&guacamole_asset_path).unwrap(),
+                    }],
+                },
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(&secrets_path, "DO_NOT_EXPOSE=this-value").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&secrets_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let status = workstation_payload_status_for_root(&dir);
+        let rendered = serde_json::to_string(&status).unwrap();
+
+        assert_eq!(status["state"], "installed");
+        assert_eq!(status["ready"], true);
+        assert_eq!(status["manifest"]["versionMatches"], true);
+        assert_eq!(status["manifest"]["sourceFree"], true);
+        assert_eq!(status["installedBinary"]["exists"], true);
+        assert_eq!(status["installedBinaryProvenanceMatches"], true);
+        assert_eq!(status["controllerAssets"]["ready"], true);
+        assert_eq!(status["units"].as_array().unwrap().len(), 5);
+        assert!(status["units"].as_array().unwrap().iter().all(|unit| {
+            unit["exists"].as_bool() == Some(true)
+                && unit["sourceFree"].as_bool() == Some(true)
+                && unit["provenanceMatches"].as_bool() == Some(true)
+        }));
+        assert_eq!(
+            status["guacamoleBundle"]["manifestExists"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(status["guacamoleBundle"]["manifestMatches"], true);
+        assert_eq!(status["guacamoleBundle"]["filesReady"], true);
+        assert_eq!(status["secrets"]["exists"], true);
+        #[cfg(unix)]
+        assert_eq!(status["secrets"]["mode"], "0600");
+        assert!(!rendered.contains("DO_NOT_EXPOSE"));
+        assert!(!rendered.contains("this-value"));
+        assert!(workstation_payload_issues(&status).is_empty());
+
+        let first_unit_path = unit_dir.join(WORKSTATION_UNIT_NAMES[0]);
+        let first_unit_content = fs::read_to_string(&first_unit_path).unwrap();
+        fs::write(
+            &first_unit_path,
+            "[Service]\nExecStart=/tmp/other-source-free-binary\n",
+        )
+        .unwrap();
+        let unit_drifted = workstation_payload_status_for_root(&dir);
+        assert_eq!(unit_drifted["state"], "partial");
+        assert_eq!(unit_drifted["units"][0]["sourceFree"], true);
+        assert_eq!(unit_drifted["units"][0]["provenanceMatches"], false);
+        fs::write(&first_unit_path, first_unit_content).unwrap();
+
+        fs::write(&controller_path, "tampered controller fixture").unwrap();
+        let drifted = workstation_payload_status_for_root(&dir);
+        assert_eq!(drifted["state"], "partial");
+        assert_eq!(drifted["ready"], false);
+        assert_eq!(drifted["controllerAssets"]["ready"], false);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workstation_payload_status_reports_partial_source_checkout_drift() {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-browser-workstation-doctor-partial-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+        ));
+        let support_dir = dir
+            .join(".local/lib/agent-browser")
+            .join(env!("CARGO_PKG_VERSION"));
+        let unit_dir = dir.join(".config/systemd/user");
+        fs::create_dir_all(&support_dir).unwrap();
+        fs::create_dir_all(&unit_dir).unwrap();
+        fs::write(
+            support_dir.join("manifest.json"),
+            serde_json::to_vec(&json!({
+                "version": "0.0.0-stale",
+                "sourceCheckoutRequired": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            unit_dir.join(WORKSTATION_UNIT_NAMES[0]),
+            "[Service]\nWorkingDirectory=/home/test/workspace.local/agent-browser\nExecStart=pnpm start\n",
+        )
+        .unwrap();
+
+        let status = workstation_payload_status_for_root(&dir);
+        let issues = workstation_payload_issues(&status);
+
+        assert_eq!(status["state"], "partial");
+        assert_eq!(status["ready"], false);
+        assert_eq!(status["manifest"]["versionMatches"], false);
+        assert_eq!(status["manifest"]["sourceFree"], false);
+        assert_eq!(status["units"][0]["sourceFree"], false);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0]["code"], "workstation_payload_partial_or_drifted");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn install_orders_remote_view_privileges_before_linux_deps() {
         let source = include_str!("install.rs");
         let run_install_start = source
@@ -3969,7 +4496,7 @@ mod tests {
             .expect("run_install should exist");
         let run_install_source = &source[run_install_start..];
         let privileges_pos = run_install_source
-            .find("install_remote_view_privileges();")
+            .find("install_remote_view_privileges(false, false)")
             .expect("run_install should call install_remote_view_privileges");
         let deps_pos = run_install_source
             .find("install_linux_deps();")

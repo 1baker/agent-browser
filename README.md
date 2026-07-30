@@ -10,7 +10,7 @@ Download the native Rust binary from this fork's GitHub releases. Pick the asset
 for your platform from the latest release, then put it on your PATH.
 
 ```bash
-VERSION=v0.26.1
+VERSION=v0.28.0
 curl -L -o ~/.local/bin/agent-browser \
   https://github.com/CochranResearchGroup/agent-browser/releases/download/$VERSION/agent-browser-linux-x64
 chmod +x ~/.local/bin/agent-browser
@@ -18,6 +18,8 @@ agent-browser install  # Download Chrome from Chrome for Testing (first time onl
 agent-browser install stealthcdp-chromium  # Optional preferred patched Chromium
 agent-browser install doctor  # Check user-scoped binary drift and launch readiness
 agent-browser install --with-deps --with-remote-view-privileges  # Linux RDP/Guacamole desktop setup
+agent-browser install workstation --dry-run --json  # Preview source-free workstation payload
+agent-browser install workstation --apply --json  # Install and reconcile a fresh Ubuntu workstation
 pnpm test:wsl-windows-chromium-profile-live  # Validate WSL Windows profile writes when doctor says available
 ```
 
@@ -67,6 +69,53 @@ Re-running the command on an already-provisioned machine exits before any
 privileged changes when the helper, sudoers policy, group, and membership are
 already ready.
 
+The `v0.28.0` release-candidate lane adds
+`agent-browser install workstation`. It plans or installs the binary,
+versioned support manifest, pinned local Guacamole Compose stack and schema,
+protected generated PostgreSQL and route credentials, dashboard service,
+runtime interlock, and PostgreSQL backup units without a source checkout or
+pnpm reference:
+
+```bash
+agent-browser install workstation --dry-run --json
+agent-browser install workstation --apply --json
+```
+
+The first apply uses one `sudo -v` authorization boundary for host preparation.
+Before acquiring that authorization or staging the payload, the real-host
+preflight requires at least 6 GiB of free disk capacity. JSON output exposes
+`hostPlan.availableDiskBytes`, `minimumDiskBytes`, and `diskSpaceReady`.
+If that adds the `agent-browser` or `docker` group to the current user, the
+command exits with status 75 and a `relogin_required` JSON state. Log out and
+back in or reboot, then rerun the same apply command. With both groups
+effective, apply starts the pinned stack, creates the two route users and
+canonical Guacamole rows, opens distinct XRDP displays selected by readiness,
+projects `guacamole:1` and `guacamole:2` into service state, and activates the
+user services only after the final doctors pass.
+Host preparation includes `x11-utils`, ImageMagick, Tesseract, and a
+path-scoped AppArmor policy that permits managed Chrome to create the user
+namespace required by its sandbox on Ubuntu 24.04. The installer does not
+disable the host restriction or add `--no-sandbox`. Final readiness recognizes
+the pinned Compose Guacd container and the Chrome binary installed in
+agent-browser's managed browser directory. Remote-view doctor reports the
+managed Chrome sandbox policy separately and refuses live-gate readiness when
+that policy is absent, inactive, or does not match the managed browser path.
+Standalone doctor runs discover their helper scripts from the installed
+versioned support root, so no checkout or ambient script-root override is
+required.
+
+On rerun, apply first stops the managed dashboard, runtime interlock, and
+backup timer while it reconciles the installed payload and routes. It
+reactivates those units only after final readiness succeeds.
+
+`agent-browser install workstation reconcile --json` reruns the installed
+convergence controller without reinstalling the payload.
+`agent-browser install workstation backup --json` performs the same protected
+PostgreSQL backup operation used by the installed timer.
+
+This release-candidate branch remains a release no-go until its disposable
+Ubuntu install, reboot, restore, full CI, and release-artifact gates pass.
+
 ### Install Doctor
 
 Use `agent-browser install doctor` after upgrading a user-scoped install or
@@ -75,7 +124,9 @@ changing custom browser manifests. It does not launch Chrome. It checks the
 package binary when pnpm is available, the current workspace binary when run
 from a checkout, and the no-launch `launchConfig` readiness view.
 It also runs a no-launch service-status probe and, on Linux, reports
-remote-view privilege helper readiness.
+remote-view privilege helper readiness. For a workstation payload, it verifies
+the installed binary, controller assets, Guacamole manifest, and Guacamole
+files against the SHA-256 provenance recorded during installation.
 
 ```bash
 agent-browser install doctor

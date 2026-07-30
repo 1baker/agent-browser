@@ -1,0 +1,5 @@
+# Non-secret local listener settings.
+AGENT_BROWSER_GUACAMOLE_HTTP_PORT=8092
+
+# POSTGRES_PASSWORD belongs in a separate mode-0600 secrets file. The installer
+# generates it; this example intentionally does not carry a value.

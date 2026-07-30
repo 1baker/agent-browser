@@ -1369,15 +1369,12 @@ async fn service_api_cli_fallback(method: &str, path: &str) -> Option<String> {
             let incident_activity_id = raw_path
                 .strip_prefix("/api/service/incidents/")
                 .and_then(|rest| rest.strip_suffix("/activity"));
-            if let Some(incident_id) = incident_activity_id.filter(|id| !id.is_empty()) {
-                vec![
-                    "service".to_string(),
-                    "activity".to_string(),
-                    incident_id.to_string(),
-                ]
-            } else {
-                return None;
-            }
+            let incident_id = incident_activity_id.filter(|id| !id.is_empty())?;
+            vec![
+                "service".to_string(),
+                "activity".to_string(),
+                incident_id.to_string(),
+            ]
         }
     };
 

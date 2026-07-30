@@ -1,0 +1,75 @@
+name: agent-browser-guacamole
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416
+    platform: linux/amd64
+    container_name: agent-browser-guacamole-postgres
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command:
+      - postgres
+      - -c
+      - fsync=on
+      - -c
+      - synchronous_commit=on
+      - -c
+      - full_page_writes=on
+      - -c
+      - checkpoint_timeout=5min
+      - -c
+      - max_wal_size=1GB
+    environment:
+      POSTGRES_DB: guacamole_db
+      POSTGRES_USER: guacamole_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the protected secrets file}
+    volumes:
+      - agent-browser-guacamole-postgres-data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guacamole_user -d guacamole_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  guacd:
+    image: guacamole/guacd:1.5.5@sha256:38232cae271361ef53db46faf5c49fe64049a1320a05b82c597425b69d6ce77e
+    platform: linux/amd64
+    container_name: agent-browser-guacd
+    restart: unless-stopped
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 4822 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  guacamole:
+    image: guacamole/guacamole:1.5.5@sha256:0f62f6d17ab379e46aa66874b2ff564dab856a6ef5e754a69cbb34c32d3e588a
+    platform: linux/amd64
+    container_name: agent-browser-guacamole
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      guacd:
+        condition: service_started
+    ports:
+      - 127.0.0.1:${AGENT_BROWSER_GUACAMOLE_HTTP_PORT:-8092}:8080
+    environment:
+      GUACD_HOSTNAME: guacd
+      POSTGRESQL_HOSTNAME: postgres
+      POSTGRESQL_DATABASE: guacamole_db
+      POSTGRESQL_USER: guacamole_user
+      POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the protected secrets file}
+      POSTGRESQL_AUTO_CREATE_ACCOUNTS: "true"
+      HEADER_ENABLED: "true"
+      HTTP_AUTH_HEADER: Remote-User
+
+volumes:
+  agent-browser-guacamole-postgres-data:
+    name: agent-browser-guacamole-postgres-data
+    external: true

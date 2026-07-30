@@ -16,6 +16,7 @@ import { spawnSync } from 'node:child_process';
 const fixtureRoot = mkdtempSync(join(tmpdir(), 'agent-browser-p79-route-sync-'));
 const guacDir = join(fixtureRoot, 'guacamole');
 const secretFile = join(fixtureRoot, 'guacamole.env');
+const stateDir = join(fixtureRoot, 'state');
 const binDir = join(fixtureRoot, 'bin');
 const sqlPath = join(fixtureRoot, 'route-write.sql');
 const dockerLog = join(fixtureRoot, 'docker.jsonl');
@@ -134,6 +135,8 @@ function run(args, commandPath = script) {
       PATH: `${binDir}${delimiter}${process.env.PATH}`,
       AGENT_BROWSER_GUACAMOLE_DIR: guacDir,
       AGENT_BROWSER_GUACAMOLE_SECRET_FILE: secretFile,
+      AGENT_BROWSER_GUACAMOLE_STATE_DIR: stateDir,
+      AGENT_BROWSER_GUACAMOLE_IDENTITY_FILE: join(stateDir, 'guacamole-postgres-identity.json'),
       P79_DOCKER_LOG: dockerLog,
       P79_SQL_PATH: sqlPath,
     },

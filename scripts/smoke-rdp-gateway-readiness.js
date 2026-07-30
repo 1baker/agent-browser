@@ -21,6 +21,16 @@ function commandExists(command) {
   return result.status === 0 ? result.stdout.trim() : null;
 }
 
+// The source-free workstation owns guacd through the pinned Compose container,
+// while repository-managed hosts may still expose a native guacd listener.
+function dockerContainerRunning(name) {
+  const result = spawnSync('docker', ['inspect', '-f', '{{.State.Running}}', name], {
+    encoding: 'utf8',
+    stdio: 'pipe',
+  });
+  return result.status === 0 && result.stdout.trim() === 'true';
+}
+
 function loadAgentBrowserEnv() {
   const agentHome = process.env.AGENT_BROWSER_HOME || join(process.env.HOME || '', '.agent-browser');
   const envPath = join(agentHome, '.env');
@@ -157,19 +167,26 @@ const commands = {
   xrdpSesman: commandExists('xrdp-sesman'),
   xfreerdp: commandExists('xfreerdp'),
 };
+const guacdContainerName = process.env.AGENT_BROWSER_GUACD_CONTAINER || 'agent-browser-guacd';
+const guacdContainerRunning = dockerContainerRunning(guacdContainerName);
 const guacdTcp = await tcpCheck('127.0.0.1', 4822);
 const xrdpTcp = await tcpCheck('127.0.0.1', 3389);
 const html5Client = viewUrl ? await httpCheck(viewUrl) : { ok: false, url: null, error: 'AGENT_BROWSER_REMOTE_VIEW_URL is unset' };
 const privateDisplays = privateDisplayReadiness();
-const backendReady = Boolean(commands.guacd && commands.xrdp && commands.xrdpSesman && commands.xfreerdp && guacdTcp.ok && xrdpTcp.ok);
+const guacdReady = Boolean((commands.guacd && guacdTcp.ok) || guacdContainerRunning);
+const backendReady = Boolean(guacdReady && commands.xrdp && commands.xrdpSesman && commands.xfreerdp && xrdpTcp.ok);
 const ready = backendReady && (!requireHtml5Client || html5Client.ok);
 const readinessComponents = [
   {
     component: 'guacd',
-    status: commands.guacd && guacdTcp.ok ? 'ready' : 'failed',
-    evidence: commands.guacd ? `guacd command at ${commands.guacd}; tcp 127.0.0.1:4822 ${guacdTcp.ok ? 'reachable' : guacdTcp.error}` : 'guacd command not found',
-    nextAction: commands.guacd && guacdTcp.ok ? 'none' : 'start_or_install_guacd',
-    recovery: commands.guacd && guacdTcp.ok ? 'guacd is reachable.' : 'Install or start guacd, then rerun the RDP gateway readiness smoke.',
+    status: guacdReady ? 'ready' : 'failed',
+    evidence: guacdContainerRunning
+      ? `Docker container ${guacdContainerName} is running on the Guacamole network`
+      : (commands.guacd
+        ? `guacd command at ${commands.guacd}; tcp 127.0.0.1:4822 ${guacdTcp.ok ? 'reachable' : guacdTcp.error}`
+        : 'guacd command and running container not found'),
+    nextAction: guacdReady ? 'none' : 'start_or_install_guacd',
+    recovery: guacdReady ? 'guacd is reachable.' : 'Install or start guacd, then rerun the RDP gateway readiness smoke.',
   },
   {
     component: 'xrdp',
@@ -187,10 +204,10 @@ const readinessComponents = [
   },
   {
     component: 'backend_tcp',
-    status: guacdTcp.ok && xrdpTcp.ok ? 'ready' : 'failed',
-    evidence: `guacd tcp=${guacdTcp.ok ? 'ok' : guacdTcp.error}; xrdp tcp=${xrdpTcp.ok ? 'ok' : xrdpTcp.error}`,
-    nextAction: guacdTcp.ok && xrdpTcp.ok ? 'none' : 'inspect_backend_tcp',
-    recovery: guacdTcp.ok && xrdpTcp.ok ? 'Backend TCP listeners are reachable.' : 'Inspect local firewall, service status, and listener bindings for guacd and xrdp.',
+    status: guacdReady && xrdpTcp.ok ? 'ready' : 'failed',
+    evidence: `guacd=${guacdContainerRunning ? `container:${guacdContainerName}` : (guacdTcp.ok ? 'tcp:ok' : guacdTcp.error)}; xrdp tcp=${xrdpTcp.ok ? 'ok' : xrdpTcp.error}`,
+    nextAction: guacdReady && xrdpTcp.ok ? 'none' : 'inspect_backend_tcp',
+    recovery: guacdReady && xrdpTcp.ok ? 'Backend services are reachable.' : 'Inspect local firewall, service status, container state, and listener bindings for guacd and xrdp.',
   },
   {
     component: 'private_display_allocator',

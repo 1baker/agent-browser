@@ -6,6 +6,131 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P82 | Fresh Install Productization and v0.28.0 Release
+
+State: OPEN
+Current state: the public release binary does not reproduce the working
+dashboard, interlock, Guacamole, PostgreSQL, XRDP, route, and backup substrate
+on a fresh host. Plan 0082 owns the self-contained installer, disposable Ubuntu
+reboot proof, release-candidate validation, single release pull request, GitHub
+release, and public-asset reinstall.
+
+### Current State
+
+- Public `v0.27.0` remains the latest published release. The
+  `prepare-v0.28.0` branch now reports `0.28.0` across package, Cargo,
+  Cargo.lock, and dashboard version surfaces.
+- Current local runtime is healthy because it was converged from this checkout.
+  The installed interlock still uses a repository `WorkingDirectory` and pnpm.
+- The latest P81 route projection fix is present on `main` but absent from the
+  public release.
+- Packet F independent audits found installer locking, credential-transport,
+  payload-integrity, route-environment, validation-selection, CI, and
+  release-note binding defects. Repairs are implemented, and all three
+  independent rechecks passed.
+- The target release is `v0.28.0` on branch `prepare-v0.28.0`.
+- The source-free payload, pinned Guacamole assets, one-sudo host preparation,
+  and binary-owned canonical route reconciliation are implemented on the
+  release branch with focused local fixtures green.
+- Clean-overlay execution exposed a too-small cloud disk before the reboot
+  gate. The VM harness now provisions 24 GiB overlays, and installer preflight
+  requires 6 GiB free before authorization or mutation.
+- The resized overlay proved the one-prompt and reboot boundary, then exposed a
+  cold Guacamole header-account race after a JVM restart. Reconciliation now
+  uses application readiness plus an exact database postcondition; a new clean
+  candidate run remains required.
+- The following clean continuation passed account and route opening, then
+  exposed a systemd fresh-unit reset ordering defect. Activation now checks
+  exact failed state through a state-bearing raw command read before resetting
+  prior interlock failure state because file-derived `LoadState=loaded` does
+  not prove a unit is manager-loaded. A reset race is accepted only after a
+  second read proves the failed state cleared.
+- The resumed candidate exposed a retiring-daemon cleanup race during
+  executable handoff. Shutdown now removes Unix session artifacts only when
+  the shared socket path still matches the daemon's original device and inode;
+  the focused regression and live handoff smoke pass.
+- The next clean exact-candidate run passed through user-unit activation and
+  install doctor, then final remote-view doctor exposed missing `xdpyinfo` and
+  a legacy host-guacd assumption. The package set and doctor now cover display
+  inspection, visual-proof tools, pinned container-backed Guacd, and managed
+  Chrome outside `PATH`.
+- The rebuilt candidate passed clean install, reboot continuation, idempotent
+  rerun, PostgreSQL backup, and isolated restore. A live Route A open then
+  exposed Ubuntu 24.04 AppArmor blocking the managed Chrome sandbox user
+  namespace. Host preparation now installs and loads a path-scoped `userns`
+  profile without disabling Chromium's sandbox or the host restriction, and
+  remote-view doctor gates on that policy. The same live open subsequently
+  reached `operatorVisible=ready`.
+- The exact rebuilt clean host installed and reloaded that policy across
+  reboot, then completed its zero-prompt continuation. A subsequent standalone
+  doctor exposed a separate discovery gap: install-time doctor used an
+  explicit support root, while later doctor runs missed the versioned
+  source-free helper directory. Discovery now includes
+  `~/.local/lib/agent-browser/<version>/scripts`.
+- Commit `ce26f0f6` produced exact candidate SHA-256
+  `06e3b85ebc734c914ad8937afe0f169107cd6e646f5c129ebe1d7afe29aacca2`.
+  After applying its emitted stale-viewer remediation, idempotent convergence
+  passed with exact installed hash parity and active user services.
+- A fresh login shell passed standalone install and remote-view doctors from
+  the versioned installed support root. Remote control, many-to-many
+  prerequisites, and the sandbox policy all reported ready with no issues.
+- The exact candidate opened Route A at `guacamole:1`, connection `1`, and
+  display `:10` with `operatorVisible=ready`; cleanup restored the entry to
+  `available` with no allocation.
+- Whole-slice local validation is green. The full Rust suite found one stale
+  source-string assertion for an installer helper whose signature had gained
+  arguments; production privilege-before-dependency order was already
+  correct, and the repaired assertion passes in the serialized Rust CI
+  harness.
+- Fast CI run `30540857427` reached the post-Rust no-launch packet before
+  exposing older profile-lookup contract expectations and a fixture assumption
+  that service status starts a daemon and creates state. The assertions now
+  use the generated lookup template and selection order, while the fixture
+  handles the intentional offline status path. All ten no-launch smokes pass
+  locally.
+- Exact-head fast CI run `30541737279` is fully green at `0cbd1729`.
+  Manually dispatched full CI run `30542411936` exposed a macOS Apple Silicon
+  integer-width mismatch in workstation disk preflight. The portable
+  conversion helper, saturation regression, and target-gated Linux import pass
+  formatting, strict Clippy, and the complete serialized Rust harness locally.
+- Exact-head fast CI run `30543600554` passed at `2db64424`. Full CI run
+  `30544211166` moved Apple Silicon past the repaired compile site, then found
+  two Windows portability boundaries: a runtime-gated Linux-only WSL test and
+  unconditional Unix process probing in workstation lock recovery. Both now
+  use compile-time target gates, with non-Unix lock probing failing closed.
+- Exact-head fast CI run `30545123372` passed at `a5423d6e`. Full CI run
+  `30545744595` compiled and ran the Windows suite until a manifest fixture
+  embedded a native Windows path into JSON without escaping backslashes. The
+  fixture now uses structured JSON serialization.
+- Exact-head fast CI run `30547407293` passed at `60c784e3`. Full CI run
+  `30548163584` then exposed a Linux private-display readiness race: a fixed
+  startup delay allowed two launches to select `:90` under load. Selection is
+  now serialized, and launch returns only after the spawned Xvfb owns a ready
+  display or fails closed with cleanup. The same run found a macOS daemon
+  socket fixture exceeding `SUN_LEN`; that test now uses a short, unique Unix
+  temporary path.
+- Exact-head fast CI run `30549724644` passed at `98316d14`. Full CI run
+  `30550334355` reached the complete Windows suite and exposed native-path
+  fixture assumptions, Unix-only home isolation, and an actual Windows
+  process-liveness gap in installer inventory. The path fixtures now compare
+  native paths, the repository test is Unix-gated, and Windows inventory uses
+  `windows-sys` to distinguish active processes. The native E2E lane also
+  exposed recovery tracing lost after intentional terminal-browser compaction.
+  Relaunch now reconstructs the bounded recovery tombstone from preserved
+  event history, retains trace context, and completes the
+  process-exited-to-ready recovery sequence.
+- The release remains no-go pending exact-head fast and full CI, the release
+  dry run, merge, publication, and public-asset proof.
+- Plan
+  `docs/dev/plans/0082-2026-07-29-fresh-install-productization-and-v0-28-0-release-plan.md`
+  owns the bounded implementation and release gates.
+
+### Next Recommendation
+
+Commit and push the Windows inventory and recovery-history repair, then
+require exact-head fast CI, manually dispatched full CI, and the release dry
+run before merging PR 7.
+
 ## P81 | Guacamole Route-Pool State Reconciliation
 
 State: CLOSED

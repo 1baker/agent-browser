@@ -45,6 +45,19 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
+compose_env_args=()
+if [[ -r "$GUAC_DIR/.env" ]]; then
+  compose_env_args+=(--env-file "$GUAC_DIR/.env")
+fi
+compose_env_args+=(--env-file "$SECRET_FILE")
+
+compose() {
+  (
+    cd "$GUAC_DIR"
+    docker compose "${compose_env_args[@]}" "$@"
+  )
+}
+
 ensure_guacamole_postgres() {
   bash "$SCRIPT_DIR/ensure-rdp-guac-postgres.sh" --apply
 }
@@ -128,12 +141,19 @@ fi
 
 ensure_guacamole_postgres
 
-SQL="$(python3 - \
-  "$CONNECTION_A" "$LEGACY_CONNECTION_A" "$USER_A" "$PASS_A" \
-  "$CONNECTION_B" "$LEGACY_CONNECTION_B" "$USER_B" "$PASS_B" \
-  "$HOSTNAME" "$PORT" <<'PY'
+SQL="$(
+  printf '%s\0' \
+    "$CONNECTION_A" "$LEGACY_CONNECTION_A" "$USER_A" "$PASS_A" \
+    "$CONNECTION_B" "$LEGACY_CONNECTION_B" "$USER_B" "$PASS_B" \
+    "$HOSTNAME" "$PORT" |
+  python3 /dev/fd/3 3<<'PY'
 import sys
 
+values = sys.stdin.buffer.read().split(b"\0")
+if values and values[-1] == b"":
+    values.pop()
+if len(values) != 10:
+    raise SystemExit(f"expected 10 NUL-delimited route values, got {len(values)}")
 (
     canonical_a,
     legacy_a,
@@ -145,7 +165,7 @@ import sys
     pass_b,
     hostname,
     port,
-) = sys.argv[1:]
+) = [value.decode("utf-8") for value in values]
 
 def quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
@@ -285,14 +305,11 @@ COMMIT;""")
 PY
 )"
 
-(
-  cd "$GUAC_DIR"
-  printf '%s\n' "$SQL" |
-    docker compose exec -T postgres psql -U guacamole_user -d guacamole_db -v ON_ERROR_STOP=1
-  docker compose exec -T postgres psql -U guacamole_user -d guacamole_db \
-    -v ON_ERROR_STOP=1 -c "CHECKPOINT;" >/dev/null
-)
+printf '%s\n' "$SQL" |
+  compose exec -T postgres psql -U guacamole_user -d guacamole_db -v ON_ERROR_STOP=1
+compose exec -T postgres psql -U guacamole_user -d guacamole_db \
+  -v ON_ERROR_STOP=1 -c "CHECKPOINT;" >/dev/null
 
 echo "Configured two canonical Guacamole RDP routes with distinct route-specific users."
 echo "Guacamole Postgres route writes checkpoint completed."
-echo "Next: open both routes in Guacamole, then run pnpm inspect:rdp-route-displays."
+echo "Next: open both routes in Guacamole, then run node scripts/inspect-rdp-route-displays.js."

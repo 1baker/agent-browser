@@ -4,6 +4,446 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 130 | 2026-07-30
+
+Scope: repair the next exact-head Windows and native E2E release defects.
+
+Actions:
+
+- Confirmed exact-head fast CI run `30549724644` fully green at commit
+  `98316d14`.
+- Dispatched full CI run `30550334355`. Windows found three native-path
+  assertions, two inventory classifications hidden by a non-Unix process
+  liveness stub, and one repository test whose `HOME` isolation is
+  Unix-specific.
+- Changed path fixtures to compare native paths, constrained the
+  Unix-specific repository isolation test, and implemented Windows process
+  liveness through the existing `windows-sys` dependency.
+- The native E2E lane passed 55 of 56 browser tests and exposed a lifecycle
+  regression after an intentional Chrome crash. Reconciliation preserved the
+  terminal health event and correctly removed operational browser state, but
+  relaunch could no longer reconstruct the recovery tombstone. Recovery now
+  rehydrates that bounded state from event history, preserves trace context,
+  emits the recovery sequence, and resolves through a fresh ready browser.
+
+Validation:
+
+- five focused cross-platform regressions
+- recovery-history unit regression
+- real-browser crash and automatic relaunch E2E
+- Rust formatting
+- strict Clippy with warnings denied
+- complete serialized Rust CI harness
+
+Result:
+
+- All focused regressions, the real-browser E2E, formatting, strict Clippy,
+  and the complete serialized Rust CI harness pass locally.
+- Full CI run `30550334355` remains valid Windows and E2E failure evidence for
+  commit `98316d14`. Matrix fail-fast cancelled both macOS lanes after those
+  failures.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
+## Turn 129 | 2026-07-30
+
+Scope: repair the next exact-head full-CI defect.
+
+Actions:
+
+- Confirmed exact-head fast CI run `30547407293` fully green at commit
+  `60c784e3`.
+- Dispatched full CI run `30548163584`. Its ordinary Linux Rust suite found
+  both sequential private-display launches selecting `:90`.
+- Traced the collision to `start_remote_headed_virtual_display`, which returned
+  after a fixed 150 ms delay without checking that the spawned Xvfb owned a
+  ready display.
+- Serialized selection inside the daemon and replaced the fixed delay with
+  ownership-backed readiness polling. Early child exit, inspection failure,
+  and timeout now fail closed and reap the child.
+- The completed matrix also found an Apple Silicon daemon-socket fixture
+  inheriting a temporary path longer than macOS `SUN_LEN`. Moved that Unix
+  fixture to a short, unique path under `/tmp`.
+
+Validation:
+
+- twenty consecutive distinct-live-display regressions
+- Rust formatting
+- strict Clippy with warnings denied
+- complete serialized Rust CI harness
+
+Result:
+
+- The repeated focused regressions, formatting, strict Clippy, and complete
+  serialized Rust CI harness pass locally.
+- Full CI run `30548163584` remains valid collision evidence for commit
+  `60c784e3`. Its Apple Silicon lane independently found the overlong socket
+  fixture; fail-fast cancelled the Windows and macOS x64 lanes.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
+## Turn 128 | 2026-07-30
+
+Scope: continue exact-head cross-platform release gating.
+
+Actions:
+
+- Confirmed exact-head fast CI run `30545123372` fully green at commit
+  `a5423d6e`.
+- Dispatched full CI run `30545744595`. The Windows target compiled and ran
+  tests for nearly ten minutes before
+  `test_manifest_resolves_stealthcdp_executable_path` exited abnormally.
+- Traced the exit to a test fixture that interpolated a native Windows path
+  directly into JSON. Backslashes in the path became invalid JSON escape
+  sequences, and the explicit-config failure path correctly terminated.
+- Replaced string interpolation with structured JSON serialization so the
+  fixture remains valid on Unix and Windows.
+
+Validation:
+
+- focused manifest-resolution regression
+- Rust formatting
+- strict Clippy with warnings denied
+- complete serialized Rust CI harness
+
+Result:
+
+- The focused regression, formatting, strict Clippy, and complete serialized
+  Rust CI harness pass locally.
+- Full CI run `30545744595` is valid Windows failure evidence for commit
+  `a5423d6e`; its macOS jobs were cancelled by matrix fail-fast.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
+## Turn 127 | 2026-07-30
+
+Scope: run exact-head release CI and repair the first cross-platform defect.
+
+Actions:
+
+- Confirmed exact-head fast CI run `30541737279` fully green at commit
+  `0cbd1729`.
+- Dispatched full CI run `30542411936` against that exact commit. Its
+  Apple Silicon macOS Rust job failed compilation because
+  `statvfs.f_bavail` is 32-bit on that target while the byte calculation
+  assumed the Linux 64-bit field shape. Matrix fail-fast then cancelled the
+  Windows job.
+- Added a typed conversion helper that accepts both platform widths and
+  saturates the byte multiplication. Added regression coverage for mixed
+  32-bit and 64-bit inputs plus overflow.
+- Target-gated the `Path` import used only by Linux `/proc` process sampling,
+  removing the adjacent macOS warning.
+- Exact-head fast CI run `30543600554` passed at repair commit `2db64424`.
+- Full CI run `30544211166` moved Apple Silicon beyond the repaired compile
+  site, then the Windows test build found a Linux-only WSL helper referenced
+  through runtime `cfg!` and a Unix `libc::kill` call compiled inside
+  workstation lock recovery. Matrix fail-fast cancelled both macOS jobs.
+- Converted the WSL test to compile-time Linux gating and split stale-lock
+  probing into Unix and fail-closed non-Unix implementations. Target-gated the
+  adjacent Unix-only resource-monitor imports.
+
+Validation:
+
+- Rust formatting
+- strict Clippy with warnings denied
+- complete serialized Rust CI harness
+- focused mixed-width and saturation regression
+
+Result:
+
+- The local portability repair is green.
+- Full CI runs `30542411936` and `30544211166` remain valid macOS and Windows
+  failure evidence for their exact commits. The current repair requires a new
+  exact-head fast run and a new manually dispatched full run after commit and
+  push.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
+## Turn 126 | 2026-07-30
+
+Scope: prove the rebuilt doctor-discovery candidate on the clean Ubuntu host
+and enter release gating.
+
+Actions:
+
+- Built commit `ce26f0f6` as release-mode SHA-256
+  `06e3b85ebc734c914ad8937afe0f169107cd6e646f5c129ebe1d7afe29aacca2`
+  and staged it on the clean rebooted Ubuntu 24.04 host.
+- The first idempotent convergence stopped fail-closed because Route A and B
+  viewer daemons still ran the preceding candidate. The diagnostic identified
+  both exact sessions and supplied bounded close commands. After closing only
+  those sessions, the retry passed with candidate and installed hashes equal,
+  dashboard active, and interlock timer active.
+- Ran standalone doctors from a new login shell. Install doctor and
+  remote-view doctor both returned success with no issues. Remote-view doctor
+  resolved
+  `/home/agent/.local/lib/agent-browser/0.28.0/scripts` and reported remote
+  control, many-to-many prerequisites, and the path-scoped managed Chrome
+  sandbox policy ready.
+- Opened `about:blank` through Route A using the exact installed binary. The
+  response selected `guacamole:1`, connection `1`, display `:10`, and returned
+  `operatorVisible.state=ready`.
+- Closed the bounded browser session. Retained Route A returned to
+  `available` with `currentRouteAllocationId=null`.
+- Ran whole-slice local validation. The first full Rust pass found that the
+  installer order test still searched for
+  `install_remote_view_privileges()` after the helper gained explicit
+  arguments. Production order remained privilege setup before dependency
+  installation. Updated the assertion to the current signature and reran the
+  serialized Rust CI harness successfully.
+- Fast CI run `30540857427` passed version sync, Rust Quality, the full Rust
+  suite, dashboard, service-client, and workstation fixture jobs. Its final
+  no-launch packet found stale profile-lookup MCP template and selection-order
+  assertions, followed by a fixture assumption that local service status
+  starts a daemon and writes `state.json`.
+- Consolidated the lookup expectations around the current generated contract.
+  Updated shared no-launch setup to accept the offline empty control-plane
+  snapshot and create a minimal service state only when no daemon-created file
+  exists. The full ten-command no-launch CI packet passes locally.
+
+Validation:
+
+- exact release artifact and installed-binary SHA-256 parity
+- fail-closed stale-runtime diagnosis and emitted remediation
+- zero-prompt idempotent convergence retry
+- standalone install doctor from a fresh login shell
+- standalone remote-view doctor from versioned installed assets
+- live Route A operator-visible open and cleanup
+- Rust formatting, strict Clippy, and the complete serialized Rust suite
+- source-free installer, host, VM harness, Guacamole asset, durability, route
+  user, and release-verifier fixtures
+- service API/MCP and generated-client contracts
+- route-confusion gates and live CDP tab streaming
+- dashboard contract packet and production build
+- docs production build, version sync, planning audit, and shared-skill parity
+- complete CI no-launch service smoke packet
+
+Result:
+
+- The clean-install, reboot, durability, conflict, sandbox, installed-helper
+  discovery, and final live Route A acceptance evidence is complete.
+- Release remains no-go until exact-head fast and full CI, release dry run,
+  merge, publication, and public-asset reinstall pass.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
+## Turn 125 | 2026-07-30
+
+Scope: finish clean-install durability and route evidence, then repair a
+managed Chrome sandbox defect found by the live gate.
+
+Actions:
+
+- Proved the exact candidate's mutation-free dry run, one-sudo first apply,
+  exit-75 reboot boundary, zero-prompt continuation, canonical two-route
+  substrate, and final doctors on a clean Ubuntu 24.04 overlay.
+- Proved idempotency by preserving binary, manifest, units, secret, named
+  volume, PostgreSQL system identity, Guacamole row IDs, routes, displays,
+  profiles, and active units across a same-artifact rerun.
+- Created a checksummed PostgreSQL custom-format backup and passed its isolated
+  temporary-database restore drill with the expected tables, connections, and
+  permissions.
+- Proved the no-launch Route A plan selects `guacamole:1`, connection `1`, and
+  display `:10` while requesting no launch, checkout, or tab.
+- The first live Route A open failed before DevTools because Ubuntu 24.04
+  AppArmor denied the managed Chrome sandbox user namespace. Lease rollback
+  restored the route.
+- Added a path-scoped AppArmor `userns` profile to the one-sudo host installer.
+  The repair keeps the host restriction and Chromium sandbox enabled.
+  Remote-view doctor now reports this policy and blocks live-gate readiness
+  when it is missing, inactive, or mismatched.
+- Loaded the exact profile on the disposable VM and repeated the live open.
+  Route A reached `operatorVisible=ready`.
+- Submitted a conflicting `guacamole:999/:99` authoritative definition while
+  Route A was checked out. Reconciliation reported
+  `skippedActiveConflictEntryIds=["guacamole-rdp-a"]`; the retained entry's
+  pre/post SHA-256 remained
+  `207ff06af5a214ee29a6cce2f2a8385f39db1e63048e2802310f627fcaef164f`.
+  Cleanup returned Route A to `available`.
+- Rebuilt commit `a05e7ed0` as SHA-256
+  `b929200b25a4104995e41ee64510ad3b650b81dc663e00f8d1bbfb459c4e072d`
+  and installed it on a new immutable-base overlay. The embedded installer
+  produced one prompt, exit 75, a distinct reboot ID, loaded AppArmor policy
+  before and after reboot, and a zero-prompt ready continuation.
+- A standalone doctor then fell back to `/home/agent/scripts` even though the
+  payload correctly installed its helpers under the versioned support root.
+  Doctor discovery now checks
+  `~/.local/lib/agent-browser/<version>/scripts` without requiring a checkout
+  or ambient override.
+
+Validation:
+
+- workstation host-provision fixture
+- managed Chrome sandbox-policy doctor unit
+- remote-control viewer-prerequisite doctor unit
+- live AppArmor parser and idempotent installer pass on Ubuntu 24.04
+- live Route A open with `operatorVisible=ready`
+- live active-conflict preservation and cleanup
+- clean embedded-policy install and post-reboot loaded-profile proof
+- versioned installed support-root discovery regression
+
+Result:
+
+- The installer and doctor now cover the live Chrome sandbox prerequisite that
+  the earlier no-launch gates missed.
+- Release remains no-go pending the rebuilt doctor-discovery candidate,
+  standalone live doctor and Route A proof, full CI, release dry run, merge,
+  and public-asset reinstall.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
+## Turn 124 | 2026-07-30
+
+Scope: build the `0.28.0` release candidate, execute the disposable VM lane,
+and repair independent Packet F findings.
+
+Actions:
+
+- Built a release-mode `0.28.0` binary with 80 embedded dashboard assets and
+  pushed release preparation commit `4a374bea` to PR 7.
+- Rebooted the iterative Ubuntu VM to a new boot ID and ran the release
+  artifact source-free. The first run stopped fail-closed at route opening; a
+  redacted direct retry selected canonical connections 1 and 2 and opened
+  distinct displays `:10` and `:11`.
+- Completed three independent audits covering installer safety, evidence
+  sufficiency, release workflow, and documentation parity.
+- Repaired secret-bearing subprocess arguments, ambient route-pool override,
+  install-wide locking, payload hash provenance, changelog/version binding,
+  Cargo.lock version validation, and missing installer fixtures in selector
+  and fast CI.
+- The first authoritative clean overlay exposed a 3.5 GiB cloud-image capacity
+  defect during apt unpack. Added a 24 GiB VM disk default and a real-host
+  6 GiB free-space gate that fails before sudo, payload staging, or package
+  mutation.
+- The resized clean overlay reached the zero-prompt post-reboot continuation,
+  then Guacamole's first JVM process crashed while concurrent header-auth
+  requests raced automatic account creation. One account transaction
+  succeeded and the other returned a duplicate-key 500. Reconciliation now
+  waits for full application readiness, makes one creation request, and
+  accepts only the exact database user postcondition.
+- The next clean continuation passed header creation and route opening, then
+  failed while resetting a newly written interlock service that systemd had
+  not loaded yet. A resumed run proved file-derived `LoadState=loaded` is not
+  manager-load evidence for a static unit. Activation now observes the
+  state-bearing `is-failed` output independently of its exit status, resets
+  only an exact `failed` result, and verifies the postcondition after a reset
+  race.
+- The resumed candidate reached executable handoff, where the retiring daemon
+  removed the replacement daemon's rebound Unix socket and session metadata.
+  Shutdown now compares the socket device and inode before cleaning any shared
+  session artifact.
+- A new exact-candidate clean overlay passed the mutation-free dry run,
+  one-sudo host preparation, exit-75 relogin, reboot, zero-prompt route
+  convergence, unit activation, and install doctor. Final remote-view doctor
+  exposed missing `xdpyinfo` plus a legacy host-guacd readiness assumption.
+  Host packages now include display and visual-proof tools; readiness accepts
+  the pinned Guacd container and managed Chrome outside `PATH`.
+
+Validation:
+
+- focused workstation and payload-integrity Rust tests
+- source-free install fixture with concurrent-lock rejection
+- route-specific user sync fixture
+- release asset and version-bound changelog fixture
+- exact selector recommendations for the new installer gates
+- disk-capacity boundary unit test and resized VM harness contract
+- Guacamole header-user postcondition unit test
+- systemd unit-load/reset boundary unit test
+- retiring-daemon socket-ownership unit test
+- live runtime executable-handoff smoke
+- clean-overlay dry run, one-sudo, reboot, and zero-prompt continuation
+- container-backed Guacd and viewer-prerequisite readiness fixture
+
+Result:
+
+- Focused repair gates are green.
+- Release remains no-go until the rebuilt candidate passes a clean Ubuntu
+  install, reboot, idempotent rerun, restore and conflict drills, full CI,
+  release workflows, merge, and public-asset reinstall.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
+## Turn 123 | 2026-07-29
+
+Scope: implement and locally validate the source-free workstation installer
+before disposable-host testing.
+
+Actions:
+
+- Hardened the release workflow around exact assets, embedded versions,
+  execution, checksums, and published-download verification.
+- Embedded the pinned Guacamole Compose stack, normalized schema, controller
+  helpers, binary, manifest, and systemd user units.
+- Added Ubuntu 24.04 amd64 host preflight, one initial sudo authorization,
+  noninteractive dependency and privilege work, service verification, and the
+  resumable group-refresh boundary.
+- Added installed reconciliation for Chrome, Guacamole, PostgreSQL continuity,
+  route users, canonical rows, readiness-selected XRDP displays,
+  readiness-authoritative service projection, unit activation, final doctors,
+  and a private receipt.
+- Added fail-closed validation for active legacy route conflicts and private,
+  idempotent generated secrets.
+- Updated the public install help, README, docs site, skill, roadmap, and Plan
+  0082 checkpoint to match the two-stage fresh-login contract.
+
+Validation:
+
+- 8 focused workstation Rust tests
+- focused installed-script-root doctor test
+- Rust format and strict Clippy
+- source-free payload fixture
+- embedded Guacamole asset fixture
+- workstation host-provision fixture
+- clean privilege fixture
+
+Result:
+
+- The source-free payload and local mocked host path are green.
+- The release remains no-go until a disposable Ubuntu host proves install,
+  reboot, canonical routes, backup restore, idempotency, and the remaining
+  release gates.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
+## Turn 122 | 2026-07-29
+
+Scope: open the fresh-install productization and formal `v0.28.0` release lane.
+
+Actions:
+
+- Verified that current local runtime health comes from source-checkout
+  convergence and is not reproducible by the public release installer.
+- Compared public `v0.27.0` at `17a284f` with plan-intake `main` at `ffda60dd`;
+  current `main` is 107 commits newer while still reporting version `0.27.0`.
+- Confirmed that P81's canonical route-state projection is absent from the
+  public release.
+- Confirmed the working dashboard interlock references this repository and
+  invokes pnpm, while the complete Guacamole compose and schema substrate is
+  not distributable from the release binary.
+- Assigned three independent read-only audits covering installer architecture,
+  clean-host test design, and release/version eligibility.
+- Selected `v0.28.0` as the feature-release target and opened branch
+  `prepare-v0.28.0`.
+- Added Plan 0082 with explicit clean-install, one-sudo, reboot, idempotency,
+  P81 regression, CI, pull-request, dry-run, publication, and public-asset
+  gates.
+
+Validation:
+
+- current repository, installed binary, doctor, systemd, GitHub release, CI,
+  and workflow readbacks
+- Graphiti advisory recall verified against current source and runtime evidence
+- three independent read-only audit receipts
+- `git diff --check`
+
+Result:
+
+- P82 is open and the release is currently no-go.
+- Implementation begins with the existing Rust Quality repair and red
+  source-free installer tests.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 121 | 2026-07-28
 
 Scope: diagnose and repair post-reboot Guacamole route-selection state drift

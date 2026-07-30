@@ -30277,6 +30277,7 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_service_reconcile_refreshes_stale_available_route_pool_definition() {
         let home = unique_socket_dir("service-reconcile-authoritative-route-pool-home");
@@ -36552,6 +36553,71 @@ mod tests {
                     .and_then(|details| details.get("note"))
                     == Some(&json!("manual retry approved"))
         }));
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_persisted_recovery_rehydrates_removed_terminal_browser_from_event_history() {
+        let home = unique_socket_dir("service-recovery-history-home");
+        fs::create_dir_all(&home).unwrap();
+
+        let browser_id = "session:history-session";
+        let store = JsonServiceStateStore::new(home.join("state.json"));
+        let repository = LockedServiceStateRepository::new(store.clone());
+        store
+            .save(&ServiceState {
+                events: vec![ServiceEvent {
+                    id: "terminal-health".to_string(),
+                    kind: ServiceEventKind::BrowserHealthChanged,
+                    browser_id: Some(browser_id.to_string()),
+                    session_id: Some("history-session".to_string()),
+                    service_name: Some("HistoryService".to_string()),
+                    agent_name: Some("history-agent".to_string()),
+                    task_name: Some("recoverHistory".to_string()),
+                    previous_health: Some(ServiceBrowserHealth::Ready),
+                    current_health: Some(ServiceBrowserHealth::ProcessExited),
+                    details: Some(json!({
+                        "currentError": "Browser process 4242 exited",
+                        "processExitPid": 4242,
+                    })),
+                    ..ServiceEvent::default()
+                }],
+                ..ServiceState::default()
+            })
+            .unwrap();
+
+        let result = persist_browser_recovery_started_in_repository(
+            &repository,
+            "history-session",
+            BrowserRecoveryPolicyConfig::default(),
+            "Browser relaunch requested from persisted unhealthy state",
+        );
+
+        assert_eq!(result, BrowserRecoveryPersistence::Recorded);
+        let state = store.load().unwrap();
+        assert_eq!(
+            state.browsers[browser_id].health,
+            ServiceBrowserHealth::ProcessExited
+        );
+        assert_eq!(state.browsers[browser_id].pid, Some(4242));
+        let recovery = state
+            .events
+            .iter()
+            .find(|event| event.kind == ServiceEventKind::BrowserRecoveryStarted)
+            .unwrap();
+        assert_eq!(recovery.browser_id.as_deref(), Some(browser_id));
+        assert_eq!(recovery.service_name.as_deref(), Some("HistoryService"));
+        assert_eq!(recovery.agent_name.as_deref(), Some("history-agent"));
+        assert_eq!(recovery.task_name.as_deref(), Some("recoverHistory"));
+        assert_eq!(
+            recovery
+                .details
+                .as_ref()
+                .and_then(|details| details.get("reasonKind"))
+                .and_then(|reason| reason.as_str()),
+            Some("process_exited")
+        );
 
         let _ = fs::remove_dir_all(&home);
     }

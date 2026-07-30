@@ -88,7 +88,7 @@ fn remote_view_doctor_report(args: &DoctorArgs) -> Value {
     let privileges = inspect_privileges();
     let config = inspect_remote_view_config();
     let display_access = inspect_route_display_access(&route_displays);
-    let viewer_prerequisites = inspect_viewer_prerequisites();
+    let viewer_prerequisites = inspect_viewer_prerequisites(&privileges);
     let many_to_many = many_to_many_status(
         &rdp_gateway,
         &route_pool,
@@ -96,8 +96,13 @@ fn remote_view_doctor_report(args: &DoctorArgs) -> Value {
         &display_access,
         &viewer_prerequisites,
     );
-    let remote_control =
-        remote_control_status(&install, &rdp_gateway, &route_pool, &route_displays);
+    let remote_control = remote_control_status(
+        &install,
+        &rdp_gateway,
+        &route_pool,
+        &route_displays,
+        &viewer_prerequisites,
+    );
     let dashboard_runtime = dashboard_runtime_from_install(&install);
     let runtime_inventory = runtime_inventory_from_install(&install);
     let runtime_convergence = runtime_convergence_from_install(&install);
@@ -175,6 +180,12 @@ fn remote_view_script_root() -> PathBuf {
 }
 
 fn find_remote_view_script_root() -> Option<PathBuf> {
+    if let Some(configured) = env::var_os("AGENT_BROWSER_REMOTE_VIEW_SCRIPT_ROOT") {
+        if let Some(root) = normalize_script_root_candidate(Path::new(&configured)) {
+            return Some(root);
+        }
+    }
+
     if let Ok(cwd) = env::current_dir() {
         if let Some(root) = find_script_root_in_ancestors(&cwd) {
             return Some(root);
@@ -191,6 +202,9 @@ fn find_remote_view_script_root() -> Option<PathBuf> {
     }
 
     if let Some(home) = dirs::home_dir() {
+        if let Some(root) = find_installed_support_script_root(&home, env!("CARGO_PKG_VERSION")) {
+            return Some(root);
+        }
         let pnpm_global_package =
             home.join(".local/share/pnpm/global/5/node_modules/agent-browser");
         if let Some(root) = normalize_script_root_candidate(&pnpm_global_package) {
@@ -207,6 +221,10 @@ fn find_remote_view_script_root() -> Option<PathBuf> {
     }
 
     None
+}
+
+fn find_installed_support_script_root(home: &Path, version: &str) -> Option<PathBuf> {
+    normalize_script_root_candidate(&home.join(".local/lib/agent-browser").join(version))
 }
 
 fn find_script_root_in_ancestors(path: &Path) -> Option<PathBuf> {
@@ -665,9 +683,20 @@ fn inspect_route_display_access(route_displays: &Value) -> Value {
     })
 }
 
-fn inspect_viewer_prerequisites() -> Value {
+fn inspect_viewer_prerequisites(privileges: &Value) -> Value {
     let client_a_env = env::var("AGENT_BROWSER_RDP_TEST_CLIENT_A_EXECUTABLE").ok();
     let client_b_env = env::var("AGENT_BROWSER_RDP_TEST_CLIENT_B_EXECUTABLE").ok();
+    // A source-free workstation installs Chrome under agent-browser's managed
+    // browser directory, which is intentionally not added to the shell PATH.
+    let installed_chrome = crate::install::find_installed_chrome()
+        .filter(|path| path.is_file())
+        .map(|path| path.display().to_string());
+    let apparmor_profile_loaded = privileges
+        .pointer("/helperStatus/parsed/managedChromeSandboxPolicy/loaded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let sandbox_policy =
+        inspect_managed_chrome_sandbox_policy(installed_chrome.as_deref(), apparmor_profile_loaded);
     let client_a = executable_candidate(
         client_a_env.as_deref(),
         &[
@@ -676,7 +705,8 @@ fn inspect_viewer_prerequisites() -> Value {
             "chromium",
             "chromium-browser",
         ],
-    );
+    )
+    .or_else(|| installed_chrome.clone());
     let client_b = executable_candidate(
         client_b_env.as_deref(),
         &[
@@ -687,11 +717,14 @@ fn inspect_viewer_prerequisites() -> Value {
             "chromium-browser",
         ],
     )
+    .or(installed_chrome)
     .or_else(|| client_a.clone());
     let identify = command_path("identify");
     let convert = command_path("convert");
     let tesseract = command_path("tesseract");
-    let ready = client_a.is_some()
+    let browser_launch_ready =
+        client_a.is_some() && sandbox_policy["ready"].as_bool().unwrap_or(false);
+    let ready = browser_launch_ready
         && client_b.is_some()
         && identify.is_some()
         && convert.is_some()
@@ -699,6 +732,7 @@ fn inspect_viewer_prerequisites() -> Value {
 
     json!({
         "ready": ready,
+        "browserLaunchReady": browser_launch_ready,
         "clients": {
             "A": {
                 "env": client_a_env,
@@ -714,6 +748,98 @@ fn inspect_viewer_prerequisites() -> Value {
             "convert": convert,
             "tesseract": tesseract,
         },
+        "managedChromeSandboxPolicy": sandbox_policy,
+    })
+}
+
+fn inspect_managed_chrome_sandbox_policy(
+    installed_chrome: Option<&str>,
+    apparmor_profile_loaded: bool,
+) -> Value {
+    let restriction_enabled =
+        fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .ok()
+            .is_some_and(|value| value.trim() == "1");
+    let apparmor_enabled = fs::read_to_string("/sys/module/apparmor/parameters/enabled")
+        .ok()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("y"));
+    let apparmor_service_active = if apparmor_enabled {
+        let mut command = Command::new("systemctl");
+        command.args(["is-active", "--quiet", "apparmor"]);
+        matches!(
+            run_command_with_timeout(command, DOCTOR_TEXT_COMMAND_TIMEOUT),
+            DoctorCommandResult::Output(output) if output.status.success()
+        )
+    } else {
+        false
+    };
+    let policy_path = Path::new("/etc/apparmor.d/agent-browser-managed-chrome");
+    let policy_content = fs::read_to_string(policy_path).ok();
+    managed_chrome_sandbox_policy_status(
+        installed_chrome,
+        restriction_enabled,
+        apparmor_enabled,
+        apparmor_service_active,
+        apparmor_profile_loaded,
+        policy_path,
+        policy_content.as_deref(),
+    )
+}
+
+fn managed_chrome_sandbox_policy_status(
+    installed_chrome: Option<&str>,
+    restriction_enabled: bool,
+    apparmor_enabled: bool,
+    apparmor_service_active: bool,
+    apparmor_profile_loaded: bool,
+    policy_path: &Path,
+    policy_content: Option<&str>,
+) -> Value {
+    let managed_browser_marker = "/.agent-browser/browsers/";
+    let managed_root = installed_chrome
+        .and_then(|path| path.split_once(managed_browser_marker))
+        .map(|(home, _)| format!("{home}/.agent-browser/browsers/**/chrome"));
+    let applicable = installed_chrome.is_some() && restriction_enabled && apparmor_enabled;
+    let policy_present = policy_content.is_some();
+    let policy_matches_managed_chrome = managed_root.as_ref().is_some_and(|root| {
+        policy_content.is_some_and(|content| {
+            content.contains("profile agent-browser-managed-chrome")
+                && content.contains(&format!("\"{root}\""))
+                && content.contains("flags=(unconfined)")
+                && content.lines().any(|line| line.trim() == "userns,")
+        })
+    });
+    let ready = !applicable
+        || (apparmor_service_active && apparmor_profile_loaded && policy_matches_managed_chrome);
+    let state = if installed_chrome.is_none() {
+        "not_applicable_no_managed_chrome"
+    } else if !restriction_enabled || !apparmor_enabled {
+        "not_required"
+    } else if !policy_present {
+        "policy_missing"
+    } else if !policy_matches_managed_chrome {
+        "policy_mismatch"
+    } else if !apparmor_service_active {
+        "apparmor_inactive"
+    } else if !apparmor_profile_loaded {
+        "policy_not_loaded"
+    } else {
+        "ready"
+    };
+
+    json!({
+        "applicable": applicable,
+        "ready": ready,
+        "state": state,
+        "installedChrome": installed_chrome,
+        "restrictionEnabled": restriction_enabled,
+        "apparmorEnabled": apparmor_enabled,
+        "apparmorServiceActive": apparmor_service_active,
+        "apparmorProfileLoaded": apparmor_profile_loaded,
+        "policyPath": policy_path.display().to_string(),
+        "policyPresent": policy_present,
+        "policyMatchesManagedChrome": policy_matches_managed_chrome,
+        "expectedManagedChromeAttachment": managed_root,
     })
 }
 
@@ -869,6 +995,7 @@ fn remote_control_status(
     rdp_gateway: &Value,
     route_pool: &Value,
     route_displays: &Value,
+    viewer_prerequisites: &Value,
 ) -> Value {
     let install_ready = nested_bool(install, &["success"]);
     let install_doctor_timed_out = doctor_command_timed_out(install);
@@ -916,15 +1043,28 @@ fn remote_control_status(
         .get("success")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let browser_launch_ready = viewer_prerequisites
+        .get("browserLaunchReady")
+        .or_else(|| viewer_prerequisites.get("ready"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let ready = install_ready
         && route_pool_ready
         && rdp_gateway_ready
         && private_display_allocator_ready
         && route_url_ready
         && display_ready
-        && display_access_ready;
+        && display_access_ready
+        && browser_launch_ready;
     let status = if ready {
         "ready"
+    } else if route_pool_ready
+        && rdp_gateway_ready
+        && route_url_ready
+        && display_ready
+        && display_access_ready
+    {
+        "needs_browser_launch_prerequisites"
     } else if route_pool_ready && rdp_gateway_ready && route_url_ready && display_ready {
         "needs_display_access"
     } else if route_pool_ready && rdp_gateway_ready && route_url_ready {
@@ -952,6 +1092,8 @@ fn remote_control_status(
         "open_or_select_single_rdp_route_display".to_string()
     } else if !display_access_ready {
         "grant_route_display_access".to_string()
+    } else if !browser_launch_ready {
+        "install_viewer_prerequisites_for_many_to_many_gate".to_string()
     } else {
         "agent_browser_remote_control_recheck".to_string()
     };
@@ -967,6 +1109,7 @@ fn remote_control_status(
         "routeDisplayReady": display_ready,
         "routeDisplayClaimed": display_claimed,
         "routeDisplayAccessReady": display_access_ready,
+        "browserLaunchReady": browser_launch_ready,
         "routePoolEntryId": route_pool_entry_id,
         "routeId": route_id,
         "displayName": display_name,
@@ -1591,14 +1734,34 @@ fn remote_view_issues(context: RemoteViewIssueContext<'_>) -> Vec<Value> {
                 missing.push(tool);
             }
         }
+        if !viewer_prerequisites
+            .pointer("/managedChromeSandboxPolicy/ready")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+        {
+            missing.push("managed Chrome AppArmor user-namespace policy");
+        }
         issues.push(remote_view_issue(
             "viewer_prerequisites_missing",
             &format!(
                 "many-to-many viewer prerequisites are missing: {}",
                 missing.join(", ")
             ),
-            "install ImageMagick and tesseract, and set AGENT_BROWSER_RDP_TEST_CLIENT_A_EXECUTABLE or put Chrome/Chromium on PATH",
+            "rerun agent-browser install workstation --apply to install the managed Chrome AppArmor policy and viewer proof tools",
             false,
+            "install_viewer_prerequisites_for_many_to_many_gate",
+        ));
+    }
+    if !viewer_prerequisites
+        .pointer("/managedChromeSandboxPolicy/ready")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        issues.push(remote_view_issue(
+            "managed_chrome_sandbox_policy_not_ready",
+            "managed Chrome cannot use its sandbox while Ubuntu AppArmor user-namespace restrictions are active",
+            "rerun agent-browser install workstation --apply to install and load the path-scoped managed Chrome AppArmor policy",
+            true,
             "install_viewer_prerequisites_for_many_to_many_gate",
         ));
     }
@@ -2176,6 +2339,7 @@ fn display_value(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::EnvGuard;
 
     fn ready_rdp_gateway() -> Value {
         json!({
@@ -2377,6 +2541,38 @@ mod tests {
     }
 
     #[test]
+    fn prefers_explicit_installed_remote_view_script_root() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_REMOTE_VIEW_SCRIPT_ROOT"]);
+        let scripts = unique_temp_dir("configured-scripts");
+        write_remote_view_helper_scripts(&scripts);
+        guard.set(
+            "AGENT_BROWSER_REMOTE_VIEW_SCRIPT_ROOT",
+            scripts.to_str().unwrap(),
+        );
+
+        let resolved = find_remote_view_script_root().unwrap();
+        assert_eq!(resolved, scripts);
+
+        let _ = fs::remove_dir_all(resolved);
+    }
+
+    #[test]
+    fn discovers_versioned_source_free_support_script_root() {
+        let home = unique_temp_dir("installed-support-home");
+        let support_root = home
+            .join(".local/lib/agent-browser")
+            .join(env!("CARGO_PKG_VERSION"));
+        let scripts = support_root.join("scripts");
+        write_remote_view_helper_scripts(&scripts);
+
+        let resolved =
+            find_installed_support_script_root(&home, env!("CARGO_PKG_VERSION")).unwrap();
+        assert_eq!(resolved, scripts);
+
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
     fn script_args_use_absolute_helper_path_without_cwd_dependent_prefix() {
         let script_root = PathBuf::from("/tmp/agent-browser-scripts");
         let args = script_args(
@@ -2390,7 +2586,10 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "/tmp/agent-browser-scripts/smoke-rdp-guac-route-pool-readiness.js".to_string(),
+                script_root
+                    .join("smoke-rdp-guac-route-pool-readiness.js")
+                    .display()
+                    .to_string(),
                 "--report-only".to_string(),
                 "--allow-shared-target".to_string(),
             ]
@@ -2663,11 +2862,62 @@ MaxSessions=50
             &ready_rdp_gateway(),
             &json!({"data": {"success": false}}),
             &json!({"data": {"success": false}}),
+            &json!({"ready": true}),
         );
 
         assert_eq!(status["installReady"], false);
         assert_eq!(status["installDoctorTimedOut"], true);
         assert_eq!(status["nextAction"], "rerun_install_doctor_after_timeout");
+    }
+
+    #[test]
+    fn managed_chrome_sandbox_policy_requires_matching_userns_profile() {
+        let chrome = "/home/agent/.agent-browser/browsers/chrome-140/chrome-linux64/chrome";
+        let missing = managed_chrome_sandbox_policy_status(
+            Some(chrome),
+            true,
+            true,
+            true,
+            true,
+            Path::new("/etc/apparmor.d/agent-browser-managed-chrome"),
+            None,
+        );
+        assert_eq!(missing["ready"], false);
+        assert_eq!(missing["state"], "policy_missing");
+
+        let policy = r#"abi <abi/4.0>,
+include <tunables/global>
+
+profile agent-browser-managed-chrome "/home/agent/.agent-browser/browsers/**/chrome" flags=(unconfined) {
+  userns,
+}
+"#;
+        let ready = managed_chrome_sandbox_policy_status(
+            Some(chrome),
+            true,
+            true,
+            true,
+            true,
+            Path::new("/etc/apparmor.d/agent-browser-managed-chrome"),
+            Some(policy),
+        );
+        assert_eq!(ready["ready"], true);
+        assert_eq!(ready["state"], "ready");
+        assert_eq!(ready["policyMatchesManagedChrome"], true);
+    }
+
+    #[test]
+    fn remote_control_reports_viewer_prerequisite_readiness() {
+        let status = remote_control_status(
+            &json!({"success": true}),
+            &ready_rdp_gateway(),
+            &json!({"data": {"success": false}}),
+            &json!({"data": {"success": false}}),
+            &json!({"ready": false}),
+        );
+
+        assert_eq!(status["ready"], false);
+        assert_eq!(status["browserLaunchReady"], false);
     }
 
     #[test]

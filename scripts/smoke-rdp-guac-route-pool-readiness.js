@@ -38,10 +38,11 @@ function loadAgentBrowserEnv() {
   loadEnvFile(process.env.AGENT_BROWSER_GUACAMOLE_SECRET_FILE || join(agentHome, 'secrets', 'guacamole.env'));
 }
 
-function commandResult(command, args) {
+function commandResult(command, args, options = {}) {
   return spawnSync(command, args, {
     encoding: 'utf8',
     stdio: 'pipe',
+    ...options,
   });
 }
 
@@ -156,14 +157,14 @@ function guacamoleLoginReachable(baseUrl) {
     'POST',
     '--header',
     'Content-Type: application/x-www-form-urlencoded',
-    '--data-urlencode',
-    `username=${username}`,
-    '--data-urlencode',
-    `password=${password}`,
+    '--data-binary',
+    '@-',
     '--write-out',
     '\n%{http_code}',
     tokenUrl,
-  ]);
+  ], {
+    input: new URLSearchParams({ username, password }).toString(),
+  });
   if (result.status !== 0) {
     return {
       ok: false,
@@ -845,7 +846,7 @@ const components = [
       schema.ok ? 'none' : 'initialize_guacamole_schema',
       schema.ok
         ? 'Guacamole database schema is present.'
-        : 'Run pnpm ensure:rdp-guac-postgres -- --apply to repair an empty initialized Guacamole PostgreSQL database before validating route-pool entries.',
+        : 'Run agent-browser install workstation reconcile --json to repair an empty initialized Guacamole PostgreSQL database before validating route-pool entries.',
     ),
   },
   {
@@ -998,9 +999,9 @@ const result = {
       }
     : {},
   nextStep: ready
-    ? 'Export AGENT_BROWSER_RDP_ROUTE_POOL_JSON and run pnpm test:rdp-guac-many-to-many-live.'
+    ? 'Export AGENT_BROWSER_RDP_ROUTE_POOL_JSON and run the reviewed many-to-many live gate.'
     : components.find((component) => component.status !== 'ready')?.recovery ||
-      'Provision two distinct Guacamole RDP route candidates, then rerun pnpm test:rdp-guac-route-pool-readiness.',
+      'Provision two distinct Guacamole RDP route candidates, then rerun agent-browser install workstation reconcile --json.',
 };
 
 if (shellOutput && ready && result.env.AGENT_BROWSER_RDP_ROUTE_POOL_JSON) {

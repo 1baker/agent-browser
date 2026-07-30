@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { request } from 'node:http';
 import { createConnection } from 'node:net';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -101,8 +101,9 @@ export function parseJsonOutput(output, label) {
 }
 
 export function assertServiceStatusDidNotLaunch(status, label) {
+  const browserHealth = status.data?.control_plane?.browser_health;
   assert(
-    status.data?.control_plane?.browser_health === 'NotStarted',
+    browserHealth === '' || browserHealth === 'NotStarted',
     `${label} launched browser: ${JSON.stringify(status.data?.control_plane)}`,
   );
 }
@@ -219,7 +220,9 @@ export function seedIncidentSummarySmokeEvents(context, {
   const serviceDir = join(context.agentHome, 'service');
   const statePath = join(serviceDir, 'state.json');
   mkdirSync(serviceDir, { recursive: true });
-  const state = JSON.parse(readFileSync(statePath, 'utf8'));
+  const state = existsSync(statePath)
+    ? JSON.parse(readFileSync(statePath, 'utf8'))
+    : { browsers: {}, events: [], monitors: {} };
   state.events = [
     {
       id: 'event-summary-critical-1',

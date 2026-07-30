@@ -943,7 +943,57 @@ pub(crate) fn persist_browser_recovery_started_in_repository(
     repository
         .mutate(|service_state| {
             let id = service_browser_id_for_session(session_id);
-            let Some(browser) = service_state.browsers.get(&id).cloned() else {
+            let historical_event = service_state
+                .events
+                .iter()
+                .rev()
+                .find(|event| {
+                    event.browser_id.as_deref() == Some(id.as_str())
+                        && event.kind == ServiceEventKind::BrowserHealthChanged
+                        && event.current_health.is_some_and(|health| {
+                            matches!(
+                                health,
+                                BrowserHealth::Degraded
+                                    | BrowserHealth::ProcessExited
+                                    | BrowserHealth::CdpDisconnected
+                                    | BrowserHealth::Unreachable
+                                    | BrowserHealth::Faulted
+                            )
+                        })
+                })
+                .cloned();
+            let browser = service_state.browsers.get(&id).cloned().or_else(|| {
+                historical_event.as_ref().map(|event| BrowserProcess {
+                    id: id.clone(),
+                    health: event.current_health.unwrap_or(BrowserHealth::Unreachable),
+                    pid: event
+                        .details
+                        .as_ref()
+                        .and_then(|details| {
+                            details
+                                .get("processExitPid")
+                                .or_else(|| details.get("pid"))
+                        })
+                        .and_then(|pid| pid.as_u64())
+                        .and_then(|pid| u32::try_from(pid).ok()),
+                    cdp_endpoint: event
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.get("cdpEndpoint"))
+                        .and_then(|endpoint| endpoint.as_str())
+                        .map(ToString::to_string),
+                    active_session_ids: vec![session_id.to_string()],
+                    last_error: event
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.get("currentError"))
+                        .and_then(|error| error.as_str())
+                        .map(ToString::to_string)
+                        .or_else(|| Some(event.message.clone())),
+                    ..BrowserProcess::default()
+                })
+            });
+            let Some(browser) = browser else {
                 return Ok(BrowserRecoveryPersistence::NotRecorded);
             };
             if !matches!(
@@ -982,6 +1032,21 @@ pub(crate) fn persist_browser_recovery_started_in_repository(
                 event_reason,
                 Some(policy),
             );
+            if !service_state.browsers.contains_key(&id) {
+                if let (Some(historical_event), Some(recovery_event)) =
+                    (historical_event.as_ref(), service_state.events.last_mut())
+                {
+                    recovery_event.profile_id = historical_event.profile_id.clone();
+                    recovery_event.session_id = historical_event
+                        .session_id
+                        .clone()
+                        .or_else(|| Some(session_id.to_string()));
+                    recovery_event.service_name = historical_event.service_name.clone();
+                    recovery_event.agent_name = historical_event.agent_name.clone();
+                    recovery_event.task_name = historical_event.task_name.clone();
+                }
+                service_state.browsers.insert(id, browser);
+            }
             Ok(BrowserRecoveryPersistence::Recorded)
         })
         .unwrap_or(BrowserRecoveryPersistence::NotRecorded)

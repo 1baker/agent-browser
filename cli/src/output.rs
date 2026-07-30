@@ -5056,19 +5056,40 @@ Examples:
 agent-browser install - Install browser binaries
 
 Usage: agent-browser install [--with-deps] [--with-remote-view-privileges]
+       agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]
+       agent-browser install workstation reconcile [--json]
+       agent-browser install workstation backup [--json]
        agent-browser install stealthcdp-chromium [--force]
        agent-browser install doctor [--json]
 
 Downloads and installs browser binaries required for automation. The doctor is
 no-launch and also reports service-status, duplicate profile pressure, and
-remote-view privilege readiness.
+remote-view privilege readiness. Workstation payload checks bind the installed
+binary and support assets to recorded SHA-256 provenance. Real-host preflight
+requires at least 6 GiB free before sudo, payload staging, or package mutation.
+
+Workstation apply reruns stop the managed dashboard, runtime interlock, and
+backup timer during reconciliation, then reactivate them after final readiness.
+Host preparation includes display inspection, visual-proof tools, and a
+path-scoped AppArmor userns policy for managed Chrome on Ubuntu 24.04. It does
+not disable the host restriction or Chromium sandbox. Final readiness accepts
+the pinned Compose guacd container and managed Chrome path, and remote-view
+doctor reports managed Chrome sandbox-policy readiness separately. Standalone
+doctor runs discover the versioned installed support-script root without a
+checkout.
 
 Options:
   -d, --with-deps      Also install system dependencies (Linux only)
   --with-remote-view-privileges
                        Install the agent-browser group, root-owned helper, and sudoers rule used by RDP/Guacamole desktop setup (Linux only)
   --force              Replace an existing chromium-stealthcdp artifact
-  --json               Output install doctor results as JSON
+  --dry-run            Plan workstation payload installation without mutation
+  --apply              Materialize the installed workstation payload
+  --dashboard-port <port>
+                       Set the workstation dashboard port (default: 4848)
+  --guacamole-port <port>
+                       Set the loopback Guacamole port (default: 8092)
+  --json               Output install or doctor results as JSON
 
 Examples:
   agent-browser install
@@ -5077,6 +5098,10 @@ Examples:
   agent-browser install doctor --json
   agent-browser install --with-deps
   agent-browser install --with-deps --with-remote-view-privileges
+  agent-browser install workstation --dry-run --json
+  agent-browser install workstation --apply --json
+  agent-browser install workstation reconcile --json
+  agent-browser install workstation backup --json
 "##
         }
 
@@ -6213,6 +6238,7 @@ Dashboard:
 
 Setup:
   install                    Install browser binaries
+  install workstation        Install and reconcile the source-free Linux workstation
   install doctor             Check user-scoped install drift and launch readiness
   doctor windows-browser     Diagnose WSL to Windows browser CDP routing
   doctor remote-view         Diagnose Guacamole and RDP remote-view setup

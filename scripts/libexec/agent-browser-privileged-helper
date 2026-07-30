@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HELPER_VERSION="2026-06-23.p44-route-desktop-v2"
+HELPER_VERSION="2026-06-23.p44-route-desktop-v3"
 
 usage() {
   cat <<'EOF'
@@ -9,6 +9,7 @@ Usage: agent-browser-privileged-helper <command> [options]
 
 Commands:
   check
+  verify-install --group <group> --sudoers <path> --sha256 <digest> [--apparmor-profile-name <name>]
   status-json
   ensure-rdp-route-user --user <user>
   restart-xrdp
@@ -54,6 +55,70 @@ require_display_name() {
   fi
 }
 
+verify_install() {
+  require_root
+  local group_name=""
+  local sudoers_path=""
+  local expected_sha256=""
+  local apparmor_profile_name=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --group)
+        group_name="$(arg_value "$1" "${2:-}")"
+        shift 2
+        ;;
+      --sudoers)
+        sudoers_path="$(arg_value "$1" "${2:-}")"
+        shift 2
+        ;;
+      --sha256)
+        expected_sha256="$(arg_value "$1" "${2:-}")"
+        shift 2
+        ;;
+      --apparmor-profile-name)
+        apparmor_profile_name="$(arg_value "$1" "${2:-}")"
+        shift 2
+        ;;
+      *)
+        echo "Unknown verify-install argument: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  if [[ ! "$group_name" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    echo "verify-install requires a valid group" >&2
+    exit 2
+  fi
+  if [[ "$sudoers_path" != */sudoers.d/agent-browser ]]; then
+    echo "verify-install requires the agent-browser sudoers path" >&2
+    exit 2
+  fi
+  if [[ ! "$expected_sha256" =~ ^[a-f0-9]{64}$ ]]; then
+    echo "verify-install requires a SHA-256 digest" >&2
+    exit 2
+  fi
+  if [[ -n "$apparmor_profile_name" && "$apparmor_profile_name" != "agent-browser-managed-chrome" ]]; then
+    echo "verify-install requires the managed Chrome AppArmor profile name" >&2
+    exit 2
+  fi
+
+  local helper_path
+  helper_path="$(readlink -f "$0")"
+  [[ "$(stat -c '%U:%G:%a' "$helper_path")" == "root:root:755" ]]
+  [[ "$(sha256sum "$helper_path" | awk '{print $1}')" == "$expected_sha256" ]]
+  [[ -f "$sudoers_path" ]]
+  [[ "$(stat -c '%U:%G:%a' "$sudoers_path")" == "root:root:440" ]]
+  printf '# agent-browser narrow privileged helper\n%%%s ALL=(root) NOPASSWD: %s\n' \
+    "$group_name" "$helper_path" \
+    | cmp -s - "$sudoers_path"
+  if [[ -n "$apparmor_profile_name" ]]; then
+    grep -Fqx "$apparmor_profile_name (unconfined)" /sys/kernel/security/apparmor/profiles
+  fi
+  echo "agent-browser privileged install verified"
+}
+
 display_socket_exists() {
   local display_number="$1"
   local display_socket="/tmp/.X11-unix/X$display_number"
@@ -77,8 +142,13 @@ arg_value() {
 }
 
 status_json() {
+  local apparmor_profile_loaded="false"
+  if [[ -r /sys/kernel/security/apparmor/profiles ]] \
+    && grep -Fqx 'agent-browser-managed-chrome (unconfined)' /sys/kernel/security/apparmor/profiles; then
+    apparmor_profile_loaded="true"
+  fi
   cat <<EOF
-{"schemaVersion":1,"helperVersion":"$HELPER_VERSION","routeDesktopSession":{"ready":true,"state":"browser_control_ready_template","terminalStartupDetected":false,"startsWindowManager":true,"keepsSessionAlive":true},"displayAccess":{"supportsFilesystemX11Socket":true,"supportsAbstractX11Socket":true,"boundedXhostTimeoutSeconds":2}}
+{"schemaVersion":1,"helperVersion":"$HELPER_VERSION","routeDesktopSession":{"ready":true,"state":"browser_control_ready_template","terminalStartupDetected":false,"startsWindowManager":true,"keepsSessionAlive":true},"displayAccess":{"supportsFilesystemX11Socket":true,"supportsAbstractX11Socket":true,"boundedXhostTimeoutSeconds":2},"managedChromeSandboxPolicy":{"profileName":"agent-browser-managed-chrome","loaded":$apparmor_profile_loaded}}
 EOF
 }
 
@@ -211,6 +281,10 @@ case "${1:-}" in
   check)
     require_root
     echo "agent-browser privileged helper ready"
+    ;;
+  verify-install)
+    shift
+    verify_install "$@"
     ;;
   status-json)
     status_json
