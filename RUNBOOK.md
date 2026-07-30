@@ -23,6 +23,10 @@ Actions:
   install-wide locking, payload hash provenance, changelog/version binding,
   Cargo.lock version validation, and missing installer fixtures in selector
   and fast CI.
+- The first authoritative clean overlay exposed a 3.5 GiB cloud-image capacity
+  defect during apt unpack. Added a 24 GiB VM disk default and a real-host
+  6 GiB free-space gate that fails before sudo, payload staging, or package
+  mutation.
 
 Validation:
 
@@ -31,13 +35,14 @@ Validation:
 - route-specific user sync fixture
 - release asset and version-bound changelog fixture
 - exact selector recommendations for the new installer gates
+- disk-capacity boundary unit test and resized VM harness contract
 
 Result:
 
 - Focused repair gates are green.
 - Release remains no-go until the rebuilt candidate passes a clean Ubuntu
-  install, reboot, idempotent rerun, restore and conflict drills, independent
-  recheck, full CI, release workflows, merge, and public-asset reinstall.
+  install, reboot, idempotent rerun, restore and conflict drills, full CI,
+  release workflows, merge, and public-asset reinstall.
 - The operator-owned untracked `--full-page` file remains excluded and
   untouched.
 

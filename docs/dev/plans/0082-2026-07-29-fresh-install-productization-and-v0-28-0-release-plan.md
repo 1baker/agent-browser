@@ -294,6 +294,10 @@ Status: pending
   `guacamole:2`, opened distinct `:10` and `:11` displays, and confirmed the
   remaining work is a final clean-overlay candidate run, not an authentication
   probe.
+- The first authoritative clean overlay exposed a too-small 3.5 GiB cloud
+  disk during package unpack. The harness now grows clean overlays to 24 GiB,
+  while real-host installer preflight requires 6 GiB free and fails before
+  sudo, payload staging, or package mutation.
 - Release remains no-go pending a rebuilt exact candidate, clean VM install and
   reboot, idempotency, restore and active-conflict proof, full CI, release dry
   run, merge, and public-asset reinstall.

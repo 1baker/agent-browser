@@ -32,6 +32,9 @@ release, and public-asset reinstall.
 - The source-free payload, pinned Guacamole assets, one-sudo host preparation,
   and binary-owned canonical route reconciliation are implemented on the
   release branch with focused local fixtures green.
+- Clean-overlay execution exposed a too-small cloud disk before the reboot
+  gate. The VM harness now provisions 24 GiB overlays, and installer preflight
+  requires 6 GiB free before authorization or mutation.
 - The release remains no-go pending a clean exact-candidate Ubuntu install,
   reboot, idempotent rerun, restore and active-conflict evidence, full CI, and
   release-artifact proof.
