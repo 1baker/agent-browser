@@ -17,6 +17,8 @@ VM_CPUS="${AGENT_BROWSER_VM_CPUS:-4}"
 VM_PASSWORD="${AGENT_BROWSER_VM_PASSWORD:-agent-browser-fresh-install}"
 QEMU_SYSTEM_BIN="${QEMU_SYSTEM_BIN:-qemu-system-x86_64}"
 QEMU_IMG_BIN="${QEMU_IMG_BIN:-qemu-img}"
+QEMU_FIRMWARE_DIR="${AGENT_BROWSER_VM_QEMU_FIRMWARE_DIR:-}"
+QEMU_BIOS_PATH="${AGENT_BROWSER_VM_QEMU_BIOS_PATH:-}"
 CLOUD_LOCALDS_BIN="${CLOUD_LOCALDS_BIN:-cloud-localds}"
 
 usage() {
@@ -38,6 +40,8 @@ Commands:
 The guest user is agent. The disposable sudo password comes from
 AGENT_BROWSER_VM_PASSWORD. Run the candidate install command in a visible SSH
 TTY so the initial sudo prompt can be counted and recorded.
+Set AGENT_BROWSER_VM_QEMU_FIRMWARE_DIR or AGENT_BROWSER_VM_QEMU_BIOS_PATH when
+an extracted QEMU build cannot discover its firmware from system paths.
 
 Inside the guest:
   /home/agent/agent-browser-candidate install workstation --dry-run --json
@@ -141,7 +145,24 @@ start_vm() {
     echo "VM is already running with PID $(cat "$STATE_DIR/qemu.pid")." >&2
     exit 1
   fi
+  local -a firmware_args
+  firmware_args=()
+  if [[ -n "$QEMU_FIRMWARE_DIR" ]]; then
+    if [[ ! -d "$QEMU_FIRMWARE_DIR" ]]; then
+      echo "AGENT_BROWSER_VM_QEMU_FIRMWARE_DIR must name a readable directory." >&2
+      exit 2
+    fi
+    firmware_args+=(-L "$QEMU_FIRMWARE_DIR")
+  fi
+  if [[ -n "$QEMU_BIOS_PATH" ]]; then
+    if [[ ! -f "$QEMU_BIOS_PATH" ]]; then
+      echo "AGENT_BROWSER_VM_QEMU_BIOS_PATH must name a readable BIOS image." >&2
+      exit 2
+    fi
+    firmware_args+=(-bios "$QEMU_BIOS_PATH")
+  fi
   "$QEMU_SYSTEM_BIN" \
+    "${firmware_args[@]}" \
     -accel tcg,thread=multi \
     -cpu max \
     -smp "$VM_CPUS" \
