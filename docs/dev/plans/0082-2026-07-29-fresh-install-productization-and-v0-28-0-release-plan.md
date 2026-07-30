@@ -163,7 +163,7 @@ Status: completed
 
 ### Packet C | Self-contained workstation installer
 
-Status: in progress
+Status: completed
 
 - Add command parsing, dry-run, apply, JSON receipt, and install phase model.
 - Embed versioned compose, schema, configuration, durability, and privileged
@@ -201,7 +201,7 @@ Status: in progress
 
 ### Packet F | Independent implementation audit
 
-Status: pending
+Status: completed
 
 - Assign read-only reviewers to installer safety, test sufficiency, release
   workflow, and documentation parity.
@@ -211,7 +211,7 @@ Status: pending
 
 ### Packet G | Version and release candidate
 
-Status: pending
+Status: in progress
 
 - Set root version to `0.28.0` and run `pnpm version:sync`.
 - Move the sole changelog release markers to the new `0.28.0` entry.
@@ -267,8 +267,36 @@ Status: pending
 - Focused Rust tests, strict Clippy, the source-free payload fixture, embedded
   asset fixture, host-provision fixture, and privilege fixture pass locally.
 - Release remains no-go. The disposable Ubuntu reboot and restore proof,
-  independent final audit, version metadata, full CI, release dry run, and
+  independent final audit, full CI, release dry run, and
   public artifact reinstall remain open.
+
+## Implementation Checkpoint | 2026-07-30
+
+- Version surfaces are synchronized at `0.28.0`, the sole changelog markers
+  belong to the new entry, and release PR 7 owns the release notes.
+- The release-mode binary reports `0.28.0` and embeds 80 dashboard assets.
+- Packet F audits found four installer blockers: credentials in subprocess
+  arguments, incomplete payload hash verification, inherited route-pool
+  override state, and a reconciliation lock acquired after apply mutation.
+- Repairs move secret form data and route values to stdin, bind doctor
+  readiness to binary and support-asset SHA-256 provenance, clear ambient
+  route-pool JSON for installed reconciliation, and hold one install-wide lock
+  before quiescence and staging.
+- Independent installer-safety, evidence-sufficiency, and release-workflow
+  rechecks all passed after the repairs. The source-free fixture, 10 focused
+  workstation installer tests, 3 payload-status tests, and diff validation
+  passed against the rebuilt current-worktree binary.
+- The validation selector and fast CI now include the workstation, durability,
+  route-sync, release-asset, and changelog-binding fixtures. Version sync also
+  validates the `agent-browser` Cargo.lock entry.
+- One iterative release-mode VM run stopped fail-closed during route opening.
+  A direct redacted rerun selected canonical `guacamole:1` and
+  `guacamole:2`, opened distinct `:10` and `:11` displays, and confirmed the
+  remaining work is a final clean-overlay candidate run, not an authentication
+  probe.
+- Release remains no-go pending a rebuilt exact candidate, clean VM install and
+  reboot, idempotency, restore and active-conflict proof, full CI, release dry
+  run, merge, and public-asset reinstall.
 
 ## Clean-Install Acceptance Matrix
 

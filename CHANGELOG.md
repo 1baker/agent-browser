@@ -7,25 +7,25 @@
 <!-- release:start -->
 ### New Features
 
-- **Source-free workstation installer** - Added a Linux workstation installer that materializes the release binary, versioned support assets, pinned Guacamole and PostgreSQL services, XRDP route users, dashboard service, runtime interlock, and backup timer without a repository checkout or pnpm.
-- **Binary-owned workstation reconciliation** - Added installed-controller reconcile and backup commands with machine-readable receipts, canonical two-route projection, database continuity checks, and fail-closed recovery gates.
-- **Runtime ownership and handoff** - Added executable-aware daemon inventory, browser handoff across executable refreshes, dependent batch execution, closed-tab history, and richer service control surfaces.
+- **Source-free workstation installer** - Added a Linux workstation installer that materializes the release binary, versioned support assets, pinned Guacamole and PostgreSQL services, XRDP route users, dashboard service, runtime interlock, and backup timer without a repository checkout or pnpm (#7).
+- **Binary-owned workstation reconciliation** - Added installed-controller reconcile and backup commands with machine-readable receipts, canonical two-route projection, database continuity checks, and fail-closed recovery gates (#7).
+- **Runtime ownership and handoff** - Added executable-aware daemon inventory, browser handoff across executable refreshes, dependent batch execution, closed-tab history, and richer service control surfaces (#7).
 
 ### Improvements
 
-- **Fresh-host safety** - Added one-sudo host preparation, protected helper verification, private generated credentials, source-free systemd units, idempotent payload materialization, and disposable Ubuntu reboot validation.
-- **Remote operation diagnostics** - Expanded route, display, viewport, clipboard, profile-lock, runtime-convergence, and operator handoff evidence across doctors, service status, and the dashboard.
-- **Release verification** - Hardened the GitHub release workflow to verify the exact seven binaries, embedded versions, minimum sizes, Linux execution, checksums, and published downloads.
+- **Fresh-host safety** - Added one-sudo host preparation, protected helper verification, private generated credentials, source-free systemd units, idempotent payload materialization, and disposable Ubuntu reboot validation (#7).
+- **Remote operation diagnostics** - Expanded route, display, viewport, clipboard, profile-lock, runtime-convergence, and operator handoff evidence across doctors, service status, and the dashboard (#7).
+- **Release verification** - Hardened the GitHub release workflow to verify the exact seven binaries, embedded versions, minimum sizes, Linux execution, checksums, and published downloads (#7).
 
 ### Bug Fixes
 
-- **Post-reboot route selection** - Fixed retained route-state reconciliation so canonical route A and route B resolve to their current Guacamole connection IDs and distinct live displays instead of a legacy route.
-- **Route viewer convergence** - Fixed route-specific user creation, Compose environment propagation, protected sudoers detection, cold Guacamole startup, route-local display readiness, interlock collisions, and rerun URL construction.
-- **Runtime and interaction recovery** - Fixed stale dashboard and daemon classification, registered-session reconnects, role locator matching, clipboard recovery, and hidden route visibility failures.
+- **Post-reboot route selection** - Fixed retained route-state reconciliation so canonical route A and route B resolve to their current Guacamole connection IDs and distinct live displays instead of a legacy route (#7).
+- **Route viewer convergence** - Fixed route-specific user creation, Compose environment propagation, protected sudoers detection, cold Guacamole startup, route-local display readiness, interlock collisions, and rerun URL construction (#7).
+- **Runtime and interaction recovery** - Fixed stale dashboard and daemon classification, registered-session reconnects, role locator matching, clipboard recovery, and hidden route visibility failures (#7).
 
 ### Documentation
 
-- **Workstation operations** - Updated CLI help, README, docs, agent skill guidance, plans, roadmap, runbook, and validation authorities for installation, reconciliation, backup, diagnostics, and release gating.
+- **Workstation operations** - Updated CLI help, README, docs, agent skill guidance, plans, roadmap, runbook, and validation authorities for installation, reconciliation, backup, diagnostics, and release gating (#7).
 
 ### Contributors
 

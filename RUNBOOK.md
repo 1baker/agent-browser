@@ -4,6 +4,43 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 124 | 2026-07-30
+
+Scope: build the `0.28.0` release candidate, execute the disposable VM lane,
+and repair independent Packet F findings.
+
+Actions:
+
+- Built a release-mode `0.28.0` binary with 80 embedded dashboard assets and
+  pushed release preparation commit `4a374bea` to PR 7.
+- Rebooted the iterative Ubuntu VM to a new boot ID and ran the release
+  artifact source-free. The first run stopped fail-closed at route opening; a
+  redacted direct retry selected canonical connections 1 and 2 and opened
+  distinct displays `:10` and `:11`.
+- Completed three independent audits covering installer safety, evidence
+  sufficiency, release workflow, and documentation parity.
+- Repaired secret-bearing subprocess arguments, ambient route-pool override,
+  install-wide locking, payload hash provenance, changelog/version binding,
+  Cargo.lock version validation, and missing installer fixtures in selector
+  and fast CI.
+
+Validation:
+
+- focused workstation and payload-integrity Rust tests
+- source-free install fixture with concurrent-lock rejection
+- route-specific user sync fixture
+- release asset and version-bound changelog fixture
+- exact selector recommendations for the new installer gates
+
+Result:
+
+- Focused repair gates are green.
+- Release remains no-go until the rebuilt candidate passes a clean Ubuntu
+  install, reboot, idempotent rerun, restore and conflict drills, independent
+  recheck, full CI, release workflows, merge, and public-asset reinstall.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 123 | 2026-07-29
 
 Scope: implement and locally validate the source-free workstation installer
