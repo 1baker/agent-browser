@@ -36,6 +36,15 @@ Actions:
   arguments. Production order remained privilege setup before dependency
   installation. Updated the assertion to the current signature and reran the
   serialized Rust CI harness successfully.
+- Fast CI run `30540857427` passed version sync, Rust Quality, the full Rust
+  suite, dashboard, service-client, and workstation fixture jobs. Its final
+  no-launch packet found stale profile-lookup MCP template and selection-order
+  assertions, followed by a fixture assumption that local service status
+  starts a daemon and writes `state.json`.
+- Consolidated the lookup expectations around the current generated contract.
+  Updated shared no-launch setup to accept the offline empty control-plane
+  snapshot and create a minimal service state only when no daemon-created file
+  exists. The full ten-command no-launch CI packet passes locally.
 
 Validation:
 
@@ -52,6 +61,7 @@ Validation:
 - route-confusion gates and live CDP tab streaming
 - dashboard contract packet and production build
 - docs production build, version sync, planning audit, and shared-skill parity
+- complete CI no-launch service smoke packet
 
 Result:
 

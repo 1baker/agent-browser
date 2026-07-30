@@ -22,6 +22,24 @@ const context = createSmokeContext({
 context.env.AGENT_BROWSER_ARGS = '--no-sandbox';
 
 const { agentHome, session } = context;
+const expectedProfileLookupResourceTemplate =
+  'agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,runtimeProfile,browserBuild}';
+const expectedProfileLookupSelectionOrder = [
+  'authenticatedServiceIds',
+  'accountIdsOrLabels',
+  'profileId',
+  'profileName',
+  'aliases',
+  'loginIds',
+  'origins',
+  'targetServiceIds',
+  'tags',
+  'authenticationState',
+  'freshnessState',
+  'sharedServiceIds',
+  'safeMetadata',
+  'browserBuild',
+];
 
 async function cleanup() {
   try {
@@ -179,7 +197,7 @@ try {
   );
   assert(
     contracts.data?.contracts?.serviceProfileLookupResponse?.mcp?.resourceTemplate ===
-      'agent-browser://profiles/lookup{?serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,readinessProfileId,browserBuild}',
+      expectedProfileLookupResourceTemplate,
     `serviceProfileLookupResponse MCP resource template mismatch: ${JSON.stringify(contracts.data?.contracts?.serviceProfileLookupResponse)}`,
   );
   assert(
@@ -299,7 +317,7 @@ try {
   );
   assert(
     JSON.stringify(contracts.data?.contracts?.serviceProfileLookupResponse?.client?.selectionOrder) ===
-      JSON.stringify(['authenticatedServiceIds', 'accountIds', 'targetServiceIds', 'sharedServiceIds', 'browserBuild']),
+      JSON.stringify(expectedProfileLookupSelectionOrder),
     `serviceProfileLookupResponse selection order mismatch: ${JSON.stringify(contracts.data?.contracts?.serviceProfileLookupResponse)}`,
   );
   assert(
@@ -326,7 +344,7 @@ try {
   );
   assert(
     clientContracts.contracts?.serviceProfileLookupResponse?.mcp?.resourceTemplate ===
-      'agent-browser://profiles/lookup{?serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,readinessProfileId,browserBuild}',
+      expectedProfileLookupResourceTemplate,
     `service client could not discover lookup MCP resource template: ${JSON.stringify(clientContracts.contracts?.serviceProfileLookupResponse)}`,
   );
   assert(
@@ -364,7 +382,7 @@ try {
   );
   assert(
     JSON.stringify(clientContracts.contracts?.serviceProfileLookupResponse?.client?.selectionOrder) ===
-      JSON.stringify(['authenticatedServiceIds', 'accountIds', 'targetServiceIds', 'sharedServiceIds', 'browserBuild']),
+      JSON.stringify(expectedProfileLookupSelectionOrder),
     `service client could not discover profile lookup selection order: ${JSON.stringify(clientContracts.contracts?.serviceProfileLookupResponse)}`,
   );
   assert(

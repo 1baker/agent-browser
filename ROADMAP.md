@@ -82,6 +82,12 @@ release, and public-asset reinstall.
   arguments; production privilege-before-dependency order was already
   correct, and the repaired assertion passes in the serialized Rust CI
   harness.
+- Fast CI run `30540857427` reached the post-Rust no-launch packet before
+  exposing older profile-lookup contract expectations and a fixture assumption
+  that service status starts a daemon and creates state. The assertions now
+  use the generated lookup template and selection order, while the fixture
+  handles the intentional offline status path. All ten no-launch smokes pass
+  locally.
 - The release remains no-go pending exact-head fast and full CI, the release
   dry run, merge, publication, and public-asset proof.
 - Plan
@@ -90,8 +96,8 @@ release, and public-asset reinstall.
 
 ### Next Recommendation
 
-Commit and push the full-suite assertion repair, then require exact-head fast
-CI, manually dispatched full CI, and the release dry run before merging PR 7.
+Commit and push the no-launch fixture repair, then require exact-head fast CI,
+manually dispatched full CI, and the release dry run before merging PR 7.
 
 ## P81 | Guacamole Route-Pool State Reconciliation
 

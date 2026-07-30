@@ -370,6 +370,14 @@ Status: pending
   Clippy, formatting, installer fixtures, service contracts, dashboard and
   docs builds, live CDP tab streaming, release verifier, version sync, and
   shared-skill parity are green.
+- Exact-head fast CI run `30540857427` passed version sync, Rust Quality, the
+  full Rust suite, dashboard, service-client, and workstation fixtures, then
+  failed its no-launch smoke step. The smoke still expected the older profile
+  lookup MCP template and ranking list, plus daemon-created service state.
+  The contract assertions now share the current generated expectations, and
+  the no-launch fixture accepts the offline empty control-plane snapshot and
+  creates minimal seed state when no daemon has written one. The complete
+  ten-command no-launch packet passes locally.
 - Release remains no-go pending exact-head fast and full CI, release dry run,
   merge, publication, and public-asset reinstall.
 
