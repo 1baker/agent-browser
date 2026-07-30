@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VERIFY_SCRIPT="$SCRIPT_DIR/verify-release-assets.sh"
+EXTRACT_NOTES_SCRIPT="$SCRIPT_DIR/extract-release-notes.js"
 FIXTURE_ROOT=$(mktemp -d)
 trap 'rm -rf "$FIXTURE_ROOT"' EXIT
 
@@ -68,6 +69,34 @@ fi
 printf 'corruption\n' >> "$valid_dir/agent-browser-darwin-arm64"
 if "$VERIFY_SCRIPT" "$valid_dir" "$VERSION" verify-checksums >/dev/null 2>&1; then
   echo "Error: verifier accepted a checksum mismatch" >&2
+  exit 1
+fi
+
+valid_changelog="$FIXTURE_ROOT/CHANGELOG-valid.md"
+cat > "$valid_changelog" <<'EOF'
+# Changelog
+
+## Unreleased
+
+## 9.8.7
+
+<!-- release:start -->
+### Bug Fixes
+
+- Fixed the fixture release.
+<!-- release:end -->
+
+## 9.8.6
+EOF
+node "$EXTRACT_NOTES_SCRIPT" \
+  "$valid_changelog" "$VERSION" "$FIXTURE_ROOT/release-notes.md"
+grep -q '^### Bug Fixes$' "$FIXTURE_ROOT/release-notes.md"
+
+stale_changelog="$FIXTURE_ROOT/CHANGELOG-stale.md"
+sed 's/## 9.8.7/## 9.8.6/' "$valid_changelog" > "$stale_changelog"
+if node "$EXTRACT_NOTES_SCRIPT" \
+  "$stale_changelog" "$VERSION" "$FIXTURE_ROOT/stale-notes.md" >/dev/null 2>&1; then
+  echo "Error: release-note extractor accepted markers under a stale version" >&2
   exit 1
 fi
 

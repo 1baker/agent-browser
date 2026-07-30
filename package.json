@@ -133,6 +133,7 @@
     "test:workstation-install-fixture": "node scripts/test-workstation-install-fixture.js",
     "test:workstation-guacamole-assets": "node scripts/test-workstation-guacamole-assets.js",
     "test:workstation-host-provision": "bash scripts/smoke-install-workstation-host-fixture.sh",
+    "test:fresh-workstation-vm-harness": "node scripts/test-fresh-workstation-vm-harness.js",
     "sync:rdp-guac-existing-user-route-pool": "bash scripts/sync-rdp-guac-existing-user-route-pool.sh",
     "sync:rdp-guac-route-specific-user-pool": "bash scripts/sync-rdp-guac-route-specific-user-pool.sh",
     "open:rdp-route-displays": "node scripts/open-rdp-guac-route-displays.js",

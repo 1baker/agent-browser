@@ -132,6 +132,54 @@ jobs:
       - name: Test service client contracts
         run: pnpm test:service-client
 
+  workstation-fixtures:
+    name: Workstation Fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+
+      - name: Build exact-head fixture binary
+        run: cargo build --manifest-path cli/Cargo.toml
+
+      - name: Test source-free workstation installation
+        run: node scripts/test-workstation-install-fixture.js
+        env:
+          AGENT_BROWSER_FIXTURE_BIN: cli/target/debug/agent-browser
+
+      - name: Test workstation host provisioning
+        run: bash scripts/smoke-install-workstation-host-fixture.sh
+
+      - name: Test fresh workstation VM harness
+        run: node scripts/test-fresh-workstation-vm-harness.js
+
+      - name: Test pinned Guacamole assets
+        run: node scripts/test-workstation-guacamole-assets.js
+
+      - name: Test PostgreSQL durability and hardening
+        run: |
+          node scripts/test-guacamole-postgres-durability.js
+          node scripts/test-rdp-guac-postgres-hardening.js
+
+      - name: Test route user synchronization
+        run: node scripts/test-rdp-guac-route-specific-user-sync.js
+
+      - name: Test release asset and changelog verification
+        run: bash scripts/release/test-verify-release-assets.sh
+
   rust-cross:
     name: Rust (${{ matrix.os }} - ${{ matrix.target }})
     if: >-
