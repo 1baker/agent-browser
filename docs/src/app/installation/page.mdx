@@ -104,6 +104,10 @@ the installed convergence controller without reinstalling the payload. Use
 <code>agent-browser install workstation backup --json</code> for the same
 protected PostgreSQL backup operation invoked by the installed timer.
 
+<code>agent-browser install doctor --json</code> verifies the installed
+binary, controller assets, Guacamole manifest, and Guacamole files against the
+SHA-256 provenance recorded during workstation installation.
+
 This release-candidate branch remains a release no-go until its disposable
 Ubuntu install, reboot, restore, full CI, and release-artifact gates pass.
 

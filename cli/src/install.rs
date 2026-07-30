@@ -1150,6 +1150,8 @@ fn workstation_payload_status() -> serde_json::Value {
     workstation_payload_status_for_root(&root)
 }
 
+/// Reports source-free workstation presence and verifies installed SHA-256
+/// provenance without reading or returning protected secret values.
 fn workstation_payload_status_for_root(root: &Path) -> serde_json::Value {
     let version = env!("CARGO_PKG_VERSION");
     let support_dir = root.join(".local/lib/agent-browser").join(version);
@@ -1174,18 +1176,56 @@ fn workstation_payload_status_for_root(root: &Path) -> serde_json::Value {
         .and_then(|manifest| manifest.get("sourceCheckoutRequired"))
         .and_then(Value::as_bool);
     let manifest_source_free = source_checkout_required == Some(false);
+    let expected_binary_sha256 = manifest_result
+        .as_ref()
+        .and_then(|manifest| manifest.pointer("/binary/sha256"))
+        .and_then(Value::as_str);
 
     let installed_binary = binary_fingerprint(Some(installed_binary_path.clone()));
     let installed_binary_exists = installed_binary
         .get("exists")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let installed_binary_sha256 = installed_binary.get("sha256").and_then(Value::as_str);
+    let installed_binary_provenance_matches =
+        expected_binary_sha256.is_some() && expected_binary_sha256 == installed_binary_sha256;
+
+    let (controller_asset_files, controller_assets_ready) = workstation_payload_file_integrity(
+        &support_dir,
+        manifest_result
+            .as_ref()
+            .and_then(|manifest| manifest.pointer("/controllerAssets/files")),
+    );
+    let (guacamole_asset_files, guacamole_assets_ready) = workstation_payload_file_integrity(
+        &support_dir.join("guacamole"),
+        manifest_result
+            .as_ref()
+            .and_then(|manifest| manifest.pointer("/guacamoleBundle/files")),
+    );
 
     let units = WORKSTATION_UNIT_NAMES
         .iter()
         .map(|name| {
             let path = unit_dir.join(name);
             let exists = path.is_file();
+            let expected_sha256 = manifest_result
+                .as_ref()
+                .and_then(|manifest| manifest.get("units"))
+                .and_then(Value::as_array)
+                .and_then(|units| {
+                    units
+                        .iter()
+                        .find(|unit| unit.get("name").and_then(Value::as_str) == Some(*name))
+                })
+                .and_then(|unit| unit.get("sha256"))
+                .and_then(Value::as_str);
+            let sha256 = if exists {
+                file_sha256(&path).ok()
+            } else {
+                None
+            };
+            let provenance_matches =
+                expected_sha256.is_some() && expected_sha256 == sha256.as_deref();
             let source_free = fs::read_to_string(&path)
                 .ok()
                 .is_some_and(|contents| workstation_unit_is_source_free(&contents));
@@ -1194,15 +1234,30 @@ fn workstation_payload_status_for_root(root: &Path) -> serde_json::Value {
                 "path": path.display().to_string(),
                 "exists": exists,
                 "sourceFree": source_free,
+                "expectedSha256": expected_sha256,
+                "sha256": sha256,
+                "provenanceMatches": provenance_matches,
             })
         })
         .collect::<Vec<_>>();
     let units_ready = units.iter().all(|unit| {
         unit.get("exists").and_then(Value::as_bool) == Some(true)
             && unit.get("sourceFree").and_then(Value::as_bool) == Some(true)
+            && unit.get("provenanceMatches").and_then(Value::as_bool) == Some(true)
     });
 
     let guacamole_manifest_exists = guacamole_manifest_path.is_file();
+    let expected_guacamole_manifest_sha256 = manifest_result
+        .as_ref()
+        .and_then(|manifest| manifest.get("guacamoleBundleManifestSha256"))
+        .and_then(Value::as_str);
+    let guacamole_manifest_sha256 = if guacamole_manifest_exists {
+        file_sha256(&guacamole_manifest_path).ok()
+    } else {
+        None
+    };
+    let guacamole_manifest_matches = expected_guacamole_manifest_sha256.is_some()
+        && expected_guacamole_manifest_sha256 == guacamole_manifest_sha256.as_deref();
     let secrets_exists = secrets_path.is_file();
     let secrets_mode = private_file_mode(&secrets_path);
     let secrets_mode_private = secrets_mode.map(|mode| mode & 0o077 == 0);
@@ -1220,8 +1275,12 @@ fn workstation_payload_status_for_root(root: &Path) -> serde_json::Value {
         && manifest_version_matches
         && manifest_source_free
         && installed_binary_exists
+        && installed_binary_provenance_matches
         && units_ready
         && guacamole_manifest_exists
+        && guacamole_manifest_matches
+        && guacamole_assets_ready
+        && controller_assets_ready
         && secrets_exists
         && secrets_mode_private.unwrap_or(cfg!(not(unix)));
     let state = if ready {
@@ -1246,12 +1305,23 @@ fn workstation_payload_status_for_root(root: &Path) -> serde_json::Value {
             "versionMatches": manifest_version_matches,
             "sourceCheckoutRequired": source_checkout_required,
             "sourceFree": manifest_source_free,
+            "binarySha256": expected_binary_sha256,
         },
         "installedBinary": installed_binary,
+        "installedBinaryProvenanceMatches": installed_binary_provenance_matches,
         "units": units,
+        "controllerAssets": {
+            "ready": controller_assets_ready,
+            "files": controller_asset_files,
+        },
         "guacamoleBundle": {
             "manifestPath": guacamole_manifest_path.display().to_string(),
             "manifestExists": guacamole_manifest_exists,
+            "manifestSha256": guacamole_manifest_sha256,
+            "expectedManifestSha256": expected_guacamole_manifest_sha256,
+            "manifestMatches": guacamole_manifest_matches,
+            "filesReady": guacamole_assets_ready,
+            "files": guacamole_asset_files,
         },
         "secrets": {
             "path": secrets_path.display().to_string(),
@@ -1260,6 +1330,53 @@ fn workstation_payload_status_for_root(root: &Path) -> serde_json::Value {
             "modePrivate": secrets_mode_private,
         },
     })
+}
+
+fn workstation_payload_file_integrity(base: &Path, entries: Option<&Value>) -> (Vec<Value>, bool) {
+    let Some(entries) = entries.and_then(Value::as_array) else {
+        return (Vec::new(), false);
+    };
+    if entries.is_empty() {
+        return (Vec::new(), false);
+    }
+
+    let files = entries
+        .iter()
+        .map(|entry| {
+            let relative = entry.get("path").and_then(Value::as_str);
+            let expected_sha256 = entry.get("sha256").and_then(Value::as_str);
+            let safe_relative = relative.is_some_and(|relative| {
+                let path = Path::new(relative);
+                !path.is_absolute()
+                    && path
+                        .components()
+                        .all(|component| matches!(component, std::path::Component::Normal(_)))
+            });
+            let path = relative
+                .filter(|_| safe_relative)
+                .map(|relative| base.join(relative));
+            let exists = path.as_ref().is_some_and(|path| path.is_file());
+            let actual_sha256 = path
+                .as_ref()
+                .filter(|path| path.is_file())
+                .and_then(|path| file_sha256(path).ok());
+            let matches = safe_relative
+                && expected_sha256.is_some()
+                && expected_sha256 == actual_sha256.as_deref();
+            json!({
+                "path": relative,
+                "safeRelativePath": safe_relative,
+                "exists": exists,
+                "expectedSha256": expected_sha256,
+                "sha256": actual_sha256,
+                "matches": matches,
+            })
+        })
+        .collect::<Vec<_>>();
+    let ready = files
+        .iter()
+        .all(|file| file.get("matches").and_then(Value::as_bool) == Some(true));
+    (files, ready)
 }
 
 fn workstation_unit_is_source_free(contents: &str) -> bool {
@@ -4199,28 +4316,58 @@ mod tests {
         let unit_dir = dir.join(".config/systemd/user");
         let binary_path = dir.join(".local/bin/agent-browser");
         let secrets_path = dir.join(".agent-browser/guacamole/secrets/guacamole.env");
-        fs::create_dir_all(support_dir.join("guacamole")).unwrap();
+        let controller_path = support_dir.join("scripts/controller.js");
+        let guacamole_asset_path = support_dir.join("guacamole/compose.yml");
+        let guacamole_manifest_path = support_dir.join("guacamole/manifest.json");
+        fs::create_dir_all(controller_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(guacamole_asset_path.parent().unwrap()).unwrap();
         fs::create_dir_all(&unit_dir).unwrap();
         fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
         fs::create_dir_all(secrets_path.parent().unwrap()).unwrap();
+        fs::write(&binary_path, "test binary").unwrap();
+        fs::write(&controller_path, "controller fixture").unwrap();
+        fs::write(&guacamole_asset_path, "compose fixture").unwrap();
+        fs::write(&guacamole_manifest_path, "{\"schemaVersion\":1}\n").unwrap();
+        let unit_entries = WORKSTATION_UNIT_NAMES
+            .iter()
+            .map(|name| {
+                let path = unit_dir.join(name);
+                let content = format!("[Service]\nExecStart={}\n", binary_path.display());
+                fs::write(&path, content).unwrap();
+                json!({
+                    "name": name,
+                    "sha256": file_sha256(&path).unwrap(),
+                })
+            })
+            .collect::<Vec<_>>();
         fs::write(
             support_dir.join("manifest.json"),
             serde_json::to_vec(&json!({
                 "version": env!("CARGO_PKG_VERSION"),
                 "sourceCheckoutRequired": false,
+                "binary": {
+                    "sha256": file_sha256(&binary_path).unwrap(),
+                },
+                "controllerAssets": {
+                    "files": [{
+                        "path": "scripts/controller.js",
+                        "sha256": file_sha256(&controller_path).unwrap(),
+                    }],
+                },
+                "units": unit_entries,
+                "guacamoleBundleManifestSha256": file_sha256(
+                    &guacamole_manifest_path
+                ).unwrap(),
+                "guacamoleBundle": {
+                    "files": [{
+                        "path": "compose.yml",
+                        "sha256": file_sha256(&guacamole_asset_path).unwrap(),
+                    }],
+                },
             }))
             .unwrap(),
         )
         .unwrap();
-        fs::write(support_dir.join("guacamole/manifest.json"), "{}").unwrap();
-        fs::write(&binary_path, "test binary").unwrap();
-        for name in WORKSTATION_UNIT_NAMES {
-            fs::write(
-                unit_dir.join(name),
-                format!("[Service]\nExecStart={}\n", binary_path.display()),
-            )
-            .unwrap();
-        }
         fs::write(&secrets_path, "DO_NOT_EXPOSE=this-value").unwrap();
         #[cfg(unix)]
         {
@@ -4236,20 +4383,45 @@ mod tests {
         assert_eq!(status["manifest"]["versionMatches"], true);
         assert_eq!(status["manifest"]["sourceFree"], true);
         assert_eq!(status["installedBinary"]["exists"], true);
+        assert_eq!(status["installedBinaryProvenanceMatches"], true);
+        assert_eq!(status["controllerAssets"]["ready"], true);
         assert_eq!(status["units"].as_array().unwrap().len(), 5);
         assert!(status["units"].as_array().unwrap().iter().all(|unit| {
-            unit["exists"].as_bool() == Some(true) && unit["sourceFree"].as_bool() == Some(true)
+            unit["exists"].as_bool() == Some(true)
+                && unit["sourceFree"].as_bool() == Some(true)
+                && unit["provenanceMatches"].as_bool() == Some(true)
         }));
         assert_eq!(
             status["guacamoleBundle"]["manifestExists"].as_bool(),
             Some(true)
         );
+        assert_eq!(status["guacamoleBundle"]["manifestMatches"], true);
+        assert_eq!(status["guacamoleBundle"]["filesReady"], true);
         assert_eq!(status["secrets"]["exists"], true);
         #[cfg(unix)]
         assert_eq!(status["secrets"]["mode"], "0600");
         assert!(!rendered.contains("DO_NOT_EXPOSE"));
         assert!(!rendered.contains("this-value"));
         assert!(workstation_payload_issues(&status).is_empty());
+
+        let first_unit_path = unit_dir.join(WORKSTATION_UNIT_NAMES[0]);
+        let first_unit_content = fs::read_to_string(&first_unit_path).unwrap();
+        fs::write(
+            &first_unit_path,
+            "[Service]\nExecStart=/tmp/other-source-free-binary\n",
+        )
+        .unwrap();
+        let unit_drifted = workstation_payload_status_for_root(&dir);
+        assert_eq!(unit_drifted["state"], "partial");
+        assert_eq!(unit_drifted["units"][0]["sourceFree"], true);
+        assert_eq!(unit_drifted["units"][0]["provenanceMatches"], false);
+        fs::write(&first_unit_path, first_unit_content).unwrap();
+
+        fs::write(&controller_path, "tampered controller fixture").unwrap();
+        let drifted = workstation_payload_status_for_root(&dir);
+        assert_eq!(drifted["state"], "partial");
+        assert_eq!(drifted["ready"], false);
+        assert_eq!(drifted["controllerAssets"]["ready"], false);
 
         let _ = fs::remove_dir_all(&dir);
     }

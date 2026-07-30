@@ -141,12 +141,19 @@ fi
 
 ensure_guacamole_postgres
 
-SQL="$(python3 - \
-  "$CONNECTION_A" "$LEGACY_CONNECTION_A" "$USER_A" "$PASS_A" \
-  "$CONNECTION_B" "$LEGACY_CONNECTION_B" "$USER_B" "$PASS_B" \
-  "$HOSTNAME" "$PORT" <<'PY'
+SQL="$(
+  printf '%s\0' \
+    "$CONNECTION_A" "$LEGACY_CONNECTION_A" "$USER_A" "$PASS_A" \
+    "$CONNECTION_B" "$LEGACY_CONNECTION_B" "$USER_B" "$PASS_B" \
+    "$HOSTNAME" "$PORT" |
+  python3 /dev/fd/3 3<<'PY'
 import sys
 
+values = sys.stdin.buffer.read().split(b"\0")
+if values and values[-1] == b"":
+    values.pop()
+if len(values) != 10:
+    raise SystemExit(f"expected 10 NUL-delimited route values, got {len(values)}")
 (
     canonical_a,
     legacy_a,
@@ -158,7 +165,7 @@ import sys
     pass_b,
     hostname,
     port,
-) = sys.argv[1:]
+) = [value.decode("utf-8") for value in values]
 
 def quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"

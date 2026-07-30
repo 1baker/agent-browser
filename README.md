@@ -110,7 +110,9 @@ changing custom browser manifests. It does not launch Chrome. It checks the
 package binary when pnpm is available, the current workspace binary when run
 from a checkout, and the no-launch `launchConfig` readiness view.
 It also runs a no-launch service-status probe and, on Linux, reports
-remote-view privilege helper readiness.
+remote-view privilege helper readiness. For a workstation payload, it verifies
+the installed binary, controller assets, Guacamole manifest, and Guacamole
+files against the SHA-256 provenance recorded during installation.
 
 ```bash
 agent-browser install doctor

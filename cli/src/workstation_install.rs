@@ -43,6 +43,55 @@ const SYNC_ROUTE_POOL_SCRIPT: &str =
     include_str!("../../scripts/sync-rdp-guac-route-specific-user-pool.sh");
 const GRANT_ROUTE_DISPLAY_ACCESS_SCRIPT: &str =
     include_str!("../../scripts/grant-rdp-route-display-access.sh");
+const CONTROLLER_PACKAGE_JSON: &str = "{\n  \"private\": true,\n  \"type\": \"module\"\n}\n";
+const CONTROLLER_ASSETS: [(&str, &str, bool); 10] = [
+    (
+        "scripts/smoke-rdp-guac-route-pool-readiness.js",
+        ROUTE_POOL_READINESS_SCRIPT,
+        true,
+    ),
+    (
+        "scripts/smoke-rdp-gateway-readiness.js",
+        RDP_GATEWAY_READINESS_SCRIPT,
+        true,
+    ),
+    (
+        "scripts/inspect-rdp-route-displays.js",
+        INSPECT_ROUTE_DISPLAYS_SCRIPT,
+        true,
+    ),
+    (
+        "scripts/open-rdp-guac-route-displays.js",
+        OPEN_ROUTE_DISPLAYS_SCRIPT,
+        true,
+    ),
+    (
+        "scripts/ensure-rdp-guac-postgres.sh",
+        ENSURE_POSTGRES_SCRIPT,
+        true,
+    ),
+    (
+        "scripts/guacamole-postgres-durability.sh",
+        POSTGRES_DURABILITY_SCRIPT,
+        true,
+    ),
+    (
+        "scripts/sync-rdp-guac-route-specific-user-pool.sh",
+        SYNC_ROUTE_POOL_SCRIPT,
+        true,
+    ),
+    (
+        "scripts/grant-rdp-route-display-access.sh",
+        GRANT_ROUTE_DISPLAY_ACCESS_SCRIPT,
+        true,
+    ),
+    (
+        "scripts/lib/rdp-route-display-selection.js",
+        ROUTE_DISPLAY_SELECTION_SCRIPT,
+        false,
+    ),
+    ("package.json", CONTROLLER_PACKAGE_JSON, false),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallMode {
@@ -143,6 +192,14 @@ fn run_workstation_install(args: &[String]) {
             parsed.json,
         );
     }
+    let _install_lock = if parsed.mode == InstallMode::Apply {
+        match WorkstationLock::acquire(&root) {
+            Ok(lock) => Some(lock),
+            Err(error) => fail(&error, parsed.json),
+        }
+    } else {
+        None
+    };
 
     let mutated = if parsed.mode == InstallMode::Apply {
         if !isolated_root {
@@ -177,7 +234,7 @@ fn run_workstation_install(args: &[String]) {
         next_action = if session_refresh_required {
             "log out and back in or reboot, then rerun workstation installation".to_string()
         } else {
-            let reconcile = match reconcile_workstation() {
+            let reconcile = match reconcile_workstation_locked(&root, &paths) {
                 Ok(reconcile) => reconcile,
                 Err(error) => fail(&error, parsed.json),
             };
@@ -282,17 +339,24 @@ fn reconcile_workstation() -> Result<WorkstationReconcileReport, String> {
     }
     let root = workstation_root()?;
     let paths = install_paths(&root);
-    require_installed_payload(&paths)?;
-    require_effective_groups()?;
     let _lock = WorkstationLock::acquire(&root)?;
+    reconcile_workstation_locked(&root, &paths)
+}
+
+fn reconcile_workstation_locked(
+    root: &Path,
+    paths: &InstallPaths,
+) -> Result<WorkstationReconcileReport, String> {
+    require_installed_payload(paths)?;
+    require_effective_groups()?;
     let support_root = &paths.support_dir;
     let scripts_dir = support_root.join("scripts");
     let guacamole_dir = support_root.join("guacamole");
     let guacamole_env = paths.guacamole_state_dir.join(".env");
-    let command_env = workstation_command_env(&paths);
+    let command_env = workstation_command_env(paths);
     let mut steps = Vec::new();
 
-    quiesce_existing_user_units(&paths)?;
+    quiesce_existing_user_units(paths)?;
     steps.push(ReconcileStep {
         name: "existing-user-units-quiesced",
         success: true,
@@ -393,7 +457,7 @@ fn reconcile_workstation() -> Result<WorkstationReconcileReport, String> {
         success: true,
     });
 
-    ensure_route_users(&paths, &command_env)?;
+    ensure_route_users(paths, &command_env)?;
     steps.push(ReconcileStep {
         name: "route-users-ready",
         success: true,
@@ -499,8 +563,8 @@ fn reconcile_workstation() -> Result<WorkstationReconcileReport, String> {
         success: true,
     });
 
-    update_canonical_runtime_env(&root, &route_pool)?;
-    activate_user_units(&paths, support_root, &command_env)?;
+    update_canonical_runtime_env(root, &route_pool)?;
+    activate_user_units(paths, support_root, &command_env)?;
     steps.push(ReconcileStep {
         name: "user-services-active",
         success: true,
@@ -518,7 +582,7 @@ fn reconcile_workstation() -> Result<WorkstationReconcileReport, String> {
         success: true,
     });
 
-    verify_final_doctors(&paths, support_root, &command_env)?;
+    verify_final_doctors(paths, support_root, &command_env)?;
     steps.push(ReconcileStep {
         name: "final-doctors-ready",
         success: true,
@@ -744,6 +808,10 @@ fn workstation_command_env(paths: &InstallPaths) -> Vec<(String, String)> {
         (
             "AGENT_BROWSER_GUACAMOLE_SECRET_FILE".to_string(),
             paths.guacamole_secret_file.display().to_string(),
+        ),
+        (
+            "AGENT_BROWSER_RDP_ROUTE_POOL_JSON".to_string(),
+            String::new(),
         ),
     ]
 }
@@ -1403,7 +1471,15 @@ fn materialize_payload(paths: &InstallPaths, args: &WorkstationInstallArgs) -> R
             .map_err(display_io("stage agent-browser executable", &staged_binary))?;
         set_executable(&staged_binary)?;
 
-        let manifest = render_manifest(args);
+        let final_binary = paths.binary.display().to_string();
+        let rendered_units = render_units(
+            &final_binary,
+            &paths.support_dir,
+            &paths.guacamole_secret_file,
+            args.dashboard_port,
+        );
+        let binary_sha256 = workstation_file_sha256(&staged_binary)?;
+        let manifest = render_manifest(args, &binary_sha256, &rendered_units);
         fs::write(staged_support.join("manifest.json"), manifest)
             .map_err(display_io("stage workstation manifest", &staged_support))?;
         fs::write(
@@ -1414,13 +1490,7 @@ fn materialize_payload(paths: &InstallPaths, args: &WorkstationInstallArgs) -> R
         materialize_guacamole_assets(&staged_support)?;
         materialize_controller_assets(&staged_support)?;
 
-        let final_binary = paths.binary.display().to_string();
-        for (name, content) in render_units(
-            &final_binary,
-            &paths.support_dir,
-            &paths.guacamole_secret_file,
-            args.dashboard_port,
-        ) {
+        for (name, content) in &rendered_units {
             fs::write(staged_units.join(name), content)
                 .map_err(display_io("stage systemd user unit", &staged_units))?;
         }
@@ -1471,62 +1541,20 @@ fn materialize_guacamole_assets(staged_support: &Path) -> Result<(), String> {
 }
 
 fn materialize_controller_assets(staged_support: &Path) -> Result<(), String> {
-    let scripts_dir = staged_support.join("scripts");
-    let lib_dir = scripts_dir.join("lib");
-    fs::create_dir_all(&lib_dir)
-        .map_err(display_io("create controller asset staging", &lib_dir))?;
-    let scripts = [
-        (
-            "smoke-rdp-guac-route-pool-readiness.js",
-            ROUTE_POOL_READINESS_SCRIPT,
-        ),
-        (
-            "smoke-rdp-gateway-readiness.js",
-            RDP_GATEWAY_READINESS_SCRIPT,
-        ),
-        (
-            "inspect-rdp-route-displays.js",
-            INSPECT_ROUTE_DISPLAYS_SCRIPT,
-        ),
-        (
-            "open-rdp-guac-route-displays.js",
-            OPEN_ROUTE_DISPLAYS_SCRIPT,
-        ),
-        ("ensure-rdp-guac-postgres.sh", ENSURE_POSTGRES_SCRIPT),
-        (
-            "guacamole-postgres-durability.sh",
-            POSTGRES_DURABILITY_SCRIPT,
-        ),
-        (
-            "sync-rdp-guac-route-specific-user-pool.sh",
-            SYNC_ROUTE_POOL_SCRIPT,
-        ),
-        (
-            "grant-rdp-route-display-access.sh",
-            GRANT_ROUTE_DISPLAY_ACCESS_SCRIPT,
-        ),
-    ];
-    for (relative, content) in scripts {
-        let destination = scripts_dir.join(relative);
+    for (relative, content, executable) in CONTROLLER_ASSETS {
+        let destination = staged_support.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(display_io("create controller asset staging", parent))?;
+        }
         fs::write(&destination, content).map_err(display_io(
             "stage workstation controller asset",
             &destination,
         ))?;
-        set_executable(&destination)?;
+        if executable {
+            set_executable(&destination)?;
+        }
     }
-    let selection_path = lib_dir.join("rdp-route-display-selection.js");
-    fs::write(&selection_path, ROUTE_DISPLAY_SELECTION_SCRIPT).map_err(display_io(
-        "stage route display selection asset",
-        &selection_path,
-    ))?;
-    fs::write(
-        staged_support.join("package.json"),
-        "{\n  \"private\": true,\n  \"type\": \"module\"\n}\n",
-    )
-    .map_err(display_io(
-        "stage workstation controller package metadata",
-        staged_support,
-    ))?;
     Ok(())
 }
 
@@ -1617,9 +1645,31 @@ fn ensure_secret_values(secret_file: &Path) -> Result<(), String> {
         .map_err(display_io("write protected Guacamole secrets", secret_file))
 }
 
-fn render_manifest(args: &WorkstationInstallArgs) -> String {
+fn render_manifest(
+    args: &WorkstationInstallArgs,
+    binary_sha256: &str,
+    units: &[(&'static str, String)],
+) -> String {
     let guacamole_bundle: serde_json::Value = serde_json::from_str(GUACAMOLE_BUNDLE_MANIFEST)
         .expect("embedded Guacamole bundle manifest must be valid JSON");
+    let controller_assets = CONTROLLER_ASSETS
+        .iter()
+        .map(|(path, content, _)| {
+            serde_json::json!({
+                "path": path,
+                "sha256": workstation_bytes_sha256(content.as_bytes()),
+            })
+        })
+        .collect::<Vec<_>>();
+    let unit_assets = units
+        .iter()
+        .map(|(name, content)| {
+            serde_json::json!({
+                "name": name,
+                "sha256": workstation_bytes_sha256(content.as_bytes()),
+            })
+        })
+        .collect::<Vec<_>>();
     serde_json::to_string_pretty(&serde_json::json!({
         "schemaVersion": "agent-browser.workstation-payload.v1",
         "version": env!("CARGO_PKG_VERSION"),
@@ -1627,9 +1677,43 @@ fn render_manifest(args: &WorkstationInstallArgs) -> String {
         "guacamolePort": args.guacamole_port,
         "runtimeController": "installed-binary",
         "sourceCheckoutRequired": false,
-        "guacamoleBundle": guacamole_bundle
+        "binary": {
+            "sha256": binary_sha256,
+        },
+        "controllerAssets": {
+            "files": controller_assets,
+        },
+        "units": unit_assets,
+        "guacamoleBundleManifestSha256": workstation_bytes_sha256(
+            GUACAMOLE_BUNDLE_MANIFEST.as_bytes()
+        ),
+        "guacamoleBundle": guacamole_bundle,
     }))
     .expect("static workstation manifest must serialize")
+}
+
+fn workstation_bytes_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn workstation_file_sha256(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+
+    let mut file = fs::File::open(path).map_err(display_io("open file for hashing", path))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(display_io("read file for hashing", path))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn render_units(
@@ -1937,14 +2021,34 @@ mod tests {
 
     #[test]
     fn manifest_records_binary_owned_runtime() {
-        let manifest = render_manifest(&WorkstationInstallArgs {
+        let args = WorkstationInstallArgs {
             mode: InstallMode::Apply,
             json: true,
             dashboard_port: 4848,
             guacamole_port: 8092,
-        });
+        };
+        let units = render_units(
+            "/tmp/agent-browser",
+            Path::new("/tmp/support"),
+            Path::new("/tmp/secrets"),
+            args.dashboard_port,
+        );
+        let manifest = render_manifest(&args, "fixture-binary-sha256", &units);
         assert!(manifest.contains(r#""runtimeController": "installed-binary""#));
         assert!(manifest.contains(r#""sourceCheckoutRequired": false"#));
+        assert!(manifest.contains(r#""sha256": "fixture-binary-sha256""#));
+        assert!(manifest.contains(r#""controllerAssets""#));
+        assert!(manifest.contains(r#""guacamoleBundleManifestSha256""#));
+        assert!(manifest.contains(r#""agent-browser-runtime-interlock.timer""#));
+    }
+
+    #[test]
+    fn installed_command_environment_clears_ambient_route_pool() {
+        let paths = install_paths(Path::new("/tmp/workstation-command-env"));
+        let command_env = workstation_command_env(&paths);
+        assert!(command_env.iter().any(|(key, value)| {
+            key == "AGENT_BROWSER_RDP_ROUTE_POOL_JSON" && value.is_empty()
+        }));
     }
 
     #[test]

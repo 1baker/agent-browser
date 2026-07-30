@@ -15,7 +15,7 @@ import {
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const repoRoot = resolve(import.meta.dirname, '..');
@@ -24,6 +24,7 @@ const fakeBin = join(fixtureRoot, 'bin');
 const commandLog = join(fixtureRoot, 'commands.jsonl');
 const installRoot = join(fixtureRoot, 'workstation');
 const failedInstallRoot = join(fixtureRoot, 'failed-workstation');
+const lockedInstallRoot = join(fixtureRoot, 'locked-workstation');
 const home = join(fixtureRoot, 'home');
 const xdgRoot = join(fixtureRoot, 'xdg');
 const agentBrowser = resolveAgentBrowser();
@@ -92,6 +93,33 @@ try {
   );
   for (const unit of expectedUnits) {
     assert.ok(installedBasenames.has(unit), `apply must install ${unit}`);
+  }
+  const payloadManifestPath = installedFiles.find(
+    (path) => basename(path) === 'manifest.json' && !path.includes(`${join('guacamole')}/`),
+  );
+  const payloadRoot = dirname(payloadManifestPath);
+  const payloadManifest = JSON.parse(readFileSync(payloadManifestPath, 'utf8'));
+  assert.equal(
+    sha256(installedBinary),
+    payloadManifest.binary.sha256,
+    'payload manifest must bind the installed binary hash',
+  );
+  for (const file of payloadManifest.controllerAssets.files) {
+    const path = join(payloadRoot, file.path);
+    assert.equal(sha256(path), file.sha256, `controller asset hash mismatch: ${file.path}`);
+  }
+  const guacamoleRoot = join(payloadRoot, 'guacamole');
+  assert.equal(
+    sha256(join(guacamoleRoot, 'manifest.json')),
+    payloadManifest.guacamoleBundleManifestSha256,
+    'payload manifest must bind the Guacamole manifest hash',
+  );
+  for (const file of payloadManifest.guacamoleBundle.files) {
+    assert.equal(
+      sha256(join(guacamoleRoot, file.path)),
+      file.sha256,
+      `Guacamole asset hash mismatch: ${file.path}`,
+    );
   }
 
   const payloadFiles = installedFiles.filter((path) => (
@@ -191,8 +219,79 @@ try {
   );
   assert.match(
     routeOpenerSource,
+    /Object\.hasOwn\(process\.env, key\)/,
+    'an explicitly cleared route-pool env value must not reload stale persisted state',
+  );
+  assert.match(
+    routeOpenerSource,
+    /'--data-binary', '@-'/,
+    'Guacamole password fallback must pass form data through stdin',
+  );
+  assert.equal(
+    routeOpenerSource.includes('`password=${auth.password}`'),
+    false,
+    'Guacamole passwords must not appear in curl argv',
+  );
+  const readinessScript = installedFiles.find(
+    (path) => basename(path) === 'smoke-rdp-guac-route-pool-readiness.js',
+  );
+  const readinessSource = readFileSync(readinessScript, 'utf8');
+  assert.match(readinessSource, /'--data-binary',\s*'@-'/);
+  assert.equal(readinessSource.includes('`password=${password}`'), false);
+  const routeSync = installedFiles.find(
+    (path) => basename(path) === 'sync-rdp-guac-route-specific-user-pool.sh',
+  );
+  const routeSyncSource = readFileSync(routeSync, 'utf8');
+  assert.match(routeSyncSource, /python3 \/dev\/fd\/3 3<<'PY'/);
+  assert.equal(
+    /python3 - \\\n[^]*?\$PASS_A/.test(routeSyncSource),
+    false,
+    'route passwords must not be passed to Python through argv',
+  );
+  assert.match(
+    routeOpenerSource,
     /agentBrowserTimeoutMs[^]*?\?\? 600000/,
     'slow route-browser commands must retain the bounded ten-minute budget',
+  );
+  const agentHome = join(home, '.agent-browser');
+  mkdirSync(agentHome, { recursive: true });
+  writeFileSync(
+    join(agentHome, '.env'),
+    `AGENT_BROWSER_RDP_ROUTE_POOL_JSON=${JSON.stringify([
+      { id: 'legacy-a', routeId: 'guacamole:99', frameUrl: 'http://legacy/a' },
+      { id: 'legacy-b', routeId: 'guacamole:100', frameUrl: 'http://legacy/b' },
+    ])}\n`,
+  );
+  writeFileSync(
+    join(fakeBin, 'docker'),
+    '#!/usr/bin/env bash\nprintf "1\\tAgent Browser RDP Route A\\n2\\tAgent Browser RDP Route B\\n"\n',
+  );
+  chmodSync(join(fakeBin, 'docker'), 0o755);
+  const persistedRouteDriftProbe = spawnSync(
+    process.execPath,
+    [routeOpener, '--dry-run'],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        AGENT_BROWSER_RDP_ROUTE_POOL_JSON: '',
+        AGENT_BROWSER_GUACAMOLE_BASE_URL: 'http://127.0.0.1:8092/guacamole/',
+      },
+    },
+  );
+  assert.equal(
+    persistedRouteDriftProbe.status,
+    0,
+    `${persistedRouteDriftProbe.stdout}${persistedRouteDriftProbe.stderr}`,
+  );
+  assert.deepEqual(
+    JSON.parse(persistedRouteDriftProbe.stdout).selectedRoutes.map(
+      (route) => route.routeId,
+    ),
+    ['guacamole:1', 'guacamole:2'],
+    'an explicit empty route-pool env value must suppress stale persisted route JSON',
   );
   const installedBinaryInode = statSync(installedBinary).ino;
   const routeOpenerInode = statSync(routeOpener).ino;
@@ -232,9 +331,11 @@ try {
     'failure injection after units-staged must return a nonzero status',
   );
   assert.equal(
-    regularFiles(failedInstallRoot).length,
+    regularFiles(failedInstallRoot).filter(
+      (path) => basename(path) !== 'workstation.lock',
+    ).length,
     0,
-    'a failed first apply must roll back all staged files',
+    'a failed first apply must roll back all staged payload files',
   );
   assert.equal(
     readFileSync(commandLog, 'utf8')
@@ -243,6 +344,26 @@ try {
       .length,
     0,
     'a failed apply must not activate systemd units',
+  );
+
+  const lockDir = join(lockedInstallRoot, '.agent-browser', 'convergence');
+  mkdirSync(lockDir, { recursive: true });
+  writeFileSync(join(lockDir, 'workstation.lock'), `${process.pid}\n`);
+  writeFileSync(commandLog, '');
+  const lockedApply = runInstaller(lockedInstallRoot, ['--apply', '--json']);
+  assert.notEqual(lockedApply.status, 0, 'a concurrent apply must fail before staging');
+  assert.match(`${lockedApply.stdout}${lockedApply.stderr}`, /already active/);
+  assert.equal(
+    regularFiles(lockedInstallRoot).filter(
+      (path) => basename(path) !== 'workstation.lock',
+    ).length,
+    0,
+    'a lock-rejected apply must not stage payload files',
+  );
+  assert.equal(
+    readFileSync(commandLog, 'utf8'),
+    '',
+    'a lock-rejected apply must not quiesce or activate user units',
   );
 
   console.log('Workstation install source-free fixture passed');
@@ -264,6 +385,10 @@ function resolveAgentBrowser() {
     'Set AGENT_BROWSER_FIXTURE_BIN to the agent-browser binary under test',
   );
   return resolve(candidate);
+}
+
+function sha256(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
 function runInstaller(root, flags, extraEnv = {}) {

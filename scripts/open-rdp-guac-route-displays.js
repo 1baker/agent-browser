@@ -41,7 +41,9 @@ function loadEnvFile(path) {
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
-    if (!process.env[key]) process.env[key] = value.replace(/\\"/g, '"');
+    if (!Object.hasOwn(process.env, key)) {
+      process.env[key] = value.replace(/\\"/g, '"');
+    }
   }
 }
 
@@ -230,15 +232,16 @@ function requestGuacamoleToken(baseUrl, auth) {
   if (auth.authMode === 'header') {
     args.push('--header', `Remote-User: ${auth.headerUser}`, '--data', '');
   } else {
-    args.push(
-      '--data-urlencode',
-      `username=${auth.username}`,
-      '--data-urlencode',
-      `password=${auth.password}`,
-    );
+    args.push('--data-binary', '@-');
   }
   args.push('--write-out', '\n%{http_code}', tokenUrl);
-  const result = commandResult('curl', args);
+  const input = auth.authMode === 'password'
+    ? new URLSearchParams({
+      username: auth.username,
+      password: auth.password,
+    }).toString()
+    : undefined;
+  const result = commandResult('curl', args, { input });
   if (result.status !== 0) {
     return {
       ok: false,

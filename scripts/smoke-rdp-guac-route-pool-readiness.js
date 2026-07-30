@@ -38,10 +38,11 @@ function loadAgentBrowserEnv() {
   loadEnvFile(process.env.AGENT_BROWSER_GUACAMOLE_SECRET_FILE || join(agentHome, 'secrets', 'guacamole.env'));
 }
 
-function commandResult(command, args) {
+function commandResult(command, args, options = {}) {
   return spawnSync(command, args, {
     encoding: 'utf8',
     stdio: 'pipe',
+    ...options,
   });
 }
 
@@ -156,14 +157,14 @@ function guacamoleLoginReachable(baseUrl) {
     'POST',
     '--header',
     'Content-Type: application/x-www-form-urlencoded',
-    '--data-urlencode',
-    `username=${username}`,
-    '--data-urlencode',
-    `password=${password}`,
+    '--data-binary',
+    '@-',
     '--write-out',
     '\n%{http_code}',
     tokenUrl,
-  ]);
+  ], {
+    input: new URLSearchParams({ username, password }).toString(),
+  });
   if (result.status !== 0) {
     return {
       ok: false,

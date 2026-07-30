@@ -5064,7 +5064,8 @@ Usage: agent-browser install [--with-deps] [--with-remote-view-privileges]
 
 Downloads and installs browser binaries required for automation. The doctor is
 no-launch and also reports service-status, duplicate profile pressure, and
-remote-view privilege readiness.
+remote-view privilege readiness. Workstation payload checks bind the installed
+binary and support assets to recorded SHA-256 provenance.
 
 Workstation apply reruns stop the managed dashboard, runtime interlock, and
 backup timer during reconciliation, then reactivate them after final readiness.
