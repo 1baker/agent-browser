@@ -23,6 +23,7 @@
 - **Route viewer convergence** - Fixed route-specific user creation, Compose environment propagation, protected sudoers detection, cold Guacamole startup and header-account races, container-backed Guacd readiness, route-local display inspection and access, interlock collisions, and rerun URL construction (#7).
 - **Runtime and interaction recovery** - Fixed stale dashboard and daemon classification, executable-handoff socket cleanup ownership, registered-session reconnects, role locator matching, clipboard recovery, and hidden route visibility failures (#7).
 - **Managed Chrome launch readiness** - Fixed fresh Ubuntu workstation installs that passed doctor but could not launch managed Chrome because AppArmor blocked its sandbox user namespace. Remote-view doctor now reports and gates on the installed policy (#7).
+- **Source-free doctor discovery** - Fixed standalone remote-view doctor runs so they discover the versioned helper scripts installed with the workstation payload instead of falling back to a nonexistent home-directory checkout (#7).
 
 ### Documentation
 

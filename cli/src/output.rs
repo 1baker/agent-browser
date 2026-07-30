@@ -5074,7 +5074,9 @@ Host preparation includes display inspection, visual-proof tools, and a
 path-scoped AppArmor userns policy for managed Chrome on Ubuntu 24.04. It does
 not disable the host restriction or Chromium sandbox. Final readiness accepts
 the pinned Compose guacd container and managed Chrome path, and remote-view
-doctor reports managed Chrome sandbox-policy readiness separately.
+doctor reports managed Chrome sandbox-policy readiness separately. Standalone
+doctor runs discover the versioned installed support-script root without a
+checkout.
 
 Options:
   -d, --with-deps      Also install system dependencies (Linux only)

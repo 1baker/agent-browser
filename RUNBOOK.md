@@ -37,6 +37,16 @@ Actions:
   pre/post SHA-256 remained
   `207ff06af5a214ee29a6cce2f2a8385f39db1e63048e2802310f627fcaef164f`.
   Cleanup returned Route A to `available`.
+- Rebuilt commit `a05e7ed0` as SHA-256
+  `b929200b25a4104995e41ee64510ad3b650b81dc663e00f8d1bbfb459c4e072d`
+  and installed it on a new immutable-base overlay. The embedded installer
+  produced one prompt, exit 75, a distinct reboot ID, loaded AppArmor policy
+  before and after reboot, and a zero-prompt ready continuation.
+- A standalone doctor then fell back to `/home/agent/scripts` even though the
+  payload correctly installed its helpers under the versioned support root.
+  Doctor discovery now checks
+  `~/.local/lib/agent-browser/<version>/scripts` without requiring a checkout
+  or ambient override.
 
 Validation:
 
@@ -46,13 +56,16 @@ Validation:
 - live AppArmor parser and idempotent installer pass on Ubuntu 24.04
 - live Route A open with `operatorVisible=ready`
 - live active-conflict preservation and cleanup
+- clean embedded-policy install and post-reboot loaded-profile proof
+- versioned installed support-root discovery regression
 
 Result:
 
 - The installer and doctor now cover the live Chrome sandbox prerequisite that
   the earlier no-launch gates missed.
-- Release remains no-go pending an exact rebuilt candidate, fresh-VM repair
-  proof, full CI, release dry run, merge, and public-asset reinstall.
+- Release remains no-go pending the rebuilt doctor-discovery candidate,
+  standalone live doctor and Route A proof, full CI, release dry run, merge,
+  and public-asset reinstall.
 - The operator-owned untracked `--full-page` file remains excluded and
   untouched.
 

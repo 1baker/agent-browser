@@ -105,6 +105,9 @@ recognizes the pinned Compose Guacd container and the Chrome binary in
 agent-browser's managed browser directory. Remote-view doctor reports the
 managed Chrome sandbox policy separately and refuses live-gate readiness when
 that policy is absent, inactive, or does not match the managed browser path.
+Standalone doctor runs discover their helper scripts from the installed
+versioned support root, so no checkout or ambient script-root override is
+required.
 
 On rerun, apply first stops the managed dashboard, runtime interlock, and
 backup timer while it reconciles the installed payload and routes. It

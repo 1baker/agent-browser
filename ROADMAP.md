@@ -61,6 +61,12 @@ release, and public-asset reinstall.
   profile without disabling Chromium's sandbox or the host restriction, and
   remote-view doctor gates on that policy. The same live open subsequently
   reached `operatorVisible=ready`.
+- The exact rebuilt clean host installed and reloaded that policy across
+  reboot, then completed its zero-prompt continuation. A subsequent standalone
+  doctor exposed a separate discovery gap: install-time doctor used an
+  explicit support root, while later doctor runs missed the versioned
+  source-free helper directory. Discovery now includes
+  `~/.local/lib/agent-browser/<version>/scripts`.
 - The release remains no-go pending a rebuilt exact-candidate Ubuntu install
   that proves the policy from the embedded installer, full CI, and
   release-artifact proof.

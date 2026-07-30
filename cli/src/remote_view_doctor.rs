@@ -202,6 +202,9 @@ fn find_remote_view_script_root() -> Option<PathBuf> {
     }
 
     if let Some(home) = dirs::home_dir() {
+        if let Some(root) = find_installed_support_script_root(&home, env!("CARGO_PKG_VERSION")) {
+            return Some(root);
+        }
         let pnpm_global_package =
             home.join(".local/share/pnpm/global/5/node_modules/agent-browser");
         if let Some(root) = normalize_script_root_candidate(&pnpm_global_package) {
@@ -218,6 +221,10 @@ fn find_remote_view_script_root() -> Option<PathBuf> {
     }
 
     None
+}
+
+fn find_installed_support_script_root(home: &Path, version: &str) -> Option<PathBuf> {
+    normalize_script_root_candidate(&home.join(".local/lib/agent-browser").join(version))
 }
 
 fn find_script_root_in_ancestors(path: &Path) -> Option<PathBuf> {
@@ -2547,6 +2554,22 @@ mod tests {
         assert_eq!(resolved, scripts);
 
         let _ = fs::remove_dir_all(resolved);
+    }
+
+    #[test]
+    fn discovers_versioned_source_free_support_script_root() {
+        let home = unique_temp_dir("installed-support-home");
+        let support_root = home
+            .join(".local/lib/agent-browser")
+            .join(env!("CARGO_PKG_VERSION"));
+        let scripts = support_root.join("scripts");
+        write_remote_view_helper_scripts(&scripts);
+
+        let resolved =
+            find_installed_support_script_root(&home, env!("CARGO_PKG_VERSION")).unwrap();
+        assert_eq!(resolved, scripts);
+
+        let _ = fs::remove_dir_all(home);
     }
 
     #[test]

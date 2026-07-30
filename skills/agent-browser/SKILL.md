@@ -24,6 +24,8 @@ keeps Chromium's sandbox enabled instead of adding `--no-sandbox` or disabling
 the host restriction. The doctor recognizes the pinned Compose Guacd
 container and managed Chrome path, and it fails the live-gate readiness view
 when the managed Chrome sandbox policy is absent, inactive, or mismatched.
+Standalone doctor runs discover the versioned installed helper-script root, so
+they do not require a checkout or an ambient script-root override.
 Reruns first stop the managed dashboard, runtime interlock, and backup
 timer while reconciliation is active, then reactivate them after final
 readiness. Use `agent-browser install workstation reconcile --json` for an

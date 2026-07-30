@@ -340,6 +340,13 @@ Status: pending
   byte-for-byte unchanged at `guacamole:1/:10`, with matching pre/post SHA-256
   `207ff06af5a214ee29a6cce2f2a8385f39db1e63048e2802310f627fcaef164f`.
   Cleanup returned Route A to `available` with no allocation.
+- The next clean exact candidate installed the AppArmor policy from its
+  embedded payload, reported the profile loaded before and after reboot, and
+  completed the post-reboot continuation without a prompt. Its later
+  standalone doctor exposed that versioned installed helper scripts were not
+  in the discovery path outside install-time command environment. Doctor
+  discovery now includes
+  `~/.local/lib/agent-browser/<version>/scripts`, with a focused regression.
 - Release remains no-go pending a rebuilt exact candidate, clean VM proof of
   the embedded AppArmor repair, full CI, release dry run, merge, and
   public-asset reinstall.
