@@ -10,6 +10,16 @@ HELPER_DIR="${AGENT_BROWSER_PRIVILEGED_HELPER_DIR:-/usr/local/libexec/agent-brow
 HELPER_PATH="${AGENT_BROWSER_PRIVILEGED_HELPER:-$HELPER_DIR/agent-browser-privileged-helper}"
 EXPECTED_HELPER_SHA256="${AGENT_BROWSER_PRIVILEGED_HELPER_SHA256:-}"
 SUDOERS_PATH="${AGENT_BROWSER_PRIVILEGED_SUDOERS:-/etc/sudoers.d/agent-browser}"
+APPARMOR_PROFILE_PATH="${AGENT_BROWSER_CHROME_APPARMOR_PROFILE:-/etc/apparmor.d/agent-browser-managed-chrome}"
+APPARMOR_PROFILE_NAME="agent-browser-managed-chrome"
+APPARMOR_TMP=""
+SUDOERS_TMP=""
+
+cleanup_temp_files() {
+  [[ -z "$APPARMOR_TMP" ]] || rm -f "$APPARMOR_TMP"
+  [[ -z "$SUDOERS_TMP" ]] || rm -f "$SUDOERS_TMP"
+}
+trap cleanup_temp_files EXIT
 
 usage() {
   cat <<'EOF'
@@ -96,8 +106,31 @@ expected_sudoers_content() {
 EOF
 }
 
+operator_home() {
+  getent passwd "$OPERATOR_USER" | awk -F: '{print $6}'
+}
+
+apparmor_profile_content() {
+  local home_dir
+  home_dir="$(operator_home)"
+  local chrome_path="$home_dir/.agent-browser/browsers/**/chrome"
+  chrome_path="${chrome_path//\\/\\\\}"
+  chrome_path="${chrome_path//\"/\\\"}"
+  cat <<EOF
+abi <abi/4.0>,
+include <tunables/global>
+
+profile $APPARMOR_PROFILE_NAME "$chrome_path" flags=(unconfined) {
+  userns,
+
+  include if exists <local/$APPARMOR_PROFILE_NAME>
+}
+EOF
+}
+
 workstation_packages() {
   printf '%s\n' \
+    apparmor \
     docker.io \
     docker-compose-v2 \
     xrdp \
@@ -163,7 +196,11 @@ workstation_deps_ready() {
   command -v xrdp >/dev/null 2>&1 || [[ -x /usr/sbin/xrdp ]] || return 1
   command -v openbox-session >/dev/null 2>&1 || return 1
   command -v xhost >/dev/null 2>&1 || return 1
+  command -v apparmor_parser >/dev/null 2>&1 || return 1
   command -v flock >/dev/null 2>&1 || return 1
+  systemctl is-active --quiet apparmor || return 1
+  [[ -r "$APPARMOR_PROFILE_PATH" ]] || return 1
+  apparmor_profile_content | cmp -s - "$APPARMOR_PROFILE_PATH" || return 1
   getent group docker >/dev/null 2>&1 || return 1
   id -nG "$OPERATOR_USER" 2>/dev/null | tr ' ' '\n' | grep -Fx docker >/dev/null || return 1
 }
@@ -173,10 +210,16 @@ current_install_ready() {
   id -nG "$OPERATOR_USER" 2>/dev/null | tr ' ' '\n' | grep -Fx "$GROUP_NAME" >/dev/null || return 1
   [[ -x "$HELPER_PATH" ]] || return 1
   cmp -s "$HELPER_SOURCE" "$HELPER_PATH" || return 1
-  sudo -n "$HELPER_PATH" verify-install \
-    --group "$GROUP_NAME" \
-    --sudoers "$SUDOERS_PATH" \
-    --sha256 "$EXPECTED_HELPER_SHA256" >/dev/null 2>&1 || return 1
+  local verify_args=(
+    verify-install
+    --group "$GROUP_NAME"
+    --sudoers "$SUDOERS_PATH"
+    --sha256 "$EXPECTED_HELPER_SHA256"
+  )
+  if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
+    verify_args+=(--apparmor-profile-name "$APPARMOR_PROFILE_NAME")
+  fi
+  sudo -n "$HELPER_PATH" "${verify_args[@]}" >/dev/null 2>&1 || return 1
   if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
     workstation_deps_ready || return 1
   fi
@@ -216,10 +259,16 @@ print_install_status() {
     echo "  sudoers: protected or missing; helper verification required"
   fi
 
-  if [[ -x "$HELPER_PATH" ]] && sudo -n "$HELPER_PATH" verify-install \
-    --group "$GROUP_NAME" \
-    --sudoers "$SUDOERS_PATH" \
-    --sha256 "$EXPECTED_HELPER_SHA256" >/dev/null 2>&1; then
+  local verify_args=(
+    verify-install
+    --group "$GROUP_NAME"
+    --sudoers "$SUDOERS_PATH"
+    --sha256 "$EXPECTED_HELPER_SHA256"
+  )
+  if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
+    verify_args+=(--apparmor-profile-name "$APPARMOR_PROFILE_NAME")
+  fi
+  if [[ -x "$HELPER_PATH" ]] && sudo -n "$HELPER_PATH" "${verify_args[@]}" >/dev/null 2>&1; then
     echo "  sudo helper install verification: ready"
   else
     echo "  sudo helper install verification: not ready"
@@ -277,6 +326,7 @@ EOF
     echo "  sudo apt-get install after a no-removal simulation:"
     workstation_packages | sed 's/^/    /'
     echo "  sudo usermod -aG docker $OPERATOR_USER"
+    echo "  sudo install and load managed Chrome AppArmor policy at $APPARMOR_PROFILE_PATH"
     echo "  sudo systemctl enable --now docker xrdp"
   fi
   cat <<EOF
@@ -322,18 +372,23 @@ if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
   fi
   sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --no-remove \
     "${WORKSTATION_PACKAGES[@]}"
+  APPARMOR_TMP="$(mktemp)"
+  apparmor_profile_content >"$APPARMOR_TMP"
+  sudo -n install -o root -g root -m 0644 "$APPARMOR_TMP" "$APPARMOR_PROFILE_PATH"
+  sudo -n apparmor_parser -r "$APPARMOR_PROFILE_PATH"
+  rm -f "$APPARMOR_TMP"
+  APPARMOR_TMP=""
   sudo -n groupadd --force docker
   sudo -n usermod -aG docker "$OPERATOR_USER"
   sudo -n loginctl enable-linger "$OPERATOR_USER"
-  sudo -n systemctl enable --now docker xrdp xrdp-sesman
+  sudo -n systemctl enable --now apparmor docker xrdp xrdp-sesman
   sudo -n docker info >/dev/null
   sudo -n docker compose version >/dev/null
-  sudo -n systemctl is-active --quiet docker xrdp xrdp-sesman
+  sudo -n systemctl is-active --quiet apparmor docker xrdp xrdp-sesman
   sudo -n ss -ltn | grep -Eq '(^|[[:space:]])[^[:space:]]*:3389[[:space:]]'
 fi
 
 SUDOERS_TMP="$(mktemp)"
-trap 'rm -f "$SUDOERS_TMP"' EXIT
 expected_sudoers_content >"$SUDOERS_TMP"
 
 sudo -n visudo -cf "$SUDOERS_TMP" >/dev/null

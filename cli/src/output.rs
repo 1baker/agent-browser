@@ -5070,8 +5070,11 @@ requires at least 6 GiB free before sudo, payload staging, or package mutation.
 
 Workstation apply reruns stop the managed dashboard, runtime interlock, and
 backup timer during reconciliation, then reactivate them after final readiness.
-Host preparation includes display inspection and visual-proof tools. Final
-readiness accepts the pinned Compose guacd container and managed Chrome path.
+Host preparation includes display inspection, visual-proof tools, and a
+path-scoped AppArmor userns policy for managed Chrome on Ubuntu 24.04. It does
+not disable the host restriction or Chromium sandbox. Final readiness accepts
+the pinned Compose guacd container and managed Chrome path, and remote-view
+doctor reports managed Chrome sandbox-policy readiness separately.
 
 Options:
   -d, --with-deps      Also install system dependencies (Linux only)

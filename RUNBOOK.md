@@ -4,6 +4,58 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 125 | 2026-07-30
+
+Scope: finish clean-install durability and route evidence, then repair a
+managed Chrome sandbox defect found by the live gate.
+
+Actions:
+
+- Proved the exact candidate's mutation-free dry run, one-sudo first apply,
+  exit-75 reboot boundary, zero-prompt continuation, canonical two-route
+  substrate, and final doctors on a clean Ubuntu 24.04 overlay.
+- Proved idempotency by preserving binary, manifest, units, secret, named
+  volume, PostgreSQL system identity, Guacamole row IDs, routes, displays,
+  profiles, and active units across a same-artifact rerun.
+- Created a checksummed PostgreSQL custom-format backup and passed its isolated
+  temporary-database restore drill with the expected tables, connections, and
+  permissions.
+- Proved the no-launch Route A plan selects `guacamole:1`, connection `1`, and
+  display `:10` while requesting no launch, checkout, or tab.
+- The first live Route A open failed before DevTools because Ubuntu 24.04
+  AppArmor denied the managed Chrome sandbox user namespace. Lease rollback
+  restored the route.
+- Added a path-scoped AppArmor `userns` profile to the one-sudo host installer.
+  The repair keeps the host restriction and Chromium sandbox enabled.
+  Remote-view doctor now reports this policy and blocks live-gate readiness
+  when it is missing, inactive, or mismatched.
+- Loaded the exact profile on the disposable VM and repeated the live open.
+  Route A reached `operatorVisible=ready`.
+- Submitted a conflicting `guacamole:999/:99` authoritative definition while
+  Route A was checked out. Reconciliation reported
+  `skippedActiveConflictEntryIds=["guacamole-rdp-a"]`; the retained entry's
+  pre/post SHA-256 remained
+  `207ff06af5a214ee29a6cce2f2a8385f39db1e63048e2802310f627fcaef164f`.
+  Cleanup returned Route A to `available`.
+
+Validation:
+
+- workstation host-provision fixture
+- managed Chrome sandbox-policy doctor unit
+- remote-control viewer-prerequisite doctor unit
+- live AppArmor parser and idempotent installer pass on Ubuntu 24.04
+- live Route A open with `operatorVisible=ready`
+- live active-conflict preservation and cleanup
+
+Result:
+
+- The installer and doctor now cover the live Chrome sandbox prerequisite that
+  the earlier no-launch gates missed.
+- Release remains no-go pending an exact rebuilt candidate, fresh-VM repair
+  proof, full CI, release dry run, merge, and public-asset reinstall.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 124 | 2026-07-30
 
 Scope: build the `0.28.0` release candidate, execute the disposable VM lane,

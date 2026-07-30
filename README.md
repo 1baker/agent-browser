@@ -92,10 +92,14 @@ effective, apply starts the pinned stack, creates the two route users and
 canonical Guacamole rows, opens distinct XRDP displays selected by readiness,
 projects `guacamole:1` and `guacamole:2` into service state, and activates the
 user services only after the final doctors pass.
-Host preparation includes `x11-utils`, ImageMagick, and Tesseract for display
-access and visual proof. Final readiness recognizes the pinned Compose Guacd
-container and the Chrome binary installed in agent-browser's managed browser
-directory.
+Host preparation includes `x11-utils`, ImageMagick, Tesseract, and a
+path-scoped AppArmor policy that permits managed Chrome to create the user
+namespace required by its sandbox on Ubuntu 24.04. The installer does not
+disable the host restriction or add `--no-sandbox`. Final readiness recognizes
+the pinned Compose Guacd container and the Chrome binary installed in
+agent-browser's managed browser directory. Remote-view doctor reports the
+managed Chrome sandbox policy separately and refuses live-gate readiness when
+that policy is absent, inactive, or does not match the managed browser path.
 
 On rerun, apply first stops the managed dashboard, runtime interlock, and
 backup timer while it reconciles the installed payload and routes. It

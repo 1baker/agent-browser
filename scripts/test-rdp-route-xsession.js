@@ -77,6 +77,11 @@ for (const file of files) {
     assert.equal(report.displayAccess?.supportsFilesystemX11Socket, true);
     assert.equal(report.displayAccess?.supportsAbstractX11Socket, true);
     assert.equal(report.displayAccess?.boundedXhostTimeoutSeconds, 2);
+    assert.equal(
+      report.managedChromeSandboxPolicy?.profileName,
+      'agent-browser-managed-chrome',
+    );
+    assert.equal(typeof report.managedChromeSandboxPolicy?.loaded, 'boolean');
   }
 }
 

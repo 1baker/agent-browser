@@ -10,6 +10,7 @@ STATE="$WORKDIR/state"
 HELPER_DIR="$WORKDIR/usr/local/libexec/agent-browser"
 HELPER_PATH="$HELPER_DIR/agent-browser-privileged-helper"
 SUDOERS_PATH="$WORKDIR/etc/sudoers.d/agent-browser"
+APPARMOR_PROFILE_PATH="$WORKDIR/etc/apparmor.d/agent-browser-managed-chrome"
 LOG="$WORKDIR/sudo.log"
 OPERATOR_USER="${USER:-}"
 GROUP_NAME="ab-workstation-fixture"
@@ -19,7 +20,7 @@ if [[ -z "$OPERATOR_USER" || "$OPERATOR_USER" == "root" ]]; then
   exit 2
 fi
 
-mkdir -p "$FAKE_BIN" "$STATE" "$(dirname "$SUDOERS_PATH")"
+mkdir -p "$FAKE_BIN" "$STATE" "$(dirname "$SUDOERS_PATH")" "$(dirname "$APPARMOR_PROFILE_PATH")"
 : >"$LOG"
 
 cat >"$FAKE_BIN/getent" <<'EOF'
@@ -102,7 +103,7 @@ fi
 exit 1
 EOF
 
-for command_name in xrdp openbox-session xhost flock; do
+for command_name in xrdp openbox-session xhost flock apparmor_parser systemctl; do
   cat >"$FAKE_BIN/$command_name" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -195,6 +196,7 @@ run_installer() {
     AGENT_BROWSER_PRIVILEGED_HELPER_DIR="$HELPER_DIR" \
     AGENT_BROWSER_PRIVILEGED_HELPER="$HELPER_PATH" \
     AGENT_BROWSER_PRIVILEGED_SUDOERS="$SUDOERS_PATH" \
+    AGENT_BROWSER_CHROME_APPARMOR_PROFILE="$APPARMOR_PROFILE_PATH" \
     bash "$ROOT/scripts/install-agent-browser-privileges.sh" \
       --apply \
       --with-workstation-deps
@@ -234,6 +236,25 @@ for package_name in imagemagick tesseract-ocr; do
     exit 1
   fi
 done
+if ! grep -q ' apparmor ' "$LOG"; then
+  echo "Expected AppArmor in the workstation dependency set." >&2
+  cat "$LOG" >&2
+  exit 1
+fi
+if [[ ! -f "$APPARMOR_PROFILE_PATH" ]]; then
+  echo "Expected the managed Chrome AppArmor profile to be installed." >&2
+  exit 1
+fi
+if ! grep -q '^  userns,$' "$APPARMOR_PROFILE_PATH"; then
+  echo "Expected the managed Chrome AppArmor profile to allow user namespaces." >&2
+  cat "$APPARMOR_PROFILE_PATH" >&2
+  exit 1
+fi
+if [[ "$(grep -c "^SUDO -n apparmor_parser -r $APPARMOR_PROFILE_PATH$" "$LOG" || true)" != "1" ]]; then
+  echo "Expected the managed Chrome AppArmor profile to be loaded once." >&2
+  cat "$LOG" >&2
+  exit 1
+fi
 if [[ ! -f "$STATE/member-$OPERATOR_USER-docker" || ! -f "$STATE/deps-installed" ]]; then
   echo "Expected Docker membership and installed dependency state." >&2
   exit 1

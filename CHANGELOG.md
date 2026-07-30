@@ -13,7 +13,7 @@
 
 ### Improvements
 
-- **Fresh-host safety** - Added pre-mutation disk-capacity validation, one-sudo host preparation, protected helper verification, private generated credentials, source-free systemd units with fresh-load-safe activation, idempotent payload materialization, and disposable Ubuntu reboot validation (#7).
+- **Fresh-host safety** - Added pre-mutation disk-capacity validation, one-sudo host preparation, protected helper verification, a path-scoped AppArmor user-namespace policy that preserves the managed Chrome sandbox on Ubuntu 24.04, private generated credentials, source-free systemd units with fresh-load-safe activation, idempotent payload materialization, and disposable Ubuntu reboot validation (#7).
 - **Remote operation diagnostics** - Expanded route, display, viewport, clipboard, profile-lock, runtime-convergence, and operator handoff evidence across doctors, service status, and the dashboard (#7).
 - **Release verification** - Hardened the GitHub release workflow to verify the exact seven binaries, embedded versions, minimum sizes, Linux execution, checksums, and published downloads (#7).
 
@@ -22,6 +22,7 @@
 - **Post-reboot route selection** - Fixed retained route-state reconciliation so canonical route A and route B resolve to their current Guacamole connection IDs and distinct live displays instead of a legacy route (#7).
 - **Route viewer convergence** - Fixed route-specific user creation, Compose environment propagation, protected sudoers detection, cold Guacamole startup and header-account races, container-backed Guacd readiness, route-local display inspection and access, interlock collisions, and rerun URL construction (#7).
 - **Runtime and interaction recovery** - Fixed stale dashboard and daemon classification, executable-handoff socket cleanup ownership, registered-session reconnects, role locator matching, clipboard recovery, and hidden route visibility failures (#7).
+- **Managed Chrome launch readiness** - Fixed fresh Ubuntu workstation installs that passed doctor but could not launch managed Chrome because AppArmor blocked its sandbox user namespace. Remote-view doctor now reports and gates on the installed policy (#7).
 
 ### Documentation
 

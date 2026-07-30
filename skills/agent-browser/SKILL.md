@@ -18,8 +18,12 @@ or package mutation; inspect `hostPlan.availableDiskBytes`,
 `minimumDiskBytes`, and `diskSpaceReady` in JSON output.
 Treat every non-ready result as a hard stop. The installer activates user units
 only after readiness-authoritative routes are projected and both final doctors
-pass. Host preparation includes `x11-utils`, ImageMagick, and Tesseract; the
-doctor recognizes the pinned Compose Guacd container and managed Chrome path.
+pass. Host preparation includes `x11-utils`, ImageMagick, Tesseract, and a
+path-scoped AppArmor `userns` policy for managed Chrome on Ubuntu 24.04. It
+keeps Chromium's sandbox enabled instead of adding `--no-sandbox` or disabling
+the host restriction. The doctor recognizes the pinned Compose Guacd
+container and managed Chrome path, and it fails the live-gate readiness view
+when the managed Chrome sandbox policy is absent, inactive, or mismatched.
 Reruns first stop the managed dashboard, runtime interlock, and backup
 timer while reconciliation is active, then reactivate them after final
 readiness. Use `agent-browser install workstation reconcile --json` for an

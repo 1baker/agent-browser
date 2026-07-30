@@ -54,8 +54,15 @@ release, and public-asset reinstall.
   a legacy host-guacd assumption. The package set and doctor now cover display
   inspection, visual-proof tools, pinned container-backed Guacd, and managed
   Chrome outside `PATH`.
-- The release remains no-go pending a clean exact-candidate Ubuntu install,
-  reboot, idempotent rerun, restore and active-conflict evidence, full CI, and
+- The rebuilt candidate passed clean install, reboot continuation, idempotent
+  rerun, PostgreSQL backup, and isolated restore. A live Route A open then
+  exposed Ubuntu 24.04 AppArmor blocking the managed Chrome sandbox user
+  namespace. Host preparation now installs and loads a path-scoped `userns`
+  profile without disabling Chromium's sandbox or the host restriction, and
+  remote-view doctor gates on that policy. The same live open subsequently
+  reached `operatorVisible=ready`.
+- The release remains no-go pending a rebuilt exact-candidate Ubuntu install
+  that proves the policy from the embedded installer, full CI, and
   release-artifact proof.
 - Plan
   `docs/dev/plans/0082-2026-07-29-fresh-install-productization-and-v0-28-0-release-plan.md`

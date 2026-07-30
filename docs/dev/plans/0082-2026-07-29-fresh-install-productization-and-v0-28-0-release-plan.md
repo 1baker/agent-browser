@@ -325,9 +325,24 @@ Status: pending
   Host preparation now includes `x11-utils`, ImageMagick, and Tesseract;
   readiness accepts the pinned running Guacd container and discovers managed
   Chrome outside `PATH`.
-- Release remains no-go pending a rebuilt exact candidate, clean VM install and
-  reboot, idempotency, restore and active-conflict proof, full CI, release dry
-  run, merge, and public-asset reinstall.
+- The rebuilt exact candidate passed fresh install, reboot continuation,
+  idempotent rerun, checksummed backup, and isolated restore. The first live
+  Route A open selected `guacamole:1`, connection `1`, and `:10`, then failed
+  before DevTools because Ubuntu 24.04 AppArmor denied managed Chrome's
+  sandbox user namespace. Lease rollback restored the route.
+- Host preparation now installs and loads a path-scoped AppArmor `userns`
+  policy for the managed Chrome directory. The repair preserves both the host
+  restriction and Chromium sandbox. Remote-view doctor exposes and gates on
+  that policy. The same VM subsequently opened Route A with
+  `operatorVisible=ready`.
+- While Route A was checked out, a conflicting authoritative
+  `guacamole:999/:99` definition was skipped. The retained entry remained
+  byte-for-byte unchanged at `guacamole:1/:10`, with matching pre/post SHA-256
+  `207ff06af5a214ee29a6cce2f2a8385f39db1e63048e2802310f627fcaef164f`.
+  Cleanup returned Route A to `available` with no allocation.
+- Release remains no-go pending a rebuilt exact candidate, clean VM proof of
+  the embedded AppArmor repair, full CI, release dry run, merge, and
+  public-asset reinstall.
 
 ## Clean-Install Acceptance Matrix
 
@@ -340,7 +355,7 @@ Status: pending
 | Dependency safety | Simulation, removal proposal, install, helper, and service failures exit nonzero |
 | Complete substrate | Dashboard, timers, PostgreSQL, Guacamole, guacd, XRDP, users, rows, and displays are ready |
 | Route isolation | Two canonical connections use distinct route users and distinct live displays |
-| P81 regression | Legacy stable entry refreshes to `guacamole:1/:11`; active conflict remains unchanged |
+| P81 regression | Stable Route A selects `guacamole:1` on its readiness-selected display (`:10` in the clean VM); active conflict remains unchanged |
 | No-launch proof | Canonical dry run requests no browser launch, route checkout, or tab open |
 | Reboot | Database identity, dashboard, timers, displays, routes, and receipts recover |
 | Durability | Checksummed backup, catalog validation, retention, and isolated restore drill pass |
