@@ -6,6 +6,36 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P82 | Fresh Install Productization and v0.28.0 Release
+
+State: OPEN
+Current state: the public release binary does not reproduce the working
+dashboard, interlock, Guacamole, PostgreSQL, XRDP, route, and backup substrate
+on a fresh host. Plan 0082 owns the self-contained installer, disposable Ubuntu
+reboot proof, release-candidate validation, single release pull request, GitHub
+release, and public-asset reinstall.
+
+### Current State
+
+- Public `v0.27.0` is 107 commits behind the plan-intake `main` head while all
+  current version surfaces still report `0.27.0`.
+- Current local runtime is healthy because it was converged from this checkout.
+  The installed interlock still uses a repository `WorkingDirectory` and pnpm.
+- The latest P81 route projection fix is present on `main` but absent from the
+  public release.
+- Three independent audits agree that the release is no-go until installer
+  ownership, clean-host coverage, red CI, and workflow validation are repaired.
+- The target release is `v0.28.0` on branch `prepare-v0.28.0`.
+- Plan
+  `docs/dev/plans/0082-2026-07-29-fresh-install-productization-and-v0-28-0-release-plan.md`
+  owns the bounded implementation and release gates.
+
+### Next Recommendation
+
+Repair the existing Rust Quality failures, add red source-free installation
+tests, then implement the binary-owned workstation installer before changing
+version metadata.
+
 ## P81 | Guacamole Route-Pool State Reconciliation
 
 State: CLOSED

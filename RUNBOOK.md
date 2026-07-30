@@ -4,6 +4,45 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 122 | 2026-07-29
+
+Scope: open the fresh-install productization and formal `v0.28.0` release lane.
+
+Actions:
+
+- Verified that current local runtime health comes from source-checkout
+  convergence and is not reproducible by the public release installer.
+- Compared public `v0.27.0` at `17a284f` with plan-intake `main` at `ffda60dd`;
+  current `main` is 107 commits newer while still reporting version `0.27.0`.
+- Confirmed that P81's canonical route-state projection is absent from the
+  public release.
+- Confirmed the working dashboard interlock references this repository and
+  invokes pnpm, while the complete Guacamole compose and schema substrate is
+  not distributable from the release binary.
+- Assigned three independent read-only audits covering installer architecture,
+  clean-host test design, and release/version eligibility.
+- Selected `v0.28.0` as the feature-release target and opened branch
+  `prepare-v0.28.0`.
+- Added Plan 0082 with explicit clean-install, one-sudo, reboot, idempotency,
+  P81 regression, CI, pull-request, dry-run, publication, and public-asset
+  gates.
+
+Validation:
+
+- current repository, installed binary, doctor, systemd, GitHub release, CI,
+  and workflow readbacks
+- Graphiti advisory recall verified against current source and runtime evidence
+- three independent read-only audit receipts
+- `git diff --check`
+
+Result:
+
+- P82 is open and the release is currently no-go.
+- Implementation begins with the existing Rust Quality repair and red
+  source-free installer tests.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 121 | 2026-07-28
 
 Scope: diagnose and repair post-reboot Guacamole route-selection state drift

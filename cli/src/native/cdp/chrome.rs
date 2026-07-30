@@ -915,7 +915,7 @@ pub fn launch_chrome_detached(options: &LaunchOptions) -> Result<ManualChromeLau
 
     let child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to launch manual Chrome at {:?}: {}", &args, e))?;
+        .map_err(|e| format!("Failed to launch manual Chrome at {:?}: {}", args, e))?;
     let pid = child.id();
     let mut child = child;
 
