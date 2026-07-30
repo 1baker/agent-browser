@@ -41,8 +41,10 @@ release, and public-asset reinstall.
   candidate run remains required.
 - The following clean continuation passed account and route opening, then
   exposed a systemd fresh-unit reset ordering defect. Activation now checks
-  exact failed state before resetting prior interlock failure state because
-  file-derived `LoadState=loaded` does not prove a unit is manager-loaded.
+  exact failed state through a state-bearing raw command read before resetting
+  prior interlock failure state because file-derived `LoadState=loaded` does
+  not prove a unit is manager-loaded. A reset race is accepted only after a
+  second read proves the failed state cleared.
 - The resumed candidate exposed a retiring-daemon cleanup race during
   executable handoff. Shutdown now removes Unix session artifacts only when
   the shared socket path still matches the daemon's original device and inode;

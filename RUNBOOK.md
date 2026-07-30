@@ -36,8 +36,10 @@ Actions:
 - The next clean continuation passed header creation and route opening, then
   failed while resetting a newly written interlock service that systemd had
   not loaded yet. A resumed run proved file-derived `LoadState=loaded` is not
-  manager-load evidence for a static unit. Activation now resets only an exact
-  `is-failed` result and rejects unexpected systemd state output.
+  manager-load evidence for a static unit. Activation now observes the
+  state-bearing `is-failed` output independently of its exit status, resets
+  only an exact `failed` result, and verifies the postcondition after a reset
+  race.
 - The resumed candidate reached executable handoff, where the retiring daemon
   removed the replacement daemon's rebound Unix socket and session metadata.
   Shutdown now compares the socket device and inode before cleaning any shared

@@ -954,15 +954,7 @@ fn run_status(
     command_env: &[(String, String)],
     sensitive: bool,
 ) -> Result<Output, String> {
-    let mut process = Command::new(command);
-    process
-        .args(args)
-        .current_dir(current_dir)
-        .stdin(Stdio::null());
-    apply_command_environment(&mut process, command_env);
-    let output = process.output().map_err(|error| {
-        format!("Unable to run installed workstation command {command}: {error}")
-    })?;
+    let output = run_observed(command, args, current_dir, command_env)?;
     if output.status.success() {
         return Ok(output);
     }
@@ -978,6 +970,23 @@ fn run_status(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     ))
+}
+
+fn run_observed(
+    command: &str,
+    args: &[&str],
+    current_dir: &Path,
+    command_env: &[(String, String)],
+) -> Result<Output, String> {
+    let mut process = Command::new(command);
+    process
+        .args(args)
+        .current_dir(current_dir)
+        .stdin(Stdio::null());
+    apply_command_environment(&mut process, command_env);
+    process
+        .output()
+        .map_err(|error| format!("Unable to run installed workstation command {command}: {error}"))
 }
 
 fn run_required(
@@ -1351,25 +1360,40 @@ fn reset_failed_user_unit_if_failed(
     support_root: &Path,
     command_env: &[(String, String)],
 ) -> Result<(), String> {
-    let failed_state = run_status(
+    let failed_state = run_observed(
         "systemctl",
         &["--user", "is-failed", unit],
         support_root,
         command_env,
-        false,
     )
     .map_err(|error| format!("inspect a prior bounded interlock failure: {error}"))?;
     if !systemd_unit_is_failed(&failed_state.stdout)? {
         return Ok(());
     }
-    run_required(
+    let reset_result = run_required(
         "systemctl",
         &["--user", "reset-failed", unit],
         support_root,
         command_env,
         false,
         "clear a prior bounded interlock failure",
+    );
+    if reset_result.is_ok() {
+        return Ok(());
+    }
+
+    let current_state = run_observed(
+        "systemctl",
+        &["--user", "is-failed", unit],
+        support_root,
+        command_env,
     )
+    .map_err(|error| format!("verify a prior bounded interlock failure cleared: {error}"))?;
+    if systemd_unit_is_failed(&current_state.stdout)? {
+        reset_result
+    } else {
+        Ok(())
+    }
 }
 
 fn systemd_unit_is_failed(stdout: &[u8]) -> Result<bool, String> {

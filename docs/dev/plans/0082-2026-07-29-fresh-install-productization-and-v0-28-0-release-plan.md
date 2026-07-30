@@ -308,8 +308,10 @@ Status: pending
   route displays, then stopped on `systemctl reset-failed` because the newly
   written interlock service was not loaded. A resumed run proved that
   `systemctl show` can synthesize `LoadState=loaded` from a static unit file
-  even when the user manager has no loaded unit. Activation now resets only an
-  exact `is-failed` result and rejects unexpected systemd state output.
+  even when the user manager has no loaded unit. Activation now observes
+  `is-failed` output independently of its state-bearing exit status, resets
+  only an exact `failed` result, and accepts a reset race only after a second
+  read proves the unit is no longer failed.
 - The resumed candidate then exposed an executable-handoff cleanup race. The
   retiring daemon removed the replacement daemon's socket and session metadata
   after the replacement rebound the shared session path. Daemon shutdown now
