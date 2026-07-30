@@ -363,8 +363,15 @@ Status: pending
   `guacamole:1`, connection `1`, display `:10`, and
   `operatorVisible.state=ready`. Cleanup returned Route A to `available` with
   no current route allocation.
-- Release remains no-go pending full local validation, fast and full CI,
-  release dry run, merge, publication, and public-asset reinstall.
+- Whole-slice local validation passed after the full Rust suite exposed one
+  stale installer ordering assertion. The production call order was already
+  correct; the test still searched for the pre-argument helper signature.
+  Updating that assertion restored the full serialized Rust harness. Strict
+  Clippy, formatting, installer fixtures, service contracts, dashboard and
+  docs builds, live CDP tab streaming, release verifier, version sync, and
+  shared-skill parity are green.
+- Release remains no-go pending exact-head fast and full CI, release dry run,
+  merge, publication, and public-asset reinstall.
 
 ## Clean-Install Acceptance Matrix
 

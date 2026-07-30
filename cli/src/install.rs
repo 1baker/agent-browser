@@ -4478,7 +4478,7 @@ mod tests {
             .expect("run_install should exist");
         let run_install_source = &source[run_install_start..];
         let privileges_pos = run_install_source
-            .find("install_remote_view_privileges();")
+            .find("install_remote_view_privileges(false, false)")
             .expect("run_install should call install_remote_view_privileges");
         let deps_pos = run_install_source
             .find("install_linux_deps();")

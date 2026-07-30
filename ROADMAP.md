@@ -77,17 +77,21 @@ release, and public-asset reinstall.
 - The exact candidate opened Route A at `guacamole:1`, connection `1`, and
   display `:10` with `operatorVisible=ready`; cleanup restored the entry to
   `available` with no allocation.
-- The release remains no-go pending full local validation, fast and full CI,
-  the release dry run, merge, publication, and public-asset proof.
+- Whole-slice local validation is green. The full Rust suite found one stale
+  source-string assertion for an installer helper whose signature had gained
+  arguments; production privilege-before-dependency order was already
+  correct, and the repaired assertion passes in the serialized Rust CI
+  harness.
+- The release remains no-go pending exact-head fast and full CI, the release
+  dry run, merge, publication, and public-asset proof.
 - Plan
   `docs/dev/plans/0082-2026-07-29-fresh-install-productization-and-v0-28-0-release-plan.md`
   owns the bounded implementation and release gates.
 
 ### Next Recommendation
 
-Run the complete local validation packet on exact commit `ce26f0f6`, then
-require fast CI, manually dispatched full CI, and the release dry run before
-merging PR 7.
+Commit and push the full-suite assertion repair, then require exact-head fast
+CI, manually dispatched full CI, and the release dry run before merging PR 7.
 
 ## P81 | Guacamole Route-Pool State Reconciliation
 

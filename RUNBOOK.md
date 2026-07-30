@@ -30,6 +30,12 @@ Actions:
   `operatorVisible.state=ready`.
 - Closed the bounded browser session. Retained Route A returned to
   `available` with `currentRouteAllocationId=null`.
+- Ran whole-slice local validation. The first full Rust pass found that the
+  installer order test still searched for
+  `install_remote_view_privileges()` after the helper gained explicit
+  arguments. Production order remained privilege setup before dependency
+  installation. Updated the assertion to the current signature and reran the
+  serialized Rust CI harness successfully.
 
 Validation:
 
@@ -39,13 +45,20 @@ Validation:
 - standalone install doctor from a fresh login shell
 - standalone remote-view doctor from versioned installed assets
 - live Route A operator-visible open and cleanup
+- Rust formatting, strict Clippy, and the complete serialized Rust suite
+- source-free installer, host, VM harness, Guacamole asset, durability, route
+  user, and release-verifier fixtures
+- service API/MCP and generated-client contracts
+- route-confusion gates and live CDP tab streaming
+- dashboard contract packet and production build
+- docs production build, version sync, planning audit, and shared-skill parity
 
 Result:
 
 - The clean-install, reboot, durability, conflict, sandbox, installed-helper
   discovery, and final live Route A acceptance evidence is complete.
-- Release remains no-go until full local validation, exact-head fast and full
-  CI, release dry run, merge, publication, and public-asset reinstall pass.
+- Release remains no-go until exact-head fast and full CI, release dry run,
+  merge, publication, and public-asset reinstall pass.
 - The operator-owned untracked `--full-page` file remains excluded and
   untouched.
 
