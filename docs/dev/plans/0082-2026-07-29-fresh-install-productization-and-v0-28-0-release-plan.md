@@ -1,7 +1,7 @@
 # Plan 0082: Fresh Install Productization and v0.28.0 Release
 
 Date: 2026-07-29
-Status: In Progress
+Status: Complete
 Lane: P82
 Predecessors: P06, P07, P79, P80, and P81
 Release branch: `prepare-v0.28.0`
@@ -211,7 +211,7 @@ Status: completed
 
 ### Packet G | Version and release candidate
 
-Status: in progress
+Status: completed
 
 - Set root version to `0.28.0` and run `pnpm version:sync`.
 - Move the sole changelog release markers to the new `0.28.0` entry.
@@ -224,7 +224,7 @@ Status: in progress
 
 ### Packet H | GitHub release and public-asset proof
 
-Status: pending
+Status: completed
 
 - Dispatch `Release` with `dry_run=true` on the exact merged commit.
 - Verify all seven platform builds and the final dry-run gate.
@@ -239,7 +239,7 @@ Status: pending
 
 ### Packet I | Closeout
 
-Status: pending
+Status: completed
 
 - Record final VM, CI, workflow, release, asset, installed-runtime, and Git
   evidence in a dated validation note.
@@ -428,6 +428,40 @@ Status: pending
 - Release remains no-go pending exact-head fast and full CI, release dry run,
   merge, publication, and public-asset reinstall.
 
+## Release Checkpoint | 2026-07-30
+
+- Release PR 7 candidate `412684f6` passed exact-head fast CI run
+  `30552821524` and manually dispatched full CI run `30553477964`.
+- Fresh evaluator `/root/p82_final_go_no_go` returned GO after independently
+  checking the exact PR head, version and changelog binding, CI evidence, and
+  release hard stops.
+- PR 7 merged as `80f64885`. The first release dry run, `30575205599`, built
+  all seven binaries and then correctly failed the exact-inventory gate
+  because repository `bin/agent-browser.js` had been included beside the
+  release assets.
+- The single authorized remediation moved release staging to isolated
+  `release-assets/` and added a regression guard. Repair commit `4132e782`
+  passed exact-head full CI run `30576313066`.
+- Corrected dry run `30578774481` passed. Publication run `30579564702`
+  published `v0.28.0`, verified all seven binaries, generated
+  `SHA256SUMS`, and re-downloaded the public assets for checksum validation.
+- Public tag `v0.28.0` resolves exactly to
+  `4132e78203f00db26b65456bde4bc36355714ae4`.
+- The public Linux x64 binary reports `agent-browser 0.28.0` and has SHA-256
+  `4af2aba4e3670b2ffcd9601ab0134ad24cd13ec9e8131212f42a5645cb9baa22`,
+  matching both the published checksum manifest and GitHub asset digest.
+- A source-free idempotent reinstall on the accepted disposable Ubuntu VM
+  completed ready. The installed hash matched the public binary, both doctors
+  passed in the normal login environment, and the route-open dry run selected
+  `guacamole:1`, connection `1`, and display `:10` without requesting a
+  browser launch, route checkout, or tab open.
+- The dated validation note
+  `docs/dev/notes/2026-07-30-v0-28-0-release-validation.md` owns the detailed
+  release and public-asset receipt. No Graphiti episode was written because
+  this session lacked explicit memory-write authorization.
+- P82 is complete. The operator-owned untracked `--full-page` file remained
+  excluded and untouched.
+
 ## Clean-Install Acceptance Matrix
 
 | Gate | Evidence |
@@ -518,4 +552,15 @@ last green baseline. Push after each coherent validated packet.
 
 ## Completion Evidence
 
-Pending.
+- Release:
+  `https://github.com/CochranResearchGroup/agent-browser/releases/tag/v0.28.0`
+- Published tag commit:
+  `4132e78203f00db26b65456bde4bc36355714ae4`
+- Exact-head candidate CI: `30552821524` and `30553477964`
+- Exact-head remediation CI: `30576313066`
+- Corrected release dry run: `30578774481`
+- Publication and published-asset verification: `30579564702`
+- Public Linux x64 SHA-256:
+  `4af2aba4e3670b2ffcd9601ab0134ad24cd13ec9e8131212f42a5645cb9baa22`
+- Durable validation:
+  `docs/dev/notes/2026-07-30-v0-28-0-release-validation.md`

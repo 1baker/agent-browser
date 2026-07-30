@@ -8,37 +8,34 @@ bounded implementation and validation plans remain under `docs/dev/plans/`.
 
 ## P82 | Fresh Install Productization and v0.28.0 Release
 
-State: OPEN
-Current state: the public release binary does not reproduce the working
-dashboard, interlock, Guacamole, PostgreSQL, XRDP, route, and backup substrate
-on a fresh host. Plan 0082 owns the self-contained installer, disposable Ubuntu
-reboot proof, release-candidate validation, single release pull request, GitHub
-release, and public-asset reinstall.
+State: CLOSED
+Current state: `v0.28.0` is published from exact commit `4132e782`. Its public
+Linux x64 binary reproduces the source-free workstation substrate on the
+accepted disposable Ubuntu host and passes installed-hash, doctor, remote-view,
+and no-launch route proof.
 
 ### Current State
 
-- Public `v0.27.0` remains the latest published release. The
-  `prepare-v0.28.0` branch now reports `0.28.0` across package, Cargo,
-  Cargo.lock, and dashboard version surfaces.
-- Current local runtime is healthy because it was converged from this checkout.
-  The installed interlock still uses a repository `WorkingDirectory` and pnpm.
-- The latest P81 route projection fix is present on `main` but absent from the
-  public release.
+- Public `v0.28.0` is published with seven supported binaries and a checksummed
+  manifest.
+- The installed runtime and recurring interlock are binary-owned and do not
+  require a repository working directory or pnpm.
+- The public release includes P81's readiness-gated route projection.
 - Packet F independent audits found installer locking, credential-transport,
   payload-integrity, route-environment, validation-selection, CI, and
   release-note binding defects. Repairs are implemented, and all three
   independent rechecks passed.
-- The target release is `v0.28.0` on branch `prepare-v0.28.0`.
+- Release `v0.28.0` was prepared through PR 7 and published from `4132e782`.
 - The source-free payload, pinned Guacamole assets, one-sudo host preparation,
-  and binary-owned canonical route reconciliation are implemented on the
-  release branch with focused local fixtures green.
+  and binary-owned canonical route reconciliation are present in the public
+  release with focused local fixtures green.
 - Clean-overlay execution exposed a too-small cloud disk before the reboot
   gate. The VM harness now provisions 24 GiB overlays, and installer preflight
   requires 6 GiB free before authorization or mutation.
 - The resized overlay proved the one-prompt and reboot boundary, then exposed a
   cold Guacamole header-account race after a JVM restart. Reconciliation now
   uses application readiness plus an exact database postcondition; a new clean
-  candidate run remains required.
+  candidate run later passed after the bounded readiness repair.
 - The following clean continuation passed account and route opening, then
   exposed a systemd fresh-unit reset ordering defect. Activation now checks
   exact failed state through a state-bearing raw command read before resetting
@@ -119,17 +116,21 @@ release, and public-asset reinstall.
   Relaunch now reconstructs the bounded recovery tombstone from preserved
   event history, retains trace context, and completes the
   process-exited-to-ready recovery sequence.
-- The release remains no-go pending exact-head fast and full CI, the release
-  dry run, merge, publication, and public-asset proof.
+- Candidate fast CI, candidate full CI, remediation full CI, the corrected
+  release dry run, publication, and published-asset verification are green.
+- The public Linux x64 artifact and installed binary share SHA-256
+  `4af2aba4e3670b2ffcd9601ab0134ad24cd13ec9e8131212f42a5645cb9baa22`.
+- Source-free reinstall, install doctor, remote-view doctor, and no-launch
+  Route A planning passed on the accepted disposable Ubuntu VM.
 - Plan
   `docs/dev/plans/0082-2026-07-29-fresh-install-productization-and-v0-28-0-release-plan.md`
-  owns the bounded implementation and release gates.
+  and the dated release validation note own the bounded implementation and
+  final evidence.
 
 ### Next Recommendation
 
-Commit and push the Windows inventory and recovery-history repair, then
-require exact-head fast CI, manually dispatched full CI, and the release dry
-run before merging PR 7.
+Treat `v0.28.0` as the supported public workstation baseline. Start any
+post-release defects as separately bounded lanes rather than reopening P82.
 
 ## P81 | Guacamole Route-Pool State Reconciliation
 

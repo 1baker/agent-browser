@@ -4,6 +4,41 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 131 | 2026-07-30
+
+Scope: finish exact-head release gating, publish `v0.28.0`, and prove the
+public artifact.
+
+Actions:
+
+- Bound the release decision to candidate `412684f6`, exact-head fast CI
+  `30552821524`, full CI `30553477964`, and an independent fresh evaluator.
+- Merged PR 7 as `80f64885`.
+- Let dry run `30575205599` fail closed when its inventory included the
+  repository JavaScript shim beside the seven release binaries.
+- Used the single authorized remediation to isolate workflow asset staging.
+  Commit `4132e782` passed exact-head full CI `30576313066`, corrected dry run
+  `30578774481`, and publication run `30579564702`.
+- Downloaded the public Linux x64 binary and checksum manifest, then performed
+  a source-free idempotent reinstall on the accepted disposable Ubuntu VM.
+
+Validation:
+
+- Public tag `v0.28.0` resolves to exact commit `4132e782`.
+- The public and installed Linux x64 binaries share SHA-256
+  `4af2aba4e3670b2ffcd9601ab0134ad24cd13ec9e8131212f42a5645cb9baa22`
+  and report version `0.28.0`.
+- Install doctor, remote-view doctor, and the no-launch Route A dry run passed.
+  The dry run requested no browser launch, route checkout, or tab open.
+
+Result:
+
+- P82 is closed and `v0.28.0` is the supported public workstation baseline.
+- Detailed evidence is in
+  `docs/dev/notes/2026-07-30-v0-28-0-release-validation.md`.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 130 | 2026-07-30
 
 Scope: repair the next exact-head Windows and native E2E release defects.
