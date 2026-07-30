@@ -401,6 +401,16 @@ Status: pending
   test interpolated a Windows path directly into JSON, so its backslashes
   produced invalid escape sequences. The fixture now uses JSON serialization,
   preserving the same production manifest-resolution coverage on every target.
+- Exact-head fast CI run `30547407293` passed at `60c784e3`. Full CI run
+  `30548163584` proved the Windows manifest fixture repair, then its ordinary
+  Linux suite exposed a real private-display launch race. Xvfb allocation
+  returned after a fixed delay without proving the selected display was ready
+  and owned by the spawned process, allowing the next launch to select the
+  same display under load. Allocation is now serialized within the daemon and
+  waits for ownership-backed readiness, with early exit and timeout cleanup.
+  The same run also exposed a macOS test fixture whose socket path inherited
+  the runner's long temporary root and exceeded `SUN_LEN`; the fixture now
+  uses a short, unique Unix temporary path.
 - Release remains no-go pending exact-head fast and full CI, release dry run,
   merge, publication, and public-asset reinstall.
 

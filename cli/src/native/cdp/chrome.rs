@@ -21,6 +21,9 @@ use super::discovery::discover_cdp_url;
 
 const MAX_CHROME_STDERR_LINES: usize = 80;
 
+#[cfg(target_os = "linux")]
+static X_DISPLAY_ALLOCATION_LOCK: Mutex<()> = Mutex::new(());
+
 fn set_private_dir_permissions(path: &Path) {
     #[cfg(unix)]
     {
@@ -2437,6 +2440,9 @@ fn headed_display_value_with_override(
 fn start_remote_headed_virtual_display(
     viewport_size: Option<(u32, u32)>,
 ) -> Result<(String, Child), String> {
+    let _allocation_guard = X_DISPLAY_ALLOCATION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let xvfb = find_path_executable("Xvfb").ok_or_else(|| {
         "remote_headed private_virtual_display launch requires Xvfb; install Xvfb or explicitly select shared_display with AGENT_BROWSER_REMOTE_HEADED_DISPLAY".to_string()
     })?;
@@ -2444,15 +2450,47 @@ fn start_remote_headed_virtual_display(
     let (width, height) = viewport_size.unwrap_or((1280, 720));
     let display_arg = format!(":{}", display);
     let screen = format!("{}x{}x24", width, height);
-    let child = Command::new(xvfb)
+    let mut child = Command::new(xvfb)
         .args([&display_arg, "-screen", "0", &screen, "-nolisten", "tcp"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|err| format!("Failed to start Xvfb for remote_headed launch: {}", err))?;
-    std::thread::sleep(Duration::from_millis(150));
-    Ok((display_arg, child))
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "Xvfb for remote_headed launch exited before display {} became ready: {}",
+                    display_arg, status
+                ));
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "Failed to verify Xvfb for remote_headed display {}: {}",
+                    display_arg, err
+                ));
+            }
+        }
+
+        let state = classify_x_display(Path::new("/tmp"), display);
+        if state.status.is_active() && state.lock_pid == Some(child.id()) {
+            return Ok((display_arg, child));
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Xvfb for remote_headed display {} did not become ready within 2 seconds",
+                display_arg
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 #[cfg(target_os = "linux")]

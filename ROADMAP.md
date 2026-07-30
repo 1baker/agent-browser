@@ -102,6 +102,13 @@ release, and public-asset reinstall.
   `30545744595` compiled and ran the Windows suite until a manifest fixture
   embedded a native Windows path into JSON without escaping backslashes. The
   fixture now uses structured JSON serialization.
+- Exact-head fast CI run `30547407293` passed at `60c784e3`. Full CI run
+  `30548163584` then exposed a Linux private-display readiness race: a fixed
+  startup delay allowed two launches to select `:90` under load. Selection is
+  now serialized, and launch returns only after the spawned Xvfb owns a ready
+  display or fails closed with cleanup. The same run found a macOS daemon
+  socket fixture exceeding `SUN_LEN`; that test now uses a short, unique Unix
+  temporary path.
 - The release remains no-go pending exact-head fast and full CI, the release
   dry run, merge, publication, and public-asset proof.
 - Plan
@@ -110,9 +117,9 @@ release, and public-asset reinstall.
 
 ### Next Recommendation
 
-Commit and push the cross-platform manifest-fixture repair, then require
-exact-head fast CI, manually dispatched full CI, and the release dry run
-before merging PR 7.
+Commit and push the private-display readiness repair, then require exact-head
+fast CI, manually dispatched full CI, and the release dry run before merging
+PR 7.
 
 ## P81 | Guacamole Route-Pool State Reconciliation
 

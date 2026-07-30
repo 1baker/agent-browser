@@ -4,6 +4,43 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 129 | 2026-07-30
+
+Scope: repair the next exact-head full-CI defect.
+
+Actions:
+
+- Confirmed exact-head fast CI run `30547407293` fully green at commit
+  `60c784e3`.
+- Dispatched full CI run `30548163584`. Its ordinary Linux Rust suite found
+  both sequential private-display launches selecting `:90`.
+- Traced the collision to `start_remote_headed_virtual_display`, which returned
+  after a fixed 150 ms delay without checking that the spawned Xvfb owned a
+  ready display.
+- Serialized selection inside the daemon and replaced the fixed delay with
+  ownership-backed readiness polling. Early child exit, inspection failure,
+  and timeout now fail closed and reap the child.
+- The completed matrix also found an Apple Silicon daemon-socket fixture
+  inheriting a temporary path longer than macOS `SUN_LEN`. Moved that Unix
+  fixture to a short, unique path under `/tmp`.
+
+Validation:
+
+- twenty consecutive distinct-live-display regressions
+- Rust formatting
+- strict Clippy with warnings denied
+- complete serialized Rust CI harness
+
+Result:
+
+- The repeated focused regressions, formatting, strict Clippy, and complete
+  serialized Rust CI harness pass locally.
+- Full CI run `30548163584` remains valid collision evidence for commit
+  `60c784e3`. Its Apple Silicon lane independently found the overlong socket
+  fixture; fail-fast cancelled the Windows and macOS x64 lanes.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 128 | 2026-07-30
 
 Scope: continue exact-head cross-platform release gating.

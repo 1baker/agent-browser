@@ -699,8 +699,8 @@ mod tests {
     fn retiring_daemon_does_not_own_replacement_socket_path() {
         use std::os::unix::net::UnixListener;
 
-        let fixture_dir = std::env::temp_dir().join(format!(
-            "agent-browser-daemon-socket-ownership-{}-{}",
+        let fixture_dir = PathBuf::from("/tmp").join(format!(
+            "ab-daemon-socket-{}-{}",
             process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
