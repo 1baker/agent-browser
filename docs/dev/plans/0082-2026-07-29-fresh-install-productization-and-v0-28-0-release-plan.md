@@ -304,6 +304,11 @@ Status: pending
   header auto-account creation raced across a first-start JVM crash. The
   repair waits for the full application, submits one request, and verifies
   the exact PostgreSQL user postcondition.
+- The next clean continuation passed the repaired account gate and opened both
+  route displays, then stopped on `systemctl reset-failed` because the newly
+  written interlock service was not loaded. Activation now loads the unit
+  state first, skips reset only for `not-found`, and keeps loaded-unit reset
+  failures fatal.
 - Release remains no-go pending a rebuilt exact candidate, clean VM install and
   reboot, idempotency, restore and active-conflict proof, full CI, release dry
   run, merge, and public-asset reinstall.

@@ -33,6 +33,11 @@ Actions:
   succeeded and the other returned a duplicate-key 500. Reconciliation now
   waits for full application readiness, makes one creation request, and
   accepts only the exact database user postcondition.
+- The next clean continuation passed header creation and route opening, then
+  failed while resetting a newly written interlock service that systemd had
+  not loaded yet. Activation now queries the unit load state first, skips only
+  an absent fresh unit, and preserves fail-closed reset behavior for loaded
+  units.
 
 Validation:
 
@@ -43,6 +48,7 @@ Validation:
 - exact selector recommendations for the new installer gates
 - disk-capacity boundary unit test and resized VM harness contract
 - Guacamole header-user postcondition unit test
+- systemd unit-load/reset boundary unit test
 
 Result:
 
