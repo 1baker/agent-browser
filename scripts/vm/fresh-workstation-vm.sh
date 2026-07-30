@@ -171,6 +171,7 @@ start_vm() {
     -drive "file=$STATE_DIR/seed.img,if=virtio,format=raw,readonly=on" \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22,hostfwd=tcp:127.0.0.1:$DASHBOARD_PORT-:4848,hostfwd=tcp:127.0.0.1:$GUACAMOLE_PORT-:8092" \
     -device virtio-net-pci,netdev=net0 \
+    -vga none \
     -display none \
     -serial "file:$STATE_DIR/serial.log" \
     -daemonize \
