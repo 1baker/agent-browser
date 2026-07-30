@@ -5056,7 +5056,9 @@ Examples:
 agent-browser install - Install browser binaries
 
 Usage: agent-browser install [--with-deps] [--with-remote-view-privileges]
-       agent-browser install workstation <--dry-run|--apply> [--json]
+       agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]
+       agent-browser install workstation reconcile [--json]
+       agent-browser install workstation backup [--json]
        agent-browser install stealthcdp-chromium [--force]
        agent-browser install doctor [--json]
 
@@ -5086,6 +5088,8 @@ Examples:
   agent-browser install --with-deps --with-remote-view-privileges
   agent-browser install workstation --dry-run --json
   agent-browser install workstation --apply --json
+  agent-browser install workstation reconcile --json
+  agent-browser install workstation backup --json
 "##
         }
 
@@ -6222,7 +6226,7 @@ Dashboard:
 
 Setup:
   install                    Install browser binaries
-  install workstation        Plan or apply the source-free Linux workstation payload
+  install workstation        Install and reconcile the source-free Linux workstation
   install doctor             Check user-scoped install drift and launch readiness
   doctor windows-browser     Diagnose WSL to Windows browser CDP routing
   doctor remote-view         Diagnose Guacamole and RDP remote-view setup

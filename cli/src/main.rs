@@ -1573,7 +1573,7 @@ fn main() {
             return;
         }
         if clean.get(1).map(|s| s.as_str()) == Some("workstation") {
-            workstation_install::run_workstation_install(&args);
+            workstation_install::run_workstation_command(&args);
             return;
         }
         if clean.get(1).map(|s| s.as_str()) == Some("stealthcdp-chromium") {

@@ -812,7 +812,10 @@ pub fn run_install(with_deps: bool, with_remote_view_privileges: bool) {
 
     if is_linux {
         if with_remote_view_privileges {
-            install_remote_view_privileges();
+            if let Err(err) = install_remote_view_privileges(false, false) {
+                eprintln!("{} {err}", color::error_indicator());
+                exit(1);
+            }
         }
 
         if with_deps {
@@ -3262,18 +3265,19 @@ fn install_linux_deps() {
     }
 }
 
-fn install_remote_view_privileges() {
-    println!(
-        "{}",
-        color::cyan("Installing remote-view privilege helper...")
-    );
+pub(crate) fn install_remote_view_privileges(
+    with_workstation_deps: bool,
+    quiet: bool,
+) -> Result<(), String> {
+    if !quiet {
+        println!(
+            "{}",
+            color::cyan("Installing remote-view privilege helper...")
+        );
+    }
 
     if !which_exists("bash") {
-        eprintln!(
-            "{} bash is required to install remote-view privileges.",
-            color::error_indicator()
-        );
-        exit(1);
+        return Err("bash is required to install remote-view privileges.".to_string());
     }
 
     let temp_root =
@@ -3291,47 +3295,50 @@ fn install_remote_view_privileges() {
         .and_then(|()| fs::write(&installer_path, REMOTE_VIEW_PRIVILEGE_INSTALLER))
         .and_then(|()| fs::write(&helper_path, REMOTE_VIEW_PRIVILEGED_HELPER))
     {
-        eprintln!(
-            "{} Failed to prepare remote-view privilege installer: {}",
-            color::error_indicator(),
-            err
-        );
         let _ = fs::remove_dir_all(&temp_root);
-        exit(1);
+        return Err(format!(
+            "Failed to prepare remote-view privilege installer: {err}"
+        ));
     }
 
-    let status = Command::new("bash")
+    let mut command = Command::new("bash");
+    command
         .arg(&installer_path)
         .arg("--apply")
         .env("AGENT_BROWSER_PRIVILEGED_HELPER_SOURCE", &helper_path)
-        .status();
+        .env(
+            "AGENT_BROWSER_PRIVILEGED_HELPER_SHA256",
+            sha256_bytes(REMOTE_VIEW_PRIVILEGED_HELPER.as_bytes()),
+        );
+    if with_workstation_deps {
+        command.arg("--with-workstation-deps");
+    }
+    let output = command
+        .output()
+        .map_err(|err| format!("Could not run remote-view privilege installer: {err}"))?;
 
     let _ = fs::remove_dir_all(&temp_root);
 
-    match status {
-        Ok(s) if s.success() => {
+    if output.status.success() {
+        if !quiet {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.is_empty() {
+                print!("{stdout}");
+            }
             println!(
                 "{} Remote-view privilege helper installed",
                 color::success_indicator()
             );
         }
-        Ok(s) => {
-            eprintln!(
-                "{} Remote-view privilege helper install failed with status {}",
-                color::error_indicator(),
-                s
-            );
-            exit(s.code().unwrap_or(1));
-        }
-        Err(err) => {
-            eprintln!(
-                "{} Could not run remote-view privilege installer: {}",
-                color::error_indicator(),
-                err
-            );
-            exit(1);
-        }
+        return Ok(());
     }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Err(format!(
+        "Remote-view privilege helper install failed with status {}: {}{}",
+        output.status, stdout, stderr
+    ))
 }
 
 fn which_exists(cmd: &str) -> bool {

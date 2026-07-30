@@ -120,6 +120,9 @@ case "$cmd" in
   visudo)
     exec visudo "$@"
     ;;
+  test)
+    exit 0
+    ;;
   *)
     AGENT_BROWSER_FAKE_ROOT=1 exec "$cmd" "$@"
     ;;
@@ -147,9 +150,9 @@ run_installer >/tmp/agent-browser-install-privileges-clean-fixture-first.out
 
 sudo_v_count="$(grep -c '^SUDO -v$' "$LOG" || true)"
 sudo_n_count="$(grep -c '^SUDO -n ' "$LOG" || true)"
-sudo_install_count="$(grep -c '^SUDO install ' "$LOG" || true)"
-sudo_groupadd_count="$(grep -c '^SUDO groupadd ' "$LOG" || true)"
-sudo_usermod_count="$(grep -c '^SUDO usermod ' "$LOG" || true)"
+sudo_install_count="$(grep -c '^SUDO -n install ' "$LOG" || true)"
+sudo_groupadd_count="$(grep -c '^SUDO -n groupadd ' "$LOG" || true)"
+sudo_usermod_count="$(grep -c '^SUDO -n usermod ' "$LOG" || true)"
 
 if [[ "$sudo_v_count" != "1" ]]; then
   echo "Expected exactly one sudo -v during first apply, found $sudo_v_count" >&2
@@ -157,8 +160,8 @@ if [[ "$sudo_v_count" != "1" ]]; then
   exit 1
 fi
 
-if [[ "$sudo_n_count" != "0" ]]; then
-  echo "Expected no sudo -n readiness check before first apply, found $sudo_n_count" >&2
+if [[ "$sudo_n_count" != "9" ]]; then
+  echo "Expected nine noninteractive privileged commands after authorization, found $sudo_n_count" >&2
   cat "$LOG" >&2
   exit 1
 fi
@@ -178,7 +181,7 @@ run_installer >/tmp/agent-browser-install-privileges-clean-fixture-second.out
 
 sudo_v_count_after="$(grep -c '^SUDO -v$' "$LOG" || true)"
 sudo_n_count_after="$(grep -c '^SUDO -n ' "$LOG" || true)"
-sudo_install_count_after="$(grep -c '^SUDO install ' "$LOG" || true)"
+sudo_install_count_after="$(grep -c '^SUDO -n install ' "$LOG" || true)"
 
 if [[ "$sudo_v_count_after" != "1" ]]; then
   echo "Second apply must not add another sudo -v prompt boundary." >&2
@@ -186,8 +189,8 @@ if [[ "$sudo_v_count_after" != "1" ]]; then
   exit 1
 fi
 
-if [[ "$sudo_n_count_after" != "1" ]]; then
-  echo "Second apply should use exactly one non-interactive helper readiness check." >&2
+if [[ "$sudo_n_count_after" != "10" ]]; then
+  echo "Second apply should add exactly one non-interactive helper readiness check." >&2
   cat "$LOG" >&2
   exit 1
 fi

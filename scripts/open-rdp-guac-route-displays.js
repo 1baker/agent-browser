@@ -329,7 +329,7 @@ try {
       success: true,
       status: 'dry_run',
       selectedRoutes,
-      nextStep: 'Run pnpm open:rdp-route-displays to open both Guacamole route clients and inspect XRDP display allocation.',
+      nextStep: 'Run node scripts/open-rdp-guac-route-displays.js to open both Guacamole route clients and inspect XRDP display allocation.',
     };
   } else {
     const openedRoutes = routes.map((route, index) => openRoute(route, index));
@@ -342,8 +342,8 @@ try {
       openedRoutes,
       routeDisplays,
       nextStep: routeDisplays.success
-        ? 'Route displays are distinct. Run pnpm test:rdp-guac-many-to-many-live.'
-        : routeDisplays.data?.nextStep || 'Repair route display allocation, then rerun pnpm open:rdp-route-displays.',
+        ? 'Route displays are distinct. Run the reviewed many-to-many live gate.'
+        : routeDisplays.data?.nextStep || 'Repair route display allocation, then rerun node scripts/open-rdp-guac-route-displays.js.',
     };
   }
 } catch (error) {

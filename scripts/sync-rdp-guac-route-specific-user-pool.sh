@@ -295,4 +295,4 @@ PY
 
 echo "Configured two canonical Guacamole RDP routes with distinct route-specific users."
 echo "Guacamole Postgres route writes checkpoint completed."
-echo "Next: open both routes in Guacamole, then run pnpm inspect:rdp-route-displays."
+echo "Next: open both routes in Guacamole, then run node scripts/inspect-rdp-route-displays.js."

@@ -172,7 +172,7 @@ const result = {
       }
     : {},
   nextStep: success
-    ? 'Export these display-name variables with the route pool JSON before running pnpm test:rdp-guac-many-to-many-live.'
+    ? 'Export these display-name variables with the route pool JSON before running the reviewed many-to-many live gate.'
     : 'Open both RDP route sessions, then rerun this display inspection helper.',
 };
 

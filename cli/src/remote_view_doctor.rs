@@ -175,6 +175,12 @@ fn remote_view_script_root() -> PathBuf {
 }
 
 fn find_remote_view_script_root() -> Option<PathBuf> {
+    if let Some(configured) = env::var_os("AGENT_BROWSER_REMOTE_VIEW_SCRIPT_ROOT") {
+        if let Some(root) = normalize_script_root_candidate(Path::new(&configured)) {
+            return Some(root);
+        }
+    }
+
     if let Ok(cwd) = env::current_dir() {
         if let Some(root) = find_script_root_in_ancestors(&cwd) {
             return Some(root);
@@ -2176,6 +2182,7 @@ fn display_value(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::EnvGuard;
 
     fn ready_rdp_gateway() -> Value {
         json!({
@@ -2371,6 +2378,22 @@ mod tests {
         write_remote_view_helper_scripts(&scripts);
 
         let resolved = normalize_script_root_candidate(&scripts).unwrap();
+        assert_eq!(resolved, scripts);
+
+        let _ = fs::remove_dir_all(resolved);
+    }
+
+    #[test]
+    fn prefers_explicit_installed_remote_view_script_root() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_REMOTE_VIEW_SCRIPT_ROOT"]);
+        let scripts = unique_temp_dir("configured-scripts");
+        write_remote_view_helper_scripts(&scripts);
+        guard.set(
+            "AGENT_BROWSER_REMOTE_VIEW_SCRIPT_ROOT",
+            scripts.to_str().unwrap(),
+        );
+
+        let resolved = find_remote_view_script_root().unwrap();
         assert_eq!(resolved, scripts);
 
         let _ = fs::remove_dir_all(resolved);
