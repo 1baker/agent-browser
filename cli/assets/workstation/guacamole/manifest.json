@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "bundle": "agent-browser-guacamole-workstation",
+  "images": [
+    {
+      "service": "postgres",
+      "repository": "postgres",
+      "tag": "16-alpine",
+      "platform": "linux/amd64",
+      "digest": "20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416"
+    },
+    {
+      "service": "guacd",
+      "repository": "guacamole/guacd",
+      "tag": "1.5.5",
+      "platform": "linux/amd64",
+      "digest": "38232cae271361ef53db46faf5c49fe64049a1320a05b82c597425b69d6ce77e"
+    },
+    {
+      "service": "guacamole",
+      "repository": "guacamole/guacamole",
+      "tag": "1.5.5",
+      "platform": "linux/amd64",
+      "digest": "0f62f6d17ab379e46aa66874b2ff564dab856a6ef5e754a69cbb34c32d3e588a"
+    }
+  ],
+  "schema": {
+    "path": "init/001-initdb.sql",
+    "sha256": "b62286f085c2dacb65ac3910473f5d9e986e22ced87325aecf8739535804b657",
+    "generatorImage": "guacamole/guacamole:1.5.5@sha256:0f62f6d17ab379e46aa66874b2ff564dab856a6ef5e754a69cbb34c32d3e588a",
+    "generatorCommand": "/opt/guacamole/bin/initdb.sh --postgresql",
+    "normalization": "strip trailing whitespace from each line"
+  },
+  "files": [
+    {
+      "path": "compose.yml",
+      "sha256": "4a7c20c440f56b50082053ae0aad065dfe916c588c5fb0c7e01741a6b84c4c21"
+    },
+    {
+      "path": "environment.example",
+      "sha256": "159c330b1c43bfeada919e2e728c58fc7aeb361e75a7fc8a6faef6e8d190c7e6"
+    },
+    {
+      "path": "generate-initdb.sh",
+      "sha256": "94705152dd0f7f2ae608ca517b6fb676aa43134d151a89e685ddddef379988fa"
+    },
+    {
+      "path": "init/001-initdb.sql",
+      "sha256": "b62286f085c2dacb65ac3910473f5d9e986e22ced87325aecf8739535804b657"
+    }
+  ]
+}
