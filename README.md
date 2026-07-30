@@ -82,6 +82,9 @@ agent-browser install workstation --apply --json
 ```
 
 The first apply uses one `sudo -v` authorization boundary for host preparation.
+Before acquiring that authorization or staging the payload, the real-host
+preflight requires at least 6 GiB of free disk capacity. JSON output exposes
+`hostPlan.availableDiskBytes`, `minimumDiskBytes`, and `diskSpaceReady`.
 If that adds the `agent-browser` or `docker` group to the current user, the
 command exits with status 75 and a `relogin_required` JSON state. Log out and
 back in or reboot, then rerun the same apply command. With both groups

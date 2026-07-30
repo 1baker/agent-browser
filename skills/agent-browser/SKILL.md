@@ -13,6 +13,9 @@ versioned support assets, pinned Guacamole stack, protected credentials,
 canonical two-route pool, dashboard, runtime interlock, and PostgreSQL backup
 timer. A first apply that adds required groups exits 75 with
 `relogin_required`; log out and back in or reboot, then rerun the same apply.
+Real-host preflight requires at least 6 GiB free before sudo, payload staging,
+or package mutation; inspect `hostPlan.availableDiskBytes`,
+`minimumDiskBytes`, and `diskSpaceReady` in JSON output.
 Treat every non-ready result as a hard stop. The installer activates user units
 only after readiness-authoritative routes are projected and both final doctors
 pass. Reruns first stop the managed dashboard, runtime interlock, and backup

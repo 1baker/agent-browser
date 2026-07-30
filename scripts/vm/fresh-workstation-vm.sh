@@ -14,6 +14,7 @@ DASHBOARD_PORT="${AGENT_BROWSER_VM_DASHBOARD_PORT:-14848}"
 GUACAMOLE_PORT="${AGENT_BROWSER_VM_GUACAMOLE_PORT:-18092}"
 VM_MEMORY_MB="${AGENT_BROWSER_VM_MEMORY_MB:-8192}"
 VM_CPUS="${AGENT_BROWSER_VM_CPUS:-4}"
+VM_DISK_SIZE="${AGENT_BROWSER_VM_DISK_SIZE:-24G}"
 VM_PASSWORD="${AGENT_BROWSER_VM_PASSWORD:-agent-browser-fresh-install}"
 QEMU_SYSTEM_BIN="${QEMU_SYSTEM_BIN:-qemu-system-x86_64}"
 QEMU_IMG_BIN="${QEMU_IMG_BIN:-qemu-img}"
@@ -45,6 +46,8 @@ Set AGENT_BROWSER_VM_QEMU_FIRMWARE_DIR or AGENT_BROWSER_VM_QEMU_BIOS_PATH when
 an extracted QEMU build cannot discover its firmware from system paths.
 Set AGENT_BROWSER_VM_QEMU_NET_ROM_PATH when its virtio network option ROM is
 stored outside the selected firmware directory.
+AGENT_BROWSER_VM_DISK_SIZE defaults to 24G so package installation, container
+images, backups, and restore evidence have bounded working space.
 
 Inside the guest:
   /home/agent/agent-browser-candidate install workstation --dry-run --json
@@ -130,9 +133,14 @@ recreate_overlay() {
     echo "Refusing to reset a running VM." >&2
     exit 1
   fi
+  if [[ ! "$VM_DISK_SIZE" =~ ^[1-9][0-9]*[GM]$ ]]; then
+    echo "AGENT_BROWSER_VM_DISK_SIZE must be a positive size ending in G or M." >&2
+    exit 2
+  fi
   rm -f "$STATE_DIR/overlay.qcow2"
   "$QEMU_IMG_BIN" create -f qcow2 -F qcow2 -b "$BASE_IMAGE" \
     "$STATE_DIR/overlay.qcow2"
+  "$QEMU_IMG_BIN" resize "$STATE_DIR/overlay.qcow2" "$VM_DISK_SIZE"
 }
 
 start_vm() {

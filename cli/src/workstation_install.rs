@@ -4,7 +4,9 @@
 //! support assets without relying on a repository checkout or package manager
 //! command at runtime. Host provisioning stops with a resumable status when a
 //! fresh login is required. Runtime reconciliation activates services only
-//! after canonical route projection and final doctor readiness.
+//! after canonical route projection and final doctor readiness. Real-host
+//! preflight also requires enough free disk capacity before sudo or payload
+//! mutation begins.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -18,6 +20,7 @@ use std::process::{exit, Command, Output, Stdio};
 const INSTALL_SCHEMA_VERSION: &str = "agent-browser.workstation-install.v1";
 const DEFAULT_DASHBOARD_PORT: u16 = 4848;
 const DEFAULT_GUACAMOLE_PORT: u16 = 8092;
+const MIN_WORKSTATION_FREE_DISK_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 const GUACAMOLE_COMPOSE: &str = include_str!("../assets/workstation/guacamole/compose.yml");
 const GUACAMOLE_ENVIRONMENT_EXAMPLE: &str =
     include_str!("../assets/workstation/guacamole/environment.example");
@@ -148,6 +151,9 @@ struct HostPlan {
     architecture: String,
     operating_system: String,
     missing_commands: Vec<String>,
+    available_disk_bytes: Option<u64>,
+    minimum_disk_bytes: u64,
+    disk_space_ready: bool,
     effective_groups: Vec<String>,
     actions: Vec<&'static str>,
 }
@@ -185,7 +191,17 @@ fn run_workstation_install(args: &[String]) {
     let paths = install_paths(&root);
     let mut phases = vec!["plan-validated"];
     let isolated_root = env::var_os("AGENT_BROWSER_WORKSTATION_ROOT").is_some();
-    let host_plan = build_host_plan(isolated_root);
+    let host_plan = build_host_plan(isolated_root, &root);
+    if !host_plan.disk_space_ready {
+        fail(
+            &format!(
+                "workstation installation requires at least {} bytes of free disk space; {} bytes are available",
+                host_plan.minimum_disk_bytes,
+                host_plan.available_disk_bytes.unwrap_or(0)
+            ),
+            parsed.json,
+        );
+    }
     if !host_plan.supported {
         fail(
             "workstation installation requires Ubuntu 24.04 x86_64 with apt-get, apt-cache, bash, sudo, and systemctl",
@@ -654,7 +670,7 @@ fn run_workstation_backup(json: bool) {
     }
 }
 
-fn build_host_plan(fixture_root: bool) -> HostPlan {
+fn build_host_plan(fixture_root: bool, root: &Path) -> HostPlan {
     let effective_groups = current_process_groups();
     if fixture_root {
         return HostPlan {
@@ -663,6 +679,9 @@ fn build_host_plan(fixture_root: bool) -> HostPlan {
             architecture: env::consts::ARCH.to_string(),
             operating_system: "isolated-fixture".to_string(),
             missing_commands: Vec::new(),
+            available_disk_bytes: None,
+            minimum_disk_bytes: MIN_WORKSTATION_FREE_DISK_BYTES,
+            disk_space_ready: true,
             effective_groups,
             actions: workstation_host_actions(),
         };
@@ -684,8 +703,13 @@ fn build_host_plan(fixture_root: bool) -> HostPlan {
         .filter(|command| !command_exists(command))
         .map(|command| (*command).to_string())
         .collect::<Vec<_>>();
+    let available_disk_bytes = available_disk_bytes(root);
+    let disk_space_ready = workstation_disk_space_ready(available_disk_bytes);
     HostPlan {
-        supported: env::consts::ARCH == "x86_64" && ubuntu_2404 && missing_commands.is_empty(),
+        supported: env::consts::ARCH == "x86_64"
+            && ubuntu_2404
+            && missing_commands.is_empty()
+            && disk_space_ready,
         fixture_root: false,
         architecture: env::consts::ARCH.to_string(),
         operating_system: if ubuntu_2404 {
@@ -694,6 +718,9 @@ fn build_host_plan(fixture_root: bool) -> HostPlan {
             "unsupported".to_string()
         },
         missing_commands,
+        available_disk_bytes,
+        minimum_disk_bytes: MIN_WORKSTATION_FREE_DISK_BYTES,
+        disk_space_ready,
         effective_groups,
         actions: workstation_host_actions(),
     }
@@ -702,6 +729,7 @@ fn build_host_plan(fixture_root: bool) -> HostPlan {
 fn workstation_host_actions() -> Vec<&'static str> {
     vec![
         "validate package candidates and no-removal simulation",
+        "require at least 6 GiB of free disk capacity before mutation",
         "authorize sudo exactly once when host changes are required",
         "install browser and remote-view host dependencies",
         "install and verify the narrow privileged helper",
@@ -709,6 +737,32 @@ fn workstation_host_actions() -> Vec<&'static str> {
         "enable user lingering plus Docker and XRDP services",
         "stop for a fresh login when group membership is not effective",
     ]
+}
+
+fn workstation_disk_space_ready(available_disk_bytes: Option<u64>) -> bool {
+    available_disk_bytes
+        .map(|available| available >= MIN_WORKSTATION_FREE_DISK_BYTES)
+        .unwrap_or(false)
+}
+
+#[cfg(target_family = "unix")]
+fn available_disk_bytes(path: &Path) -> Option<u64> {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stats = MaybeUninit::<libc::statvfs>::uninit();
+    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let stats = unsafe { stats.assume_init() };
+    Some(stats.f_bavail.saturating_mul(stats.f_frsize))
+}
+
+#[cfg(not(target_family = "unix"))]
+fn available_disk_bytes(_path: &Path) -> Option<u64> {
+    None
 }
 
 fn command_exists(command: &str) -> bool {
@@ -2174,6 +2228,17 @@ mod tests {
         }
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn workstation_disk_preflight_fails_closed_below_minimum() {
+        assert!(!workstation_disk_space_ready(None));
+        assert!(!workstation_disk_space_ready(Some(
+            MIN_WORKSTATION_FREE_DISK_BYTES - 1
+        )));
+        assert!(workstation_disk_space_ready(Some(
+            MIN_WORKSTATION_FREE_DISK_BYTES
+        )));
     }
 
     #[cfg(unix)]
