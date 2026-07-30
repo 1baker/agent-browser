@@ -16,6 +16,7 @@ for (const contract of [
   'AGENT_BROWSER_VM_CANDIDATE',
   'AGENT_BROWSER_VM_QEMU_FIRMWARE_DIR',
   'AGENT_BROWSER_VM_QEMU_BIOS_PATH',
+  'AGENT_BROWSER_VM_QEMU_NET_ROM_PATH',
   'Refusing to reset a running VM',
   '127.0.0.1',
   'workstation --apply --json',
