@@ -27,6 +27,12 @@ Actions:
   defect during apt unpack. Added a 24 GiB VM disk default and a real-host
   6 GiB free-space gate that fails before sudo, payload staging, or package
   mutation.
+- The resized clean overlay reached the zero-prompt post-reboot continuation,
+  then Guacamole's first JVM process crashed while concurrent header-auth
+  requests raced automatic account creation. One account transaction
+  succeeded and the other returned a duplicate-key 500. Reconciliation now
+  waits for full application readiness, makes one creation request, and
+  accepts only the exact database user postcondition.
 
 Validation:
 
@@ -36,6 +42,7 @@ Validation:
 - release asset and version-bound changelog fixture
 - exact selector recommendations for the new installer gates
 - disk-capacity boundary unit test and resized VM harness contract
+- Guacamole header-user postcondition unit test
 
 Result:
 

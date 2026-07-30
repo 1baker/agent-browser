@@ -298,6 +298,12 @@ Status: pending
   disk during package unpack. The harness now grows clean overlays to 24 GiB,
   while real-host installer preflight requires 6 GiB free and fails before
   sudo, payload staging, or package mutation.
+- The resized overlay proved exactly one installer sudo prompt, exit-75
+  relogin handling, a changed reboot ID, effective groups, and a zero-prompt
+  continuation. That continuation then stopped fail-closed when Guacamole
+  header auto-account creation raced across a first-start JVM crash. The
+  repair waits for the full application, submits one request, and verifies
+  the exact PostgreSQL user postcondition.
 - Release remains no-go pending a rebuilt exact candidate, clean VM install and
   reboot, idempotency, restore and active-conflict proof, full CI, release dry
   run, merge, and public-asset reinstall.
