@@ -1149,6 +1149,10 @@ fn activate_user_units(
     Ok(())
 }
 
+/// Stops installed user units that could race with workstation reconciliation.
+///
+/// The final readiness gate reactivates these units after route and payload
+/// convergence succeeds.
 fn quiesce_existing_user_units(paths: &InstallPaths) -> Result<(), String> {
     let managed_units = [
         "agent-browser-dashboard.service",

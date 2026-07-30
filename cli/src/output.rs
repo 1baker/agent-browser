@@ -5066,6 +5066,9 @@ Downloads and installs browser binaries required for automation. The doctor is
 no-launch and also reports service-status, duplicate profile pressure, and
 remote-view privilege readiness.
 
+Workstation apply reruns stop the managed dashboard, runtime interlock, and
+backup timer during reconciliation, then reactivate them after final readiness.
+
 Options:
   -d, --with-deps      Also install system dependencies (Linux only)
   --with-remote-view-privileges

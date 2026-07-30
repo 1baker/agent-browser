@@ -6,7 +6,7 @@ Download the native Rust binary from this fork's GitHub releases. Pick the asset
 for your platform from the latest release, then put it on your PATH.
 
 ```bash
-VERSION=v0.26.1
+VERSION=v0.28.0
 curl -L -o ~/.local/bin/agent-browser \
   https://github.com/CochranResearchGroup/agent-browser/releases/download/$VERSION/agent-browser-linux-x64
 chmod +x ~/.local/bin/agent-browser
@@ -94,6 +94,10 @@ pinned stack, creates the two route users and canonical Guacamole rows, opens
 distinct XRDP displays selected by readiness, projects
 <code>guacamole:1</code> and <code>guacamole:2</code> into service state, and
 activates the user services only after the final doctors pass.
+
+On rerun, apply first stops the managed dashboard, runtime interlock, and
+backup timer while it reconciles the installed payload and routes. It
+reactivates those units only after final readiness succeeds.
 
 Use <code>agent-browser install workstation reconcile --json</code> to rerun
 the installed convergence controller without reinstalling the payload. Use
