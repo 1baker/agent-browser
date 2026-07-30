@@ -67,18 +67,27 @@ release, and public-asset reinstall.
   explicit support root, while later doctor runs missed the versioned
   source-free helper directory. Discovery now includes
   `~/.local/lib/agent-browser/<version>/scripts`.
-- The release remains no-go pending a rebuilt exact-candidate Ubuntu install
-  that proves the policy from the embedded installer, full CI, and
-  release-artifact proof.
+- Commit `ce26f0f6` produced exact candidate SHA-256
+  `06e3b85ebc734c914ad8937afe0f169107cd6e646f5c129ebe1d7afe29aacca2`.
+  After applying its emitted stale-viewer remediation, idempotent convergence
+  passed with exact installed hash parity and active user services.
+- A fresh login shell passed standalone install and remote-view doctors from
+  the versioned installed support root. Remote control, many-to-many
+  prerequisites, and the sandbox policy all reported ready with no issues.
+- The exact candidate opened Route A at `guacamole:1`, connection `1`, and
+  display `:10` with `operatorVisible=ready`; cleanup restored the entry to
+  `available` with no allocation.
+- The release remains no-go pending full local validation, fast and full CI,
+  the release dry run, merge, publication, and public-asset proof.
 - Plan
   `docs/dev/plans/0082-2026-07-29-fresh-install-productization-and-v0-28-0-release-plan.md`
   owns the bounded implementation and release gates.
 
 ### Next Recommendation
 
-Rebuild the exact release-mode candidate and complete the disposable Ubuntu
-24.04 install, reboot, restore, conflict, and idempotency harness before
-release gating.
+Run the complete local validation packet on exact commit `ce26f0f6`, then
+require fast CI, manually dispatched full CI, and the release dry run before
+merging PR 7.
 
 ## P81 | Guacamole Route-Pool State Reconciliation
 

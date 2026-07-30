@@ -4,6 +4,51 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 126 | 2026-07-30
+
+Scope: prove the rebuilt doctor-discovery candidate on the clean Ubuntu host
+and enter release gating.
+
+Actions:
+
+- Built commit `ce26f0f6` as release-mode SHA-256
+  `06e3b85ebc734c914ad8937afe0f169107cd6e646f5c129ebe1d7afe29aacca2`
+  and staged it on the clean rebooted Ubuntu 24.04 host.
+- The first idempotent convergence stopped fail-closed because Route A and B
+  viewer daemons still ran the preceding candidate. The diagnostic identified
+  both exact sessions and supplied bounded close commands. After closing only
+  those sessions, the retry passed with candidate and installed hashes equal,
+  dashboard active, and interlock timer active.
+- Ran standalone doctors from a new login shell. Install doctor and
+  remote-view doctor both returned success with no issues. Remote-view doctor
+  resolved
+  `/home/agent/.local/lib/agent-browser/0.28.0/scripts` and reported remote
+  control, many-to-many prerequisites, and the path-scoped managed Chrome
+  sandbox policy ready.
+- Opened `about:blank` through Route A using the exact installed binary. The
+  response selected `guacamole:1`, connection `1`, display `:10`, and returned
+  `operatorVisible.state=ready`.
+- Closed the bounded browser session. Retained Route A returned to
+  `available` with `currentRouteAllocationId=null`.
+
+Validation:
+
+- exact release artifact and installed-binary SHA-256 parity
+- fail-closed stale-runtime diagnosis and emitted remediation
+- zero-prompt idempotent convergence retry
+- standalone install doctor from a fresh login shell
+- standalone remote-view doctor from versioned installed assets
+- live Route A operator-visible open and cleanup
+
+Result:
+
+- The clean-install, reboot, durability, conflict, sandbox, installed-helper
+  discovery, and final live Route A acceptance evidence is complete.
+- Release remains no-go until full local validation, exact-head fast and full
+  CI, release dry run, merge, publication, and public-asset reinstall pass.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 125 | 2026-07-30
 
 Scope: finish clean-install durability and route evidence, then repair a

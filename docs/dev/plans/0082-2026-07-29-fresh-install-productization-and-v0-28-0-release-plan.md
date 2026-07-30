@@ -177,7 +177,7 @@ Status: completed
 
 ### Packet D | Binary-owned convergence
 
-Status: in progress
+Status: completed
 
 - Move recurring decision logic behind an installed CLI command.
 - Require successful route-readiness output before authoritative projection.
@@ -189,7 +189,7 @@ Status: in progress
 
 ### Packet E | Clean-install and recovery harness
 
-Status: in progress
+Status: completed
 
 - Add fast isolated-HOME payload, mutation, prompt-meter, and failure-injection
   fixtures.
@@ -347,9 +347,24 @@ Status: pending
   in the discovery path outside install-time command environment. Doctor
   discovery now includes
   `~/.local/lib/agent-browser/<version>/scripts`, with a focused regression.
-- Release remains no-go pending a rebuilt exact candidate, clean VM proof of
-  the embedded AppArmor repair, full CI, release dry run, merge, and
-  public-asset reinstall.
+- Commit `ce26f0f6` rebuilt to the exact release-mode SHA-256
+  `06e3b85ebc734c914ad8937afe0f169107cd6e646f5c129ebe1d7afe29aacca2`.
+  Its first same-host convergence stopped fail-closed on two viewer daemons
+  still running the preceding candidate. The emitted per-session close
+  remedies removed only those stale runtimes; the bounded retry passed with
+  exact candidate and installed hashes, an active dashboard, and an active
+  interlock timer.
+- A new login shell then passed standalone install and remote-view doctors.
+  Doctor selected
+  `/home/agent/.local/lib/agent-browser/0.28.0/scripts`, reported no issues,
+  and proved remote control, many-to-many prerequisites, and the managed
+  Chrome sandbox policy ready.
+- The exact candidate opened `about:blank` through Route A at
+  `guacamole:1`, connection `1`, display `:10`, and
+  `operatorVisible.state=ready`. Cleanup returned Route A to `available` with
+  no current route allocation.
+- Release remains no-go pending full local validation, fast and full CI,
+  release dry run, merge, publication, and public-asset reinstall.
 
 ## Clean-Install Acceptance Matrix
 
