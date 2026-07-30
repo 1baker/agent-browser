@@ -34,6 +34,13 @@ const INSTALL_DOCTOR_SHORT_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const INSTALL_DOCTOR_SERVICE_STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 const INSTALL_DOCTOR_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(25);
 static INSTALL_DOCTOR_COMMAND_OUTPUT_COUNTER: AtomicU64 = AtomicU64::new(0);
+const WORKSTATION_UNIT_NAMES: [&str; 5] = [
+    "agent-browser-dashboard.service",
+    "agent-browser-runtime-interlock.service",
+    "agent-browser-runtime-interlock.timer",
+    "agent-browser-guacamole-postgres-backup.service",
+    "agent-browser-guacamole-postgres-backup.timer",
+];
 
 enum InstallDoctorCommandResult {
     Output(Output),
@@ -1091,8 +1098,10 @@ fn install_doctor_report(flags: &Flags) -> serde_json::Value {
     install_doctor_trace("runtime_convergence");
     let runtime_convergence =
         runtime_convergence_summary(&live_dashboard_runtime, &runtime_inventory);
+    install_doctor_trace("workstation_payload");
+    let workstation_payload = workstation_payload_status();
     install_doctor_trace("issues");
-    let issues = install_doctor_issues(InstallDoctorIssueInputs {
+    let mut issues = install_doctor_issues(InstallDoctorIssueInputs {
         current_executable: &current_executable,
         path_command: &path_command,
         pnpm_package_binary: &pnpm_package_binary,
@@ -1105,6 +1114,7 @@ fn install_doctor_report(flags: &Flags) -> serde_json::Value {
         runtime_inventory: &runtime_inventory,
         daemon_listener_inventory: &daemon_listener_inventory,
     });
+    issues.extend(workstation_payload_issues(&workstation_payload));
 
     json!({
         "success": issues.is_empty(),
@@ -1123,9 +1133,171 @@ fn install_doctor_report(flags: &Flags) -> serde_json::Value {
             "runtimeInventory": runtime_inventory,
             "daemonListenerInventory": daemon_listener_inventory,
             "runtimeConvergence": runtime_convergence,
+            "workstationPayload": workstation_payload,
             "issues": issues,
         }
     })
+}
+
+fn workstation_payload_status() -> serde_json::Value {
+    let root = std::env::var_os("AGENT_BROWSER_WORKSTATION_ROOT")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    workstation_payload_status_for_root(&root)
+}
+
+fn workstation_payload_status_for_root(root: &Path) -> serde_json::Value {
+    let version = env!("CARGO_PKG_VERSION");
+    let support_dir = root.join(".local/lib/agent-browser").join(version);
+    let manifest_path = support_dir.join("manifest.json");
+    let installed_binary_path = root.join(".local/bin/agent-browser");
+    let unit_dir = root.join(".config/systemd/user");
+    let guacamole_manifest_path = support_dir.join("guacamole/manifest.json");
+    let secrets_path = root.join(".agent-browser/guacamole/secrets/guacamole.env");
+
+    let manifest_exists = manifest_path.is_file();
+    let manifest_result = fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok());
+    let manifest_parsed = manifest_result.is_some();
+    let manifest_version = manifest_result
+        .as_ref()
+        .and_then(|manifest| manifest.get("version"))
+        .and_then(Value::as_str);
+    let manifest_version_matches = manifest_version == Some(version);
+    let source_checkout_required = manifest_result
+        .as_ref()
+        .and_then(|manifest| manifest.get("sourceCheckoutRequired"))
+        .and_then(Value::as_bool);
+    let manifest_source_free = source_checkout_required == Some(false);
+
+    let installed_binary = binary_fingerprint(Some(installed_binary_path.clone()));
+    let installed_binary_exists = installed_binary
+        .get("exists")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let units = WORKSTATION_UNIT_NAMES
+        .iter()
+        .map(|name| {
+            let path = unit_dir.join(name);
+            let exists = path.is_file();
+            let source_free = fs::read_to_string(&path)
+                .ok()
+                .is_some_and(|contents| workstation_unit_is_source_free(&contents));
+            json!({
+                "name": name,
+                "path": path.display().to_string(),
+                "exists": exists,
+                "sourceFree": source_free,
+            })
+        })
+        .collect::<Vec<_>>();
+    let units_ready = units.iter().all(|unit| {
+        unit.get("exists").and_then(Value::as_bool) == Some(true)
+            && unit.get("sourceFree").and_then(Value::as_bool) == Some(true)
+    });
+
+    let guacamole_manifest_exists = guacamole_manifest_path.is_file();
+    let secrets_exists = secrets_path.is_file();
+    let secrets_mode = private_file_mode(&secrets_path);
+    let secrets_mode_private = secrets_mode.map(|mode| mode & 0o077 == 0);
+
+    let presence = [
+        manifest_exists,
+        units
+            .iter()
+            .any(|unit| unit.get("exists").and_then(Value::as_bool) == Some(true)),
+        guacamole_manifest_exists,
+        secrets_exists,
+    ];
+    let any_present = presence.iter().any(|present| *present);
+    let ready = manifest_parsed
+        && manifest_version_matches
+        && manifest_source_free
+        && installed_binary_exists
+        && units_ready
+        && guacamole_manifest_exists
+        && secrets_exists
+        && secrets_mode_private.unwrap_or(cfg!(not(unix)));
+    let state = if ready {
+        "installed"
+    } else if any_present {
+        "partial"
+    } else {
+        "absent"
+    };
+
+    json!({
+        "schemaVersion": "agent-browser.workstation-payload-status.v1",
+        "state": state,
+        "ready": ready,
+        "expectedVersion": version,
+        "supportPath": support_dir.display().to_string(),
+        "manifest": {
+            "path": manifest_path.display().to_string(),
+            "exists": manifest_exists,
+            "parsed": manifest_parsed,
+            "version": manifest_version,
+            "versionMatches": manifest_version_matches,
+            "sourceCheckoutRequired": source_checkout_required,
+            "sourceFree": manifest_source_free,
+        },
+        "installedBinary": installed_binary,
+        "units": units,
+        "guacamoleBundle": {
+            "manifestPath": guacamole_manifest_path.display().to_string(),
+            "manifestExists": guacamole_manifest_exists,
+        },
+        "secrets": {
+            "path": secrets_path.display().to_string(),
+            "exists": secrets_exists,
+            "mode": secrets_mode.map(|mode| format!("{mode:04o}")),
+            "modePrivate": secrets_mode_private,
+        },
+    })
+}
+
+fn workstation_unit_is_source_free(contents: &str) -> bool {
+    !contents.lines().any(|line| {
+        let normalized = line.trim().to_ascii_lowercase();
+        normalized.starts_with("workingdirectory=")
+            || normalized.contains("pnpm")
+            || normalized.contains("workspace.local")
+    })
+}
+
+#[cfg(unix)]
+fn private_file_mode(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+fn private_file_mode(_path: &Path) -> Option<u32> {
+    None
+}
+
+fn workstation_payload_issues(status: &serde_json::Value) -> Vec<serde_json::Value> {
+    if status.get("state").and_then(Value::as_str) != Some("partial") {
+        return Vec::new();
+    }
+    vec![json!({
+        "code": "workstation_payload_partial_or_drifted",
+        "message": "workstation payload artifacts are incomplete or drifted from the current source-free version",
+        "nextAction": "install_workstation_payload",
+        "remedy": {
+            "kind": "operator_command",
+            "command": "agent-browser install workstation --apply --json",
+            "argv": ["agent-browser", "install", "workstation", "--apply", "--json"],
+            "requiresInteractiveSudo": false,
+            "why": "Install or refresh the versioned source-free workstation payload, service units, Guacamole bundle, and protected state."
+        }
+    })]
 }
 
 fn install_doctor_trace(phase: &str) {
@@ -3957,6 +4129,143 @@ mod tests {
             .unwrap()
             .iter()
             .any(|reason| reason == "stream_unreachable"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workstation_payload_status_reports_absent_without_issue() {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-browser-workstation-doctor-absent-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+        ));
+
+        let ordinary_binary = dir.join(".local/bin/agent-browser");
+        fs::create_dir_all(ordinary_binary.parent().unwrap()).unwrap();
+        fs::write(&ordinary_binary, "ordinary install").unwrap();
+
+        let status = workstation_payload_status_for_root(&dir);
+
+        assert_eq!(status["state"], "absent");
+        assert_eq!(status["ready"], false);
+        assert_eq!(status["installedBinary"]["exists"], true);
+        assert!(workstation_payload_issues(&status).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workstation_payload_status_reports_source_free_install_without_exposing_secrets() {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-browser-workstation-doctor-installed-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+        ));
+        let support_dir = dir
+            .join(".local/lib/agent-browser")
+            .join(env!("CARGO_PKG_VERSION"));
+        let unit_dir = dir.join(".config/systemd/user");
+        let binary_path = dir.join(".local/bin/agent-browser");
+        let secrets_path = dir.join(".agent-browser/guacamole/secrets/guacamole.env");
+        fs::create_dir_all(support_dir.join("guacamole")).unwrap();
+        fs::create_dir_all(&unit_dir).unwrap();
+        fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(secrets_path.parent().unwrap()).unwrap();
+        fs::write(
+            support_dir.join("manifest.json"),
+            serde_json::to_vec(&json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "sourceCheckoutRequired": false,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(support_dir.join("guacamole/manifest.json"), "{}").unwrap();
+        fs::write(&binary_path, "test binary").unwrap();
+        for name in WORKSTATION_UNIT_NAMES {
+            fs::write(
+                unit_dir.join(name),
+                format!("[Service]\nExecStart={}\n", binary_path.display()),
+            )
+            .unwrap();
+        }
+        fs::write(&secrets_path, "DO_NOT_EXPOSE=this-value").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&secrets_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let status = workstation_payload_status_for_root(&dir);
+        let rendered = serde_json::to_string(&status).unwrap();
+
+        assert_eq!(status["state"], "installed");
+        assert_eq!(status["ready"], true);
+        assert_eq!(status["manifest"]["versionMatches"], true);
+        assert_eq!(status["manifest"]["sourceFree"], true);
+        assert_eq!(status["installedBinary"]["exists"], true);
+        assert_eq!(status["units"].as_array().unwrap().len(), 5);
+        assert!(status["units"].as_array().unwrap().iter().all(|unit| {
+            unit["exists"].as_bool() == Some(true) && unit["sourceFree"].as_bool() == Some(true)
+        }));
+        assert_eq!(
+            status["guacamoleBundle"]["manifestExists"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(status["secrets"]["exists"], true);
+        #[cfg(unix)]
+        assert_eq!(status["secrets"]["mode"], "0600");
+        assert!(!rendered.contains("DO_NOT_EXPOSE"));
+        assert!(!rendered.contains("this-value"));
+        assert!(workstation_payload_issues(&status).is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workstation_payload_status_reports_partial_source_checkout_drift() {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-browser-workstation-doctor-partial-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+        ));
+        let support_dir = dir
+            .join(".local/lib/agent-browser")
+            .join(env!("CARGO_PKG_VERSION"));
+        let unit_dir = dir.join(".config/systemd/user");
+        fs::create_dir_all(&support_dir).unwrap();
+        fs::create_dir_all(&unit_dir).unwrap();
+        fs::write(
+            support_dir.join("manifest.json"),
+            serde_json::to_vec(&json!({
+                "version": "0.0.0-stale",
+                "sourceCheckoutRequired": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            unit_dir.join(WORKSTATION_UNIT_NAMES[0]),
+            "[Service]\nWorkingDirectory=/home/test/workspace.local/agent-browser\nExecStart=pnpm start\n",
+        )
+        .unwrap();
+
+        let status = workstation_payload_status_for_root(&dir);
+        let issues = workstation_payload_issues(&status);
+
+        assert_eq!(status["state"], "partial");
+        assert_eq!(status["ready"], false);
+        assert_eq!(status["manifest"]["versionMatches"], false);
+        assert_eq!(status["manifest"]["sourceFree"], false);
+        assert_eq!(status["units"][0]["sourceFree"], false);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0]["code"], "workstation_payload_partial_or_drifted");
 
         let _ = fs::remove_dir_all(&dir);
     }
