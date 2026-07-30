@@ -197,20 +197,20 @@ jobs:
         with:
           path: artifacts/
 
-      - name: Move binaries to bin directory
+      - name: Collect release binaries
         run: |
-          mkdir -p bin
-          find artifacts -type f -name 'agent-browser-*' -exec mv {} bin/ \;
+          mkdir -p release-assets
+          find artifacts -type f -name 'agent-browser-*' -exec mv {} release-assets/ \;
           rm -rf artifacts
-          chmod +x bin/agent-browser-linux-x64
-          echo "Binaries in bin/:"
-          ls -la bin/
+          chmod +x release-assets/agent-browser-linux-x64
+          echo "Release binaries:"
+          ls -la release-assets/
 
       - name: Verify release assets
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
-          scripts/release/verify-release-assets.sh bin "$VERSION" write-checksums
-          scripts/release/verify-release-assets.sh bin "$VERSION" verify-checksums
+          scripts/release/verify-release-assets.sh release-assets "$VERSION" write-checksums
+          scripts/release/verify-release-assets.sh release-assets "$VERSION" verify-checksums
 
   github-release:
     name: Create GitHub Release
@@ -226,19 +226,19 @@ jobs:
         with:
           path: artifacts/
 
-      - name: Move binaries to bin directory
+      - name: Collect release binaries
         run: |
-          mkdir -p bin
-          find artifacts -type f -name 'agent-browser-*' -exec mv {} bin/ \;
+          mkdir -p release-assets
+          find artifacts -type f -name 'agent-browser-*' -exec mv {} release-assets/ \;
           rm -rf artifacts
-          chmod +x bin/agent-browser-linux-x64
-          ls -la bin/
+          chmod +x release-assets/agent-browser-linux-x64
+          ls -la release-assets/
 
       - name: Verify release assets
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
-          scripts/release/verify-release-assets.sh bin "$VERSION" write-checksums
-          scripts/release/verify-release-assets.sh bin "$VERSION" verify-checksums
+          scripts/release/verify-release-assets.sh release-assets "$VERSION" write-checksums
+          scripts/release/verify-release-assets.sh release-assets "$VERSION" verify-checksums
 
       - name: Extract changelog entry
         run: |
@@ -253,13 +253,13 @@ jobs:
 
           if gh release view "$TAG" &>/dev/null; then
             echo "Release $TAG already exists, uploading assets..."
-            gh release upload "$TAG" bin/* --clobber
+            gh release upload "$TAG" release-assets/* --clobber
           else
             echo "Creating release $TAG..."
             gh release create "$TAG" \
               --title "$TAG" \
               --notes-file /tmp/release-notes.md \
-              bin/*
+              release-assets/*
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

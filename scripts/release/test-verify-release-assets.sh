@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VERIFY_SCRIPT="$SCRIPT_DIR/verify-release-assets.sh"
 EXTRACT_NOTES_SCRIPT="$SCRIPT_DIR/extract-release-notes.js"
+RELEASE_WORKFLOW="$SCRIPT_DIR/../../.github/workflows/release.yml"
 FIXTURE_ROOT=$(mktemp -d)
 trap 'rm -rf "$FIXTURE_ROOT"' EXIT
 
@@ -97,6 +98,17 @@ sed 's/## 9.8.7/## 9.8.6/' "$valid_changelog" > "$stale_changelog"
 if node "$EXTRACT_NOTES_SCRIPT" \
   "$stale_changelog" "$VERSION" "$FIXTURE_ROOT/stale-notes.md" >/dev/null 2>&1; then
   echo "Error: release-note extractor accepted markers under a stale version" >&2
+  exit 1
+fi
+
+if grep -Eq 'mkdir -p bin|verify-release-assets\.sh bin|release (upload|create).*bin/' \
+  "$RELEASE_WORKFLOW"; then
+  echo "Error: release workflow stages assets in the repository bin directory" >&2
+  exit 1
+fi
+
+if [ "$(grep -c 'verify-release-assets.sh release-assets' "$RELEASE_WORKFLOW")" -ne 4 ]; then
+  echo "Error: release workflow does not verify both isolated asset collections" >&2
   exit 1
 fi
 
