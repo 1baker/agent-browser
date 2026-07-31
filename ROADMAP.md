@@ -6,6 +6,42 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P85 | Service-Tab-Handle Profile Routing
+
+State: CLOSED
+Current state: the shared service-tab-handle routing helper preserves browser,
+session, target, and profile identity across every follow-on client request.
+Focused client/type checks pass, and the one live rerun proved target-bound
+LinkedIn URL/title readback, browser-visible route handoff, one matching tab,
+and cleanup.
+
+### Next Recommendation
+
+Return to last30days Plan 0018 and execute fresh bounded successor intervals for
+Reddit, X, Facebook, and LinkedIn using their configured access-method order.
+
+## P84 | Handle-Bound Live-Gate Readback
+
+State: CLOSED
+Current state: the live gate now reads URL/title through the exact returned
+service-tab handle. Its sole rerun reached P85's distinct dropped-profile
+client-routing defect and cleaned up safely.
+
+### Next Recommendation
+
+Continue through P85; do not return to generic active-tab rediscovery.
+
+## P83 | Route-Owned Live-Gate Attribution
+
+State: CLOSED
+Current state: route-owned stream selection and its stale duplicate-route
+regression pass. The sole live rerun reached the distinct Plan 0084 generic-tab
+readback defect and cleaned up safely.
+
+### Next Recommendation
+
+Continue through P84; do not reopen P83 or weaken route-owned evidence.
+
 ## P82 | Fresh Install Productization and v0.28.0 Release
 
 State: CLOSED

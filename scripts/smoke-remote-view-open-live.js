@@ -7,10 +7,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  evaluateServiceTab,
   requestServiceRemoteViewOpen,
   requestServiceRoutePoolRepair,
 } from '../packages/client/src/service-request.js';
 import { buildAudit } from './audit-route-handoff.js';
+import {
+  selectRouteOwnedStream,
+  serviceEvaluateValue,
+} from './lib/remote-view-live-state.js';
 import { assert, parseJsonOutput } from './smoke-utils.js';
 import { loadAgentBrowserEnvFromRealHome } from './smoke-remote-headed-utils.js';
 
@@ -423,10 +428,7 @@ function stateRecords(status, routeId) {
   const allocation = state.displayAllocations?.[route.displayAllocationId] ||
     state.remoteViewDisplayAllocations?.[route.displayAllocationId];
   assert(allocation, `service status is missing display allocation ${route.displayAllocationId}`);
-  const stream = [
-    ...Object.values(state.viewStreams || {}),
-    ...Object.values(state.browsers || {}).flatMap((candidate) => candidate?.viewStreams || []),
-  ].find((candidate) => candidate?.routeId === routeId);
+  const stream = selectRouteOwnedStream(state, routeId, browser.id);
   assert(stream, `service status is missing retained stream for ${routeId}`);
   return { allocation, browser, route, stream };
 }
@@ -737,15 +739,29 @@ async function main() {
       `HTTP helper display allocation changed: ${JSON.stringify({ firstIds, httpIds })}`,
     );
 
-    const url = runAgentJson(['get', 'url'], 'get url');
-    const title = runAgentJson(['get', 'title'], 'get title');
-    writeArtifact('cdp-readback.json', { url, title });
+    const serviceTabHandle = http.data?.tab?.serviceTabHandle;
+    assert(serviceTabHandle?.valid === true, `HTTP helper did not return a valid service tab handle: ${JSON.stringify(http)}`);
+    const targetReadback = await evaluateServiceTab({
+      baseUrl,
+      serviceName,
+      agentName,
+      taskName: 'remoteViewOpenLiveTargetReadback',
+      serviceTabHandle,
+      expression: '({ url: window.location.href, title: document.title })',
+      timeoutMs: 5000,
+      maxReturnBytes: 1024,
+      jobTimeoutMs: remoteViewOpenTimeoutMs,
+    });
+    const evaluatedPage = serviceEvaluateValue(targetReadback);
+    writeArtifact('cdp-readback.json', { serviceTabHandle, targetReadback, evaluatedPage });
+    assert(targetReadback.success === true && targetReadback.data?.ok === true, `target-bound readback failed: ${JSON.stringify(targetReadback)}`);
+    assert(targetReadback.data?.targetId === serviceTabHandle.targetId, `target-bound readback used the wrong target: ${JSON.stringify(targetReadback)}`);
     if (fixture) {
-      assert(url.data?.url === fixture.targetUrl, `CDP URL readback is not fixture URL: ${JSON.stringify(url)}`);
-      assert(title.data?.title === fixture.marker, `CDP title readback is not fixture title: ${JSON.stringify(title)}`);
+      assert(evaluatedPage?.url === fixture.targetUrl, `CDP URL readback is not fixture URL: ${JSON.stringify(targetReadback)}`);
+      assert(evaluatedPage?.title === fixture.marker, `CDP title readback is not fixture title: ${JSON.stringify(targetReadback)}`);
     } else {
-      assert(url.data?.url?.includes('linkedin.com'), `CDP URL readback is not LinkedIn: ${JSON.stringify(url)}`);
-      assert(typeof title.data?.title === 'string' && title.data.title.length > 0, `CDP title readback missing: ${JSON.stringify(title)}`);
+      assert(evaluatedPage?.url?.includes('linkedin.com'), `CDP URL readback is not LinkedIn: ${JSON.stringify(targetReadback)}`);
+      assert(typeof evaluatedPage?.title === 'string' && evaluatedPage.title.length > 0, `CDP title readback missing: ${JSON.stringify(targetReadback)}`);
     }
 
     const serviceStatus = runAgentJson(['service', 'status'], 'service status');
@@ -783,8 +799,8 @@ async function main() {
       displayAllocationId: httpIds.displayAllocationId,
       frameUrl: records.route.frameUrl,
       externalUrl: records.route.externalUrl,
-      title: title.data.title,
-      url: url.data.url,
+      title: evaluatedPage.title,
+      url: evaluatedPage.url,
       x11WindowId: matchingWindow.id,
       x11WindowPid: matchingWindow.pid,
       routeHandoffClassification: auditRow.classification,

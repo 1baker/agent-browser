@@ -274,6 +274,30 @@ function requireRefreshableServiceTabHandle(response) {
 }
 
 /**
+ * Preserve the complete routing identity carried by a service-owned tab handle.
+ * Explicit caller fields remain authoritative, including independent profile
+ * aliases for compatibility with older service clients.
+ *
+ * @param {Partial<ServiceRequest>} request
+ * @param {ServiceTabHandle} handle
+ * @returns {Partial<ServiceRequest>}
+ */
+function serviceTabHandleRouting(request, handle) {
+  const browserId = request.browserId ?? handle.browserId;
+  const sessionName = request.sessionName ?? handle.sessionName ?? handle.ownerSessionId;
+  const targetId = request.targetId ?? handle.targetId;
+  const runtimeProfile = request.runtimeProfile ?? request.profileId ?? handle.profileId;
+  const profileId = request.profileId ?? request.runtimeProfile ?? handle.profileId;
+  return {
+    ...(browserId !== undefined && browserId !== null ? { browserId } : {}),
+    ...(sessionName !== undefined && sessionName !== null ? { sessionName } : {}),
+    ...(targetId !== undefined && targetId !== null ? { targetId } : {}),
+    ...(runtimeProfile !== undefined && runtimeProfile !== null ? { runtimeProfile } : {}),
+    ...(profileId !== undefined && profileId !== null ? { profileId } : {}),
+  };
+}
+
+/**
  * Builds a headed no-DevTools launch request for CDP-sensitive services.
  *
  * @param {ServiceCdpFreeLaunchRequestOptions} input
@@ -387,14 +411,11 @@ export function createServiceCdpAttachRequest(input) {
   if (!handle.targetId) {
     throw new TypeError('service CDP attach request requires serviceTabHandle.targetId');
   }
-  const sessionName = request.sessionName ?? handle.sessionName ?? handle.ownerSessionId;
-  const targetId = request.targetId ?? handle.targetId;
+  const routing = serviceTabHandleRouting(request, handle);
   return createServiceRequest({
     ...request,
     action: 'cdp_attach',
-    browserId: request.browserId ?? handle.browserId,
-    ...(sessionName !== undefined && sessionName !== null ? { sessionName } : {}),
-    ...(targetId !== undefined && targetId !== null ? { targetId } : {}),
+    ...routing,
     cdpAttachmentAllowed: true,
     serviceTabHandle: handle,
     ...(params !== undefined ? { params } : {}),
@@ -414,14 +435,11 @@ export function createServiceCdpDetachRequest(input) {
   if (params !== undefined) {
     assertPlainObject(params, 'service CDP detach request params');
   }
-  const sessionName = request.sessionName ?? handle.sessionName ?? handle.ownerSessionId;
-  const targetId = request.targetId ?? handle.targetId;
+  const routing = serviceTabHandleRouting(request, handle);
   return createServiceRequest({
     ...request,
     action: 'cdp_detach',
-    browserId: request.browserId ?? handle.browserId,
-    ...(sessionName !== undefined && sessionName !== null ? { sessionName } : {}),
-    ...(targetId !== undefined && targetId !== null ? { targetId } : {}),
+    ...routing,
     serviceTabHandle: handle,
     ...(params !== undefined ? { params } : {}),
   });
@@ -456,14 +474,11 @@ export function createServiceEvaluateRequest(input) {
   if (!handle.targetId) {
     throw new TypeError('service evaluate request requires serviceTabHandle.targetId');
   }
-  const sessionName = request.sessionName ?? handle.sessionName ?? handle.ownerSessionId;
-  const targetId = request.targetId ?? handle.targetId;
+  const routing = serviceTabHandleRouting(request, handle);
   return createServiceRequest({
     ...request,
     action: 'evaluate',
-    browserId: request.browserId ?? handle.browserId,
-    ...(sessionName !== undefined && sessionName !== null ? { sessionName } : {}),
-    targetId,
+    ...routing,
     script: source,
     returnByValue: true,
     timeoutMs: request.timeoutMs,
@@ -498,14 +513,11 @@ export function createServiceDiagnosticsRequest(input) {
   if (request.screenshotDir !== undefined && typeof request.screenshotDir !== 'string') {
     throw new TypeError('service diagnostics request screenshotDir must be a string');
   }
-  const sessionName = request.sessionName ?? handle.sessionName ?? handle.ownerSessionId;
-  const targetId = request.targetId ?? handle.targetId;
+  const routing = serviceTabHandleRouting(request, handle);
   return createServiceRequest({
     ...request,
     action: 'diagnostics',
-    browserId: request.browserId ?? handle.browserId,
-    ...(sessionName !== undefined && sessionName !== null ? { sessionName } : {}),
-    ...(targetId !== undefined && targetId !== null ? { targetId } : {}),
+    ...routing,
     serviceTabHandle: handle,
     ...(params !== undefined ? { params } : {}),
   });
@@ -551,14 +563,11 @@ export function createServiceProbeRequest(input) {
       throw new TypeError('service probe request probe.recordFreshness requires accountId');
     }
   }
-  const sessionName = request.sessionName ?? handle.sessionName ?? handle.ownerSessionId;
-  const targetId = request.targetId ?? handle.targetId;
+  const routing = serviceTabHandleRouting(request, handle);
   return createServiceRequest({
     ...request,
     action: 'probe',
-    browserId: request.browserId ?? handle.browserId,
-    ...(sessionName !== undefined && sessionName !== null ? { sessionName } : {}),
-    targetId,
+    ...routing,
     timeoutMs: Number(timeoutMs),
     maxReturnBytes: Number(maxReturnBytes),
     serviceTabHandle: handle,
@@ -597,14 +606,11 @@ export function createServiceUiActionRequest(input) {
   if (!handle.targetId) {
     throw new TypeError('service UI action request requires serviceTabHandle.targetId');
   }
-  const sessionName = request.sessionName ?? handle.sessionName ?? handle.ownerSessionId;
-  const targetId = request.targetId ?? handle.targetId;
+  const routing = serviceTabHandleRouting(request, handle);
   return createServiceRequest({
     ...request,
     action: 'ui_action',
-    browserId: request.browserId ?? handle.browserId,
-    ...(sessionName !== undefined && sessionName !== null ? { sessionName } : {}),
-    targetId,
+    ...routing,
     timeoutMs: Number(timeoutMs),
     ...(maxTextBytes !== undefined ? { maxTextBytes: Number(maxTextBytes) } : {}),
     serviceTabHandle: handle,
@@ -647,14 +653,11 @@ export function createServiceNetworkCaptureRequest(input) {
   if (!handle.targetId) {
     throw new TypeError('service network capture request requires serviceTabHandle.targetId');
   }
-  const sessionName = request.sessionName ?? handle.sessionName ?? handle.ownerSessionId;
-  const targetId = request.targetId ?? handle.targetId;
+  const routing = serviceTabHandleRouting(request, handle);
   return createServiceRequest({
     ...request,
     action: 'network_capture',
-    browserId: request.browserId ?? handle.browserId,
-    ...(sessionName !== undefined && sessionName !== null ? { sessionName } : {}),
-    targetId,
+    ...routing,
     timeoutMs: Number(timeoutMs),
     ...(maxBodyBytes !== undefined ? { maxBodyBytes: Number(maxBodyBytes) } : {}),
     serviceTabHandle: handle,
@@ -694,14 +697,11 @@ export function createServiceFileTransferRequest(input) {
   if (!handle.targetId) {
     throw new TypeError('service file transfer request requires serviceTabHandle.targetId');
   }
-  const sessionName = request.sessionName ?? handle.sessionName ?? handle.ownerSessionId;
-  const targetId = request.targetId ?? handle.targetId;
+  const routing = serviceTabHandleRouting(request, handle);
   return createServiceRequest({
     ...request,
     action: 'file_transfer',
-    browserId: request.browserId ?? handle.browserId,
-    ...(sessionName !== undefined && sessionName !== null ? { sessionName } : {}),
-    targetId,
+    ...routing,
     timeoutMs: Number(timeoutMs),
     serviceTabHandle: handle,
     fileTransfer,
@@ -779,14 +779,11 @@ export function createServiceTabHandleRefreshRequest(input) {
       'service tab handle refresh request repairPolicy must be reject_only, reuse_compatible, open_if_missing, or replace_duplicates',
     );
   }
-  const sessionName = request.sessionName ?? handle.sessionName ?? handle.ownerSessionId;
-  const targetId = request.targetId ?? handle.targetId;
+  const routing = serviceTabHandleRouting(request, handle);
   return createServiceRequest({
     ...request,
     action: 'tab_handle_refresh',
-    browserId: request.browserId ?? handle.browserId,
-    ...(sessionName !== undefined && sessionName !== null ? { sessionName } : {}),
-    ...(targetId !== undefined && targetId !== null ? { targetId } : {}),
+    ...routing,
     repairPolicy,
     serviceTabHandle: handle,
     ...(params !== undefined ? { params } : {}),
@@ -806,14 +803,11 @@ export function createServiceTabHandleReleaseRequest(input) {
   if (params !== undefined) {
     assertPlainObject(params, 'service tab handle release request params');
   }
-  const sessionName = request.sessionName ?? handle.sessionName ?? handle.ownerSessionId;
-  const targetId = request.targetId ?? handle.targetId;
+  const routing = serviceTabHandleRouting(request, handle);
   return createServiceRequest({
     ...request,
     action: 'tab_handle_release',
-    browserId: request.browserId ?? handle.browserId,
-    ...(sessionName !== undefined && sessionName !== null ? { sessionName } : {}),
-    ...(targetId !== undefined && targetId !== null ? { targetId } : {}),
+    ...routing,
     serviceTabHandle: handle,
     ...(params !== undefined ? { params } : {}),
   });
