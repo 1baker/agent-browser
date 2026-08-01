@@ -69,8 +69,13 @@ dashboard and public operator URLs only after the service state agrees on the
 browser, tab, display allocation, route, and stream:
 
 ```bash
-agent-browser remote-view open <url> --runtime-profile <profile> --browser-build stealthcdp_chromium --view-stream-provider rdp_gateway
+agent-browser remote-view open <url> --runtime-profile <profile> --browser-build stealthcdp_chromium --view-stream-provider rdp_gateway --job-timeout-ms 120000
 ```
+
+Use `--job-timeout-ms <ms>` when a route-bound durable-profile launch can
+legitimately exceed the daemon's default service-job timeout. It applies only
+to that open request and must be a positive integer; it does not reconfigure
+the daemon-wide `--service-job-timeout` policy.
 
 Global flags may appear before or after `remote-view open`. Use `--session`
 for the agent-browser daemon session and `--session-name` for saved browser

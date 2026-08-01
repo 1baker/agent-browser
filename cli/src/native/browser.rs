@@ -1412,17 +1412,56 @@ impl BrowserManager {
     /// Bring the active page forward and ask Chrome to maximize the containing
     /// native window for operator remote-view inspection.
     pub async fn focus_for_view(&self, maximize: bool) -> Result<Value, String> {
-        self.bring_to_front().await?;
+        self.focus_for_view_with_policy(maximize, false).await
+    }
+
+    pub async fn focus_for_view_allowing_bring_to_front_failure(
+        &self,
+        maximize: bool,
+    ) -> Result<Value, String> {
+        self.focus_for_view_with_policy(maximize, true).await
+    }
+
+    /// Focus the native browser window without issuing CDP window commands.
+    /// Route-bound handoff uses this after exact-target navigation because its
+    /// independent visible-window proof is the authority for operator display.
+    pub fn focus_native_window_for_view_only(&self, maximize: bool) -> Value {
+        let native_window_focus = self.focus_native_window_for_view();
+        let mut result = json!({
+            "broughtToFront": false,
+            "maximizeRequested": maximize,
+            "maximized": false,
+            "cdpFocusSkipped": true,
+        });
+        if let Some(native_window_focus) = native_window_focus {
+            result["nativeWindowFocus"] = native_window_focus;
+        }
+        result
+    }
+
+    async fn focus_for_view_with_policy(
+        &self,
+        maximize: bool,
+        allow_bring_to_front_failure: bool,
+    ) -> Result<Value, String> {
+        let bring_to_front_error = match self.bring_to_front().await {
+            Ok(()) => None,
+            Err(error) if allow_bring_to_front_failure => Some(error),
+            Err(error) => return Err(error),
+        };
         let native_window_focus = self.focus_native_window_for_view();
 
         if !maximize {
             let mut result = json!({
-                "broughtToFront": true,
+                "broughtToFront": bring_to_front_error.is_none(),
                 "maximizeRequested": false,
                 "maximized": false,
             });
             if let Some(native_window_focus) = native_window_focus {
                 result["nativeWindowFocus"] = native_window_focus;
+            }
+            if let Some(error) = bring_to_front_error {
+                result["bringToFrontError"] = json!(error);
             }
             return Ok(result);
         }
@@ -1455,7 +1494,7 @@ impl BrowserManager {
         {
             Ok(_) => {
                 let mut result = json!({
-                "broughtToFront": true,
+                "broughtToFront": bring_to_front_error.is_none(),
                 "maximizeRequested": true,
                 "maximized": true,
                 "windowId": window_id,
@@ -1463,11 +1502,14 @@ impl BrowserManager {
                 if let Some(native_window_focus) = native_window_focus {
                     result["nativeWindowFocus"] = native_window_focus;
                 }
+                if let Some(error) = bring_to_front_error {
+                    result["bringToFrontError"] = json!(error);
+                }
                 Ok(result)
             }
             Err(err) => {
                 let mut result = json!({
-                "broughtToFront": true,
+                "broughtToFront": bring_to_front_error.is_none(),
                 "maximizeRequested": true,
                 "maximized": false,
                 "windowId": window_id,
@@ -1475,6 +1517,9 @@ impl BrowserManager {
                 });
                 if let Some(native_window_focus) = native_window_focus {
                     result["nativeWindowFocus"] = native_window_focus;
+                }
+                if let Some(error) = bring_to_front_error {
+                    result["bringToFrontError"] = json!(error);
                 }
                 Ok(result)
             }

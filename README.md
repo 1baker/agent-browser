@@ -2702,11 +2702,16 @@ no-launch HTTP/client route-preflight path and bounded latency without starting
 a browser. Use
 `requestServiceRemoteViewOpen()` or
 `agent-browser remote-view open <url> --runtime-profile <id> --browser-build
-stealthcdp_chromium --view-stream-provider rdp_gateway` when a caller needs the service to
+stealthcdp_chromium --view-stream-provider rdp_gateway --job-timeout-ms 120000`
+when a caller needs the service to
 select the route binding, launch or reuse a remote-headed browser on that bound
 display, open the requested tab, check visible browser window evidence on the
 selected route display, and return dashboard and external route URLs without
 hand-editing Guacamole, display, Xauthority, or CDP fields.
+`--job-timeout-ms` sets the positive per-request service control-plane timeout
+for this open. Use it when a durable-profile or remote-display launch can
+legitimately outlive the daemon's shorter default; it does not change the
+daemon-wide `--service-job-timeout` setting.
 When `AGENT_BROWSER_RDP_ROUTE_POOL_JSON` is present, the CLI copies that
 fresh route-pool array into the `remote_view_open` request unless the caller
 already supplied `--route-pool-entry-json`. This keeps route-pool readiness

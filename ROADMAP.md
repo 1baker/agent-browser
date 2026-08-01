@@ -6,6 +6,49 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P89 | Native Focus for Route-Bound Handoff
+
+State: CLOSED
+Current state: route-bound handoff uses native X11 focus after exact-target
+navigation. The installed cold LinkedIn feed gate passed exact-target,
+visible-window, and operator-route proof in 5.5 seconds.
+
+### Next Recommendation
+
+Consume this repair through last30days source acceptance; keep ordinary
+`view_focus` CDP behavior unchanged.
+
+## P88 | Active-Target Remote-View Readback
+
+State: CLOSED
+Current state: exact-active readback reuses retained target metadata and avoids
+redundant CDP target activation. Focus behavior was completed by Plan 0089.
+
+### Next Recommendation
+
+Preserve exact-active reuse and real target switching as separate paths.
+
+## P87 | Remote-View Blank-Target Acquisition
+
+State: CLOSED
+Current state: route-bound new tabs attach at `about:blank`, then use no-wait
+destination navigation and exact-target readback. The live destination gate
+passed; later handoff issues were closed by Plans 0088 and 0089.
+
+### Next Recommendation
+
+Preserve blank-target acquisition for remote-view opens only.
+
+## P86 | Remote-View Open Per-Job Timeout
+
+State: CLOSED
+Current state: `remote-view open --job-timeout-ms` carries positive per-job
+timeouts into the control plane; live jobs recorded the configured 90 seconds.
+
+### Next Recommendation
+
+Keep client timeout policy explicit and user-scoped at the caller.
+
 ## P85 | Service-Tab-Handle Profile Routing
 
 State: CLOSED
@@ -802,7 +845,7 @@ Start a new lane for any post-release patch or next-version work.
 
 ## P08 | CDP Tab Streaming For Non-Remote Browsers
 
-State: OPEN
+State: CLOSED
 Current state: P08 is the next feature-planning lane after the `v0.27.0`
 release. Existing runtime streaming already uses CDP screencast, but
 service-owned non-remote browsers do not yet advertise dashboard-openable,

@@ -140,7 +140,7 @@ fn parse_service_profile_lookup(
     Ok(cmd)
 }
 
-const REMOTE_VIEW_OPEN_USAGE: &str = "remote-view open [url] [--url <url>] [--runtime-profile <id>] [--browser-build <stock_chrome|stealthcdp_chromium|cdp_free_headed>] [--view-stream-provider <rdp_gateway>] [--provider <rdp_gateway>] [--profile <path>] [--route-pool-entry-id <id>] [--route-pool-entry-json <json>] [--route-id <id>] [--display <name>] [--display-allocation-id <id>] [--browser-id <id>] [--session-name <name>] [--service-name <name>] [--agent-name <name>] [--task-name <name>] [--dry-run]";
+const REMOTE_VIEW_OPEN_USAGE: &str = "remote-view open [url] [--url <url>] [--runtime-profile <id>] [--browser-build <stock_chrome|stealthcdp_chromium|cdp_free_headed>] [--view-stream-provider <rdp_gateway>] [--provider <rdp_gateway>] [--profile <path>] [--route-pool-entry-id <id>] [--route-pool-entry-json <json>] [--route-id <id>] [--display <name>] [--display-allocation-id <id>] [--browser-id <id>] [--session-name <name>] [--service-name <name>] [--agent-name <name>] [--task-name <name>] [--job-timeout-ms <ms>] [--dry-run]";
 
 fn remote_view_route_pool_from_env_value(raw: Option<String>) -> Result<Option<Value>, ParseError> {
     let Some(raw) = raw else {
@@ -976,6 +976,8 @@ fn required_next(
         })
 }
 
+/// Parse one route-bound open, including an optional command-level timeout
+/// that overrides the service control plane's shorter daemon default.
 fn parse_remote_view_open(id: String, rest: &[&str], flags: &Flags) -> Result<Value, ParseError> {
     let mut cmd = json!({
         "id": id,
@@ -1166,6 +1168,25 @@ fn parse_remote_view_open(id: String, rest: &[&str], flags: &Flags) -> Result<Va
             "--task-name" => {
                 let value = required_next(rest, i, "--task-name", REMOTE_VIEW_OPEN_USAGE)?;
                 cmd["taskName"] = json!(value);
+                i += 1;
+            }
+            "--job-timeout-ms" => {
+                let value = required_next(rest, i, "--job-timeout-ms", REMOTE_VIEW_OPEN_USAGE)?;
+                let timeout_ms = value.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                    message: format!(
+                        "Invalid --job-timeout-ms: expected positive milliseconds, got {}",
+                        value
+                    ),
+                    usage: REMOTE_VIEW_OPEN_USAGE,
+                })?;
+                if timeout_ms == 0 {
+                    return Err(ParseError::InvalidValue {
+                        message: "Invalid --job-timeout-ms: expected positive milliseconds, got 0"
+                            .to_string(),
+                        usage: REMOTE_VIEW_OPEN_USAGE,
+                    });
+                }
+                cmd["jobTimeoutMs"] = json!(timeout_ms);
                 i += 1;
             }
             "--dry-run" => {
@@ -7585,6 +7606,32 @@ mod tests {
         assert_eq!(cmd["browserBuild"], "stealthcdp_chromium");
         assert_eq!(cmd["routePoolEntryId"], "pool-a");
         assert_eq!(cmd["dryRun"], true);
+    }
+
+    #[test]
+    fn test_remote_view_open_accepts_per_job_timeout() {
+        let raw =
+            args("remote-view open https://www.linkedin.com/ --job-timeout-ms 120000 --dry-run");
+        let flags = crate::flags::parse_flags(&raw);
+        let clean = crate::flags::clean_args(&raw);
+        let cmd = parse_command(&clean, &flags).unwrap();
+
+        assert_eq!(cmd["action"], "remote_view_open");
+        assert_eq!(cmd["jobTimeoutMs"], 120000);
+        assert_eq!(cmd["dryRun"], true);
+    }
+
+    #[test]
+    fn test_remote_view_open_rejects_invalid_per_job_timeout() {
+        for value in ["0", "invalid"] {
+            let raw = args(&format!(
+                "remote-view open https://www.linkedin.com/ --job-timeout-ms {value}"
+            ));
+            let flags = crate::flags::parse_flags(&raw);
+            let clean = crate::flags::clean_args(&raw);
+            let err = parse_command(&clean, &flags).unwrap_err();
+            assert!(err.format().contains("Invalid --job-timeout-ms"));
+        }
     }
 
     #[test]

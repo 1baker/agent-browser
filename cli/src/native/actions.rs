@@ -11230,6 +11230,29 @@ fn remote_view_open_retained_tab_candidate(
         .cloned()
 }
 
+fn remote_view_open_tab_creation_command(cmd: &Value) -> Value {
+    let mut initial = cmd.clone();
+    initial["url"] = json!("about:blank");
+    initial
+}
+
+fn remote_view_open_active_target_readback(
+    active_target_id: Option<&str>,
+    pages: &[PageInfo],
+    target_id: &str,
+) -> Option<Value> {
+    if active_target_id != Some(target_id) {
+        return None;
+    }
+    let page = pages.iter().find(|page| page.target_id == target_id)?;
+    Some(json!({
+        "targetId": page.target_id,
+        "state": "already_active",
+        "url": page.url,
+        "title": page.title,
+    }))
+}
+
 async fn remote_view_open_acquire_tab(
     cmd: &Value,
     state: &mut DaemonState,
@@ -11487,7 +11510,8 @@ async fn remote_view_open_acquire_tab(
         }
     }
 
-    let mut opened = handle_tab_new(cmd, state).await?;
+    let initial_tab_command = remote_view_open_tab_creation_command(cmd);
+    let mut opened = handle_tab_new(&initial_tab_command, state).await?;
     remote_view_open_wait_for_target_url(cmd, state, &mut opened).await;
     if let Some(service_tab_handle) = opened.get("serviceTabHandle").cloned() {
         persist_service_owned_tab_new(
@@ -11538,7 +11562,16 @@ async fn remote_view_open_wait_for_target_url(
         };
         let mut switched_once = false;
         if let Some(target_id) = target_id.as_deref() {
-            match mgr.tab_switch_target_id(target_id).await {
+            let active_readback = remote_view_open_active_target_readback(
+                mgr.active_target_id().ok(),
+                &mgr.pages_list(),
+                target_id,
+            );
+            match if let Some(readback) = active_readback {
+                Ok(readback)
+            } else {
+                mgr.tab_switch_target_id(target_id).await
+            } {
                 Ok(switched) => {
                     switched_once = true;
                     tab["targetSwitch"] = switched;
@@ -11592,7 +11625,16 @@ async fn remote_view_open_wait_for_target_url(
         };
 
         let selected_switched = if let Some(target_id) = target_id.as_deref() {
-            mgr.tab_switch_target_id(target_id).await.ok()
+            let active_readback = remote_view_open_active_target_readback(
+                mgr.active_target_id().ok(),
+                &mgr.pages_list(),
+                target_id,
+            );
+            if active_readback.is_some() {
+                active_readback
+            } else {
+                mgr.tab_switch_target_id(target_id).await.ok()
+            }
         } else {
             None
         };
@@ -12754,7 +12796,22 @@ async fn handle_view_focus(cmd: &Value, state: &mut DaemonState) -> Result<Value
         .get("maximize")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    let mut result = mgr.focus_for_view(maximize).await?;
+    let mut result = if cmd
+        .get("nativeFocusOnly")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        mgr.focus_native_window_for_view_only(maximize)
+    } else if cmd
+        .get("allowBringToFrontFailure")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        mgr.focus_for_view_allowing_bring_to_front_failure(maximize)
+            .await?
+    } else {
+        mgr.focus_for_view(maximize).await?
+    };
     if let Some(tab_switched) = tab_switched {
         result["tabSwitch"] = tab_switched;
     }
@@ -24795,6 +24852,48 @@ mod tests {
             remote_view_open_reusable_live_target(&pages, Some("https://example.com")).unwrap();
 
         assert_eq!(target.target_id, "same-origin-target");
+    }
+
+    #[test]
+    fn test_remote_view_open_creates_blank_target_before_destination_navigation() {
+        let command = json!({
+            "action": "remote_view_open",
+            "url": "https://www.linkedin.com/feed/",
+            "runtimeProfile": "last30days-facebook",
+            "serviceName": "last30days",
+            "jobTimeoutMs": 90_000,
+        });
+
+        let initial = remote_view_open_tab_creation_command(&command);
+
+        assert_eq!(initial["url"], "about:blank");
+        assert_eq!(initial["runtimeProfile"], "last30days-facebook");
+        assert_eq!(initial["serviceName"], "last30days");
+        assert_eq!(initial["jobTimeoutMs"], 90_000);
+        assert_eq!(command["url"], "https://www.linkedin.com/feed/");
+    }
+
+    #[test]
+    fn test_remote_view_open_reuses_only_exact_active_target_metadata() {
+        let pages = vec![PageInfo {
+            target_id: "target-feed".to_string(),
+            session_id: "page-session".to_string(),
+            url: "https://www.linkedin.com/feed/".to_string(),
+            title: "Feed | LinkedIn".to_string(),
+            target_type: "page".to_string(),
+        }];
+
+        let readback =
+            remote_view_open_active_target_readback(Some("target-feed"), &pages, "target-feed")
+                .unwrap();
+        assert_eq!(readback["state"], "already_active");
+        assert_eq!(readback["url"], "https://www.linkedin.com/feed/");
+        assert!(remote_view_open_active_target_readback(
+            Some("other-target"),
+            &pages,
+            "target-feed"
+        )
+        .is_none());
     }
 
     #[test]

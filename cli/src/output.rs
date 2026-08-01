@@ -5243,6 +5243,7 @@ Options:
   --service-name <name>        Caller service label for service trace records
   --agent-name <name>          Caller agent label for service trace records
   --task-name <name>           Caller task label for service trace records
+  --job-timeout-ms <ms>        Positive per-request service job timeout for slow launches
   --dry-run                    Show planned route, launch, tab, and checkout commands
   --json                       Output JSON
 
@@ -5262,7 +5263,7 @@ Global placement:
 
 Examples:
   agent-browser --json remote-view open https://www.facebook.com/ --view-stream-provider rdp_gateway
-  agent-browser remote-view open https://www.facebook.com/ --runtime-profile last30days-facebook --browser-build stealthcdp_chromium --view-stream-provider rdp_gateway
+  agent-browser remote-view open https://www.facebook.com/ --runtime-profile last30days-facebook --browser-build stealthcdp_chromium --view-stream-provider rdp_gateway --job-timeout-ms 120000
   agent-browser --session facebook-route remote-view open https://www.facebook.com/ --runtime-profile last30days-facebook --session-name last30days-facebook --view-stream-provider rdp_gateway
   agent-browser remote-view open linkedin.com --route-pool-entry-id guacamole-rdp-a --display :11 --dry-run
 "##

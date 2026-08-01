@@ -732,6 +732,8 @@ pub fn route_bound_handoff_focus_command(cmd: &Value, tab: &Value, session_id: &
         Value::String(session_id.to_string()),
     );
     command.insert("maximize".to_string(), Value::Bool(true));
+    command.insert("allowBringToFrontFailure".to_string(), Value::Bool(true));
+    command.insert("nativeFocusOnly".to_string(), Value::Bool(true));
     let has_target_id = if let Some(target_id) = tab.get("targetId").and_then(Value::as_str) {
         command.insert("targetId".to_string(), Value::String(target_id.to_string()));
         true
@@ -2454,6 +2456,8 @@ mod tests {
         assert_eq!(command["action"], "view_focus");
         assert_eq!(command["sessionName"], "remote-session");
         assert_eq!(command["targetId"], "selected-target");
+        assert_eq!(command["allowBringToFrontFailure"], true);
+        assert_eq!(command["nativeFocusOnly"], true);
         assert!(command.get("index").is_none());
     }
 
