@@ -46,11 +46,10 @@ through CLI error rendering.
 
 ## Next Action
 
-- From an interactive terminal, run `agent-browser install workstation --apply
-  --json`, then `agent-browser install doctor --json`. The reviewed executable
-  is installed, but the source-free workstation manifest and root-owned
-  remote-view helper must be reconciled before any successor last30days source
-  proof.
+- Return to last30days Plan 0018 and create one separately reviewed, bounded X
+  successor checkpoint. The installed agent-browser runtime and route-bound
+  proof gate are now satisfied; do not reuse the failed C63 run or bypass its
+  exhausted attempt budget.
 
 ## Candidate Result
 
@@ -89,3 +88,21 @@ through CLI error rendering.
   previous executable and the bundled privilege helper differs from the
   installed root-owned helper. Workstation reconciliation requires interactive
   sudo and was not completed in this non-interactive turn.
+- The operator subsequently completed the interactive workstation
+  reconciliation. `agent-browser install doctor --json` now passes with no
+  issues, the installed executable and sole live daemon share SHA-256
+  `a99728c56a57a80bd89ad1bc4e8c8d4a1d1af7bc08e2d52919ea0e384a5d7211`,
+  the dashboard is ready, and runtime convergence reports no stale or
+  diagnostic runtimes.
+- `agent-browser doctor remote-view --json` is ready with both route displays
+  accessible, the route pool ready, and external Guacamole ingress ready. A
+  direct installed-binary Route B gate opened the existing dashboard through
+  `guacamole:2`, proved `browser_window_visible`, operator visibility, and
+  attachability in one target readback, then closed the disposable session;
+  the post-close doctor remained ready and no route allocation remained.
+- The repository fixture harness separately stalled its in-process HTTP
+  fixture at navigation because its synchronous CLI child blocks that same
+  Node event loop. It nevertheless reached the repaired visible-window proof
+  before the unrelated navigation timeout and cleaned up its disposable
+  browser, session, route, and display. Treat that harness defect as separate
+  follow-up; it does not invalidate the installed product-path gate above.

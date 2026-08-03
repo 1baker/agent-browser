@@ -4,6 +4,57 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 134 | 2026-08-02
+
+Scope: reconcile the installed P90 workstation payload and prove the repaired
+route-bound display path before returning authority to last30days.
+
+Actions:
+
+- Accepted the operator-completed interactive workstation reconciliation and
+  re-read installed provenance rather than assuming the source push implied
+  runtime readiness.
+- Ran both installed-runtime doctors and confirmed executable, daemon,
+  dashboard, route-pool, route-display, and external-ingress convergence.
+- Ran the repository live fixture. Its route-bound visible-window proof passed,
+  but its in-process HTTP fixture could not serve while the same Node process
+  blocked on the synchronous CLI child, so navigation remained `about:blank`.
+  Cleanup released every disposable resource.
+- Ran the installed binary directly against the already-running dashboard on
+  disposable Route B. It loaded the target, returned a direct external
+  Guacamole URL, and aligned route, display, browser window, operator-visible,
+  and attachability proof before clean close.
+
+Validation:
+
+- install doctor: success, zero issues, executable SHA-256
+  `a99728c56a57a80bd89ad1bc4e8c8d4a1d1af7bc08e2d52919ea0e384a5d7211`,
+  one converged daemon, dashboard ready
+- remote-view doctor: ready, runtime converged, both `:10` and `:11`
+  accessible, route pool and external Guacamole ingress ready
+- direct gate: job `r63183`, `remote_view_open` succeeded on
+  `guacamole-rdp-b` / `guacamole:2` / `:11`; target dashboard loaded in one
+  readback with `browser_window_visible`, operator-visible ready, and
+  attachability ready
+- post-close remote-view doctor remained ready and both route allocations were
+  free
+
+Result:
+
+- P90 is closed both in source and in the installed runtime. The original C63
+  route-bound proof defect is repaired and live-proven.
+- The fixture self-server/synchronous-child interaction is a separate harness
+  defect; it consumed no last30days source attempt and left no retained
+  resource.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
+Next bounded action:
+
+- Return to last30days Plan 0018 and review one fresh X successor identity.
+  Preserve the durable `last30days-facebook` binding and require any genuine
+  human handoff to use the direct external Guacamole URL.
+
 ## Turn 133 | 2026-08-02
 
 Scope: finish the reviewed P90 runtime installation and publish the repo fix
