@@ -102,6 +102,11 @@ try {
   const dockerCommands = readFileSync(dockerLog, 'utf8');
   assert.match(dockerCommands, /ON_ERROR_STOP=1/);
   assert.match(dockerCommands, /CHECKPOINT;/);
+  assert.match(
+    dockerCommands,
+    /compose --project-name true /,
+    'retained Compose project must be inherited by route sync and schema guards',
+  );
 
   const applyFlag = run(['--apply']);
   assert.equal(applyFlag.status, 2, 'sync applies by default and must reject an apply flag');

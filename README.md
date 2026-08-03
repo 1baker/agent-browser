@@ -60,6 +60,9 @@ restart XRDP, and grant route-display access without repeated sudo prompts.
 New route-pool users get an idle Openbox session that keeps XRDP alive without
 starting a foreground terminal, so `remote-view open` can make the browser the
 operator-visible window.
+Routine workstation reconciliation preserves live XRDP desktops. Route-user
+and credential changes take effect at the next login without restarting
+`xrdp-sesman`, whose replacement cannot adopt an existing Xorg session.
 After applying, open a new shell or run `newgrp agent-browser`, then verify
 with `agent-browser doctor remote-view`.
 When `--with-deps` is combined with `--with-remote-view-privileges`, the
@@ -118,6 +121,12 @@ required.
 On rerun, apply first stops the managed dashboard, runtime interlock, and
 backup timer while it reconciles the installed payload and routes. It
 reactivates those units only after final readiness succeeds.
+Before Compose can recreate Guacamole, reconciliation compares the protected
+PostgreSQL password with any retained database container. If they differ, it
+updates only the protected password entry, keeps the file private, and leaves
+the database unchanged. It also reuses the retained Compose project label so
+the existing containers are reconciled in place. A retained container without
+a usable password or project label fails closed.
 
 `agent-browser install workstation reconcile --json` reruns the installed
 convergence controller without reinstalling the payload.

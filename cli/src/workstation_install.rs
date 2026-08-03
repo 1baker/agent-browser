@@ -427,18 +427,20 @@ fn reconcile_workstation_locked(
         success: true,
     });
 
-    let compose_args = vec![
-        "compose".to_string(),
-        "--env-file".to_string(),
-        guacamole_env.display().to_string(),
-        "--env-file".to_string(),
-        paths.guacamole_secret_file.display().to_string(),
-        "-f".to_string(),
-        guacamole_dir.join("compose.yml").display().to_string(),
-        "up".to_string(),
-        "-d".to_string(),
-        "--wait".to_string(),
-    ];
+    reconcile_postgres_password_from_retained_container(paths, support_root, &command_env)?;
+    steps.push(ReconcileStep {
+        name: "postgres-credentials-aligned",
+        success: true,
+    });
+
+    let retained_compose_project =
+        retained_postgres_compose_project_name(support_root, &command_env)?;
+    let compose_args = guacamole_compose_args(
+        &guacamole_env,
+        &paths.guacamole_secret_file,
+        &guacamole_dir.join("compose.yml"),
+        retained_compose_project.as_deref(),
+    );
     run_required_owned(
         "docker",
         &compose_args,
@@ -1078,6 +1080,178 @@ fn secret_values(secret_file: &Path) -> Result<std::collections::HashMap<String,
         .collect())
 }
 
+/// Keeps a retained PostgreSQL cluster and the protected Compose environment
+/// on the same credential before any Guacamole container can be recreated.
+/// PostgreSQL ignores `POSTGRES_PASSWORD` when its data directory already
+/// exists, so the retained container value must win over a drifted file.
+fn reconcile_postgres_password_from_retained_container(
+    paths: &InstallPaths,
+    support_root: &Path,
+    command_env: &[(String, String)],
+) -> Result<bool, String> {
+    let container_name = "agent-browser-guacamole-postgres";
+    if !retained_postgres_container_exists(support_root, command_env)? {
+        return Ok(false);
+    }
+
+    let inspect = run_status(
+        "docker",
+        &[
+            "container",
+            "inspect",
+            "--format",
+            "{{range .Config.Env}}{{println .}}{{end}}",
+            container_name,
+        ],
+        support_root,
+        command_env,
+        true,
+    )?;
+    let password = container_environment_value(&inspect.stdout, "POSTGRES_PASSWORD")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "Retained Guacamole PostgreSQL container has no usable POSTGRES_PASSWORD".to_string()
+        })?;
+    reconcile_protected_secret_value(&paths.guacamole_secret_file, "POSTGRES_PASSWORD", &password)
+}
+
+fn retained_postgres_container_exists(
+    support_root: &Path,
+    command_env: &[(String, String)],
+) -> Result<bool, String> {
+    let container_list = run_status(
+        "docker",
+        &[
+            "container",
+            "ls",
+            "--all",
+            "--filter",
+            "name=^/agent-browser-guacamole-postgres$",
+            "--format",
+            "{{.Names}}",
+        ],
+        support_root,
+        command_env,
+        false,
+    )?;
+    Ok(String::from_utf8_lossy(&container_list.stdout)
+        .lines()
+        .any(|name| name.trim() == "agent-browser-guacamole-postgres"))
+}
+
+fn retained_postgres_compose_project_name(
+    support_root: &Path,
+    command_env: &[(String, String)],
+) -> Result<Option<String>, String> {
+    if !retained_postgres_container_exists(support_root, command_env)? {
+        return Ok(None);
+    }
+    let output = run_status(
+        "docker",
+        &[
+            "container",
+            "inspect",
+            "--format",
+            "{{index .Config.Labels \"com.docker.compose.project\"}}",
+            "agent-browser-guacamole-postgres",
+        ],
+        support_root,
+        command_env,
+        false,
+    )?;
+    let project = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let valid = project
+        .chars()
+        .next()
+        .map(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+        .unwrap_or(false)
+        && project.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || character == '-'
+                || character == '_'
+        });
+    if !valid {
+        return Err(
+            "Retained Guacamole PostgreSQL container has no usable Compose project label"
+                .to_string(),
+        );
+    }
+    Ok(Some(project))
+}
+
+fn guacamole_compose_args(
+    environment_file: &Path,
+    secret_file: &Path,
+    compose_file: &Path,
+    retained_project: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec!["compose".to_string()];
+    if let Some(project) = retained_project {
+        args.extend(["--project-name".to_string(), project.to_string()]);
+    }
+    args.extend([
+        "--env-file".to_string(),
+        environment_file.display().to_string(),
+        "--env-file".to_string(),
+        secret_file.display().to_string(),
+        "-f".to_string(),
+        compose_file.display().to_string(),
+        "up".to_string(),
+        "-d".to_string(),
+        "--wait".to_string(),
+    ]);
+    args
+}
+
+fn container_environment_value(output: &[u8], key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    String::from_utf8_lossy(output)
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix).map(str::to_string))
+}
+
+fn reconcile_protected_secret_value(
+    secret_file: &Path,
+    key: &str,
+    value: &str,
+) -> Result<bool, String> {
+    if value.contains('\n') || value.contains('\r') {
+        return Err(format!(
+            "Protected Guacamole value for {key} contains a newline"
+        ));
+    }
+    let contents = fs::read_to_string(secret_file)
+        .map_err(display_io("read protected Guacamole secrets", secret_file))?;
+    let mut lines = contents.lines().map(str::to_string).collect::<Vec<_>>();
+    let matches = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            line.split_once('=')
+                .filter(|(candidate, _)| candidate.trim() == key)
+                .map(|(_, current)| (index, current.to_string()))
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(format!(
+            "Protected Guacamole secret file must contain exactly one {key} entry: {}",
+            secret_file.display()
+        ));
+    }
+    if matches[0].1 == value {
+        set_private_file(secret_file)?;
+        return Ok(false);
+    }
+    lines[matches[0].0] = format!("{key}={value}");
+    fs::write(secret_file, format!("{}\n", lines.join("\n"))).map_err(display_io(
+        "reconcile protected Guacamole secrets",
+        secret_file,
+    ))?;
+    set_private_file(secret_file)?;
+    Ok(true)
+}
+
 fn ensure_route_users(
     paths: &InstallPaths,
     command_env: &[(String, String)],
@@ -1135,14 +1309,11 @@ fn ensure_route_users(
             ));
         }
     }
-    run_required(
-        "sudo",
-        &["-n", helper, "restart-xrdp"],
-        &paths.support_dir,
-        command_env,
-        true,
-        "restart XRDP after route-user bootstrap",
-    )
+    // XRDP resolves PAM users and their session startup file at login time.
+    // Restarting sesman here is unnecessary and makes any live route desktop
+    // unreachable because the replacement sesman cannot adopt the surviving
+    // Xorg session owned by its predecessor.
+    Ok(())
 }
 
 fn route_readiness(
@@ -1744,9 +1915,23 @@ fn materialize_guacamole_assets(staged_support: &Path) -> Result<(), String> {
         ("generate-initdb.sh", GUACAMOLE_SCHEMA_GENERATOR, true),
         ("manifest.json", GUACAMOLE_BUNDLE_MANIFEST, false),
         ("init/001-initdb.sql", GUACAMOLE_INITDB, false),
+        (
+            "extensions/guac-manifest.json",
+            GUACAMOLE_DEFAULTS_EXTENSION_MANIFEST,
+            false,
+        ),
+        (
+            "extensions/agent-browser-defaults.js",
+            GUACAMOLE_DEFAULTS_EXTENSION_SCRIPT,
+            false,
+        ),
     ];
     for (relative, content, executable) in assets {
         let destination = guacamole_dir.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(display_io("create Guacamole asset staging", parent))?;
+        }
         fs::write(&destination, content)
             .map_err(display_io("stage Guacamole support asset", &destination))?;
         if executable {
@@ -2434,6 +2619,74 @@ mod tests {
     }
 
     #[test]
+    fn retained_postgres_password_replaces_drifted_protected_secret() {
+        let root = env::temp_dir().join(format!(
+            "agent-browser-workstation-postgres-secret-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let secret_file = root.join("guacamole.env");
+        fs::write(
+            &secret_file,
+            "POSTGRES_PASSWORD=stale\nXRDP_AGENT_BROWSER_ROUTE_A_USERNAME=preserved\n",
+        )
+        .unwrap();
+        set_private_file(&secret_file).unwrap();
+
+        assert!(reconcile_protected_secret_value(
+            &secret_file,
+            "POSTGRES_PASSWORD",
+            "retained-container-password",
+        )
+        .unwrap());
+        assert!(!reconcile_protected_secret_value(
+            &secret_file,
+            "POSTGRES_PASSWORD",
+            "retained-container-password",
+        )
+        .unwrap());
+
+        let contents = fs::read_to_string(&secret_file).unwrap();
+        assert!(contents.contains("POSTGRES_PASSWORD=retained-container-password\n"));
+        assert!(contents.contains("XRDP_AGENT_BROWSER_ROUTE_A_USERNAME=preserved\n"));
+        assert!(!contents.contains("POSTGRES_PASSWORD=stale\n"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&secret_file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn retained_compose_project_is_used_for_reconcile() {
+        let args = guacamole_compose_args(
+            Path::new("/state/.env"),
+            Path::new("/state/secrets/guacamole.env"),
+            Path::new("/support/guacamole/compose.yml"),
+            Some("guacamole"),
+        );
+        assert_eq!(&args[..3], ["compose", "--project-name", "guacamole"]);
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--env-file", "/state/.env"]));
+        assert!(args.ends_with(&["up".to_string(), "-d".to_string(), "--wait".to_string()]));
+
+        let fresh = guacamole_compose_args(
+            Path::new("/state/.env"),
+            Path::new("/state/secrets/guacamole.env"),
+            Path::new("/support/guacamole/compose.yml"),
+            None,
+        );
+        assert_eq!(fresh.first().map(String::as_str), Some("compose"));
+        assert!(!fresh.iter().any(|value| value == "--project-name"));
+    }
+
+    #[test]
     fn guacamole_defaults_extension_packages_text_input_migration() {
         let root = env::temp_dir().join(format!(
             "agent-browser-guacamole-defaults-test-{}",
@@ -2463,6 +2716,26 @@ mod tests {
             .unwrap();
         assert!(script.contains("preferences.inputMethod = 'text'"));
         assert!(script.contains("AGENT_BROWSER_GUAC_DEFAULTS_VERSION"));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn materialized_guacamole_bundle_keeps_defaults_extension_sources() {
+        let root = env::temp_dir().join(format!(
+            "agent-browser-guacamole-bundle-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        materialize_guacamole_assets(&root).unwrap();
+        for relative in [
+            "guacamole/extensions/guac-manifest.json",
+            "guacamole/extensions/agent-browser-defaults.js",
+            "guacamole/extensions/agent-browser-defaults.jar",
+        ] {
+            assert!(root.join(relative).is_file(), "missing {relative}");
+        }
 
         fs::remove_dir_all(&root).unwrap();
     }

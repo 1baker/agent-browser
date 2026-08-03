@@ -8,6 +8,7 @@ const files = ['scripts/libexec/agent-browser-privileged-helper'];
 
 const routePoolSource = readFileSync('scripts/setup-rdp-guac-route-pool.sh', 'utf8');
 const displayAccessSource = readFileSync('scripts/grant-rdp-route-display-access.sh', 'utf8');
+const workstationInstallSource = readFileSync('cli/src/workstation_install.rs', 'utf8');
 
 assert.doesNotMatch(
   routePoolSource,
@@ -15,7 +16,20 @@ assert.doesNotMatch(
   'installed route-pool setup must never fall back to interactive or unbounded sudo commands',
 );
 assert.match(routePoolSource, /sudo -n "\$PRIVILEGED_HELPER" ensure-rdp-route-user/);
-assert.match(routePoolSource, /sudo -n "\$PRIVILEGED_HELPER" restart-xrdp/);
+assert.doesNotMatch(
+  routePoolSource,
+  /sudo -n "\$PRIVILEGED_HELPER" restart-xrdp/,
+  'route-user setup must preserve live XRDP desktops',
+);
+const workstationRouteUsers = workstationInstallSource.match(
+  /fn ensure_route_users\([^]*?\n}\n\nfn route_readiness/,
+)?.[0];
+assert.ok(workstationRouteUsers, 'workstation route-user reconciliation source must be present');
+assert.doesNotMatch(
+  workstationRouteUsers,
+  /restart-xrdp|restart XRDP/,
+  'workstation reconciliation must preserve live XRDP desktops',
+);
 assert.doesNotMatch(
   displayAccessSource,
   /\bsudo -u\b/,

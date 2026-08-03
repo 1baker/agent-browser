@@ -18,6 +18,10 @@ route-user, XRDP restart, and route-display action then uses the fixed
 root-owned helper through passwordless `sudo -n`. Compatible helper versions
 are retained across byte-only bundle drift, and maintenance fails closed
 instead of prompting or running direct sudo fallbacks.
+Routine workstation reconciliation preserves live XRDP desktops. Route-user
+and credential changes apply at the next login without restarting
+`xrdp-sesman`, because a replacement sesman cannot adopt a surviving Xorg
+session.
 Real-host preflight requires at least 6 GiB free before sudo, payload staging,
 or package mutation; inspect `hostPlan.availableDiskBytes`,
 `minimumDiskBytes`, and `diskSpaceReady` in JSON output.
@@ -38,7 +42,13 @@ the `text` input method. Text input is therefore selected for existing and new
 connections, while a later user-selected override remains persistent.
 Reruns first stop the managed dashboard, runtime interlock, and backup
 timer while reconciliation is active, then reactivate them after final
-readiness. Use `agent-browser install workstation reconcile --json` for an
+readiness. Before Compose can recreate Guacamole, reconciliation aligns the
+protected PostgreSQL password with any retained database container, preserves
+the other protected values and private file mode, and leaves the database
+unchanged. It reuses the retained Compose project label so existing containers
+are reconciled in place. A retained container without a usable password or
+project label fails closed. Use `agent-browser install workstation reconcile
+--json` for an
 explicit installed-controller recovery pass and `agent-browser install
 workstation backup --json` for the protected PostgreSQL backup operation. This
 branch remains a release no-go until the disposable Ubuntu and release gates

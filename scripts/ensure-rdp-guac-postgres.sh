@@ -65,10 +65,20 @@ if [[ -r "$SECRET_FILE" ]]; then
   compose_env_args+=(--env-file "$SECRET_FILE")
 fi
 
+compose_project_args=()
+if docker inspect "$POSTGRES_CONTAINER" >/dev/null 2>&1; then
+  retained_project="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$POSTGRES_CONTAINER")"
+  if [[ ! "$retained_project" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+    echo "Retained Guacamole PostgreSQL container has no usable Compose project label." >&2
+    exit 1
+  fi
+  compose_project_args+=(--project-name "$retained_project")
+fi
+
 compose() {
   (
     cd "$GUAC_DIR"
-    docker compose "${compose_env_args[@]}" "$@"
+    docker compose "${compose_project_args[@]}" "${compose_env_args[@]}" "$@"
   )
 }
 

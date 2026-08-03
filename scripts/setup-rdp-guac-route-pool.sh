@@ -359,14 +359,11 @@ PY
   docker compose exec -T postgres psql -U guacamole_user -d guacamole_db -v ON_ERROR_STOP=1 -c "CHECKPOINT;" >/dev/null
 )
 
-if [[ "$REUSE_EXISTING_ROUTE_USERS" != "1" ]]; then
-  sudo -n "$PRIVILEGED_HELPER" restart-xrdp
-fi
-
 echo "Configured two Guacamole RDP route-pool users and connections."
 if [[ "$REUSE_EXISTING_ROUTE_USERS" == "1" ]]; then
   echo "Reused existing route-specific XRDP users and stored route secrets."
 fi
+echo "Preserved any live XRDP route desktops; new users and credentials apply at their next login."
 echo "Guacamole Postgres route writes checkpoint completed."
 echo "Secrets were stored in $SECRET_FILE."
 echo "Next: pnpm test:rdp-guac-route-pool-readiness"

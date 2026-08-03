@@ -5070,10 +5070,16 @@ requires at least 6 GiB free before sudo, payload staging, or package mutation.
 
 Workstation apply reruns stop the managed dashboard, runtime interlock, and
 backup timer during reconciliation, then reactivate them after final readiness.
+Before Compose can recreate Guacamole, reconciliation aligns the protected
+PostgreSQL password with any retained database container without changing the
+database and reuses its Compose project label. A retained container without a
+usable password or project label fails closed.
 The first host bootstrap has one sudo authorization boundary. Later route-user,
 XRDP restart, and display-access maintenance uses only the fixed passwordless
 helper and fails closed instead of prompting. Compatible installed helper
 versions are retained across byte-only bundle drift.
+Routine workstation reconciliation preserves live XRDP desktops and applies
+route-user or credential changes at the next login without restarting sesman.
 Host preparation includes display inspection, visual-proof tools, and a
 path-scoped AppArmor userns policy for managed Chrome on Ubuntu 24.04. It does
 not require that policy when the kernel disables AppArmor or does not restrict

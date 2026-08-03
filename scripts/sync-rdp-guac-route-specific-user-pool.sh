@@ -23,6 +23,7 @@ GUAC_DIR="${AGENT_BROWSER_GUACAMOLE_DIR:-$HOME/.agent-browser/guacamole}"
 SECRET_FILE="${AGENT_BROWSER_GUACAMOLE_SECRET_FILE:-$HOME/.agent-browser/secrets/guacamole.env}"
 HOSTNAME="${AGENT_BROWSER_RDP_TARGET_HOST:-host.docker.internal}"
 PORT="${AGENT_BROWSER_RDP_TARGET_PORT:-3389}"
+POSTGRES_CONTAINER="${AGENT_BROWSER_GUACAMOLE_POSTGRES_CONTAINER:-agent-browser-guacamole-postgres}"
 CONNECTION_A="${AGENT_BROWSER_RDP_ROUTE_A_CONNECTION_NAME:-Agent Browser RDP Route A}"
 CONNECTION_B="${AGENT_BROWSER_RDP_ROUTE_B_CONNECTION_NAME:-Agent Browser RDP Route B}"
 LEGACY_CONNECTION_A="${AGENT_BROWSER_RDP_ROUTE_A_LEGACY_CONNECTION_NAME:-Agent Browser RDP Existing User Route A}"
@@ -51,10 +52,20 @@ if [[ -r "$GUAC_DIR/.env" ]]; then
 fi
 compose_env_args+=(--env-file "$SECRET_FILE")
 
+compose_project_args=()
+if docker inspect "$POSTGRES_CONTAINER" >/dev/null 2>&1; then
+  retained_project="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$POSTGRES_CONTAINER")"
+  if [[ ! "$retained_project" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+    echo "Retained Guacamole PostgreSQL container has no usable Compose project label." >&2
+    exit 1
+  fi
+  compose_project_args+=(--project-name "$retained_project")
+fi
+
 compose() {
   (
     cd "$GUAC_DIR"
-    docker compose "${compose_env_args[@]}" "$@"
+    docker compose "${compose_project_args[@]}" "${compose_env_args[@]}" "$@"
   )
 }
 
