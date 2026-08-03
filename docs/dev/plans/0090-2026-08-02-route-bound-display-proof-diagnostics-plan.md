@@ -59,6 +59,11 @@ through CLI error rendering.
   reason, and AI-friendly rendering preserves the structured failure.
 - Forty-seven focused tests and all twenty-nine `remote_view_open` tests pass.
   Rust formatting and strict Clippy pass.
+- The first independent review found one blocking coverage gap: the probe-error
+  regression did not exercise sanitization or the 240-character cap. The one
+  allowed rework cycle now covers multiline, quoted, over-limit input and
+  asserts the sanitized bounded result; thirty remote-view unit tests and all
+  twenty-nine `remote_view_open` tests pass after rework.
 - The complete Rust suite reported 1,755 passed, 57 ignored, and two failures.
   The authenticated-target failure passed alone. The unknown-command fixture
   remains sensitive to the installed browser-recovery retry state and still

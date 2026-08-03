@@ -21,10 +21,14 @@ Actions:
   exact-display proof path while retaining that guard for unbound probes.
 - Preserved a sanitized, bounded underlying display-probe reason through the
   visible-window proof and AI-friendly error renderer.
+- Independent review found the initial probe-error test did not lock down
+  sanitization and truncation. Reworked it with multiline, quoted, over-limit
+  input and exact assertions for single-line output and the 240-character cap.
 
 Validation:
 
 - forty-seven focused display-proof and error-rendering tests
+- thirty remote-view unit tests after the independent-review rework
 - all twenty-nine `remote_view_open` tests
 - Rust formatting and strict Clippy with warnings denied
 - complete Rust suite: 1,755 passed, 57 ignored, two state-sensitive failures;

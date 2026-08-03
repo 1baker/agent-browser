@@ -2908,6 +2908,7 @@ mod tests {
 
     #[test]
     fn visible_window_failure_preserves_display_probe_reason() {
+        let raw_probe_error = format!("quoted' line\nbreak\r{}", "x".repeat(300));
         let error = visible_browser_window_proof(
             "guacamole:2",
             ":11",
@@ -2915,12 +2916,19 @@ mod tests {
                 "state": "display_probe_unavailable",
                 "displayName": ":11",
                 "windows": [],
-                "error": "xwininfo probe failed",
+                "error": raw_probe_error,
             }),
         )
         .unwrap_err();
 
         assert!(error.contains("browser_window_not_visible"));
-        assert!(error.contains("probe_error='xwininfo probe failed'"));
+        let preserved_probe_error = error
+            .split("probe_error='")
+            .nth(1)
+            .and_then(|value| value.strip_suffix('\''))
+            .expect("visible-window failure should preserve the probe error");
+        assert_eq!(preserved_probe_error.chars().count(), 240);
+        assert!(preserved_probe_error.starts_with("quoted line break "));
+        assert!(!preserved_probe_error.contains(['\n', '\r', '\'']));
     }
 }
