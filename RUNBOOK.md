@@ -4,6 +4,39 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 133 | 2026-08-02
+
+Scope: finish the reviewed P90 runtime installation and publish the repo fix
+after the litscout owner paused its workflow.
+
+Actions:
+
+- Confirmed the blocking `litscout-plan0311` daemon had exited.
+- Re-ran the no-browser local publisher. It installed executable SHA-256
+  `a99728c56a57a80bd89ad1bc4e8c8d4a1d1af7bc08e2d52919ea0e384a5d7211`,
+  restarted the dashboard, passed dashboard smoke, and reattached ten retained
+  targets in `litscout-0312`.
+- Ran install doctor, which failed closed on workstation-payload provenance:
+  the source-free manifest still records the previous executable and the
+  installed root-owned privilege helper differs from the bundled helper.
+- Attempted the doctor-prescribed workstation reconciliation. It stopped at
+  the interactive sudo gate without changing the root-owned helper.
+
+Validation:
+
+- installed, built, and checkout-reference binaries share SHA-256 `a99728c56a57a80bd89ad1bc4e8c8d4a1d1af7bc08e2d52919ea0e384a5d7211`
+- dashboard runtime manifest reports the same executable SHA-256
+- dashboard service is active and its no-browser smoke passed
+- install doctor remains non-ready until interactive workstation reconciliation
+
+Result:
+
+- The reviewed P90 executable is installed, but the full workstation payload
+  is not provenance-converged. Do not consume a last30days source proof until
+  interactive reconciliation and install doctor pass.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 132 | 2026-08-02
 
 Scope: diagnose and repair the last30days route-bound visible-window proof

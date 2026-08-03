@@ -46,9 +46,11 @@ through CLI error rendering.
 
 ## Next Action
 
-- When the active `litscout-plan0311` daemon can be quiesced by its owning
-  workflow, rerun the no-browser local publisher and install doctor before any
-  successor last30days source proof.
+- From an interactive terminal, run `agent-browser install workstation --apply
+  --json`, then `agent-browser install doctor --json`. The reviewed executable
+  is installed, but the source-free workstation manifest and root-owned
+  remote-view helper must be reconciled before any successor last30days source
+  proof.
 
 ## Candidate Result
 
@@ -80,3 +82,10 @@ through CLI error rendering.
   all three active daemons match that installed executable and the dashboard
   service is active. The reviewed repair is therefore implemented and
   validated in the repo, but not installed.
+- After the litscout owner paused its workflow, the no-browser publisher
+  succeeded and installed candidate SHA-256 `a99728c56a57a80bd89ad1bc4e8c8d4a1d1af7bc08e2d52919ea0e384a5d7211`.
+  Dashboard smoke passed and `litscout-0312` reattached ten targets. Install
+  doctor then failed closed because the source-free manifest still records the
+  previous executable and the bundled privilege helper differs from the
+  installed root-owned helper. Workstation reconciliation requires interactive
+  sudo and was not completed in this non-interactive turn.

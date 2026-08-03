@@ -16,10 +16,11 @@ failure, but CLI error rendering collapsed it into a generic page timeout.
 
 ### Next Recommendation
 
-Install reviewed commit `116ee810` through the no-browser publisher after the
-active `litscout-plan0311` daemon can be quiesced by its owning workflow. The
-publisher rolled back safely when that daemon did not exit; do not consume
-another last30days source attempt before the reviewed binary is installed.
+The reviewed executable is installed after the litscout owner paused its
+workflow, but install doctor fails closed on source-free manifest and
+root-owned helper drift. Complete `agent-browser install workstation --apply
+--json` from an interactive sudo-capable terminal, then require install doctor
+to pass before consuming another last30days source attempt.
 
 ## P89 | Native Focus for Route-Bound Handoff
 
