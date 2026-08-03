@@ -6,6 +6,24 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P91 | Systemd Interlock Self-Quiesce Repair
+
+State: BLOCKED
+Current state: the self-quiesce defect is repaired and validated, and the
+corrected binary and source-free payload are installed with matching
+provenance. The dashboard public route and PostgreSQL backup timer are healthy.
+The recurring interlock remains disabled because the helper refresh requires
+interactive sudo. `wsl-chrome-3` was recovered separately on Route A, leaving
+nineteen stale daemon owners that still truthfully bind the prior executable
+and cannot be forced closed safely.
+
+### Next Recommendation
+
+Schedule one coordinated maintenance window to refresh the root-owned helper,
+hand off all nineteen remaining stale daemon sessions, and require one
+successful installed interlock pass before re-enabling the recurring timer
+contract.
+
 ## P90 | Route-Bound Display Proof Diagnostics
 
 State: CLOSED

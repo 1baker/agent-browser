@@ -4,6 +4,59 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 135 | 2026-08-03
+
+Scope: restore the public agent-browser and Guacamole routes, repair the
+systemd interlock self-quiesce defect, and attempt one bounded installed proof.
+
+Actions:
+
+- Restored missing Guacamole READ grants for the three governed users on
+  connection ids `1` and `2` from a prechange PostgreSQL backup.
+- Diagnosed the external HTTP 502 as the dashboard service being stopped by a
+  timer-triggered reconcile that included its own running interlock service in
+  the systemd stop request.
+- Added a red regression for the quiesce set, removed only the running service
+  from that set, and retained the dashboard, interlock timer, and PostgreSQL
+  backup timer.
+- Built and materialized the corrected `0.28.0` payload. The apply then stopped
+  at the existing interactive sudo gate for the root-owned privilege helper.
+- Preserved every active daemon and browser session. Restored the dashboard and
+  backup timer directly, and kept the recurring interlock disabled fail-closed.
+- After the operator reported `wsl-chrome-3` unreachable, confirmed its Chrome
+  process was absent, relaunched the durable profile once on Route A display
+  `:10`, and reattached the restored ChatGPT target through the browser's
+  canonical display allocation.
+
+Validation:
+
+- focused red then green Rust regression
+- fifteen workstation install Rust tests
+- workstation install fixture, host provision, fresh VM harness, Guacamole
+  assets, PostgreSQL durability, and route-user sync tests
+- Rust formatting, strict Clippy, selected validation, and release build
+- installed executable and payload manifest SHA-256
+  `23e71f0ffd8e75355719896a71d09849f57bf6c7e5c417eaf366e8489405d684`
+- dashboard local and public HTTP 200; Guacamole readiness `ready`
+- connections `1` and `2` each at three of three READ grants; route displays
+  remain `:10` and `:11`
+- dashboard active, backup timer enabled and active, interlock timer disabled
+- `wsl-chrome-3` browser healthy, visible on `:10`, Route A ready, and the
+  Guacamole operator URL HTTP 200
+
+Result:
+
+- The external dashboard and exact Guacamole Route A URL are reachable again.
+- The source defect is repaired and the corrected payload is installed, but
+  Plan 0091 is blocked at the installed runtime gate. Install doctor reports
+  nineteen stale active daemons after `wsl-chrome-3` moved to the corrected
+  runtime.
+- The remaining gate requires interactive sudo and an owner-coordinated handoff
+  of all active daemon sessions. Do not re-enable the recurring interlock until
+  one installed pass exits successfully.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 134 | 2026-08-02
 
 Scope: reconcile the installed P90 workstation payload and prove the repaired

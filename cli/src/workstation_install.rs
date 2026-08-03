@@ -21,6 +21,13 @@ const INSTALL_SCHEMA_VERSION: &str = "agent-browser.workstation-install.v1";
 const DEFAULT_DASHBOARD_PORT: u16 = 4848;
 const DEFAULT_GUACAMOLE_PORT: u16 = 8092;
 const MIN_WORKSTATION_FREE_DISK_BYTES: u64 = 6 * 1024 * 1024 * 1024;
+// A reconcile may run as agent-browser-runtime-interlock.service, so stopping
+// that service here would terminate the active reconciler before reactivation.
+const WORKSTATION_RECONCILE_QUIESCE_UNITS: [&str; 3] = [
+    "agent-browser-dashboard.service",
+    "agent-browser-runtime-interlock.timer",
+    "agent-browser-guacamole-postgres-backup.timer",
+];
 const GUACAMOLE_COMPOSE: &str = include_str!("../assets/workstation/guacamole/compose.yml");
 const GUACAMOLE_ENVIRONMENT_EXAMPLE: &str =
     include_str!("../assets/workstation/guacamole/environment.example");
@@ -1423,13 +1430,7 @@ fn systemd_unit_is_failed(stdout: &[u8]) -> Result<bool, String> {
 /// The final readiness gate reactivates these units after route and payload
 /// convergence succeeds.
 fn quiesce_existing_user_units(paths: &InstallPaths) -> Result<(), String> {
-    let managed_units = [
-        "agent-browser-dashboard.service",
-        "agent-browser-runtime-interlock.service",
-        "agent-browser-runtime-interlock.timer",
-        "agent-browser-guacamole-postgres-backup.timer",
-    ];
-    if !managed_units
+    if !WORKSTATION_RECONCILE_QUIESCE_UNITS
         .iter()
         .any(|unit| paths.unit_dir.join(unit).is_file())
     {
@@ -1445,7 +1446,7 @@ fn quiesce_existing_user_units(paths: &InstallPaths) -> Result<(), String> {
         "reload existing workstation user units before reconciliation",
     )?;
     let mut args = vec!["--user", "stop"];
-    args.extend(managed_units);
+    args.extend(WORKSTATION_RECONCILE_QUIESCE_UNITS);
     run_required(
         "systemctl",
         &args,
@@ -2419,6 +2420,18 @@ mod tests {
         assert_eq!(systemd_unit_is_failed(b"inactive\n"), Ok(false));
         assert_eq!(systemd_unit_is_failed(b"unknown\n"), Ok(false));
         assert!(systemd_unit_is_failed(b"").is_err());
+    }
+
+    #[test]
+    fn systemd_reconcile_quiesce_set_preserves_its_running_service() {
+        assert!(WORKSTATION_RECONCILE_QUIESCE_UNITS.contains(&"agent-browser-dashboard.service"));
+        assert!(
+            WORKSTATION_RECONCILE_QUIESCE_UNITS.contains(&"agent-browser-runtime-interlock.timer")
+        );
+        assert!(WORKSTATION_RECONCILE_QUIESCE_UNITS
+            .contains(&"agent-browser-guacamole-postgres-backup.timer"));
+        assert!(!WORKSTATION_RECONCILE_QUIESCE_UNITS
+            .contains(&"agent-browser-runtime-interlock.service"));
     }
 
     #[cfg(unix)]
