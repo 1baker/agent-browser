@@ -12,6 +12,9 @@ EXPECTED_HELPER_SHA256="${AGENT_BROWSER_PRIVILEGED_HELPER_SHA256:-}"
 SUDOERS_PATH="${AGENT_BROWSER_PRIVILEGED_SUDOERS:-/etc/sudoers.d/agent-browser}"
 APPARMOR_PROFILE_PATH="${AGENT_BROWSER_CHROME_APPARMOR_PROFILE:-/etc/apparmor.d/agent-browser-managed-chrome}"
 APPARMOR_PROFILE_NAME="agent-browser-managed-chrome"
+APPARMOR_ENABLED_PATH="${AGENT_BROWSER_APPARMOR_ENABLED_PATH:-/sys/module/apparmor/parameters/enabled}"
+APPARMOR_RESTRICTION_PATH="${AGENT_BROWSER_APPARMOR_RESTRICTION_PATH:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}"
+APPARMOR_PROFILES_PATH="${AGENT_BROWSER_APPARMOR_PROFILES_PATH:-/sys/kernel/security/apparmor/profiles}"
 APPARMOR_TMP=""
 SUDOERS_TMP=""
 
@@ -128,6 +131,35 @@ profile $APPARMOR_PROFILE_NAME "$chrome_path" flags=(unconfined) {
 EOF
 }
 
+# The managed Chrome policy is only needed on kernels that both enable
+# AppArmor and restrict unprivileged user namespaces. WSL kernels commonly
+# expose AppArmor as disabled, where installing or starting the service cannot
+# make the policy effective and must not turn an otherwise-ready rerun into a
+# new sudo prompt.
+apparmor_policy_required() {
+  [[ -r "$APPARMOR_ENABLED_PATH" ]] || return 1
+  [[ -r "$APPARMOR_RESTRICTION_PATH" ]] || return 1
+  [[ "$(tr -d '[:space:]' <"$APPARMOR_ENABLED_PATH")" =~ ^[Yy]$ ]] || return 1
+  [[ "$(tr -d '[:space:]' <"$APPARMOR_RESTRICTION_PATH")" == "1" ]]
+}
+
+apparmor_profile_ready() {
+  apparmor_policy_required || return 0
+  command -v apparmor_parser >/dev/null 2>&1 || return 1
+  systemctl is-active --quiet apparmor || return 1
+  [[ -r "$APPARMOR_PROFILE_PATH" ]] || return 1
+  [[ "$(stat -c '%U:%G:%a' "$APPARMOR_PROFILE_PATH" 2>/dev/null)" == "root:root:644" ]] || return 1
+
+  local home_dir chrome_path profile_header
+  home_dir="$(operator_home)"
+  chrome_path="$home_dir/.agent-browser/browsers/**/chrome"
+  profile_header="profile $APPARMOR_PROFILE_NAME \"$chrome_path\" flags=(unconfined) {"
+  grep -Fqx "$profile_header" "$APPARMOR_PROFILE_PATH" || return 1
+  grep -Eq '^[[:space:]]*userns,[[:space:]]*$' "$APPARMOR_PROFILE_PATH" || return 1
+  [[ -r "$APPARMOR_PROFILES_PATH" ]] || return 1
+  grep -Fqx "$APPARMOR_PROFILE_NAME (unconfined)" "$APPARMOR_PROFILES_PATH"
+}
+
 workstation_packages() {
   printf '%s\n' \
     apparmor \
@@ -196,11 +228,8 @@ workstation_deps_ready() {
   command -v xrdp >/dev/null 2>&1 || [[ -x /usr/sbin/xrdp ]] || return 1
   command -v openbox-session >/dev/null 2>&1 || return 1
   command -v xhost >/dev/null 2>&1 || return 1
-  command -v apparmor_parser >/dev/null 2>&1 || return 1
   command -v flock >/dev/null 2>&1 || return 1
-  systemctl is-active --quiet apparmor || return 1
-  [[ -r "$APPARMOR_PROFILE_PATH" ]] || return 1
-  apparmor_profile_content | cmp -s - "$APPARMOR_PROFILE_PATH" || return 1
+  apparmor_profile_ready || return 1
   getent group docker >/dev/null 2>&1 || return 1
   id -nG "$OPERATOR_USER" 2>/dev/null | tr ' ' '\n' | grep -Fx docker >/dev/null || return 1
 }
@@ -208,21 +237,30 @@ workstation_deps_ready() {
 current_install_ready() {
   getent group "$GROUP_NAME" >/dev/null 2>&1 || return 1
   id -nG "$OPERATOR_USER" 2>/dev/null | tr ' ' '\n' | grep -Fx "$GROUP_NAME" >/dev/null || return 1
-  [[ -x "$HELPER_PATH" ]] || return 1
-  cmp -s "$HELPER_SOURCE" "$HELPER_PATH" || return 1
-  local verify_args=(
-    verify-install
-    --group "$GROUP_NAME"
-    --sudoers "$SUDOERS_PATH"
-    --sha256 "$EXPECTED_HELPER_SHA256"
-  )
-  if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
-    verify_args+=(--apparmor-profile-name "$APPARMOR_PROFILE_NAME")
-  fi
-  sudo -n "$HELPER_PATH" "${verify_args[@]}" >/dev/null 2>&1 || return 1
+  helper_contract_ready || return 1
   if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
     workstation_deps_ready || return 1
   fi
+}
+
+helper_contract_ready() {
+  [[ -x "$HELPER_PATH" ]] || return 1
+  [[ "$(stat -c '%U:%G:%a' "$HELPER_PATH" 2>/dev/null)" == "root:root:755" ]] || return 1
+  sudo -n "$HELPER_PATH" check >/dev/null 2>&1 || return 1
+
+  local helper_status compact_status required
+  helper_status="$(sudo -n "$HELPER_PATH" status-json 2>/dev/null)" || return 1
+  compact_status="$(printf '%s' "$helper_status" | tr -d '[:space:]')"
+  for required in \
+    '"schemaVersion":1' \
+    '"state":"browser_control_ready_template"' \
+    '"startsWindowManager":true' \
+    '"keepsSessionAlive":true' \
+    '"supportsFilesystemX11Socket":true' \
+    '"supportsAbstractX11Socket":true' \
+    '"boundedXhostTimeoutSeconds":2'; do
+    [[ "$compact_status" == *"$required"* ]] || return 1
+  done
 }
 
 print_install_status() {
@@ -241,14 +279,16 @@ print_install_status() {
 
   if [[ -x "$HELPER_PATH" ]]; then
     if cmp -s "$HELPER_SOURCE" "$HELPER_PATH"; then
-      echo "  helper: ready"
+      echo "  helper provenance: bundled helper matches installed helper"
+    elif helper_contract_ready; then
+      echo "  helper provenance: bundled helper differs; compatible installed helper will be retained"
     else
-      echo "  helper: installed helper differs from bundled helper and must be refreshed"
+      echo "  helper provenance: installed helper differs and lacks the required runtime contract"
     fi
   elif [[ -e "$HELPER_PATH" ]]; then
-    echo "  helper: present but not executable"
+    echo "  helper provenance: present but not executable"
   else
-    echo "  helper: missing"
+    echo "  helper provenance: missing"
   fi
 
   if [[ -r "$SUDOERS_PATH" ]] && expected_sudoers_content | diff -q - "$SUDOERS_PATH" >/dev/null 2>&1; then
@@ -259,19 +299,10 @@ print_install_status() {
     echo "  sudoers: protected or missing; helper verification required"
   fi
 
-  local verify_args=(
-    verify-install
-    --group "$GROUP_NAME"
-    --sudoers "$SUDOERS_PATH"
-    --sha256 "$EXPECTED_HELPER_SHA256"
-  )
-  if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
-    verify_args+=(--apparmor-profile-name "$APPARMOR_PROFILE_NAME")
-  fi
-  if [[ -x "$HELPER_PATH" ]] && sudo -n "$HELPER_PATH" "${verify_args[@]}" >/dev/null 2>&1; then
-    echo "  sudo helper install verification: ready"
+  if helper_contract_ready; then
+    echo "  passwordless helper contract: ready"
   else
-    echo "  sudo helper install verification: not ready"
+    echo "  passwordless helper contract: not ready"
   fi
 
   if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
@@ -279,6 +310,15 @@ print_install_status() {
       echo "  workstation dependencies: ready"
     else
       echo "  workstation dependencies: missing or operator docker membership is stale"
+    fi
+    if apparmor_policy_required; then
+      if apparmor_profile_ready; then
+        echo "  managed Chrome AppArmor policy: ready"
+      else
+        echo "  managed Chrome AppArmor policy: required but not ready"
+      fi
+    else
+      echo "  managed Chrome AppArmor policy: not required by this kernel"
     fi
   fi
 }
@@ -326,7 +366,11 @@ EOF
     echo "  sudo apt-get install after a no-removal simulation:"
     workstation_packages | sed 's/^/    /'
     echo "  sudo usermod -aG docker $OPERATOR_USER"
-    echo "  sudo install and load managed Chrome AppArmor policy at $APPARMOR_PROFILE_PATH"
+    if apparmor_policy_required; then
+      echo "  sudo install and load managed Chrome AppArmor policy at $APPARMOR_PROFILE_PATH"
+    else
+      echo "  managed Chrome AppArmor policy is not required by this kernel"
+    fi
     echo "  sudo systemctl enable --now docker xrdp"
   fi
   cat <<EOF
@@ -372,19 +416,29 @@ if [[ "$WITH_WORKSTATION_DEPS" == "1" ]]; then
   fi
   sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --no-remove \
     "${WORKSTATION_PACKAGES[@]}"
-  APPARMOR_TMP="$(mktemp)"
-  apparmor_profile_content >"$APPARMOR_TMP"
-  sudo -n install -o root -g root -m 0644 "$APPARMOR_TMP" "$APPARMOR_PROFILE_PATH"
-  sudo -n apparmor_parser -r "$APPARMOR_PROFILE_PATH"
-  rm -f "$APPARMOR_TMP"
-  APPARMOR_TMP=""
+  if apparmor_policy_required; then
+    APPARMOR_TMP="$(mktemp)"
+    apparmor_profile_content >"$APPARMOR_TMP"
+    sudo -n install -o root -g root -m 0644 "$APPARMOR_TMP" "$APPARMOR_PROFILE_PATH"
+    sudo -n apparmor_parser -r "$APPARMOR_PROFILE_PATH"
+    rm -f "$APPARMOR_TMP"
+    APPARMOR_TMP=""
+  fi
   sudo -n groupadd --force docker
   sudo -n usermod -aG docker "$OPERATOR_USER"
   sudo -n loginctl enable-linger "$OPERATOR_USER"
-  sudo -n systemctl enable --now apparmor docker xrdp xrdp-sesman
+  if apparmor_policy_required; then
+    sudo -n systemctl enable --now apparmor docker xrdp xrdp-sesman
+  else
+    sudo -n systemctl enable --now docker xrdp xrdp-sesman
+  fi
   sudo -n docker info >/dev/null
   sudo -n docker compose version >/dev/null
-  sudo -n systemctl is-active --quiet apparmor docker xrdp xrdp-sesman
+  if apparmor_policy_required; then
+    sudo -n systemctl is-active --quiet apparmor docker xrdp xrdp-sesman
+  else
+    sudo -n systemctl is-active --quiet docker xrdp xrdp-sesman
+  fi
   sudo -n ss -ltn | grep -Eq '(^|[[:space:]])[^[:space:]]*:3389[[:space:]]'
 fi
 

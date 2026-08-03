@@ -4,6 +4,58 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 136 | 2026-08-03
+
+Scope: make recurring workstation privilege actions passwordless through the
+narrow installed helper, enable Guacamole text input by default, and restore
+the named Route A browser after live drift.
+
+Actions:
+
+- Replaced byte-only helper readiness with root-owned capability checks while
+  retaining exact helper provenance as advisory evidence.
+- Removed direct sudo fallbacks from route-user and display-access maintenance.
+- Made the managed Chrome AppArmor policy conditional on a kernel where
+  AppArmor and restricted unprivileged user namespaces are both active.
+- Added and packaged a Guacamole JavaScript extension that performs a
+  versioned one-time browser-origin migration to text input while preserving
+  later operator overrides.
+- Published a prechange PostgreSQL backup, mounted the extension, and recreated
+  only the Guacamole web container. PostgreSQL and guacd were not recreated.
+- Found `wsl-chrome-3` with a dead retained DevTools port, then performed the
+  requested Route A recovery on its canonical `:10` allocation and reused its
+  restored ChatGPT target.
+
+Validation:
+
+- privilege clean and host-provision regressions, including compatible helper
+  drift, compatible AppArmor annotation drift, and AppArmor-disabled WSL
+- Guacamole asset, workstation install, fresh VM, PostgreSQL durability, and
+  route-user fixture suites
+- Rust workstation-install tests, formatting, strict Clippy, docs build, and
+  selected validation
+- live no-prompt privilege apply returned no privileged changes needed
+- Guacamole logged the defaults extension loaded; served application code
+  contains the migration; a fresh origin read back `inputMethod: text` and
+  migration version `1`
+- PostgreSQL retained 2 connections, 22 parameters, and 6 permissions; public
+  ingress returned the expected authentication redirect and HTTP 200 login
+- `wsl-chrome-3` operator-visible proof returned browser, display `:10`, Route
+  A, stream, selected ChatGPT target, and operator access ready
+
+Result:
+
+- Guacamole text input is the live default for each browser origin on its first
+  load after this deployment. A later user-selected input method is retained.
+- Recurring route maintenance uses only the fixed passwordless helper. Missing
+  or incompatible root state still stops at the one-time bootstrap boundary.
+- The installed 0.28.0 candidate remains unchanged to avoid invalidating active
+  daemon owners. Plan 0091 retains the coordinated candidate-install and
+  remaining-daemon handoff gate; four stale daemon owners remained at final
+  readback, and its recurring timer stays disabled.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 135 | 2026-08-03
 
 Scope: restore the public agent-browser and Guacamole routes, repair the

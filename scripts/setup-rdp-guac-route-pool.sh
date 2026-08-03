@@ -148,7 +148,8 @@ Install one-time privileges with:
   pnpm install:privileges -- --apply
 
 Then run without --dry-run. If the privileged helper is not installed, run from
-an interactive terminal to allow sudo prompts.
+an interactive terminal to complete the one-time workstation bootstrap. All
+later route maintenance uses the passwordless helper and never prompts.
 
 Important: this host-XRDP-user bootstrap only creates distinct RDP sessions.
 P03 is complete only after the many-to-many live gate proves Browser A and
@@ -183,15 +184,11 @@ if getent passwd "$USER_A" >/dev/null \
   REUSE_EXISTING_ROUTE_USERS=1
 fi
 
-USE_PRIVILEGED_HELPER=0
 if [[ "$REUSE_EXISTING_ROUTE_USERS" != "1" ]]; then
-  if privileged_helper_available; then
-    USE_PRIVILEGED_HELPER=1
-  elif ! sudo -v; then
-    echo "This setup needs sudo to create/update local XRDP users." >&2
-    echo "Install the one-time helper from an interactive terminal:" >&2
-    echo "  pnpm install:privileges -- --apply" >&2
-    echo "Or run this setup from an interactive terminal where sudo can prompt." >&2
+  if ! privileged_helper_available; then
+    echo "The passwordless agent-browser helper is required to create or update XRDP route users." >&2
+    echo "Complete the one-time workstation bootstrap from an interactive terminal:" >&2
+    echo "  agent-browser install workstation --apply" >&2
     exit 2
   fi
 fi
@@ -218,31 +215,8 @@ setup_user() {
   local user_name="$1"
   local password="$2"
 
-  if [[ "$USE_PRIVILEGED_HELPER" == "1" ]]; then
-    printf '%s\n' "$password" | sudo -n "$PRIVILEGED_HELPER" ensure-rdp-route-user --user "$user_name"
-    return
-  fi
-
-  if ! getent passwd "$user_name" >/dev/null; then
-    sudo useradd --create-home --shell /bin/bash --comment "agent-browser route-pool RDP session" "$user_name"
-  fi
-
-  printf '%s:%s\n' "$user_name" "$password" | sudo chpasswd
-  sudo usermod -aG ssl-cert xrdp >/dev/null 2>&1 || true
-
-  sudo -u "$user_name" mkdir -p "/home/$user_name/.config/openbox"
-  sudo tee "/home/$user_name/.xsession" >/dev/null <<'EOF'
-#!/bin/sh
-xsetroot -solid '#20252b' 2>/dev/null || true
-if command -v openbox-session >/dev/null 2>&1; then
-  openbox-session &
-fi
-while true; do
-  sleep 3600
-done
-EOF
-  sudo chmod 700 "/home/$user_name/.xsession"
-  sudo chown "$user_name:$user_name" "/home/$user_name/.xsession"
+  printf '%s\n' "$password" \
+    | sudo -n "$PRIVILEGED_HELPER" ensure-rdp-route-user --user "$user_name"
 }
 
 if [[ "$REUSE_EXISTING_ROUTE_USERS" == "1" ]]; then
@@ -386,11 +360,7 @@ PY
 )
 
 if [[ "$REUSE_EXISTING_ROUTE_USERS" != "1" ]]; then
-  if [[ "$USE_PRIVILEGED_HELPER" == "1" ]]; then
-    sudo -n "$PRIVILEGED_HELPER" restart-xrdp
-  else
-    sudo systemctl restart xrdp-sesman xrdp
-  fi
+  sudo -n "$PRIVILEGED_HELPER" restart-xrdp
 fi
 
 echo "Configured two Guacamole RDP route-pool users and connections."

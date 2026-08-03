@@ -82,6 +82,11 @@ agent-browser install workstation --apply --json
 ```
 
 The first apply uses one `sudo -v` authorization boundary for host preparation.
+After that bootstrap, recurring workstation, route-user, XRDP restart, and
+display-access operations use only the fixed root-owned helper through
+passwordless `sudo -n`. A compatible installed helper is retained even when
+its bytes differ from the newly bundled helper. Installed maintenance fails
+closed instead of falling back to an interactive sudo prompt.
 Before acquiring that authorization or staging the payload, the real-host
 preflight requires at least 6 GiB of free disk capacity. JSON output exposes
 `hostPlan.availableDiskBytes`, `minimumDiskBytes`, and `diskSpaceReady`.
@@ -92,10 +97,16 @@ effective, apply starts the pinned stack, creates the two route users and
 canonical Guacamole rows, opens distinct XRDP displays selected by readiness,
 projects `guacamole:1` and `guacamole:2` into service state, and activates the
 user services only after the final doctors pass.
+The pinned Guacamole web app loads an agent-browser defaults extension. It
+migrates each browser origin once to the `text` input method so existing and
+new connections default to text input, then preserves later user-selected
+input-method changes.
 Host preparation includes `x11-utils`, ImageMagick, Tesseract, and a
 path-scoped AppArmor policy that permits managed Chrome to create the user
-namespace required by its sandbox on Ubuntu 24.04. The installer does not
-disable the host restriction or add `--no-sandbox`. Final readiness recognizes
+namespace required by its sandbox on Ubuntu 24.04. The policy is required only
+when the kernel enables AppArmor and restricts unprivileged user namespaces;
+an AppArmor-disabled WSL kernel reports it as not required. The installer does
+not disable the host restriction or add `--no-sandbox`. Final readiness recognizes
 the pinned Compose Guacd container and the Chrome binary installed in
 agent-browser's managed browser directory. Remote-view doctor reports the
 managed Chrome sandbox policy separately and refuses live-gate readiness when
@@ -2137,9 +2148,10 @@ reviewed operator override passes `--force`. It creates or updates two local
 XRDP users, creates or updates two Guacamole RDP connections, grants Guacamole
 read permission, stores generated XRDP passwords under the user-scoped
 Guacamole secret file, restarts XRDP, and then tells you to rerun the
-route-pool readiness smoke. The setup command uses the installed privileged
-helper when available, falls back to interactive sudo otherwise, and does not
-print the generated passwords. Route-pool users get an idle Openbox session
+route-pool readiness smoke. The setup command requires the installed
+passwordless helper and fails closed when bootstrap is incomplete. It never
+falls back to direct interactive sudo and does not print the generated
+passwords. Route-pool users get an idle Openbox session
 that keeps XRDP alive without starting a foreground terminal, so browser-control
 routes begin on a terminal-free desktop. This bootstrap only creates distinct
 RDP sessions; P03 is complete only after the many-to-many live gate proves
@@ -2169,8 +2181,8 @@ the display inspector or route-pool readiness smoke when you want copyable
 `export ...` lines instead of JSON. If the agent user cannot launch onto those
 XRDP-owned displays, run `pnpm grant:rdp-route-display-access -- --dry-run` to
 review the narrow local X grants, then run
-`pnpm grant:rdp-route-display-access -- --apply`. It uses the installed helper
-when available and falls back to interactive sudo otherwise.
+`pnpm grant:rdp-route-display-access -- --apply`. Apply requires the installed
+passwordless helper and never falls back to direct sudo as a route user.
 When route-specific Linux users and secrets already exist, use
 `pnpm sync:rdp-guac-route-specific-user-pool` instead of the sudo setup. It
 migrates the exact supported legacy rows in place, configures distinct route

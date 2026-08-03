@@ -67,7 +67,11 @@ runs first so its explicit <code>sudo -v</code> boundary authorizes the later
 dependency installation.
 Re-running the command on an already-provisioned machine exits before any
 privileged changes when the helper, sudoers policy, group, and membership are
-already ready. <code>agent-browser install doctor --json</code> reports the
+already ready. Readiness is based on the bounded helper command and capability
+contract, so a compatible root-owned helper is retained even when its bytes
+differ from the newly bundled helper. Recurring route-user, XRDP restart, and
+display-access maintenance uses passwordless <code>sudo -n</code> through that
+fixed helper and fails closed instead of prompting. <code>agent-browser install doctor --json</code> reports the
 installed helper's route desktop template as
 <code>remoteViewPrivileges.helperDesktopSession</code> and raises
 <code>remote_view_route_desktop_helper_stale</code> when that helper still
@@ -97,10 +101,16 @@ pinned stack, creates the two route users and canonical Guacamole rows, opens
 distinct XRDP displays selected by readiness, projects
 <code>guacamole:1</code> and <code>guacamole:2</code> into service state, and
 activates the user services only after the final doctors pass.
+The Guacamole web container loads the packaged agent-browser defaults
+extension. It performs a one-time browser-origin migration to the
+<code>text</code> input method, making text input the default for existing and
+new connections while preserving later user overrides.
 Host preparation includes <code>x11-utils</code>, ImageMagick, Tesseract, and
 a path-scoped AppArmor policy that permits managed Chrome to create the user
-namespace required by its sandbox on Ubuntu 24.04. The installer does not
-disable the host restriction or add <code>--no-sandbox</code>. Final readiness
+namespace required by its sandbox on Ubuntu 24.04. The policy is required only
+when the kernel enables AppArmor and restricts unprivileged user namespaces;
+an AppArmor-disabled WSL kernel reports it as not required. The installer does
+not disable the host restriction or add <code>--no-sandbox</code>. Final readiness
 recognizes the pinned Compose Guacd container and the Chrome binary in
 agent-browser's managed browser directory. Remote-view doctor reports the
 managed Chrome sandbox policy separately and refuses live-gate readiness when

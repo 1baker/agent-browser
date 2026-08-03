@@ -34,7 +34,7 @@
   "files": [
     {
       "path": "compose.yml",
-      "sha256": "54acfa48eb13fb69d5e34cda72f1222567f6c7833c64c1d5234554f8bef30d56"
+      "sha256": "8dc1dc96ed573dc5d74c7327214678c2715e2c92ef36fe657125e9dd5df0ecd2"
     },
     {
       "path": "environment.example",
@@ -47,6 +47,14 @@
     {
       "path": "init/001-initdb.sql",
       "sha256": "b62286f085c2dacb65ac3910473f5d9e986e22ced87325aecf8739535804b657"
+    },
+    {
+      "path": "extensions/guac-manifest.json",
+      "sha256": "ccb30cbe398a8821da578624222d5289a214af39f8bb6e5366506971801f7ffb"
+    },
+    {
+      "path": "extensions/agent-browser-defaults.js",
+      "sha256": "6802f5d172e846b5c8e69ad79bf1b014abecf9c5ec5c0bff072b0c8a86b856e5"
     }
   ]
 }

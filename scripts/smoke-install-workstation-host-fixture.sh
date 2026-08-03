@@ -11,6 +11,9 @@ HELPER_DIR="$WORKDIR/usr/local/libexec/agent-browser"
 HELPER_PATH="$HELPER_DIR/agent-browser-privileged-helper"
 SUDOERS_PATH="$WORKDIR/etc/sudoers.d/agent-browser"
 APPARMOR_PROFILE_PATH="$WORKDIR/etc/apparmor.d/agent-browser-managed-chrome"
+APPARMOR_ENABLED_PATH="$WORKDIR/sys/module/apparmor/parameters/enabled"
+APPARMOR_RESTRICTION_PATH="$WORKDIR/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+APPARMOR_PROFILES_PATH="$WORKDIR/sys/kernel/security/apparmor/profiles"
 LOG="$WORKDIR/sudo.log"
 OPERATOR_USER="${USER:-}"
 GROUP_NAME="ab-workstation-fixture"
@@ -20,8 +23,18 @@ if [[ -z "$OPERATOR_USER" || "$OPERATOR_USER" == "root" ]]; then
   exit 2
 fi
 
-mkdir -p "$FAKE_BIN" "$STATE" "$(dirname "$SUDOERS_PATH")" "$(dirname "$APPARMOR_PROFILE_PATH")"
+mkdir -p \
+  "$FAKE_BIN" \
+  "$STATE" \
+  "$(dirname "$SUDOERS_PATH")" \
+  "$(dirname "$APPARMOR_PROFILE_PATH")" \
+  "$(dirname "$APPARMOR_ENABLED_PATH")" \
+  "$(dirname "$APPARMOR_RESTRICTION_PATH")" \
+  "$(dirname "$APPARMOR_PROFILES_PATH")"
 : >"$LOG"
+printf 'Y\n' >"$APPARMOR_ENABLED_PATH"
+printf '1\n' >"$APPARMOR_RESTRICTION_PATH"
+: >"$APPARMOR_PROFILES_PATH"
 
 cat >"$FAKE_BIN/getent" <<'EOF'
 #!/usr/bin/env bash
@@ -71,6 +84,26 @@ set -euo pipefail
 [[ "${1:-}" == "-cf" && -f "${2:-}" ]]
 EOF
 
+cat >"$FAKE_BIN/stat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-c" \
+   && "${2:-}" == "%U:%G:%a" \
+   && "${3:-}" == "${AGENT_BROWSER_PRIVILEGED_HELPER:-}" \
+   && -x "${3:-}" ]]; then
+  echo root:root:755
+  exit 0
+fi
+if [[ "${1:-}" == "-c" \
+   && "${2:-}" == "%U:%G:%a" \
+   && "${3:-}" == "${AGENT_BROWSER_CHROME_APPARMOR_PROFILE:-}" \
+   && -r "${3:-}" ]]; then
+  echo root:root:644
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+EOF
+
 cat >"$FAKE_BIN/apt-get" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -103,12 +136,18 @@ fi
 exit 1
 EOF
 
-for command_name in xrdp openbox-session xhost flock apparmor_parser systemctl; do
+for command_name in xrdp openbox-session xhost flock systemctl; do
   cat >"$FAKE_BIN/$command_name" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
 done
+
+cat >"$FAKE_BIN/apparmor_parser" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'agent-browser-managed-chrome (unconfined)\n' >"$AGENT_BROWSER_APPARMOR_PROFILES_PATH"
+EOF
 
 cat >"$FAKE_BIN/ss" <<'EOF'
 #!/usr/bin/env bash
@@ -197,6 +236,9 @@ run_installer() {
     AGENT_BROWSER_PRIVILEGED_HELPER="$HELPER_PATH" \
     AGENT_BROWSER_PRIVILEGED_SUDOERS="$SUDOERS_PATH" \
     AGENT_BROWSER_CHROME_APPARMOR_PROFILE="$APPARMOR_PROFILE_PATH" \
+    AGENT_BROWSER_APPARMOR_ENABLED_PATH="$APPARMOR_ENABLED_PATH" \
+    AGENT_BROWSER_APPARMOR_RESTRICTION_PATH="$APPARMOR_RESTRICTION_PATH" \
+    AGENT_BROWSER_APPARMOR_PROFILES_PATH="$APPARMOR_PROFILES_PATH" \
     bash "$ROOT/scripts/install-agent-browser-privileges.sh" \
       --apply \
       --with-workstation-deps
@@ -261,6 +303,7 @@ if [[ ! -f "$STATE/member-$OPERATOR_USER-docker" || ! -f "$STATE/deps-installed"
 fi
 
 first_command_count="$(wc -l <"$LOG" | tr -d ' ')"
+printf '\n# compatible local policy annotation\n' >>"$APPARMOR_PROFILE_PATH"
 run_installer >"$WORKDIR/second.out"
 second_command_count="$(wc -l <"$LOG" | tr -d ' ')"
 
@@ -269,15 +312,32 @@ if [[ "$(grep -c '^SUDO -v$' "$LOG" || true)" != "1" ]]; then
   cat "$LOG" >&2
   exit 1
 fi
-if [[ "$second_command_count" != "$((first_command_count + 1))" ]]; then
-  echo "Idempotent rerun should add only the noninteractive helper readiness check." >&2
+if [[ "$second_command_count" != "$((first_command_count + 2))" ]]; then
+  echo "Idempotent rerun should add only the two noninteractive helper capability checks." >&2
   cat "$LOG" >&2
   exit 1
 fi
-if [[ "$(tail -n 1 "$LOG")" != SUDO\ -n\ "$HELPER_PATH"\ verify-install* ]]; then
+if [[ "$(tail -n 2 "$LOG" | head -n 1)" != "SUDO -n $HELPER_PATH check" \
+   || "$(tail -n 1 "$LOG")" != "SUDO -n $HELPER_PATH status-json" ]]; then
   echo "Unexpected idempotent rerun command." >&2
   tail -n 3 "$LOG" >&2
   exit 1
 fi
 
+printf 'N\n' >"$APPARMOR_ENABLED_PATH"
+rm "$APPARMOR_PROFILE_PATH"
+: >"$APPARMOR_PROFILES_PATH"
+run_installer >"$WORKDIR/wsl-like.out"
+third_command_count="$(wc -l <"$LOG" | tr -d ' ')"
+
+if [[ "$(grep -c '^SUDO -v$' "$LOG" || true)" != "1" ]]; then
+  echo "A WSL-like AppArmor-disabled rerun added another sudo authorization." >&2
+  cat "$LOG" >&2
+  exit 1
+fi
+if [[ "$third_command_count" != "$((second_command_count + 2))" ]]; then
+  echo "An AppArmor-disabled rerun should add only helper capability checks." >&2
+  cat "$LOG" >&2
+  exit 1
+fi
 echo "Workstation host-provision fixture passed"

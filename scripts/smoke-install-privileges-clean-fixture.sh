@@ -71,6 +71,19 @@ echo "fake visudo expected -cf <file>" >&2
 exit 2
 EOF
 
+cat >"$FAKE_BIN/stat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-c" \
+   && "${2:-}" == "%U:%G:%a" \
+   && "${3:-}" == "${AGENT_BROWSER_PRIVILEGED_HELPER:-}" \
+   && -x "${3:-}" ]]; then
+  echo root:root:755
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+EOF
+
 cat >"$FAKE_BIN/sudo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -132,7 +145,7 @@ case "$cmd" in
 esac
 EOF
 
-chmod +x "$FAKE_BIN/getent" "$FAKE_BIN/id" "$FAKE_BIN/sudo" "$FAKE_BIN/visudo"
+chmod +x "$FAKE_BIN/getent" "$FAKE_BIN/id" "$FAKE_BIN/stat" "$FAKE_BIN/sudo" "$FAKE_BIN/visudo"
 
 run_installer() {
   PATH="$FAKE_BIN:$PATH" \
@@ -180,11 +193,18 @@ if [[ ! -x "$HELPER_PATH" || ! -f "$SUDOERS_PATH" ]]; then
   exit 1
 fi
 
+# A compatible installed helper may differ byte-for-byte from the newly bundled
+# helper. Repeat installation must use its bounded runtime contract instead of
+# requiring an interactive root-owned file refresh solely for provenance drift.
+printf '\n# compatible fixture provenance drift\n' >>"$HELPER_PATH"
+helper_sha_before_second_apply="$(sha256sum "$HELPER_PATH" | awk '{print $1}')"
+
 run_installer >/tmp/agent-browser-install-privileges-clean-fixture-second.out
 
 sudo_v_count_after="$(grep -c '^SUDO -v$' "$LOG" || true)"
 sudo_n_count_after="$(grep -c '^SUDO -n ' "$LOG" || true)"
 sudo_install_count_after="$(grep -c '^SUDO -n install ' "$LOG" || true)"
+helper_sha_after_second_apply="$(sha256sum "$HELPER_PATH" | awk '{print $1}')"
 
 if [[ "$sudo_v_count_after" != "1" ]]; then
   echo "Second apply must not add another sudo -v prompt boundary." >&2
@@ -192,8 +212,15 @@ if [[ "$sudo_v_count_after" != "1" ]]; then
   exit 1
 fi
 
-if [[ "$sudo_n_count_after" != "10" ]]; then
-  echo "Second apply should add exactly one non-interactive helper readiness check." >&2
+if [[ "$sudo_n_count_after" != "11" ]]; then
+  echo "Second apply should add exactly two non-interactive helper capability checks." >&2
+  cat "$LOG" >&2
+  exit 1
+fi
+
+if [[ "$(grep -c "^SUDO -n $HELPER_PATH check$" "$LOG" || true)" != "1" \
+   || "$(grep -c "^SUDO -n $HELPER_PATH status-json$" "$LOG" || true)" != "1" ]]; then
+  echo "Second apply must probe the bounded helper check and status-json contracts." >&2
   cat "$LOG" >&2
   exit 1
 fi
@@ -201,6 +228,11 @@ fi
 if [[ "$sudo_install_count_after" != "$sudo_install_count" ]]; then
   echo "Second apply unexpectedly repeated privileged install commands." >&2
   cat "$LOG" >&2
+  exit 1
+fi
+
+if [[ "$helper_sha_after_second_apply" != "$helper_sha_before_second_apply" ]]; then
+  echo "Second apply unexpectedly replaced the compatible installed helper." >&2
   exit 1
 fi
 

@@ -6,23 +6,41 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P92 | Passwordless Helper Compatibility and Guacamole Text Input Defaults
+
+State: CLOSED
+Current state: compatible helper and managed AppArmor policy drift no longer
+cross another `sudo -v` boundary, and AppArmor-disabled WSL kernels do not
+request an inapplicable policy bootstrap. Installed route-user and
+display-access scripts require the narrow passwordless helper without direct
+sudo fallbacks. The live Guacamole web container loads the versioned defaults
+extension, and a fresh browser origin reads back text input with later user
+overrides preserved.
+
+### Next Recommendation
+
+Consume this closed slice in the next reviewed workstation candidate. Keep the
+live extension mounted until that candidate owns the same artifact through the
+installed payload.
+
 ## P91 | Systemd Interlock Self-Quiesce Repair
 
 State: BLOCKED
 Current state: the self-quiesce defect is repaired and validated, and the
 corrected binary and source-free payload are installed with matching
 provenance. The dashboard public route and PostgreSQL backup timer are healthy.
-The recurring interlock remains disabled because the helper refresh requires
-interactive sudo. `wsl-chrome-3` was recovered separately on Route A, leaving
-nineteen stale daemon owners that still truthfully bind the prior executable
-and cannot be forced closed safely.
+The compatible-helper path is now source-complete and the installed helper
+reports ready without interactive sudo. The recurring interlock remains
+disabled pending a current candidate install and coordinated runtime handoff.
+`wsl-chrome-3` was recovered separately on Route A; four other stale daemon
+owners still truthfully bind the prior executable and cannot be forced
+closed safely.
 
 ### Next Recommendation
 
-Schedule one coordinated maintenance window to refresh the root-owned helper,
-hand off all nineteen remaining stale daemon sessions, and require one
-successful installed interlock pass before re-enabling the recurring timer
-contract.
+Schedule one coordinated maintenance window to install the current candidate,
+hand off the remaining stale daemon sessions, and require one successful
+installed interlock pass before re-enabling the recurring timer contract.
 
 ## P90 | Route-Bound Display Proof Diagnostics
 

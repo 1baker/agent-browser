@@ -4,10 +4,24 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
-const files = [
-  'scripts/libexec/agent-browser-privileged-helper',
-  'scripts/setup-rdp-guac-route-pool.sh',
-];
+const files = ['scripts/libexec/agent-browser-privileged-helper'];
+
+const routePoolSource = readFileSync('scripts/setup-rdp-guac-route-pool.sh', 'utf8');
+const displayAccessSource = readFileSync('scripts/grant-rdp-route-display-access.sh', 'utf8');
+
+assert.doesNotMatch(
+  routePoolSource,
+  /\bsudo -v\b|\bsudo (?:useradd|chpasswd|usermod|tee|chmod|chown|systemctl)\b|\bsudo -u\b/,
+  'installed route-pool setup must never fall back to interactive or unbounded sudo commands',
+);
+assert.match(routePoolSource, /sudo -n "\$PRIVILEGED_HELPER" ensure-rdp-route-user/);
+assert.match(routePoolSource, /sudo -n "\$PRIVILEGED_HELPER" restart-xrdp/);
+assert.doesNotMatch(
+  displayAccessSource,
+  /\bsudo -u\b/,
+  'installed display-access setup must never fall back to direct sudo as a route user',
+);
+assert.match(displayAccessSource, /sudo -n "\$PRIVILEGED_HELPER" grant-display-access/);
 
 function xsessionBlocks(source) {
   const blocks = [];

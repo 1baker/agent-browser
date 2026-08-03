@@ -5070,13 +5070,21 @@ requires at least 6 GiB free before sudo, payload staging, or package mutation.
 
 Workstation apply reruns stop the managed dashboard, runtime interlock, and
 backup timer during reconciliation, then reactivate them after final readiness.
+The first host bootstrap has one sudo authorization boundary. Later route-user,
+XRDP restart, and display-access maintenance uses only the fixed passwordless
+helper and fails closed instead of prompting. Compatible installed helper
+versions are retained across byte-only bundle drift.
 Host preparation includes display inspection, visual-proof tools, and a
 path-scoped AppArmor userns policy for managed Chrome on Ubuntu 24.04. It does
+not require that policy when the kernel disables AppArmor or does not restrict
+unprivileged user namespaces, including AppArmor-disabled WSL kernels. It does
 not disable the host restriction or Chromium sandbox. Final readiness accepts
 the pinned Compose guacd container and managed Chrome path, and remote-view
 doctor reports managed Chrome sandbox-policy readiness separately. Standalone
 doctor runs discover the versioned installed support-script root without a
-checkout.
+checkout. Guacamole performs a one-time browser-origin migration that makes
+text input the default for existing and new connections while preserving later
+user overrides.
 
 Options:
   -d, --with-deps      Also install system dependencies (Linux only)

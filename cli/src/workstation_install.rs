@@ -36,6 +36,10 @@ const GUACAMOLE_SCHEMA_GENERATOR: &str =
 const GUACAMOLE_BUNDLE_MANIFEST: &str =
     include_str!("../assets/workstation/guacamole/manifest.json");
 const GUACAMOLE_INITDB: &str = include_str!("../assets/workstation/guacamole/init/001-initdb.sql");
+const GUACAMOLE_DEFAULTS_EXTENSION_MANIFEST: &str =
+    include_str!("../assets/workstation/guacamole/extensions/guac-manifest.json");
+const GUACAMOLE_DEFAULTS_EXTENSION_SCRIPT: &str =
+    include_str!("../assets/workstation/guacamole/extensions/agent-browser-defaults.js");
 const ROUTE_POOL_READINESS_SCRIPT: &str =
     include_str!("../../scripts/smoke-rdp-guac-route-pool-readiness.js");
 const RDP_GATEWAY_READINESS_SCRIPT: &str =
@@ -1749,7 +1753,48 @@ fn materialize_guacamole_assets(staged_support: &Path) -> Result<(), String> {
             set_executable(&destination)?;
         }
     }
+    materialize_guacamole_defaults_extension(&guacamole_dir)?;
     Ok(())
+}
+
+/// Packages the browser-local Guacamole defaults migration as a standard
+/// extension JAR. Guacamole loads the JavaScript before Angular bootstraps,
+/// allowing the migration to set text input without modifying the pinned
+/// upstream image.
+fn materialize_guacamole_defaults_extension(guacamole_dir: &Path) -> Result<(), String> {
+    let extension_dir = guacamole_dir.join("extensions");
+    fs::create_dir_all(&extension_dir).map_err(display_io(
+        "create Guacamole extension staging",
+        &extension_dir,
+    ))?;
+
+    let cursor = io::Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(cursor);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, content) in [
+        ("guac-manifest.json", GUACAMOLE_DEFAULTS_EXTENSION_MANIFEST),
+        (
+            "agent-browser-defaults.js",
+            GUACAMOLE_DEFAULTS_EXTENSION_SCRIPT,
+        ),
+    ] {
+        writer.start_file(name, options).map_err(|error| {
+            format!("Unable to start Guacamole extension entry {name}: {error}")
+        })?;
+        writer.write_all(content.as_bytes()).map_err(|error| {
+            format!("Unable to write Guacamole extension entry {name}: {error}")
+        })?;
+    }
+    let archive = writer
+        .finish()
+        .map_err(|error| format!("Unable to finish Guacamole defaults extension: {error}"))?
+        .into_inner();
+    let destination = extension_dir.join("agent-browser-defaults.jar");
+    fs::write(&destination, archive).map_err(display_io(
+        "stage Guacamole defaults extension",
+        &destination,
+    ))
 }
 
 fn materialize_controller_assets(staged_support: &Path) -> Result<(), String> {
@@ -2384,6 +2429,40 @@ mod tests {
                 0o600
             );
         }
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn guacamole_defaults_extension_packages_text_input_migration() {
+        let root = env::temp_dir().join(format!(
+            "agent-browser-guacamole-defaults-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        materialize_guacamole_defaults_extension(&root).unwrap();
+        let bundle = fs::File::open(root.join("extensions/agent-browser-defaults.jar")).unwrap();
+        let mut archive = zip::ZipArchive::new(bundle).unwrap();
+        let mut manifest = String::new();
+        archive
+            .by_name("guac-manifest.json")
+            .unwrap()
+            .read_to_string(&mut manifest)
+            .unwrap();
+        assert!(manifest.contains(r#""namespace": "agent-browser-defaults""#));
+        drop(archive);
+
+        let bundle = fs::File::open(root.join("extensions/agent-browser-defaults.jar")).unwrap();
+        let mut archive = zip::ZipArchive::new(bundle).unwrap();
+        let mut script = String::new();
+        archive
+            .by_name("agent-browser-defaults.js")
+            .unwrap()
+            .read_to_string(&mut script)
+            .unwrap();
+        assert!(script.contains("preferences.inputMethod = 'text'"));
+        assert!(script.contains("AGENT_BROWSER_GUAC_DEFAULTS_VERSION"));
 
         fs::remove_dir_all(&root).unwrap();
     }

@@ -1,0 +1,8 @@
+{
+  "guacamoleVersion": "1.5.5",
+  "name": "agent-browser workstation defaults",
+  "namespace": "agent-browser-defaults",
+  "js": [
+    "agent-browser-defaults.js"
+  ]
+}

@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import vm from 'node:vm'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const assetRoot = join(repoRoot, 'cli/assets/workstation/guacamole')
@@ -62,6 +63,8 @@ assert.doesNotMatch(compose, /AGENT_BROWSER_GUACAMOLE_BIND_ADDRESS/)
 assert.equal((compose.match(/^\s+ports:/gm) || []).length, 1, 'only the web service may publish ports')
 assert.match(compose, /agent-browser-guacamole-postgres-data:\/var\/lib\/postgresql\/data/)
 assert.match(compose, /\.\/init:\/docker-entrypoint-initdb\.d:ro/)
+assert.match(compose, /\.\/extensions:\/etc\/guacamole\/extensions:ro/)
+assert.match(compose, /^\s+GUACAMOLE_HOME: \/etc\/guacamole$/m)
 assert.match(compose, /agent-browser-guacamole-postgres-data:\n\s+name: agent-browser-guacamole-postgres-data\n\s+external: true/)
 assert.doesNotMatch(compose, /POSTGRES_PASSWORD:\s+[^\s$]/)
 assert.equal(
@@ -83,6 +86,47 @@ for (const relation of [
   assert(schema.includes(`CREATE TABLE ${relation}`), `schema relation missing: ${relation}`)
 }
 assert.equal(sha256(join(assetRoot, manifest.schema.path)), manifest.schema.sha256)
+
+const defaultsManifestPath = join(assetRoot, 'extensions/guac-manifest.json')
+const defaultsScriptPath = join(assetRoot, 'extensions/agent-browser-defaults.js')
+const defaultsManifest = JSON.parse(readFileSync(defaultsManifestPath, 'utf8'))
+const defaultsScript = readFileSync(defaultsScriptPath, 'utf8')
+
+assert.equal(defaultsManifest.guacamoleVersion, '1.5.5')
+assert.equal(defaultsManifest.namespace, 'agent-browser-defaults')
+assert.deepEqual(defaultsManifest.js, ['agent-browser-defaults.js'])
+
+function runDefaultsMigration(initialEntries = {}) {
+  const entries = new Map(Object.entries(initialEntries))
+  const localStorage = {
+    getItem(key) {
+      return entries.has(key) ? entries.get(key) : null
+    },
+    setItem(key, value) {
+      entries.set(key, String(value))
+    },
+  }
+  vm.runInNewContext(defaultsScript, { window: { localStorage } })
+  return entries
+}
+
+const emptyOrigin = runDefaultsMigration()
+assert.equal(JSON.parse(emptyOrigin.get('GUAC_PREFERENCES')).inputMethod, 'text')
+assert.equal(emptyOrigin.get('AGENT_BROWSER_GUAC_DEFAULTS_VERSION'), '1')
+
+const priorDefault = runDefaultsMigration({
+  GUAC_PREFERENCES: JSON.stringify({ inputMethod: 'none', emulateAbsoluteMouse: false }),
+})
+assert.deepEqual(JSON.parse(priorDefault.get('GUAC_PREFERENCES')), {
+  inputMethod: 'text',
+  emulateAbsoluteMouse: false,
+})
+
+const migratedOverride = runDefaultsMigration({
+  GUAC_PREFERENCES: JSON.stringify({ inputMethod: 'none' }),
+  AGENT_BROWSER_GUAC_DEFAULTS_VERSION: '1',
+})
+assert.equal(JSON.parse(migratedOverride.get('GUAC_PREFERENCES')).inputMethod, 'none')
 
 const generator = readFileSync(join(assetRoot, 'generate-initdb.sh'), 'utf8')
 assert(generator.includes(`readonly GUACAMOLE_IMAGE='${manifest.schema.generatorImage}'`))
