@@ -1,6 +1,6 @@
 # Plan 0090: Route-Bound Display Proof Diagnostics
 
-State: AWAITING_REVIEW
+State: CLOSED
 
 Created: 2026-08-02
 
@@ -46,9 +46,9 @@ through CLI error rendering.
 
 ## Next Action
 
-- Obtain independent review of the candidate repair. If it passes, close the
-  plan without launching a browser or consuming another last30days source
-  attempt.
+- When the active `litscout-plan0311` daemon can be quiesced by its owning
+  workflow, rerun the no-browser local publisher and install doctor before any
+  successor last30days source proof.
 
 ## Candidate Result
 
@@ -71,3 +71,12 @@ through CLI error rendering.
   not exercise the files or paths changed by this plan.
 - No browser or source attempt was launched. The operator-owned untracked
   `--full-page` file remains untouched.
+- Independent re-review passed exact commit `116ee810`.
+- The no-browser local publisher built candidate binary SHA-256 `a99728c56a57a80bd89ad1bc4e8c8d4a1d1af7bc08e2d52919ea0e384a5d7211`
+  but could not quiesce the active `litscout-plan0311` daemon. It rolled back
+  the executable handoff and resumed the prepared `litscout-0312` session.
+  Install doctor then passed with the supported prior executable SHA-256
+  `cc22abe43a069e55e2dd46598b3eaa4954ffd4b8859388f646d7761c6c05da60`;
+  all three active daemons match that installed executable and the dashboard
+  service is active. The reviewed repair is therefore implemented and
+  validated in the repo, but not installed.

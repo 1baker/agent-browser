@@ -8,7 +8,7 @@ bounded implementation and validation plans remain under `docs/dev/plans/`.
 
 ## P90 | Route-Bound Display Proof Diagnostics
 
-State: AWAITING_REVIEW
+State: CLOSED
 Current state: two last30days X successor attempts selected the correct profile
 and route B, then failed visible-window proof because display `:11` was reported
 as `display_probe_unavailable`. The retained lease preserved the typed proof
@@ -16,8 +16,10 @@ failure, but CLI error rendering collapsed it into a generic page timeout.
 
 ### Next Recommendation
 
-Independently review the bounded no-launch P90 candidate. Do not consume
-another source attempt in this packet.
+Install reviewed commit `116ee810` through the no-browser publisher after the
+active `litscout-plan0311` daemon can be quiesced by its owning workflow. The
+publisher rolled back safely when that daemon did not exit; do not consume
+another last30days source attempt before the reviewed binary is installed.
 
 ## P89 | Native Focus for Route-Bound Handoff
 

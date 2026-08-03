@@ -35,10 +35,17 @@ Validation:
   the authenticated-target case passed alone, while the unknown-command case
   remains intercepted by installed browser-recovery retry state before its
   expected assertion
+- independent re-review passed exact commit `116ee810`
+- no-browser publisher built candidate SHA-256 `a99728c56a57a80bd89ad1bc4e8c8d4a1d1af7bc08e2d52919ea0e384a5d7211`
+  but rolled back when active daemon `litscout-plan0311` did not exit; the
+  resumed prior runtime then passed install doctor with all active daemons
+  matching installed SHA-256 `cc22abe43a069e55e2dd46598b3eaa4954ffd4b8859388f646d7761c6c05da60`
 
 Result:
 
-- P90 is awaiting independent review of the no-launch candidate.
+- P90 is closed with independent PASS. The repo repair is implemented and
+  validated, while installation is deferred until the owning litscout workflow
+  can quiesce its active daemon.
 - No browser or last30days source attempt was launched.
 - The operator-owned untracked `--full-page` file remains excluded and
   untouched.
