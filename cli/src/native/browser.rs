@@ -139,6 +139,8 @@ pub fn to_ai_friendly_error(error: &str) -> String {
         || lower.contains("display_access_grant_failed")
         || lower.contains("route_display_unavailable")
         || lower.contains("route_pool_unavailable")
+        || lower.contains("browser_window_not_visible")
+        || lower.contains("display_probe_unavailable")
         || lower.contains("operator-visible")
     {
         return error.to_string();
@@ -2559,6 +2561,12 @@ mod tests {
     fn test_to_ai_friendly_error_preserves_remote_view_timeout_codes() {
         let error =
             "display_access_grant_timeout: route 'guacamole:1' display ':11' helper exceeded 2s";
+        assert_eq!(to_ai_friendly_error(error), error);
+    }
+
+    #[test]
+    fn test_to_ai_friendly_error_preserves_visible_window_probe_failure() {
+        let error = "browser_window_not_visible: route 'guacamole:2' display ':11' state is 'display_probe_unavailable'; probe_error='xwininfo probe failed'; visible_window_proof_attempts=21; timeoutMs=10000";
         assert_eq!(to_ai_friendly_error(error), error);
     }
 

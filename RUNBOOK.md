@@ -4,6 +4,41 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 132 | 2026-08-02
+
+Scope: diagnose and repair the last30days route-bound visible-window proof
+timeout without launching another browser or consuming a source attempt.
+
+Actions:
+
+- Read the two retained failed acquisition leases. Both selected the expected
+  `last30days-facebook` profile, route `guacamole:2`, and display `:11`, then
+  failed after twenty-one visible-window probes reported
+  `display_probe_unavailable`.
+- Confirmed both Chrome processes launched on the route-B environment and that
+  current `xwininfo` probes can read displays `:10` and `:11`.
+- Removed redundant ambient route discovery from the already normalized,
+  exact-display proof path while retaining that guard for unbound probes.
+- Preserved a sanitized, bounded underlying display-probe reason through the
+  visible-window proof and AI-friendly error renderer.
+
+Validation:
+
+- forty-seven focused display-proof and error-rendering tests
+- all twenty-nine `remote_view_open` tests
+- Rust formatting and strict Clippy with warnings denied
+- complete Rust suite: 1,755 passed, 57 ignored, two state-sensitive failures;
+  the authenticated-target case passed alone, while the unknown-command case
+  remains intercepted by installed browser-recovery retry state before its
+  expected assertion
+
+Result:
+
+- P90 is awaiting independent review of the no-launch candidate.
+- No browser or last30days source attempt was launched.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 131 | 2026-07-30
 
 Scope: finish exact-head release gating, publish `v0.28.0`, and prove the

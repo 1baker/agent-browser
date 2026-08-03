@@ -1279,11 +1279,26 @@ pub fn route_binding_readiness(binding: &RemoteViewRouteBinding) -> Value {
 }
 
 pub fn route_display_content(display_name: &str) -> Option<Value> {
+    route_display_content_with_bound_display(display_name, None)
+}
+
+pub fn route_bound_display_content(display_name: &str) -> Option<Value> {
+    route_display_content_with_bound_display(display_name, Some(display_name))
+}
+
+fn route_display_content_with_bound_display(
+    display_name: &str,
+    bound_display_name: Option<&str>,
+) -> Option<Value> {
     let display_name = display_name.trim();
     if display_name.is_empty() {
         return None;
     }
-    if !should_probe_route_display(display_name) {
+    if !route_display_probe_authorized(
+        display_name,
+        bound_display_name,
+        should_probe_route_display(display_name),
+    ) {
         return Some(json!({
             "state": "display_probe_unavailable",
             "displayName": display_name,
@@ -1311,6 +1326,14 @@ pub fn route_display_content(display_name: &str) -> Option<Value> {
         return Some(content);
     }
     Some(inspect_route_display_content(display_name))
+}
+
+fn route_display_probe_authorized(
+    display_name: &str,
+    bound_display_name: Option<&str>,
+    configured_route_display: bool,
+) -> bool {
+    configured_route_display || bound_display_name == Some(display_name)
 }
 
 pub fn should_probe_route_display(display_name: &str) -> bool {
@@ -1564,8 +1587,25 @@ pub fn visible_browser_window_proof(
     } else {
         "browser_window_not_visible"
     };
+    let probe_error = display_content
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .replace(['\n', '\r'], " ")
+                .replace('\'', "")
+                .chars()
+                .take(240)
+                .collect::<String>()
+        });
+    let probe_error = probe_error
+        .as_deref()
+        .map(|value| format!("; probe_error='{value}'"))
+        .unwrap_or_default();
     Err(format!(
-        "{code}: route '{}' display '{}' state is '{}'",
+        "{code}: route '{}' display '{}' state is '{}'{probe_error}",
         route_id, display_name, state
     ))
 }
@@ -2856,5 +2896,31 @@ mod tests {
         assert!(visible_browser_window_proof("route-a", ":12", content)
             .unwrap_err()
             .contains("terminal_topmost_route"));
+    }
+
+    #[test]
+    fn route_bound_display_authorizes_only_its_exact_display() {
+        assert!(route_display_probe_authorized(":11", Some(":11"), false));
+        assert!(!route_display_probe_authorized(":11", None, false));
+        assert!(!route_display_probe_authorized(":11", Some(":10"), false));
+        assert!(route_display_probe_authorized(":11", None, true));
+    }
+
+    #[test]
+    fn visible_window_failure_preserves_display_probe_reason() {
+        let error = visible_browser_window_proof(
+            "guacamole:2",
+            ":11",
+            json!({
+                "state": "display_probe_unavailable",
+                "displayName": ":11",
+                "windows": [],
+                "error": "xwininfo probe failed",
+            }),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("browser_window_not_visible"));
+        assert!(error.contains("probe_error='xwininfo probe failed'"));
     }
 }

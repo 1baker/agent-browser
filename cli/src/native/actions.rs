@@ -47,8 +47,9 @@ use super::providers;
 use super::recording::{self, RecordingState};
 use super::remote_view::{
     display_allocation_id_for_route_pool_entry, normalize_remote_view_open_intent,
-    plan_remote_view_acquisition, readiness_state, route_binding_readiness, route_display_content,
-    visible_browser_window_proof, RemoteViewAcquisitionPlan, RemoteViewRouteBinding,
+    plan_remote_view_acquisition, readiness_state, route_binding_readiness,
+    route_bound_display_content, route_display_content, visible_browser_window_proof,
+    RemoteViewAcquisitionPlan, RemoteViewRouteBinding,
 };
 use super::remote_view_attachability::refresh_remote_view_attachability;
 use super::remote_view_handoff::{
@@ -14082,7 +14083,7 @@ fn remote_view_open_visible_window_proof(
     let mut attempts = 0_u32;
     loop {
         attempts += 1;
-        let display_content = route_display_content(display_name).unwrap_or_else(|| {
+        let display_content = route_bound_display_content(display_name).unwrap_or_else(|| {
             json!({
                 "state": "display_probe_unavailable",
                 "displayName": display_name,
