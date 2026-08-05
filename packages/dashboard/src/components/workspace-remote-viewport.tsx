@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from "react";
 import { createPortal } from "react-dom";
 import { useAtomValue, useSetAtom } from "jotai/react";
-import { AlertTriangle, ExternalLink, LogIn, Maximize2, Minimize2, MousePointer2, PlugZap, RefreshCw, Settings2, SquareArrowOutUpRight, Unplug } from "lucide-react";
+import { AlertTriangle, Download, ExternalLink, LogIn, Maximize2, Minimize2, MousePointer2, PlugZap, RefreshCw, Settings2, SquareArrowOutUpRight, Unplug } from "lucide-react";
 import {
   canEmbedViewStream,
   canOpenControlViewStream,
@@ -56,6 +56,15 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { StreamMessage } from "@/types";
+import {
+  borrowForeignCdpControl,
+  dispatchForeignCdpInput,
+  fetchForeignCdpScreenshot,
+  readForeignCdpControlStatus,
+  releaseForeignCdpControl,
+  type ForeignCdpBorrowStatus,
+  type ForeignCdpInput,
+} from "@/lib/foreign-cdp-control";
 
 type WorkspaceViewportMode = "view" | "control" | "tile";
 
@@ -1286,10 +1295,17 @@ function WorkspaceCdpStreamCanvas({
 function WorkspaceCdpSnapshotViewer({
   snapshotUrl,
   refreshNonce,
+  canControl,
+  onInput,
+  onTargetResolved,
 }: {
   snapshotUrl: string;
   refreshNonce: number;
+  canControl: boolean;
+  onInput: (input: ForeignCdpInput) => void;
+  onTargetResolved: (targetId: string) => void;
 }) {
+  const imageRef = useRef<HTMLImageElement | null>(null);
   const [state, setState] = useState<{
     dataUrl: string | null;
     connected: boolean;
@@ -1338,6 +1354,7 @@ function WorkspaceCdpSnapshotViewer({
           message: "",
           targetLabel: [json.title, json.url, json.targetId].filter(Boolean).join(" / "),
         });
+        if (json.targetId) onTargetResolved(json.targetId);
       } catch (err) {
         if (disposed || (err instanceof DOMException && err.name === "AbortError")) return;
         setState((current) => ({
@@ -1349,21 +1366,93 @@ function WorkspaceCdpSnapshotViewer({
     };
 
     void fetchSnapshot();
-    const timer = window.setInterval(fetchSnapshot, 2000);
+    const timer = window.setInterval(fetchSnapshot, 750);
     return () => {
       disposed = true;
       controller?.abort();
       window.clearInterval(timer);
     };
-  }, [snapshotUrl, refreshNonce]);
+  }, [onTargetResolved, snapshotUrl, refreshNonce]);
+
+  const imageCoordinates = useCallback((clientX: number, clientY: number) => {
+    const image = imageRef.current;
+    if (!image?.naturalWidth || !image.naturalHeight) return null;
+    const bounds = image.getBoundingClientRect();
+    const scale = Math.min(bounds.width / image.naturalWidth, bounds.height / image.naturalHeight);
+    const renderedWidth = image.naturalWidth * scale;
+    const renderedHeight = image.naturalHeight * scale;
+    const left = bounds.left + (bounds.width - renderedWidth) / 2;
+    const top = bounds.top + (bounds.height - renderedHeight) / 2;
+    if (clientX < left || clientX > left + renderedWidth || clientY < top || clientY > top + renderedHeight) {
+      return null;
+    }
+    return {
+      x: (clientX - left) / scale,
+      y: (clientY - top) / scale,
+    };
+  }, []);
+
+  const dispatchMouse = useCallback((
+    event: ReactMouseEvent<HTMLDivElement>,
+    eventType: "mousePressed" | "mouseReleased" | "mouseMoved",
+  ) => {
+    if (!canControl) return;
+    const point = imageCoordinates(event.clientX, event.clientY);
+    if (!point) return;
+    const button = event.button === 1 ? "middle" : event.button === 2 ? "right" : "left";
+    onInput({ kind: "mouse", eventType, ...point, button, clickCount: 1 });
+  }, [canControl, imageCoordinates, onInput]);
+
+  const dispatchKeyboard = useCallback((
+    event: ReactKeyboardEvent<HTMLDivElement>,
+    eventType: "keyDown" | "keyUp",
+  ) => {
+    if (!canControl) return;
+    event.preventDefault();
+    onInput({
+      kind: "keyboard",
+      eventType,
+      key: event.key,
+      code: event.code,
+      text: eventType === "keyDown" && event.key.length === 1 ? event.key : undefined,
+      modifiers: (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0),
+    });
+  }, [canControl, onInput]);
+
+  const dispatchWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    if (!canControl) return;
+    const point = imageCoordinates(event.clientX, event.clientY);
+    if (!point) return;
+    event.preventDefault();
+    onInput({ kind: "wheel", ...point, deltaX: event.deltaX, deltaY: event.deltaY });
+  }, [canControl, imageCoordinates, onInput]);
 
   return (
-    <div className="workspace-cdp-stream" data-provider="cdp_snapshot" data-snapshot-url={snapshotUrl}>
+    <div
+      className={cn("workspace-cdp-stream", canControl && "workspace-cdp-stream-controllable")}
+      data-provider="cdp_snapshot"
+      data-snapshot-url={snapshotUrl}
+      tabIndex={canControl ? 0 : -1}
+      aria-label={canControl ? "Interactive borrowed foreign CDP browser" : "Read-only foreign CDP browser watch"}
+      onMouseDown={(event) => {
+        if (canControl) event.currentTarget.focus();
+        dispatchMouse(event, "mousePressed");
+      }}
+      onMouseUp={(event) => dispatchMouse(event, "mouseReleased")}
+      onMouseMove={(event) => {
+        if (event.buttons !== 0) dispatchMouse(event, "mouseMoved");
+      }}
+      onKeyDown={(event) => dispatchKeyboard(event, "keyDown")}
+      onKeyUp={(event) => dispatchKeyboard(event, "keyUp")}
+      onWheel={dispatchWheel}
+      onContextMenu={(event) => event.preventDefault()}
+    >
       {state.dataUrl && (
         <img
+          ref={imageRef}
           className="workspace-cdp-snapshot-image"
           src={state.dataUrl}
-          alt="Read-only browser snapshot"
+          alt={canControl ? "Borrowed interactive browser snapshot" : "Read-only browser snapshot"}
           draggable={false}
         />
       )}
@@ -1373,9 +1462,9 @@ function WorkspaceCdpSnapshotViewer({
           <span>{state.message || "Waiting for read-only CDP screenshot."}</span>
         </div>
       )}
-      <div className="workspace-cdp-stream-footer">
+      <div className="workspace-cdp-stream-footer" aria-live="polite">
         <span className={cn("workspace-cdp-stream-dot", state.connected && "workspace-cdp-stream-dot-ready")} />
-        <span>{state.connected ? "Read-only snapshot live" : "Read-only snapshot waiting"}</span>
+        <span>{canControl ? "Foreign CDP Borrow control active" : state.connected ? "Foreign CDP watch live" : "Foreign CDP watch waiting"}</span>
         <span className="workspace-cdp-stream-port">{state.targetLabel || snapshotUrl}</span>
       </div>
     </div>
@@ -1400,6 +1489,9 @@ export function WorkspaceRemoteViewport({
   const [focusPending, setFocusPending] = useState(false);
   const [takeoverPending, setTakeoverPending] = useState(false);
   const [recoveryPending, setRecoveryPending] = useState<string | null>(null);
+  const [foreignBorrow, setForeignBorrow] = useState<ForeignCdpBorrowStatus | null>(null);
+  const [foreignBorrowPending, setForeignBorrowPending] = useState(false);
+  const [foreignTargetId, setForeignTargetId] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenFallback, setFullscreenFallback] = useState(false);
   const [streamRefreshNonce, setStreamRefreshNonce] = useState(() => Date.now());
@@ -1491,7 +1583,8 @@ export function WorkspaceRemoteViewport({
   const selectedContextBrowser = isCdpSnapshotStream(selectedWorkspaceContext?.stream)
     ? workspaceViewportBrowserFromSelectedContext(selectedWorkspaceContext)
     : null;
-  const daemonBrowser = daemonBrowserFromSession(daemonSessionFromSelection(sessions, viewportSelection?.selection));
+  const selectedDaemonSession = daemonSessionFromSelection(sessions, viewportSelection?.selection);
+  const daemonBrowser = daemonBrowserFromSession(selectedDaemonSession);
   const browser = chooseWorkspaceViewportBrowser(serviceBrowser, selectedContextBrowser ?? daemonBrowser);
   const tabs = useMemo(() => Object.values(serviceStatus?.service_state?.tabs ?? {}), [serviceStatus]);
   const tabSelection = browser?.id && viewportSelection
@@ -1506,6 +1599,10 @@ export function WorkspaceRemoteViewport({
   const externalStreamUrl = snapshotStream ? null : resolveWorkspaceStreamUrl(stream, "external");
   const frameUrl = buildWorkspaceFrameUrl(streamUrl, streamRefreshNonce);
   const snapshotUrl = snapshotStream ? buildCdpSnapshotUrl(streamUrl, tabSelection.tab?.targetId) : null;
+  const foreignCdpPort = snapshotStream
+    ? selectedDaemonSession?.cdpPort ?? selectedDaemonSession?.port ?? null
+    : null;
+  const foreignControlTargetId = tabSelection.tab?.targetId ?? foreignTargetId;
   const canEmbed = stream ? canOpenViewStream(stream) : false;
   const canControl = stream ? canOpenControlViewStream(stream) : false;
   const canRenderSelectedBrowser = browserCanRenderWorkspaceViewport(browser);
@@ -1561,6 +1658,126 @@ export function WorkspaceRemoteViewport({
     streamReadiness: stream?.remoteReadiness ?? stream?.readiness,
     focusMessage,
   });
+
+  const captureForeignCdpScreenshot = useCallback(async () => {
+    if (!foreignCdpPort) return;
+    setRecoveryPending("foreign-cdp-capture");
+    setFocusMessage("Capturing the selected foreign browser target as PNG.");
+    try {
+      const captured = await fetchForeignCdpScreenshot({
+        port: foreignCdpPort,
+        targetId: tabSelection.tab?.targetId,
+        format: "png",
+      });
+      const safeTitle = (captured.title || "foreign-browser")
+        .replace(/[^a-z0-9]+/gi, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 64) || "foreign-browser";
+      const download = document.createElement("a");
+      download.href = captured.dataUrl;
+      download.download = `${safeTitle}-${Date.now()}.png`;
+      document.body.appendChild(download);
+      download.click();
+      download.remove();
+      setFocusMessage("Downloaded a PNG capture from the selected foreign browser target.");
+    } catch (err) {
+      setFocusMessage(err instanceof Error ? `Foreign browser capture failed: ${err.message}` : "Foreign browser capture failed.");
+    } finally {
+      setRecoveryPending(null);
+    }
+  }, [foreignCdpPort, tabSelection.tab?.targetId]);
+
+  const resolveForeignTarget = useCallback((targetId: string) => {
+    setForeignTargetId((current) => current === targetId ? current : targetId);
+  }, []);
+
+  useEffect(() => {
+    setForeignBorrow(null);
+    setForeignTargetId(null);
+  }, [foreignCdpPort, snapshotUrl]);
+
+  useEffect(() => {
+    if (!foreignCdpPort || !foreignControlTargetId) return;
+    let disposed = false;
+    void readForeignCdpControlStatus({
+      port: foreignCdpPort,
+      targetId: foreignControlTargetId,
+    }).then((status) => {
+      if (!disposed) setForeignBorrow(status);
+    }).catch((err) => {
+      if (!disposed) {
+        setForeignBorrow(null);
+        setFocusMessage(err instanceof Error ? `Could not read Borrow status: ${err.message}` : "Could not read Borrow status.");
+      }
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [foreignCdpPort, foreignControlTargetId]);
+
+  useEffect(() => {
+    if (!foreignBorrow?.active || !foreignBorrow.expiresAt) return;
+    const expiresAt = new Date(foreignBorrow.expiresAt).getTime();
+    const delay = Math.max(0, expiresAt - Date.now());
+    const timer = window.setTimeout(() => {
+      setForeignBorrow(null);
+      setFocusMessage("Borrow control expired. The foreign browser remains running and non-owned.");
+    }, Math.min(delay + 50, 900_050));
+    return () => window.clearTimeout(timer);
+  }, [foreignBorrow?.active, foreignBorrow?.expiresAt]);
+
+  const borrowForeignControl = useCallback(async () => {
+    if (!foreignCdpPort || !foreignControlTargetId) return;
+    setForeignBorrowPending(true);
+    setFocusMessage("Requesting five minutes of foreign-browser input control.");
+    try {
+      const status = await borrowForeignCdpControl({
+        port: foreignCdpPort,
+        targetId: foreignControlTargetId,
+        reason: "Dashboard operator interactive diagnosis",
+        ttlSeconds: 300,
+      });
+      setForeignBorrow(status);
+      setFocusMessage(`Borrow control is active until ${status.expiresAt ? new Date(status.expiresAt).toLocaleTimeString() : "grant expiry"}. Browser lifecycle ownership did not change.`);
+    } catch (err) {
+      setFocusMessage(err instanceof Error ? `Borrow control failed: ${err.message}` : "Borrow control failed.");
+    } finally {
+      setForeignBorrowPending(false);
+    }
+  }, [foreignCdpPort, foreignControlTargetId]);
+
+  const releaseForeignControl = useCallback(async () => {
+    if (!foreignCdpPort || !foreignControlTargetId || !foreignBorrow?.grantId) return;
+    setForeignBorrowPending(true);
+    try {
+      const status = await releaseForeignCdpControl({
+        port: foreignCdpPort,
+        targetId: foreignControlTargetId,
+        grantId: foreignBorrow.grantId,
+      });
+      setForeignBorrow(status);
+      setFocusMessage("Borrow control released. The foreign browser remains running and non-owned.");
+    } catch (err) {
+      setFocusMessage(err instanceof Error ? `Release control failed: ${err.message}` : "Release control failed.");
+    } finally {
+      setForeignBorrowPending(false);
+    }
+  }, [foreignBorrow?.grantId, foreignCdpPort, foreignControlTargetId]);
+
+  const sendForeignInput = useCallback((input: ForeignCdpInput) => {
+    if (!foreignBorrow?.active || !foreignBorrow.grantId || !foreignCdpPort || !foreignControlTargetId) return;
+    void dispatchForeignCdpInput({
+      port: foreignCdpPort,
+      targetId: foreignControlTargetId,
+      grantId: foreignBorrow.grantId,
+      input,
+    }).catch((err) => {
+      setFocusMessage(err instanceof Error ? `Foreign browser input failed: ${err.message}` : "Foreign browser input failed.");
+      if (err instanceof Error && /No active Borrow|does not authorize/i.test(err.message)) {
+        setForeignBorrow(null);
+      }
+    });
+  }, [foreignBorrow?.active, foreignBorrow?.grantId, foreignCdpPort, foreignControlTargetId]);
 
   useEffect(() => {
     if (!viewportSelection || !tabSelection.recoveredFromStaleSelection || !tabSelection.tab?.id) return;
@@ -2349,6 +2566,54 @@ export function WorkspaceRemoteViewport({
           >
             <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
           </Button>
+          {snapshotStream && foreignCdpPort && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              aria-label="Capture foreign browser screenshot"
+              title="Download the selected foreign browser target as a PNG"
+              disabled={Boolean(recoveryPending)}
+              onClick={() => {
+                void captureForeignCdpScreenshot();
+              }}
+            >
+              <Download className="size-3.5" />
+              Capture PNG
+            </Button>
+          )}
+          {snapshotStream && foreignCdpPort && !foreignBorrow?.active && (
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              aria-label="Borrow foreign browser control for five minutes"
+              title="Temporarily enable pointer, keyboard, and wheel input. Close and Kill remain unavailable."
+              disabled={foreignBorrowPending || !foreignControlTargetId}
+              onClick={() => {
+                void borrowForeignControl();
+              }}
+            >
+              <MousePointer2 className="size-3.5" />
+              Borrow control
+            </Button>
+          )}
+          {snapshotStream && foreignCdpPort && foreignBorrow?.active && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              aria-label="Release foreign browser control"
+              title="Stop sending input while leaving the foreign browser running"
+              disabled={foreignBorrowPending}
+              onClick={() => {
+                void releaseForeignControl();
+              }}
+            >
+              <Unplug className="size-3.5" />
+              Release control
+            </Button>
+          )}
           {stream && !snapshotStream && (
             <Button
               type="button"
@@ -2521,7 +2786,7 @@ export function WorkspaceRemoteViewport({
               {focusMessage}
             </p>
           )}
-          {stream && !canControl && viewportSelection.mode === "control" && (
+          {stream && !canControl && !(snapshotStream && foreignBorrow?.active) && viewportSelection.mode === "control" && (
             <p className="workspace-remote-viewport-notice">
               <AlertTriangle className="size-3.5" />
               The service marked this stream as {controlInputLabel(stream)}, so the viewport is view-only.
@@ -2543,6 +2808,9 @@ export function WorkspaceRemoteViewport({
             key={`${snapshotUrl}:${streamRefreshNonce}`}
             snapshotUrl={snapshotUrl}
             refreshNonce={streamRefreshNonce}
+            canControl={foreignBorrow?.active === true}
+            onInput={sendForeignInput}
+            onTargetResolved={resolveForeignTarget}
           />
         ) : stream && canRenderFrame ? (
           <iframe

@@ -32,6 +32,14 @@ import {
   workspaceViewportUxStateLabel,
 } from '../packages/dashboard/src/lib/workspace-viewport-state.ts';
 import { serviceBrowserForWorkspaceSelection } from '../packages/dashboard/src/lib/workspace-browser-selection.ts';
+import {
+  borrowForeignCdpControl,
+  dispatchForeignCdpInput,
+  fetchForeignCdpScreenshot,
+  foreignCdpScreenshotUrl,
+  readForeignCdpControlStatus,
+  releaseForeignCdpControl,
+} from '../packages/dashboard/src/lib/foreign-cdp-control.ts';
 
 const dashboardPage = readFileSync('packages/dashboard/src/app/page.tsx', 'utf8');
 const workspaceNavigator = readFileSync('packages/dashboard/src/components/workspace-navigator.tsx', 'utf8');
@@ -71,6 +79,103 @@ const selectableCdpScreencastStream = {
   readiness: { state: 'ready' },
   readOnly: false,
 };
+
+assert.equal(
+  foreignCdpScreenshotUrl(45011, 'target-a', 'png'),
+  '/api/session-screenshot?port=45011&format=png&targetId=target-a',
+  'Foreign CDP capture uses the selected page target and an explicit image format',
+);
+
+let captureRequest = null;
+const captured = await fetchForeignCdpScreenshot({
+  port: 45011,
+  targetId: 'target-a',
+  format: 'png',
+  fetcher: async (input, init) => {
+    captureRequest = { input, init };
+    return new Response(JSON.stringify({
+      success: true,
+      targetId: 'target-a',
+      title: 'Detected page',
+      format: 'png',
+      dataUrl: 'data:image/png;base64,AA==',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  },
+});
+assert.equal(captureRequest.input, '/api/session-screenshot?port=45011&format=png&targetId=target-a');
+assert.equal(captureRequest.init.credentials, 'include');
+assert.equal(captured.dataUrl, 'data:image/png;base64,AA==');
+
+const controlRequests = [];
+const controlFetcher = async (input, init) => {
+  controlRequests.push({ input, init });
+  if (input.startsWith('/api/foreign-cdp/control')) {
+    return new Response(JSON.stringify({ active: false, lifecycleOwnership: false }), { status: 200 });
+  }
+  if (input === '/api/foreign-cdp/borrow') {
+    return new Response(JSON.stringify({
+      active: true,
+      grantId: 'grant-a',
+      owner: 'operator-a',
+      expiresAt: '2026-08-05T12:05:00Z',
+      allowedOperations: ['pointer', 'keyboard', 'wheel'],
+      lifecycleOwnership: false,
+    }), { status: 200 });
+  }
+  return new Response(JSON.stringify({ success: true, active: false, lifecycleOwnership: false }), { status: 200 });
+};
+await readForeignCdpControlStatus({ port: 45011, targetId: 'target-a', fetcher: controlFetcher });
+const borrow = await borrowForeignCdpControl({
+  port: 45011,
+  targetId: 'target-a',
+  reason: 'Investigate checkout failure',
+  ttlSeconds: 300,
+  fetcher: controlFetcher,
+});
+assert.equal(borrow.grantId, 'grant-a');
+await dispatchForeignCdpInput({
+  port: 45011,
+  targetId: 'target-a',
+  grantId: 'grant-a',
+  input: { kind: 'mouse', eventType: 'mousePressed', x: 10, y: 20, button: 'left', clickCount: 1 },
+  fetcher: controlFetcher,
+});
+await releaseForeignCdpControl({
+  port: 45011,
+  targetId: 'target-a',
+  grantId: 'grant-a',
+  fetcher: controlFetcher,
+});
+assert.equal(
+  controlRequests[0].input,
+  '/api/foreign-cdp/control?port=45011&targetId=target-a',
+  'Borrow status is scoped to the selected foreign page target',
+);
+assert.deepEqual(
+  JSON.parse(controlRequests[1].init.body),
+  { port: 45011, targetId: 'target-a', reason: 'Investigate checkout failure', ttlSeconds: 300 },
+);
+assert.equal(controlRequests[2].input, '/api/foreign-cdp/input');
+assert.equal(controlRequests[3].input, '/api/foreign-cdp/release');
+assert.ok(controlRequests.every((request) => request.init.credentials === 'include'));
+assert.match(
+  workspaceViewport,
+  /Borrow control[\s\S]*Release control/,
+  'The foreign snapshot viewport exposes explicit Borrow and Release controls',
+);
+assert.match(
+  workspaceViewport,
+  /dispatchForeignCdpInput[\s\S]*canControl=\{foreignBorrow\?\.active === true\}/,
+  'Pointer and keyboard input is enabled only while a visible Borrow grant is active',
+);
+assert.match(
+  workspaceViewport,
+  /onKeyDown/,
+  'The borrowed snapshot viewport supports narrow keyboard and wheel input',
+);
+assert.match(workspaceViewport, /kind: "keyboard"/);
+assert.match(workspaceViewport, /onWheel/);
+assert.match(workspaceViewport, /kind: "wheel"/);
 
 assert.deepEqual(
   mergeWorkspaceViewStreams([rdpGatewayStream], [selectableCdpScreencastStream]),
@@ -816,6 +921,18 @@ assert.match(
   workspaceViewport,
   /workspaceViewStreamChoices\(browser\?\.viewStreams\)[\s\S]*workspaceViewStreamKey\(option[\s\S]*aria-pressed=\{selected\}[\s\S]*Use \{viewStreamLabel\(option\)\}/,
   'Workspace remote viewport must expose every reported stream as an explicit operator-selectable source',
+);
+
+assert.match(
+  workspaceViewport,
+  /captureForeignCdpScreenshot[\s\S]*fetchForeignCdpScreenshot[\s\S]*format: "png"[\s\S]*download = document\.createElement\("a"\)[\s\S]*download\.click\(\)[\s\S]*aria-label="Capture foreign browser screenshot"[\s\S]*Capture PNG/,
+  'Foreign CDP viewport must expose a target-specific PNG download instead of treating Screenshot as selection only',
+);
+
+assert.match(
+  workspaceViewport,
+  /function WorkspaceCdpSnapshotViewer[\s\S]*window\.setInterval\(fetchSnapshot, 750\)[\s\S]*aria-live="polite"[\s\S]*Foreign CDP watch live/,
+  'Foreign CDP viewport must present snapshot polling as an obvious responsive live watch feed',
 );
 
 assert.match(

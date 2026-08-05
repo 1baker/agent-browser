@@ -93,6 +93,7 @@ type RuntimeManifestState = {
 
 const REQUIRED_RUNTIME_FEATURES = [
   "workspace.detectedBrowsers",
+  "workspace.foreignCdpBorrow",
   "workspace.noRetainedLiveRail",
 ] as const;
 

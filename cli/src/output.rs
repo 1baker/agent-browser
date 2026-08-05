@@ -5160,6 +5160,11 @@ When a browser reports several streams, the viewport lets the operator choose
 CDP or RDP and remembers that source per browser. Recoverable browsers with no
 usable stream remain visible with Wake stream, which reattaches or switches the
 retained browser route without launching a duplicate browser process.
+Detected non-owned browsers with reachable page CDP targets provide Screenshot
+and a responsive Watch live image feed. A dashboard superuser can explicitly
+Borrow pointer, keyboard, and wheel input for up to five minutes, then Release
+it early. Borrow never enables Close, Kill, profile release, or lifecycle
+ownership for the foreign browser.
 The launcher defaults to
 private remote display plus RDP gateway control; selecting RDP gateway forces a
 remote_headed request so configured Guac stream metadata can open in the

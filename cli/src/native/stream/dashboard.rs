@@ -23,6 +23,7 @@ use super::app_intelligence::{
 use super::chat::{chat_status_json, handle_chat_request, handle_models_request};
 use super::dashboard_auth;
 use super::discovery::discover_sessions;
+use super::foreign_cdp_control;
 use super::http::{
     relay_command_to_daemon, runtime_manifest_json, serve_embedded_file, CORS_HEADERS,
 };
@@ -306,6 +307,35 @@ async fn handle_dashboard_connection(mut stream: tokio::net::TcpStream) {
 
     if method == "GET" && path == "/api/session-screenshot" {
         handle_session_screenshot_api_request(&mut stream, query).await;
+        return;
+    }
+
+    if method == "GET" && path == "/api/foreign-cdp/control" {
+        handle_foreign_cdp_control_status(&mut stream, query).await;
+        return;
+    }
+
+    if method == "POST"
+        && matches!(
+            path,
+            "/api/foreign-cdp/borrow" | "/api/foreign-cdp/release" | "/api/foreign-cdp/input"
+        )
+    {
+        let identity = match dashboard_auth::require_superuser(&headers, secure_cookie) {
+            Ok(identity) => identity,
+            Err(response) => {
+                let _ = stream.write_all(&response.into_http_bytes()).await;
+                return;
+            }
+        };
+        let body_str = read_post_body(&mut stream, &buf, n).await;
+        handle_foreign_cdp_control_request(
+            &mut stream,
+            path,
+            &body_str,
+            identity.username.as_str(),
+        )
+        .await;
         return;
     }
 
@@ -1082,7 +1112,125 @@ fn cdp_json_list_screenshot_target(
     if requested_found_without_ws {
         return Err("Requested CDP target does not expose a page WebSocket".to_string());
     }
+    if requested_target_id.is_some() {
+        return Err("Requested CDP target is no longer present".to_string());
+    }
     fallback.ok_or_else(|| "No screenshot-capable CDP page target was found".to_string())
+}
+
+fn bounded_input_number(input: &Value, field: &str, max_abs: f64) -> Result<f64, String> {
+    let value = input
+        .get(field)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("Foreign CDP input requires numeric {field}"))?;
+    if !value.is_finite() || value.abs() > max_abs {
+        return Err(format!(
+            "Foreign CDP input {field} is outside the allowed range"
+        ));
+    }
+    Ok(value)
+}
+
+/// Convert a dashboard input event into one of the fixed CDP input commands.
+/// Arbitrary CDP methods, script evaluation, navigation, and lifecycle commands
+/// are intentionally not accepted by this boundary.
+fn foreign_cdp_input_command(input: &Value) -> Result<(&'static str, Value), String> {
+    let kind = input
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Foreign CDP input requires a kind".to_string())?;
+    match kind {
+        "mouse" => {
+            let event_type = input
+                .get("eventType")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Mouse input requires eventType".to_string())?;
+            if !matches!(event_type, "mousePressed" | "mouseReleased" | "mouseMoved") {
+                return Err("Mouse eventType is not allowed".to_string());
+            }
+            let x = bounded_input_number(input, "x", 100_000.0)?;
+            let y = bounded_input_number(input, "y", 100_000.0)?;
+            if x < 0.0 || y < 0.0 {
+                return Err("Mouse coordinates must not be negative".to_string());
+            }
+            let button = input
+                .get("button")
+                .and_then(Value::as_str)
+                .unwrap_or("none");
+            if !matches!(
+                button,
+                "none" | "left" | "middle" | "right" | "back" | "forward"
+            ) {
+                return Err("Mouse button is not allowed".to_string());
+            }
+            let click_count = input.get("clickCount").and_then(Value::as_u64).unwrap_or(0);
+            if click_count > 3 {
+                return Err("Mouse clickCount is outside the allowed range".to_string());
+            }
+            let mut params = json!({
+                "type": event_type,
+                "x": x,
+                "y": y,
+                "button": button,
+                "clickCount": click_count,
+            });
+            if let Some(modifiers) = input.get("modifiers").and_then(Value::as_u64) {
+                if modifiers > 15 {
+                    return Err("Mouse modifiers are outside the allowed range".to_string());
+                }
+                params["modifiers"] = json!(modifiers);
+            }
+            Ok(("Input.dispatchMouseEvent", params))
+        }
+        "wheel" => {
+            let x = bounded_input_number(input, "x", 100_000.0)?;
+            let y = bounded_input_number(input, "y", 100_000.0)?;
+            if x < 0.0 || y < 0.0 {
+                return Err("Wheel coordinates must not be negative".to_string());
+            }
+            Ok((
+                "Input.dispatchMouseEvent",
+                json!({
+                    "type": "mouseWheel",
+                    "x": x,
+                    "y": y,
+                    "deltaX": bounded_input_number(input, "deltaX", 100_000.0)?,
+                    "deltaY": bounded_input_number(input, "deltaY", 100_000.0)?,
+                }),
+            ))
+        }
+        "keyboard" => {
+            let event_type = input
+                .get("eventType")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Keyboard input requires eventType".to_string())?;
+            if !matches!(event_type, "keyDown" | "keyUp" | "char") {
+                return Err("Keyboard eventType is not allowed".to_string());
+            }
+            let key = input.get("key").and_then(Value::as_str).unwrap_or("");
+            let code = input.get("code").and_then(Value::as_str).unwrap_or("");
+            let text = input.get("text").and_then(Value::as_str).unwrap_or("");
+            if key.len() > 64 || code.len() > 64 || text.len() > 4096 {
+                return Err("Keyboard input exceeds the allowed size".to_string());
+            }
+            let mut params = json!({
+                "type": event_type,
+                "key": key,
+                "code": code,
+            });
+            if !text.is_empty() {
+                params["text"] = json!(text);
+            }
+            if let Some(modifiers) = input.get("modifiers").and_then(Value::as_u64) {
+                if modifiers > 15 {
+                    return Err("Keyboard modifiers are outside the allowed range".to_string());
+                }
+                params["modifiers"] = json!(modifiers);
+            }
+            Ok(("Input.dispatchKeyEvent", params))
+        }
+        _ => Err("Foreign CDP input kind is not allowed".to_string()),
+    }
 }
 
 async fn foreign_cdp_tabs_response(port: u16) -> Result<Vec<u8>, String> {
@@ -1103,13 +1251,6 @@ async fn capture_foreign_cdp_screenshot(
     target: &ForeignCdpScreenshotTarget,
     format: &str,
 ) -> Result<String, String> {
-    let connect = timeout(
-        DASHBOARD_CDP_SCREENSHOT_TIMEOUT,
-        tokio_tungstenite::connect_async(&target.web_socket_debugger_url),
-    )
-    .await
-    .map_err(|_| "Timed out connecting to CDP page WebSocket".to_string())?;
-    let (mut ws, _) = connect.map_err(|err| format!("CDP page WebSocket connect failed: {err}"))?;
     let mut params = json!({
         "format": format,
         "fromSurface": true,
@@ -1117,52 +1258,68 @@ async fn capture_foreign_cdp_screenshot(
     if format == "jpeg" {
         params["quality"] = json!(60);
     }
+    let result = send_foreign_cdp_command(target, "Page.captureScreenshot", params).await?;
+    result
+        .get("data")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "CDP screenshot response did not include image data".to_string())
+}
+
+async fn send_foreign_cdp_command(
+    target: &ForeignCdpScreenshotTarget,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let connect = timeout(
+        DASHBOARD_CDP_SCREENSHOT_TIMEOUT,
+        tokio_tungstenite::connect_async(&target.web_socket_debugger_url),
+    )
+    .await
+    .map_err(|_| "Timed out connecting to CDP page WebSocket".to_string())?;
+    let (mut ws, _) = connect.map_err(|err| format!("CDP page WebSocket connect failed: {err}"))?;
     let command = json!({
         "id": 1,
-        "method": "Page.captureScreenshot",
+        "method": method,
         "params": params,
     });
     ws.send(Message::Text(command.to_string()))
         .await
-        .map_err(|err| format!("CDP screenshot command send failed: {err}"))?;
+        .map_err(|err| format!("CDP command send failed: {err}"))?;
 
     let response = timeout(DASHBOARD_CDP_SCREENSHOT_TIMEOUT, async {
         while let Some(message) = ws.next().await {
-            let message =
-                message.map_err(|err| format!("CDP screenshot response failed: {err}"))?;
+            let message = message.map_err(|err| format!("CDP command response failed: {err}"))?;
             let Message::Text(text) = message else {
                 continue;
             };
             let value: Value = serde_json::from_str(&text)
-                .map_err(|err| format!("CDP screenshot response was not JSON: {err}"))?;
+                .map_err(|err| format!("CDP command response was not JSON: {err}"))?;
             if value.get("id").and_then(Value::as_u64) != Some(1) {
                 continue;
             }
             if let Some(error) = value.get("error") {
-                return Err(format!("CDP screenshot command failed: {error}"));
+                return Err(format!("CDP command failed: {error}"));
             }
             return value
                 .get("result")
-                .and_then(|result| result.get("data"))
-                .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_string)
-                .ok_or_else(|| "CDP screenshot response did not include image data".to_string());
+                .cloned()
+                .ok_or_else(|| "CDP command response did not include a result".to_string());
         }
-        Err("CDP page WebSocket closed before a screenshot response arrived".to_string())
+        Err("CDP page WebSocket closed before a command response arrived".to_string())
     })
     .await
-    .map_err(|_| "Timed out waiting for CDP screenshot response".to_string())??;
+    .map_err(|_| "Timed out waiting for CDP command response".to_string())??;
 
     let _ = ws.close(None).await;
     Ok(response)
 }
 
-async fn foreign_cdp_screenshot_response(
+async fn resolve_foreign_cdp_target(
     port: u16,
     requested_target_id: Option<&str>,
-    format: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<ForeignCdpScreenshotTarget, String> {
     let response = proxy_local_http_api_request(port, "GET", "/json/list", "")
         .await
         .map_err(|err| err.to_string())?;
@@ -1172,7 +1329,15 @@ async fn foreign_cdp_screenshot_response(
     }
     let body = http_response_body(&response)
         .ok_or_else(|| "CDP /json/list response missing body".to_string())?;
-    let target = cdp_json_list_screenshot_target(body, requested_target_id)?;
+    cdp_json_list_screenshot_target(body, requested_target_id)
+}
+
+async fn foreign_cdp_screenshot_response(
+    port: u16,
+    requested_target_id: Option<&str>,
+    format: &str,
+) -> Result<Vec<u8>, String> {
+    let target = resolve_foreign_cdp_target(port, requested_target_id).await?;
     let data = capture_foreign_cdp_screenshot(&target, format).await?;
     Ok(json_http_response(
         "200 OK",
@@ -1188,6 +1353,246 @@ async fn foreign_cdp_screenshot_response(
             "dataUrl": format!("data:image/{};base64,{}", format, data),
         }),
     ))
+}
+
+fn detected_foreign_cdp_port(port: u16) -> Result<bool, String> {
+    let sessions: Vec<Value> = serde_json::from_str(&discover_sessions())
+        .map_err(|err| format!("Could not read detected browser inventory: {err}"))?;
+    Ok(sessions.iter().any(|session| {
+        session.get("port").and_then(Value::as_u64) == Some(u64::from(port))
+            && session.get("ownership").and_then(Value::as_str) == Some("foreign_cdp")
+    }))
+}
+
+fn foreign_cdp_grant_json(grant: &foreign_cdp_control::ForeignCdpBorrowGrant) -> Value {
+    json!({
+        "active": true,
+        "grantId": grant.id,
+        "port": grant.port,
+        "targetId": grant.target_id,
+        "owner": grant.owner,
+        "reason": grant.reason,
+        "issuedAt": grant.issued_at.to_rfc3339(),
+        "expiresAt": grant.expires_at.to_rfc3339(),
+        "allowedOperations": ["pointer", "keyboard", "wheel"],
+        "lifecycleOwnership": false,
+    })
+}
+
+fn required_request_port(body: &Value) -> Result<u16, String> {
+    body.get("port")
+        .and_then(Value::as_u64)
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port > 0)
+        .ok_or_else(|| "Missing or invalid foreign CDP port".to_string())
+}
+
+fn required_request_string<'a>(body: &'a Value, field: &str) -> Result<&'a str, String> {
+    body.get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("Missing or invalid {field}"))
+}
+
+async fn handle_foreign_cdp_control_status(
+    stream: &mut tokio::net::TcpStream,
+    query: Option<&str>,
+) {
+    let Some(port) = query_value(query, "port").and_then(|value| value.parse::<u16>().ok()) else {
+        write_json_error(
+            stream,
+            "400 Bad Request",
+            "Missing or invalid foreign CDP port",
+        )
+        .await;
+        return;
+    };
+    let Some(target_id) = query_value(query, "targetId") else {
+        write_json_error(stream, "400 Bad Request", "Missing foreign CDP targetId").await;
+        return;
+    };
+    match foreign_cdp_control::status(port, &target_id) {
+        Ok(Some(grant)) => {
+            write_json_value(stream, "200 OK", foreign_cdp_grant_json(&grant)).await;
+        }
+        Ok(None) => {
+            write_json_value(
+                stream,
+                "200 OK",
+                json!({
+                    "active": false,
+                    "port": port,
+                    "targetId": target_id,
+                    "allowedOperations": [],
+                    "lifecycleOwnership": false,
+                }),
+            )
+            .await;
+        }
+        Err(err) => write_json_error(stream, "500 Internal Server Error", &err).await,
+    }
+}
+
+async fn handle_foreign_cdp_control_request(
+    stream: &mut tokio::net::TcpStream,
+    path: &str,
+    body_str: &str,
+    operator: &str,
+) {
+    let body: Value = match serde_json::from_str(body_str) {
+        Ok(body) => body,
+        Err(err) => {
+            write_json_error(
+                stream,
+                "400 Bad Request",
+                &format!("Invalid foreign CDP control request JSON: {err}"),
+            )
+            .await;
+            return;
+        }
+    };
+    let port = match required_request_port(&body) {
+        Ok(port) => port,
+        Err(err) => {
+            write_json_error(stream, "400 Bad Request", &err).await;
+            return;
+        }
+    };
+    let target_id = match required_request_string(&body, "targetId") {
+        Ok(target_id) => target_id,
+        Err(err) => {
+            write_json_error(stream, "400 Bad Request", &err).await;
+            return;
+        }
+    };
+
+    if path == "/api/foreign-cdp/borrow" {
+        match detected_foreign_cdp_port(port) {
+            Ok(true) => {}
+            Ok(false) => {
+                write_json_error(
+                    stream,
+                    "409 Conflict",
+                    "Borrow is available only for a currently detected foreign CDP browser",
+                )
+                .await;
+                return;
+            }
+            Err(err) => {
+                write_json_error(stream, "500 Internal Server Error", &err).await;
+                return;
+            }
+        }
+        if let Err(err) = resolve_foreign_cdp_target(port, Some(target_id)).await {
+            write_json_error(stream, "409 Conflict", &err).await;
+            return;
+        }
+        let reason = match required_request_string(&body, "reason") {
+            Ok(reason) => reason,
+            Err(err) => {
+                write_json_error(stream, "400 Bad Request", &err).await;
+                return;
+            }
+        };
+        let ttl_seconds = body
+            .get("ttlSeconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(300);
+        match foreign_cdp_control::borrow(port, target_id, operator, reason, ttl_seconds) {
+            Ok(grant) => {
+                eprintln!(
+                    "Foreign CDP Borrow granted: operator={} port={} target={} expires={}",
+                    operator,
+                    port,
+                    target_id,
+                    grant.expires_at.to_rfc3339()
+                );
+                write_json_value(stream, "200 OK", foreign_cdp_grant_json(&grant)).await;
+            }
+            Err(err) => write_json_error(stream, "409 Conflict", &err).await,
+        }
+        return;
+    }
+
+    let grant_id = match required_request_string(&body, "grantId") {
+        Ok(grant_id) => grant_id,
+        Err(err) => {
+            write_json_error(stream, "400 Bad Request", &err).await;
+            return;
+        }
+    };
+
+    if path == "/api/foreign-cdp/release" {
+        match foreign_cdp_control::release(port, target_id, grant_id, operator) {
+            Ok(grant) => {
+                eprintln!(
+                    "Foreign CDP Borrow released: operator={} port={} target={}",
+                    operator, port, target_id
+                );
+                write_json_value(
+                    stream,
+                    "200 OK",
+                    json!({
+                        "active": false,
+                        "released": true,
+                        "port": grant.port,
+                        "targetId": grant.target_id,
+                        "lifecycleOwnership": false,
+                    }),
+                )
+                .await;
+            }
+            Err(err) => write_json_error(stream, "403 Forbidden", &err).await,
+        }
+        return;
+    }
+
+    let input = match body.get("input") {
+        Some(input) => input,
+        None => {
+            write_json_error(stream, "400 Bad Request", "Missing foreign CDP input").await;
+            return;
+        }
+    };
+    let (method, params) = match foreign_cdp_input_command(input) {
+        Ok(command) => command,
+        Err(err) => {
+            write_json_error(stream, "400 Bad Request", &err).await;
+            return;
+        }
+    };
+    let grant = match foreign_cdp_control::authorize(port, target_id, grant_id, operator) {
+        Ok(grant) => grant,
+        Err(err) => {
+            write_json_error(stream, "403 Forbidden", &err).await;
+            return;
+        }
+    };
+    let target = match resolve_foreign_cdp_target(port, Some(target_id)).await {
+        Ok(target) => target,
+        Err(err) => {
+            write_json_error(stream, "409 Conflict", &err).await;
+            return;
+        }
+    };
+    match send_foreign_cdp_command(&target, method, params).await {
+        Ok(_) => {
+            write_json_value(
+                stream,
+                "200 OK",
+                json!({
+                    "success": true,
+                    "port": port,
+                    "targetId": target_id,
+                    "expiresAt": grant.expires_at.to_rfc3339(),
+                    "lifecycleOwnership": false,
+                }),
+            )
+            .await;
+        }
+        Err(err) => write_json_error(stream, "502 Bad Gateway", &err).await,
+    }
 }
 
 async fn handle_session_tabs_api_request(stream: &mut tokio::net::TcpStream, query: Option<&str>) {
@@ -2061,6 +2466,20 @@ mod tests {
     }
 
     #[test]
+    fn cdp_json_list_screenshot_target_rejects_a_missing_requested_target() {
+        let body = json!([{
+            "id": "target-page-1",
+            "type": "page",
+            "title": "First page",
+            "url": "https://example.test/first",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/target-page-1"
+        }])
+        .to_string();
+
+        assert!(cdp_json_list_screenshot_target(body.as_bytes(), Some("missing-target")).is_err());
+    }
+
+    #[test]
     fn json_http_response_sets_json_headers_and_body() {
         let response = json_http_response("200 OK", json!([{"index": 0, "title": "ok"}]));
         let text = String::from_utf8(response).unwrap();
@@ -2259,5 +2678,77 @@ mod tests {
         let unreachable =
             normalize_screenshot_error("Timed out waiting for CDP screenshot response".into());
         assert_eq!(unreachable.code, "backend_read_timeout");
+    }
+
+    #[test]
+    fn foreign_cdp_input_accepts_only_bounded_pointer_keyboard_and_wheel_events() {
+        assert_eq!(
+            foreign_cdp_input_command(&json!({
+                "kind": "mouse",
+                "eventType": "mousePressed",
+                "x": 120.5,
+                "y": 80,
+                "button": "left",
+                "clickCount": 1
+            }))
+            .unwrap(),
+            (
+                "Input.dispatchMouseEvent",
+                json!({
+                    "type": "mousePressed",
+                    "x": 120.5,
+                    "y": 80.0,
+                    "button": "left",
+                    "clickCount": 1
+                })
+            )
+        );
+        assert_eq!(
+            foreign_cdp_input_command(&json!({
+                "kind": "wheel",
+                "x": 10,
+                "y": 20,
+                "deltaX": 0,
+                "deltaY": 150
+            }))
+            .unwrap()
+            .0,
+            "Input.dispatchMouseEvent"
+        );
+        assert_eq!(
+            foreign_cdp_input_command(&json!({
+                "kind": "keyboard",
+                "eventType": "keyDown",
+                "key": "a",
+                "code": "KeyA",
+                "text": "a"
+            }))
+            .unwrap()
+            .0,
+            "Input.dispatchKeyEvent"
+        );
+    }
+
+    #[test]
+    fn foreign_cdp_input_rejects_arbitrary_cdp_and_out_of_bounds_coordinates() {
+        assert!(foreign_cdp_input_command(&json!({
+            "kind": "cdp",
+            "method": "Browser.close"
+        }))
+        .is_err());
+        assert!(foreign_cdp_input_command(&json!({
+            "kind": "mouse",
+            "eventType": "mousePressed",
+            "x": -1,
+            "y": 20
+        }))
+        .is_err());
+        assert!(foreign_cdp_input_command(&json!({
+            "kind": "keyboard",
+            "eventType": "rawKeyDown",
+            "key": "a",
+            "code": "KeyA"
+        }))
+        .is_err());
     }
 }

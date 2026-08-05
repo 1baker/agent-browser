@@ -1,7 +1,7 @@
 # Foreign CDP Browser Discovery And Control Plan
 
 Date: 2026-06-22
-State: PLANNED
+State: ACTIVE
 Lane: P41
 Depends On:
 - `docs/dev/plans/0033-2026-06-13-auracall-service-cdp-upgrade-plan.md`
@@ -349,3 +349,25 @@ pnpm validation:select -- --base HEAD
 - Skipped candidates are diagnosable without private browser artifacts.
 - Docs, skill guidance, tests, live smoke, and local dashboard runtime
   publication agree.
+
+## 2026-08-05 Execution Update
+
+- Foreign rows now provide functional PNG capture and a responsive Watch live
+  image feed instead of selection-only actions.
+- The authenticated dashboard API now issues operator-bound Borrow grants for
+  one detected foreign CDP port and page target. Grants default to five minutes,
+  are capped at fifteen minutes, and fail closed after expiry or Release.
+- Borrow accepts only server-built pointer, keyboard, and wheel CDP commands.
+  Arbitrary CDP methods, navigation, evaluation, Close, Kill, profile release,
+  and ownership transfer remain unavailable.
+- Unit and dashboard contract tests cover grant scope, expiry, release, stale
+  targets, fixed input commands, Watch polling, capture download, and hidden
+  lifecycle actions.
+- The installed dashboard runtime publishes `workspace.foreignCdpBorrow`, and
+  one disposable foreign Chrome proved capture, Watch, pointer and keyboard
+  input, wheel dispatch, Release, post-release denial, and unchanged
+  `foreign_cdp` lifecycle ownership.
+- Plan 0041 remains active for a native CDP screencast transport and a durable
+  Service or Activity audit surface. The delivered Watch feed is a responsive
+  screenshot stream, and Borrow audit metadata currently reaches the service
+  log rather than durable activity history.

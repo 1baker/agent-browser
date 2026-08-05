@@ -6,6 +6,7 @@ pub(crate) mod chat;
 mod dashboard;
 mod dashboard_auth;
 mod discovery;
+mod foreign_cdp_control;
 mod http;
 mod websocket;
 

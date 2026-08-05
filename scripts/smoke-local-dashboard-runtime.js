@@ -516,7 +516,7 @@ function assertRuntimeManifest(manifest) {
     throw new Error(`Runtime manifest is missing dashboard sha256: ${JSON.stringify(manifest.dashboard)}`);
   }
   const features = new Set(Array.isArray(manifest.supportedUiFeatures) ? manifest.supportedUiFeatures : []);
-  for (const feature of ['workspace.detectedBrowsers', 'workspace.noRetainedLiveRail']) {
+  for (const feature of ['workspace.detectedBrowsers', 'workspace.foreignCdpBorrow', 'workspace.noRetainedLiveRail']) {
     if (!features.has(feature)) {
       throw new Error(`Runtime manifest is missing required UI feature: ${feature}`);
     }

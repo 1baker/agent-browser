@@ -4,6 +4,63 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 137 | 2026-08-05
+
+Scope: make detected non-owned CDP browser tiles useful for capture, responsive
+watching, and explicit time-bounded interaction without taking lifecycle
+ownership.
+
+Actions:
+
+- Added functional Screenshot and Watch live actions for foreign CDP page
+  targets. Watch refreshes a bounded PNG frame every 750 milliseconds.
+- Added authenticated Borrow status, grant, fixed-input, and Release endpoints.
+  Grants bind one superuser, CDP port, and live page target for five minutes by
+  default and no more than fifteen minutes.
+- Restricted borrowed input to server-built pointer, keyboard, and wheel CDP
+  commands. Arbitrary CDP, navigation, evaluation, Close, Kill, profile
+  release, and adoption remain unavailable.
+- Added viewport pointer, drag, wheel, and keyboard forwarding plus visible
+  grant expiry and Release controls. Foreign rows no longer expose Close or
+  Kill affordances.
+- Updated help, README, dashboard docs, the agent-browser skill, runtime feature
+  markers, tests, Plan 0041, and the roadmap.
+- Published the embedded dashboard and executable while preserving retained
+  browsers and daemon handoffs.
+
+Validation:
+
+- dashboard workspace navigator, view-stream, workspace-node, inspector,
+  selected-context, chat-packet, console, service parity, service-client
+  contract, and JavaScript type suites
+- dashboard and docs production builds
+- focused foreign-CDP Rust tests, formatting, strict Clippy, and the canonical
+  partitioned Rust suite
+- installed runtime marker smoke for `Borrow control`, `Capture PNG`, and
+  `workspace.foreignCdpBorrow`
+- disposable foreign Chrome proof of capture, Borrow, mouse and keyboard input,
+  wheel input, Release, post-release HTTP 403, continued process health, and
+  unchanged `foreign_cdp` ownership
+
+Result:
+
+- The installed dashboard at `http://127.0.0.1:4848/` can capture, watch, and
+  temporarily interact with reachable non-owned browser targets without
+  claiming their lifecycle.
+- The installed dashboard SHA-256 is
+  `d215c9b5fe7fc731abff307db240e383c31811060254d2a58514e3b4059d8cb4`;
+  the executable SHA-256 is
+  `f5d0c1ef6220415671f6e756e56bf9f18c6c6b5ade884ffbfacb0a4b264510fd`.
+- Install doctor reports runtime convergence and the dashboard ready, but
+  remains nonzero for the separate
+  `workstation_payload_partial_or_drifted` source-free workstation payload
+  issue. This slice did not broaden into workstation repair.
+- Plan 0041 remains active for a native CDP screencast and durable Service or
+  Activity audit history. The current Watch feed is a responsive screenshot
+  stream.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 136 | 2026-08-03
 
 Scope: make recurring workstation privilege actions passwordless through the

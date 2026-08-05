@@ -1131,6 +1131,39 @@ readbacks before live browser work, then proceed to the many-to-many
 Guacamole/RDP live gate and P41 foreign-CDP browser management without turning
 non-owned browser addressability into agent-browser lifecycle ownership.
 
+## P41 | Foreign CDP Browser Discovery And Control
+
+State: ACTIVE
+Current state: discovery, PNG capture, responsive Watch live image feed, and
+an explicit time-bounded Borrow control path are installed and live-proven on
+a disposable non-owned Chrome process.
+
+### Current State
+
+- Borrow is scoped to one detected foreign CDP port, one live page target, and
+  one authenticated dashboard superuser.
+- Grants default to five minutes, are capped at fifteen minutes, and accept only
+  pointer, keyboard, and wheel input.
+- Release and expiry fail closed. Close, Kill, profile release, lifecycle
+  ownership, arbitrary CDP commands, evaluation, and navigation remain outside
+  the foreign-browser path.
+- The installed runtime advertises `workspace.foreignCdpBorrow`. A disposable
+  live proof completed capture, Watch, pointer and keyboard input, wheel
+  dispatch, Release, post-release denial, and unchanged foreign ownership.
+- The remaining P41 gate is a native CDP screencast transport plus durable
+  Service or Activity audit history. The current Watch feed polls screenshots,
+  and Borrow audit metadata currently reaches the service log.
+
+### Evidence
+
+- `docs/dev/plans/0041-2026-06-22-foreign-cdp-browser-discovery-and-control-plan.md`
+
+### Next Recommendation
+
+Add the native CDP screencast and durable Borrow audit surface without widening
+Borrow into arbitrary CDP or lifecycle control, then close P41 after an
+installed live proof.
+
 ## P43 | Route Handoff Confusion Audit
 
 State: COMPLETE

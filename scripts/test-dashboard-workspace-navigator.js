@@ -101,8 +101,8 @@ assert.match(
 
 assert.match(
   remoteViewport,
-  /function isCdpSnapshotStream[\s\S]*WorkspaceCdpSnapshotViewer[\s\S]*window\.setInterval\(fetchSnapshot, 2000\)/,
-  'Workspace viewport must render foreign CDP snapshot streams through periodic read-only screenshot polling',
+  /function isCdpSnapshotStream[\s\S]*WorkspaceCdpSnapshotViewer[\s\S]*window\.setInterval\(fetchSnapshot, 750\)/,
+  'Workspace viewport must render foreign CDP snapshot streams through responsive screenshot polling',
 );
 
 assert.match(

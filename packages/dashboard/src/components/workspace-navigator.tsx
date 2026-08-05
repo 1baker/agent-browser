@@ -66,6 +66,7 @@ import {
 } from "@/lib/workspace-url-selection";
 import { SERVICE_API_BASE } from "@/lib/dashboard-api";
 import { execCommand } from "@/lib/exec";
+import { fetchForeignCdpScreenshot } from "@/lib/foreign-cdp-control";
 import {
   activePortAtom,
   addTabAtom,
@@ -1119,6 +1120,8 @@ function WorkspaceNodeRow({
 }) {
   const Icon = nodeIcon(node);
   const action = primaryAction(node);
+  const closeAction = node.actions.find((candidate) => candidate.id === "close");
+  const killAction = node.actions.find((candidate) => candidate.id === "kill");
   const countLabel = compactCountLabel(node);
   const processItems = processIndicatorItems(node).slice(0, 3);
 
@@ -1175,8 +1178,7 @@ function WorkspaceNodeRow({
             </TooltipContent>
           </Tooltip>
         )}
-        {node.port ? (
-          <>
+        {closeAction?.enabled ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -1190,6 +1192,8 @@ function WorkspaceNodeRow({
               </TooltipTrigger>
               <TooltipContent side="right">Close workspace</TooltipContent>
             </Tooltip>
+        ) : null}
+        {killAction?.enabled ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -1203,7 +1207,6 @@ function WorkspaceNodeRow({
               </TooltipTrigger>
               <TooltipContent side="right">Kill workspace</TooltipContent>
             </Tooltip>
-          </>
         ) : null}
         {node.group === "needs-attention" && onDismiss ? (
           <Tooltip>
@@ -1817,8 +1820,32 @@ export function WorkspaceNavigator() {
       window.open(node.viewStream.url, "_blank", "noopener,noreferrer");
       return;
     }
-    if (action.id === "inspect" || action.id === "stream" || action.id === "screenshot") {
-      selectNode(node);
+    if (action.id === "screenshot" && node.port) {
+      setWorkspaceActionLoadingId(`${node.id}:screenshot`);
+      setServiceError("");
+      try {
+        const capture = await fetchForeignCdpScreenshot({
+          port: node.port,
+          targetId: node.primaryTab?.id ?? null,
+          format: "png",
+        });
+        const link = document.createElement("a");
+        link.href = capture.dataUrl;
+        link.download = `foreign-cdp-${node.port}-${capture.targetId || "page"}.png`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      } catch (err) {
+        setServiceError(err instanceof Error ? err.message : "Foreign CDP capture failed");
+      } finally {
+        setWorkspaceActionLoadingId(null);
+      }
+      return;
+    }
+    if (action.id === "inspect" || action.id === "stream" || action.id === "borrow-control") {
+      const selection = pushWorkspaceViewportUrl(node, "view");
+      if (selection) setUrlSelection(selection);
+      else selectNode(node);
       return;
     }
     selectNode(node);
@@ -1863,7 +1890,10 @@ export function WorkspaceNavigator() {
     setPendingDangerAction(null);
   }, [dispatchCloseAllSessions, dispatchCloseSession, dispatchKillSession, pendingDangerAction]);
 
-  const sessionBackedNodes = liveRailNodes.filter((node) => node.source === "daemon-session");
+  const sessionBackedNodes = liveRailNodes.filter((node) =>
+    node.source === "daemon-session"
+      && node.actions.some((action) => action.id === "close" && action.enabled)
+  );
 
   return (
     <div className="workspace-nav flex h-full flex-col">

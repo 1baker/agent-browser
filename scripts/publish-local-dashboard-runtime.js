@@ -561,7 +561,7 @@ function verifyRuntimeManifestReadback(installBin, manifest) {
     throw new Error(`Live runtime manifest dashboard sha is missing: ${JSON.stringify(manifest.dashboard)}`);
   }
   const features = new Set(Array.isArray(manifest.supportedUiFeatures) ? manifest.supportedUiFeatures : []);
-  for (const feature of ['workspace.detectedBrowsers', 'workspace.noRetainedLiveRail']) {
+  for (const feature of ['workspace.detectedBrowsers', 'workspace.foreignCdpBorrow', 'workspace.noRetainedLiveRail']) {
     if (!features.has(feature)) {
       throw new Error(`Live runtime manifest missing feature ${feature}`);
     }

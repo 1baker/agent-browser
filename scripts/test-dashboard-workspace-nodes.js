@@ -11,6 +11,7 @@ import {
 } from '../packages/dashboard/src/lib/service-workspaces.ts';
 
 const workspaceSource = readFileSync('packages/dashboard/src/lib/service-workspaces.ts', 'utf8');
+const workspaceNavigatorSource = readFileSync('packages/dashboard/src/components/workspace-navigator.tsx', 'utf8');
 
 assert.match(
   workspaceSource,
@@ -1435,20 +1436,30 @@ assert.match(detectedExternal.secondaryLabel, /detected external Chrome/);
 assert.match(detectedExternal.secondaryLabel, /not agent-browser service-owned/);
 assert.equal(action(detectedExternal, 'inspect').enabled, true);
 assert.equal(action(detectedExternal, 'view').enabled, true);
-assert.equal(action(detectedExternal, 'stream').enabled, false);
-assert.match(action(detectedExternal, 'stream').reason ?? '', /explicitly adopted/);
+assert.equal(action(detectedExternal, 'stream').enabled, true);
+assert.equal(action(detectedExternal, 'stream').label, 'Watch live');
 assert.equal(action(detectedExternal, 'screenshot').enabled, true);
 assert.equal(action(detectedExternal, 'control').enabled, false);
 assert.match(action(detectedExternal, 'control').reason ?? '', /borrow-control/);
 assert.equal(action(detectedExternal, 'add-tab').enabled, false);
 assert.match(action(detectedExternal, 'add-tab').reason ?? '', /borrow-control/);
-assert.equal(action(detectedExternal, 'borrow-control').enabled, false);
-assert.match(action(detectedExternal, 'borrow-control').reason ?? '', /not active/);
+assert.equal(action(detectedExternal, 'borrow-control').enabled, true);
+assert.equal(action(detectedExternal, 'borrow-control').label, 'Borrow control');
 assert.equal(action(detectedExternal, 'repair').enabled, false);
 assert.match(action(detectedExternal, 'repair').reason ?? '', /Non-owned browsers do not use service-owned route repair/);
 assert.equal(action(detectedExternal, 'close').enabled, false);
 assert.equal(action(detectedExternal, 'kill').enabled, false);
 assert.match(action(detectedExternal, 'kill').reason ?? '', /explicit adoption/);
+assert.doesNotMatch(
+  workspaceNavigatorSource,
+  /\{node\.port \? \(/,
+  'A CDP port alone must not expose Close and Kill controls for a foreign browser',
+);
+assert.match(
+  workspaceNavigatorSource,
+  /fetchForeignCdpScreenshot[\s\S]*action\.id === "screenshot"/,
+  'The detected-browser Screenshot action must capture an image rather than only selecting its tile',
+);
 
 const detectedReachableNoTabs = byId(nodes, 'daemon-session:detected-empty-but-reachable');
 assert.equal(detectedReachableNoTabs.source, 'daemon-session');

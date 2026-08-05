@@ -2915,19 +2915,17 @@ function detectedBrowserActions(live: boolean, viewStream?: WorkspaceNodeViewStr
   const mutateReason = live
     ? "Non-owned browsers require an explicit borrow-control action before mutation."
     : "Detected browser is not live.";
-  const streamReason = live
-    ? "Detected external CDP browsers must be explicitly adopted before agent-browser can start a CDP screencast stream."
-    : "Detected browser is not live.";
+  const streamReason = live ? null : "Detected browser is not live.";
   const lifecycleReason = "Non-owned browsers require explicit adoption before lifecycle or profile actions.";
   const repairReason = "Non-owned browsers do not use service-owned route repair.";
   return [
     { id: "inspect", label: "Inspect", enabled: live, reason: readOnlyReason },
-    { id: "stream", label: "Stream", enabled: false, reason: streamReason },
+    { id: "stream", label: "Watch live", enabled: canViewSnapshot, reason: streamReason },
     { id: "screenshot", label: "Screenshot", enabled: live, reason: readOnlyReason },
     { id: "focus", label: "Focus", enabled: false, reason: "Non-owned browsers are not focus-owned by agent-browser." },
     { id: "view", label: "View", enabled: canViewSnapshot, reason: canViewSnapshot ? null : streamReason },
     { id: "control", label: "Control", enabled: false, reason: mutateReason },
-    { id: "borrow-control", label: "Borrow control", enabled: false, reason: "Borrow-control approval is not active for this non-owned browser." },
+    { id: "borrow-control", label: "Borrow control", enabled: canViewSnapshot, reason: canViewSnapshot ? null : streamReason },
     { id: "add-tab", label: "Add tab", enabled: false, reason: mutateReason },
     { id: "repair", label: "Repair", enabled: false, reason: repairReason },
     { id: "close", label: "Close", enabled: false, reason: lifecycleReason },

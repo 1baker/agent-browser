@@ -73,6 +73,7 @@ fn runtime_manifest_json_uncached() -> Value {
         "executable": executable,
         "supportedUiFeatures": [
             "workspace.detectedBrowsers",
+            "workspace.foreignCdpBorrow",
             "workspace.noRetainedLiveRail",
             "workspace.rdpGateway",
             "workspace.cdpScreencast",
@@ -6528,6 +6529,11 @@ mod dashboard_asset_tests {
             .unwrap()
             .iter()
             .any(|feature| feature.as_str() == Some("workspace.detectedBrowsers")));
+        assert!(manifest["supportedUiFeatures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|feature| feature.as_str() == Some("workspace.foreignCdpBorrow")));
         assert!(manifest["supportedUiFeatures"]
             .as_array()
             .unwrap()
