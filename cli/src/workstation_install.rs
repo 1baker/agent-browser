@@ -2176,7 +2176,7 @@ fn render_units(
         (
             "agent-browser-dashboard.service",
             format!(
-                "[Unit]\nDescription=agent-browser dashboard\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment=AGENT_BROWSER_DASHBOARD=1\nEnvironment=AGENT_BROWSER_DASHBOARD_PORT={dashboard_port}\nExecStart={binary}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n"
+                "[Unit]\nDescription=agent-browser dashboard\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironmentFile=-%h/.agent-browser/.env\nEnvironment=AGENT_BROWSER_DASHBOARD=1\nEnvironment=AGENT_BROWSER_DASHBOARD_PORT={dashboard_port}\nExecStart={binary}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n"
             ),
         ),
         (
@@ -2454,6 +2454,9 @@ mod tests {
             assert!(!body.contains("pnpm"));
             assert!(!body.contains("WorkingDirectory="));
             assert!(!body.contains("workspace.local"));
+            if name == "agent-browser-dashboard.service" {
+                assert!(body.contains("EnvironmentFile=-%h/.agent-browser/.env"));
+            }
             if name == "agent-browser-runtime-interlock.timer" {
                 assert!(body.contains("OnActiveSec=5min"));
                 assert!(!body.contains("OnBootSec="));

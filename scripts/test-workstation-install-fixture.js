@@ -94,6 +94,15 @@ try {
   for (const unit of expectedUnits) {
     assert.ok(installedBasenames.has(unit), `apply must install ${unit}`);
   }
+  const dashboardUnit = installedFiles.find(
+    (path) => basename(path) === 'agent-browser-dashboard.service',
+  );
+  const dashboardSource = readFileSync(dashboardUnit, 'utf8');
+  assert.match(
+    dashboardSource,
+    /EnvironmentFile=-%h\/.agent-browser\/\.env/,
+    'dashboard service must load the managed agent-browser environment',
+  );
   const payloadManifestPath = installedFiles.find(
     (path) => basename(path) === 'manifest.json' && !path.includes(`${join('guacamole')}/`),
   );
