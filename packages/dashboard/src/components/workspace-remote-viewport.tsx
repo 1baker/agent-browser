@@ -45,6 +45,14 @@ import {
   type WorkspaceViewportTarget,
 } from "@/lib/workspace-viewport-controller";
 import { serviceBrowserForWorkspaceSelection } from "@/lib/workspace-browser-selection";
+import {
+  mergeWorkspaceViewStreams,
+  selectWorkspaceViewStream,
+  workspaceViewRecoveryAction,
+  workspaceViewStreamChoices,
+  workspaceViewStreamKey,
+  workspaceViewStreamScore,
+} from "@/lib/workspace-view-stream-selection";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { StreamMessage } from "@/types";
@@ -109,12 +117,34 @@ type WorkspaceViewportSelection = {
   selection: DashboardWorkspaceUrlSelection;
 };
 
+type WorkspaceViewStreamPreferences = Record<string, string>;
+
+const WORKSPACE_VIEW_STREAM_PREFERENCES_STORAGE_KEY = "agent-browser.workspace-view-stream-preferences.v1";
+
+function readWorkspaceViewStreamPreferences(): WorkspaceViewStreamPreferences {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(WORKSPACE_VIEW_STREAM_PREFERENCES_STORAGE_KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeWorkspaceViewStreamPreferences(preferences: WorkspaceViewStreamPreferences): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(WORKSPACE_VIEW_STREAM_PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
+}
+
 type WorkspaceViewportTile = {
   browser: WorkspaceViewportBrowser;
-  stream: ServiceViewStream;
-  frameUrl: string;
+  stream: ServiceViewStream | null;
+  frameUrl: string | null;
   externalUrl: string | null;
-  routeKey: string;
+  routeKey: string | null;
   sharedRoute: boolean;
 };
 
@@ -615,10 +645,11 @@ function workspaceViewportBrowserFromSelectedContext(
   };
 }
 
-function primaryViewStream(browser?: WorkspaceViewportBrowser | null): ServiceViewStream | null {
-  const streams = browser?.viewStreams ?? [];
-  if (streams.length === 0) return null;
-  return [...streams].sort((left, right) => workspaceViewportStreamScore(right) - workspaceViewportStreamScore(left))[0] ?? null;
+function primaryViewStream(
+  browser?: WorkspaceViewportBrowser | null,
+  preferredKey?: string | null,
+): ServiceViewStream | null {
+  return selectWorkspaceViewStream(browser?.viewStreams, preferredKey);
 }
 
 function hasOpenWorkspaceViewportStream(browser?: WorkspaceViewportBrowser | null): boolean {
@@ -629,9 +660,35 @@ function chooseWorkspaceViewportBrowser(
   serviceBrowser: WorkspaceViewportBrowser | null,
   daemonBrowser: WorkspaceViewportBrowser | null,
 ): WorkspaceViewportBrowser | null {
+  if (serviceBrowser && daemonBrowser && workspaceViewportBrowsersShareSession(serviceBrowser, daemonBrowser)) {
+    return {
+      ...daemonBrowser,
+      ...serviceBrowser,
+      viewStreams: mergeWorkspaceViewStreams(serviceBrowser.viewStreams, daemonBrowser.viewStreams),
+      activeSessionIds: [...new Set([
+        ...(serviceBrowser.activeSessionIds ?? []),
+        ...(daemonBrowser.activeSessionIds ?? []),
+      ])],
+    };
+  }
   if (hasOpenWorkspaceViewportStream(serviceBrowser)) return serviceBrowser;
   if (hasOpenWorkspaceViewportStream(daemonBrowser)) return daemonBrowser;
   return serviceBrowser ?? daemonBrowser;
+}
+
+/** Returns the daemon-session identities shared by two service projections. */
+function workspaceViewportBrowsersShareSession(
+  left: WorkspaceViewportBrowser,
+  right: WorkspaceViewportBrowser,
+): boolean {
+  const identities = (browser: WorkspaceViewportBrowser) => {
+    const values = [...(browser.activeSessionIds ?? [])];
+    const prefixedId = browser.id.match(/^(?:session|daemon):(.+)$/)?.[1];
+    if (prefixedId) values.push(prefixedId);
+    return new Set(values.map((value) => value.trim()).filter(Boolean));
+  };
+  const leftIdentities = identities(left);
+  return [...identities(right)].some((identity) => leftIdentities.has(identity));
 }
 
 function browserCanRenderWorkspaceViewport(browser?: WorkspaceViewportBrowser | null): boolean {
@@ -639,60 +696,58 @@ function browserCanRenderWorkspaceViewport(browser?: WorkspaceViewportBrowser | 
   return Boolean(browser) && !WORKSPACE_VIEWPORT_TERMINAL_BROWSER_HEALTH.has(health);
 }
 
-function workspaceViewportStreamScore(stream: ServiceViewStream): number {
-  const provider = stream.provider?.trim().toLowerCase() ?? "";
-  const routeSource = stream.routeSource?.trim().toLowerCase() ?? "";
-  const providerMode = stream.providerMode?.trim().toLowerCase() ?? "";
-  const displayAllocationId = stream.displayAllocationId?.trim().toLowerCase() ?? "";
-  let score = 0;
-  if (canOpenViewStream(stream)) score += 80;
-  if (provider === "rdp_gateway") score += 20;
-  if (canOpenControlViewStream(stream)) score += 15;
-  if (stream.routeId || stream.connectionId || stream.connectionName) score += 20;
-  if (displayAllocationId) score += 10;
-  if (displayAllocationId && !displayAllocationId.includes("shared")) score += 35;
-  if (routeSource === "pool" || routeSource === "generated" || routeSource === "discovered") score += 40;
-  if (providerMode === "simultaneous_view") score += 20;
-  if (providerMode === "single_controller") score += 10;
-  if (viewStreamReadinessLabel(stream) === "ready") score += 10;
-  return score;
+function browserCanRecoverWorkspaceViewport(browser?: WorkspaceViewportBrowser | null): boolean {
+  return Boolean(
+    browser && (
+      browser.attachability
+      || browser.displayAllocationId
+      || browser.activeSessionIds?.length
+      || browser.viewStreams?.length
+    ),
+  );
 }
 
 function workspaceViewportRouteKey(stream: ServiceViewStream): string {
   return stream.routeId || stream.connectionId || stream.frameUrl || stream.externalUrl || stream.url || "unrouted";
 }
 
-function workspaceViewportTiles(serviceStatus: ServiceStatusData | null): WorkspaceViewportTile[] {
+function workspaceViewportTiles(
+  serviceStatus: ServiceStatusData | null,
+  streamPreferences: WorkspaceViewStreamPreferences = {},
+): WorkspaceViewportTile[] {
   const browsers = Object.values(serviceStatus?.service_state?.browsers ?? {});
   const candidates = browsers
     .map((browser) => {
-      if (!browserCanRenderWorkspaceViewport(browser)) return null;
-      const stream = primaryViewStream(browser);
+      if (!browserCanRenderWorkspaceViewport(browser) && !browserCanRecoverWorkspaceViewport(browser)) return null;
+      const stream = primaryViewStream(browser, streamPreferences[browser.id]);
       const frameUrl = resolveWorkspaceStreamUrl(stream);
-      if (!stream || !frameUrl || !canOpenViewStream(stream)) return null;
       return {
         browser,
         stream,
-        frameUrl,
-        externalUrl: resolveWorkspaceStreamUrl(stream, "external"),
-        routeKey: workspaceViewportRouteKey(stream),
+        frameUrl: browserCanRenderWorkspaceViewport(browser) && stream && frameUrl && canOpenViewStream(stream) ? frameUrl : null,
+        externalUrl: stream ? resolveWorkspaceStreamUrl(stream, "external") : null,
+        routeKey: stream ? workspaceViewportRouteKey(stream) : null,
         sharedRoute: false,
       };
     })
     .filter((tile): tile is WorkspaceViewportTile => Boolean(tile))
     .sort((left, right) => {
-      const score = workspaceViewportStreamScore(right.stream) - workspaceViewportStreamScore(left.stream);
+      const readyScore = Number(Boolean(right.frameUrl)) - Number(Boolean(left.frameUrl));
+      if (readyScore !== 0) return readyScore;
+      const score = (right.stream ? workspaceViewStreamScore(right.stream) : 0)
+        - (left.stream ? workspaceViewStreamScore(left.stream) : 0);
       if (score !== 0) return score;
       return left.browser.id.localeCompare(right.browser.id);
     });
 
   const routeCounts = new Map<string, number>();
   for (const candidate of candidates) {
+    if (!candidate.routeKey) continue;
     routeCounts.set(candidate.routeKey, (routeCounts.get(candidate.routeKey) ?? 0) + 1);
   }
   return candidates.slice(0, 2).map((candidate) => ({
     ...candidate,
-    sharedRoute: (routeCounts.get(candidate.routeKey) ?? 0) > 1,
+    sharedRoute: candidate.routeKey ? (routeCounts.get(candidate.routeKey) ?? 0) > 1 : false,
   }));
 }
 
@@ -1349,6 +1404,7 @@ export function WorkspaceRemoteViewport({
   const [fullscreenFallback, setFullscreenFallback] = useState(false);
   const [streamRefreshNonce, setStreamRefreshNonce] = useState(() => Date.now());
   const [tileRefreshNonces, setTileRefreshNonces] = useState<Record<string, number>>({});
+  const [streamPreferences, setStreamPreferences] = useState<WorkspaceViewStreamPreferences>(() => readWorkspaceViewStreamPreferences());
   const [frameIssue, setFrameIssue] = useState<WorkspaceFrameIssue>(null);
   const [viewportController, dispatchViewportController] = useReducer(
     workspaceViewportControllerReducer,
@@ -1396,6 +1452,19 @@ export function WorkspaceRemoteViewport({
     void fetchServiceStatus();
   }, [fetchServiceStatus]);
 
+  const selectWorkspaceStream = useCallback((browserId: string, option: ServiceViewStream, index: number) => {
+    const streamKey = workspaceViewStreamKey(option, index);
+    setStreamPreferences((current) => {
+      const next = { ...current, [browserId]: streamKey };
+      writeWorkspaceViewStreamPreferences(next);
+      return next;
+    });
+    streamFrameRetryRef.current = 0;
+    setFrameIssue(null);
+    setFocusMessage(`Selected ${viewStreamLabel(option)} for this browser.`);
+    setStreamRefreshNonce(Date.now());
+  }, []);
+
   useEffect(() => {
     const onSelection = () => setViewportSelection(readWorkspaceViewportSelection());
     window.addEventListener("popstate", onSelection);
@@ -1428,8 +1497,10 @@ export function WorkspaceRemoteViewport({
   const tabSelection = browser?.id && viewportSelection
     ? selectedTabForBrowser(tabs, browser.id, viewportSelection.selection)
     : { tab: null, tabIndex: null, recoveredFromStaleSelection: false, staleSelectionId: null };
-  const stream = primaryViewStream(browser);
-  const tileStreams = viewportSelection?.mode === "tile" ? workspaceViewportTiles(serviceStatus) : [];
+  const streamChoices = workspaceViewStreamChoices(browser?.viewStreams);
+  const stream = primaryViewStream(browser, browser ? streamPreferences[browser.id] : null);
+  const tileStreams = viewportSelection?.mode === "tile" ? workspaceViewportTiles(serviceStatus, streamPreferences) : [];
+  const liveTileStreamCount = tileStreams.filter((tile) => Boolean(tile.frameUrl)).length;
   const streamUrl = resolveWorkspaceStreamUrl(stream);
   const snapshotStream = isCdpSnapshotStream(stream);
   const externalStreamUrl = snapshotStream ? null : resolveWorkspaceStreamUrl(stream, "external");
@@ -1821,17 +1892,18 @@ export function WorkspaceRemoteViewport({
     ...(stream?.viewerLeaseIds ?? []),
     ...(stream?.controllerLeaseId ? [stream.controllerLeaseId] : []),
   ].filter((id): id is string => Boolean(id?.trim())))), [stream?.controllerLeaseId, stream?.viewerLeaseIds]);
-  const workspaceSessionName = browser && viewportSelection ? daemonSessionNameForBrowser(browser, viewportSelection.selection) : null;
   const workspaceViewerId = activeSessionName || "operator";
 
-  const refreshWorkspaceRoute = useCallback(async () => {
-    if (!browser || !stream) return;
-    const displayAllocationId = stream.displayAllocationId || browser.displayAllocationId;
-    const attachability = viewportRecord(stream.attachability) ?? viewportRecord(browser.attachability);
-    const recommendedAction = viewportString(attachability?.recommendedAction);
-    const recoveryAction: ServiceRequestAction = recommendedAction === "service_remote_view_route_switch"
-      ? "service_remote_view_route_switch"
-      : "service_remote_view_browser_reattach";
+  const recoverWorkspaceBrowser = useCallback(async (
+    targetBrowser: WorkspaceViewportBrowser | null,
+    targetStream: ServiceViewStream | null,
+  ) => {
+    if (!targetBrowser) return;
+    const displayAllocationId = targetStream?.displayAllocationId || targetBrowser.displayAllocationId;
+    const recoveryAction: ServiceRequestAction = workspaceViewRecoveryAction({
+      browserAttachability: targetBrowser.attachability,
+      streamAttachability: targetStream?.attachability,
+    });
     const switchingRoute = recoveryAction === "service_remote_view_route_switch";
     setRecoveryPending("route-refresh");
     setFocusMessage(switchingRoute
@@ -1839,17 +1911,19 @@ export function WorkspaceRemoteViewport({
       : "Reattaching the retained remote browser route.");
     try {
       await postWorkspaceRecoveryRequest(recoveryAction, switchingRoute ? "workspace-viewport-route-switch" : "workspace-viewport-browser-reattach", {
-        browserId: browser.id,
-        ...(workspaceSessionName ? { sessionName: workspaceSessionName } : {}),
-        ...(stream.id ? { streamId: stream.id } : {}),
+        browserId: targetBrowser.id,
+        ...(daemonSessionNameForBrowser(targetBrowser, viewportSelection?.selection) ? {
+          sessionName: daemonSessionNameForBrowser(targetBrowser, viewportSelection?.selection),
+        } : {}),
+        ...(targetStream?.id ? { streamId: targetStream.id } : {}),
         ...(displayAllocationId ? { displayAllocationId } : {}),
-        ...(!switchingRoute && workspaceRouteId ? { routeId: workspaceRouteId } : {}),
-        ...(stream.provider ? { provider: stream.provider } : {}),
-        ...(stream.providerMode ? { providerMode: stream.providerMode } : {}),
-        ...(stream.frameUrl ? { frameUrl: stream.frameUrl } : {}),
-        ...(stream.externalUrl ? { externalUrl: stream.externalUrl } : {}),
-        ...(stream.connectionId ? { connectionId: stream.connectionId } : {}),
-        ...(stream.connectionName ? { connectionName: stream.connectionName } : {}),
+        ...(!switchingRoute && targetStream?.routeId ? { routeId: targetStream.routeId } : {}),
+        ...(targetStream?.provider ? { provider: targetStream.provider } : {}),
+        ...(targetStream?.providerMode ? { providerMode: targetStream.providerMode } : {}),
+        ...(targetStream?.frameUrl ? { frameUrl: targetStream.frameUrl } : {}),
+        ...(targetStream?.externalUrl ? { externalUrl: targetStream.externalUrl } : {}),
+        ...(targetStream?.connectionId ? { connectionId: targetStream.connectionId } : {}),
+        ...(targetStream?.connectionName ? { connectionName: targetStream.connectionName } : {}),
       });
       streamFrameRetryRef.current = 0;
       setFrameIssue(null);
@@ -1865,7 +1939,7 @@ export function WorkspaceRemoteViewport({
     } finally {
       setRecoveryPending(null);
     }
-  }, [browser, fetchServiceStatus, postWorkspaceRecoveryRequest, stream, workspaceRouteId, workspaceSessionName]);
+  }, [fetchServiceStatus, postWorkspaceRecoveryRequest, viewportSelection?.selection]);
 
   const reconnectWorkspaceViewer = useCallback(async () => {
     if (!browser || !workspaceRouteId) return;
@@ -2006,8 +2080,8 @@ export function WorkspaceRemoteViewport({
     return (
       <section
         className="workspace-remote-viewport workspace-remote-viewport-tile"
-        data-ux-state={tileStreams.length > 0 ? "connected" : "missing_stream"}
-        data-readiness-status={tileStreams.length > 0 ? "ready" : "missing"}
+        data-ux-state={liveTileStreamCount > 0 ? "connected" : "missing_stream"}
+        data-readiness-status={liveTileStreamCount > 0 ? "ready" : "missing"}
         aria-label="Tiled workspace remote view"
       >
         <header className="workspace-remote-viewport-header">
@@ -2019,7 +2093,7 @@ export function WorkspaceRemoteViewport({
           <div className="workspace-remote-viewport-actions">
             <Badge variant="secondary" className="workspace-remote-viewport-badge">
               <span className="workspace-remote-viewport-badge-text">
-                {tileStreams.length} live route{tileStreams.length === 1 ? "" : "s"}
+                {tileStreams.length} workspace{tileStreams.length === 1 ? "" : "s"} / {liveTileStreamCount} live stream{liveTileStreamCount === 1 ? "" : "s"}
               </span>
             </Badge>
             <Button
@@ -2051,7 +2125,8 @@ export function WorkspaceRemoteViewport({
           <div className="workspace-remote-viewport-tile-grid">
             {tileStreams.map((tile) => {
               const nonce = tileRefreshNonces[tile.browser.id] ?? streamRefreshNonce;
-              const tileFrameUrl = buildWorkspaceFrameUrl(tile.frameUrl, nonce);
+              const tileFrameUrl = tile.frameUrl ? buildWorkspaceFrameUrl(tile.frameUrl, nonce) : null;
+              const tileChoices = workspaceViewStreamChoices(tile.browser.viewStreams);
               return (
                 <article
                   key={tile.browser.id}
@@ -2060,7 +2135,7 @@ export function WorkspaceRemoteViewport({
                   <header className="workspace-remote-viewport-tile-header">
                     <div className="min-w-0">
                       <h3>{workspaceViewportTitle(tile.browser)}</h3>
-                      <p>{viewStreamRouteSummary(tile.stream)}</p>
+                      <p>{tile.stream ? viewStreamRouteSummary(tile.stream) : "No usable view stream reported."}</p>
                     </div>
                     <div className="workspace-remote-viewport-tile-actions">
                       {tile.sharedRoute && (
@@ -2068,21 +2143,36 @@ export function WorkspaceRemoteViewport({
                           <span className="workspace-remote-viewport-badge-text">shared route</span>
                         </Badge>
                       )}
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="outline"
-                        aria-label={`Refresh ${tile.browser.id}`}
-                        title={`Refresh ${tile.browser.id}`}
-                        onClick={() => {
-                          setTileRefreshNonces((current) => ({
-                            ...current,
-                            [tile.browser.id]: Date.now(),
-                          }));
-                        }}
-                      >
-                        <RefreshCw className="size-3.5" />
-                      </Button>
+                      {tileFrameUrl ? (
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="outline"
+                          aria-label={`Refresh ${tile.browser.id}`}
+                          title={`Refresh ${tile.browser.id}`}
+                          onClick={() => {
+                            setTileRefreshNonces((current) => ({
+                              ...current,
+                              [tile.browser.id]: Date.now(),
+                            }));
+                          }}
+                        >
+                          <RefreshCw className="size-3.5" />
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="default"
+                          disabled={Boolean(recoveryPending)}
+                          onClick={() => {
+                            void recoverWorkspaceBrowser(tile.browser, tile.stream);
+                          }}
+                        >
+                          <PlugZap className={cn("size-3.5", recoveryPending === "route-refresh" && "animate-spin")} />
+                          Wake stream
+                        </Button>
+                      )}
                       {tile.externalUrl && (
                         <Button size="icon" variant="outline" asChild>
                           <a href={tile.externalUrl} target="_blank" rel="noreferrer" aria-label={`Open ${tile.browser.id} externally`}>
@@ -2092,6 +2182,26 @@ export function WorkspaceRemoteViewport({
                       )}
                     </div>
                   </header>
+                  {tileChoices.length > 1 && (
+                    <div className="workspace-remote-viewport-stream-picker" role="group" aria-label={`Stream source for ${tile.browser.displayName || tile.browser.id}`}>
+                      {tileChoices.map((option, index) => {
+                        const optionKey = workspaceViewStreamKey(option, index);
+                        const selected = option === tile.stream;
+                        return (
+                          <Button
+                            key={optionKey}
+                            type="button"
+                            size="sm"
+                            variant={selected ? "default" : "outline"}
+                            aria-pressed={selected}
+                            onClick={() => selectWorkspaceStream(tile.browser.id, option, index)}
+                          >
+                            Use {viewStreamLabel(option)}
+                          </Button>
+                        );
+                      })}
+                    </div>
+                  )}
                   {tile.sharedRoute && (
                     <p className="workspace-remote-viewport-notice workspace-remote-viewport-notice-bad">
                       <AlertTriangle className="size-3.5" />
@@ -2099,14 +2209,35 @@ export function WorkspaceRemoteViewport({
                     </p>
                   )}
                   <div className="workspace-remote-viewport-tile-stage">
-                    <iframe
-                      key={`${tile.browser.id}:${tileFrameUrl ?? ""}`}
-                      title={`${viewStreamLabel(tile.stream)} ${tile.browser.id}`}
-                      src={tileFrameUrl ?? undefined}
-                      className="workspace-remote-viewport-frame"
-                      allow="clipboard-read; clipboard-write; fullscreen; pointer-lock"
-                      allowFullScreen
-                    />
+                    {tile.stream && tileFrameUrl ? (
+                      <iframe
+                        key={`${tile.browser.id}:${tileFrameUrl}`}
+                        title={`${viewStreamLabel(tile.stream)} ${tile.browser.id}`}
+                        src={tileFrameUrl}
+                        className="workspace-remote-viewport-frame"
+                        allow="clipboard-read; clipboard-write; fullscreen; pointer-lock"
+                        allowFullScreen
+                      />
+                    ) : (
+                      <div className="workspace-remote-viewport-empty workspace-remote-viewport-tile-empty">
+                        <PlugZap className="size-6" />
+                        <h3>Stream needs attention</h3>
+                        <p>This retained browser has no embeddable stream. Reattach it to reuse the existing process and profile.</p>
+                        <div className="workspace-remote-viewport-empty-actions">
+                          <Button
+                            size="sm"
+                            variant="default"
+                            disabled={Boolean(recoveryPending)}
+                            onClick={() => {
+                              void recoverWorkspaceBrowser(tile.browser, tile.stream);
+                            }}
+                          >
+                            <PlugZap className={cn("size-3.5", recoveryPending === "route-refresh" && "animate-spin")} />
+                            Wake stream
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </article>
               );
@@ -2144,6 +2275,28 @@ export function WorkspaceRemoteViewport({
           <p>{browser ? workspaceViewportSubtitle(browser, tabSelection.tab) : "Select a workspace with service-owned view-stream evidence."}</p>
         </div>
         <div className="workspace-remote-viewport-actions">
+          {browser && streamChoices.length > 1 && (
+            <div className="workspace-remote-viewport-stream-picker" role="group" aria-label="Stream source">
+              {streamChoices.map((option, index) => {
+                const optionKey = workspaceViewStreamKey(option, index);
+                const selected = option === stream;
+                return (
+                  <Button
+                    key={optionKey}
+                    type="button"
+                    size="sm"
+                    variant={selected ? "default" : "outline"}
+                    aria-pressed={selected}
+                    aria-label={`Use ${viewStreamLabel(option)} stream`}
+                    title={`${viewStreamRouteSummary(option)}. Use this stream for ${browser.displayName || browser.id}.`}
+                    onClick={() => selectWorkspaceStream(browser.id, option, index)}
+                  >
+                    Use {viewStreamLabel(option)}
+                  </Button>
+                );
+              })}
+            </div>
+          )}
           {stream && (
             <Badge
               variant={canControl ? "default" : canEmbed ? "secondary" : "outline"}
@@ -2205,7 +2358,7 @@ export function WorkspaceRemoteViewport({
               title="Reattach remote browser route"
               disabled={Boolean(recoveryPending)}
               onClick={() => {
-                void refreshWorkspaceRoute();
+                void recoverWorkspaceBrowser(browser, stream);
               }}
             >
               <PlugZap className={cn("size-3.5", recoveryPending === "route-refresh" && "animate-spin")} />
@@ -2419,6 +2572,19 @@ export function WorkspaceRemoteViewport({
                 || (stream ? viewStreamOpenTitle(stream) : "The selected workspace does not currently report a service-owned view stream.")}
             </p>
             <div className="workspace-remote-viewport-empty-actions">
+              {!stream && browser && (
+                <Button
+                  size="sm"
+                  variant="default"
+                  disabled={Boolean(recoveryPending)}
+                  onClick={() => {
+                    void recoverWorkspaceBrowser(browser, null);
+                  }}
+                >
+                  <PlugZap className={cn("size-3.5", recoveryPending === "route-refresh" && "animate-spin")} />
+                  Wake stream
+                </Button>
+              )}
               {viewportReadiness.nextAction === "sign_in_again" && (
                 <Button size="sm" variant="default" asChild>
                   <a href={dashboardLoginPath()}>

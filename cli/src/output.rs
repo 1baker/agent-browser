@@ -5156,6 +5156,10 @@ memory, CPU, CDP, and stream-port indicators when available, and open a dense
 right-pane Workspace inspector with action reasons, page identity, ownership,
 viewport readiness, and collapsed diagnostic evidence. Selecting a row with an
 embeddable stream opens the workspace viewport, including CDP screencast streams.
+When a browser reports several streams, the viewport lets the operator choose
+CDP or RDP and remembers that source per browser. Recoverable browsers with no
+usable stream remain visible with Wake stream, which reattaches or switches the
+retained browser route without launching a duplicate browser process.
 The launcher defaults to
 private remote display plus RDP gateway control; selecting RDP gateway forces a
 remote_headed request so configured Guac stream metadata can open in the

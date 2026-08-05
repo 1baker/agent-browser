@@ -4956,6 +4956,24 @@ body {
   gap: 0.35rem;
 }
 
+.workspace-remote-viewport-stream-picker {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--muted) 30%, transparent);
+  padding: 0.18rem;
+}
+
+.workspace-remote-viewport-stream-picker button {
+  height: 1.65rem;
+  min-width: max-content;
+  padding-inline: 0.48rem;
+  font-size: 0.62rem;
+}
+
 .workspace-remote-viewport-badge {
   min-width: 0;
   max-width: 18rem;
@@ -5249,6 +5267,11 @@ body {
     width: 100%;
     flex-wrap: nowrap;
     justify-content: flex-start;
+    overflow-x: auto;
+  }
+
+  .workspace-remote-viewport-stream-picker {
+    flex: 0 0 auto;
   }
 
   .workspace-remote-viewport-badge {

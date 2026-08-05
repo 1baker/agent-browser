@@ -19,6 +19,12 @@ import {
   viewStreamLeaseLabel,
 } from '../packages/dashboard/src/lib/service-view-streams.ts';
 import {
+  mergeWorkspaceViewStreams,
+  selectWorkspaceViewStream,
+  workspaceViewRecoveryAction,
+  workspaceViewStreamKey,
+} from '../packages/dashboard/src/lib/workspace-view-stream-selection.ts';
+import {
   compactWorkspaceViewportReadinessComponents,
   deriveWorkspaceViewportReadiness,
   deriveWorkspaceViewportUxState,
@@ -56,6 +62,53 @@ const rdpGatewayStream = {
   remoteReadiness: { state: 'ready' },
   readOnly: false,
 };
+
+const selectableCdpScreencastStream = {
+  id: 'cdp-live-view',
+  provider: 'cdp_screencast',
+  controlInput: 'cdp_input',
+  url: 'http://127.0.0.1:9223/',
+  readiness: { state: 'ready' },
+  readOnly: false,
+};
+
+assert.deepEqual(
+  mergeWorkspaceViewStreams([rdpGatewayStream], [selectableCdpScreencastStream]),
+  [rdpGatewayStream, selectableCdpScreencastStream],
+  'Workspace view merges service-owned RDP and daemon-owned CDP sources for one browser',
+);
+assert.deepEqual(
+  mergeWorkspaceViewStreams([rdpGatewayStream], [rdpGatewayStream]),
+  [rdpGatewayStream],
+  'Workspace view does not duplicate the same source when browser projections overlap',
+);
+
+assert.equal(
+  selectWorkspaceViewStream([selectableCdpScreencastStream, rdpGatewayStream]),
+  rdpGatewayStream,
+  'Workspace view defaults to the highest-readiness remote control stream',
+);
+assert.equal(
+  selectWorkspaceViewStream(
+    [selectableCdpScreencastStream, rdpGatewayStream],
+    workspaceViewStreamKey(selectableCdpScreencastStream),
+  ),
+  selectableCdpScreencastStream,
+  'Workspace view honors an explicit remembered stream choice over automatic scoring',
+);
+assert.equal(
+  workspaceViewRecoveryAction({ browserAttachability: null, streamAttachability: null }),
+  'service_remote_view_browser_reattach',
+  'A retained browser with no reported stream defaults to non-launching browser reattachment',
+);
+assert.equal(
+  workspaceViewRecoveryAction({
+    browserAttachability: { recommendedAction: 'service_remote_view_route_switch' },
+    streamAttachability: null,
+  }),
+  'service_remote_view_route_switch',
+  'A retained browser uses route switch when service attachability explicitly recommends it',
+);
 
 const linkedRdpBrowser = {
   id: 'session:last30days-facebook',
@@ -619,8 +672,8 @@ assert.match(
 
 assert.match(
   workspaceViewport,
-  /function chooseWorkspaceViewportBrowser[\s\S]*hasOpenWorkspaceViewportStream\(serviceBrowser\)[\s\S]*return serviceBrowser[\s\S]*hasOpenWorkspaceViewportStream\(daemonBrowser\)[\s\S]*return daemonBrowser[\s\S]*return serviceBrowser \?\? daemonBrowser/,
-  'Workspace remote viewport must prefer an openable daemon stream when a selected service browser is stale or has no embeddable stream',
+  /function chooseWorkspaceViewportBrowser[\s\S]*workspaceViewportBrowsersShareSession\(serviceBrowser, daemonBrowser\)[\s\S]*mergeWorkspaceViewStreams\(serviceBrowser\.viewStreams, daemonBrowser\.viewStreams\)[\s\S]*hasOpenWorkspaceViewportStream\(serviceBrowser\)[\s\S]*return serviceBrowser[\s\S]*hasOpenWorkspaceViewportStream\(daemonBrowser\)[\s\S]*return daemonBrowser/,
+  'Workspace remote viewport must merge RDP and CDP projections for one session, then preserve the openable fallback behavior for distinct browsers',
 );
 
 assert.match(
@@ -689,8 +742,8 @@ assert.match(
 
 assert.match(
   workspaceViewport,
-  /function workspaceViewportTiles[\s\S]*if \(!browserCanRenderWorkspaceViewport\(browser\)\) return null[\s\S]*canOpenViewStream\(stream\)/,
-  'Workspace tile mode must exclude retained terminal browser records even when they still have Guacamole URLs',
+  /function workspaceViewportTiles[\s\S]*!browserCanRenderWorkspaceViewport\(browser\) && !browserCanRecoverWorkspaceViewport\(browser\)[\s\S]*frameUrl: browserCanRenderWorkspaceViewport\(browser\) && stream && frameUrl && canOpenViewStream\(stream\) \? frameUrl : null/,
+  'Workspace tile mode must keep recoverable terminal cards visible without embedding their stale Guacamole URLs',
 );
 
 assert.doesNotMatch(
@@ -749,7 +802,7 @@ assert.match(
 
 assert.match(
   workspaceViewport,
-  /postWorkspaceRecoveryRequest[\s\S]*action: ServiceRequestAction[\s\S]*service_remote_view_browser_reattach[\s\S]*service_remote_view_route_switch[\s\S]*workspace-viewport-route-switch[\s\S]*workspace-viewport-browser-reattach[\s\S]*service_viewer_lease_request[\s\S]*workspace-viewport-viewer-reconnect[\s\S]*service_controller_lease_takeover[\s\S]*workspace-viewport-controller-takeover[\s\S]*service_viewer_lease_release[\s\S]*workspace-viewport-viewer-release/,
+  /postWorkspaceRecoveryRequest[\s\S]*action: ServiceRequestAction[\s\S]*workspaceViewRecoveryAction[\s\S]*workspace-viewport-route-switch[\s\S]*workspace-viewport-browser-reattach[\s\S]*service_viewer_lease_request[\s\S]*workspace-viewport-viewer-reconnect[\s\S]*service_controller_lease_takeover[\s\S]*workspace-viewport-controller-takeover[\s\S]*service_viewer_lease_release[\s\S]*workspace-viewport-viewer-release/,
   'Workspace remote viewport must expose explicit browser reattach, route switch, viewer reconnect, controller takeover, and viewer release recovery actions',
 );
 
@@ -757,6 +810,24 @@ assert.match(
   workspaceViewport,
   /aria-label="Reattach remote browser route"[\s\S]*aria-label="Reconnect viewer lease"[\s\S]*aria-label="Take controller lease"[\s\S]*aria-label="Release viewer leases"/,
   'Workspace remote viewport recovery actions must be visible as stable icon-button controls',
+);
+
+assert.match(
+  workspaceViewport,
+  /workspaceViewStreamChoices\(browser\?\.viewStreams\)[\s\S]*workspaceViewStreamKey\(option[\s\S]*aria-pressed=\{selected\}[\s\S]*Use \{viewStreamLabel\(option\)\}/,
+  'Workspace remote viewport must expose every reported stream as an explicit operator-selectable source',
+);
+
+assert.match(
+  workspaceViewport,
+  /recoverWorkspaceBrowser[\s\S]*if \(!targetBrowser\) return[\s\S]*workspaceViewRecoveryAction[\s\S]*!stream && browser[\s\S]*Wake stream/,
+  'A selected retained browser with no stream must expose a non-launching wake action',
+);
+
+assert.match(
+  workspaceViewport,
+  /type WorkspaceViewportTile = \{[\s\S]*stream: ServiceViewStream \| null[\s\S]*function workspaceViewportTiles[\s\S]*tile\.stream && tileFrameUrl[\s\S]*recoverWorkspaceBrowser\(tile\.browser, tile\.stream\)[\s\S]*Wake stream/,
+  'Tile mode must retain recoverable browser cards without a usable stream and expose wake-up in place',
 );
 
 assert.match(
