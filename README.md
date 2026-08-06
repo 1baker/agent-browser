@@ -2026,7 +2026,11 @@ agent-browser carries `AGENT_BROWSER_REMOTE_HEADED_DISPLAY`,
 `AGENT_BROWSER_REMOTE_VIEW_PROVIDER`, and
 `AGENT_BROWSER_REMOTE_CONTROL_INPUT_PROVIDER` into the launch command instead
 of relying on stale daemon environment.
-The dashboard guided launcher defaults to this RDP gateway posture; selecting
+The dashboard guided launcher defaults to this RDP gateway posture. When an
+access plan includes both a service profile identity and an exact custom
+user-data path, the launcher passes both `--runtime-profile <id>` and
+`--profile <path>` so it preserves service identity without substituting a
+same-named managed runtime directory for the exact stored state. Selecting
 RDP gateway in the launcher starts the selected browser/profile combo as a
 fresh `remote_headed` daemon session with `shared_display` and
 `manual_attached_desktop` so the operator lands in the same remote desktop that

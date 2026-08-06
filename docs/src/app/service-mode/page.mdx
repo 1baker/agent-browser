@@ -401,6 +401,10 @@ idle-display, and missing-proof route rows stay in the live workspace group as
 disabled diagnostics instead of opening a generic desktop as a successful
 browser stream. Responses that only include a job ID fall back to the Service
 Jobs view.
+When an access plan includes both a service profile identity and an exact
+custom user-data path, the dashboard launcher passes both
+<code>--runtime-profile &lt;id&gt;</code> and <code>--profile &lt;path&gt;</code> so
+service identity and exact stored browser state remain authoritative together.
 If a workspace URL carries a stale <code>tab=target:*</code> selection, the
 workspace viewport replaces it with the current live service tab before queuing
 control-mode focus, so manual control does not bind to a closed or missing CDP

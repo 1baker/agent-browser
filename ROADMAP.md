@@ -6,6 +6,28 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P93 | Stored-Profile Browser Opening
+
+State: CLOSED
+Current state: installed browser-capability preflights preserve their global
+launch flags and pass against exact compatibility evidence. The dashboard
+launcher carries service identity and exact custom profile paths together.
+Two service-owned stored-profile browsers are running with distinct PIDs,
+private displays, CDP endpoints, screenshots, and controllable streams. The
+Last30days browser is visibly authenticated on Facebook. The AuraCall profile
+opens ChatGPT from its exact path, but its saved login is currently logged out.
+
+### Next Recommendation
+
+Use the installed dashboard launcher for future stored-profile starts, and
+repeat both profile identity fields on direct follow-up CLI commands. Treat the
+AuraCall ChatGPT readiness row as drifted until a separate authorized login and
+freshness-verification pass succeeds.
+
+### Evidence
+
+- `docs/dev/plans/0093-2026-08-05-stored-profile-browser-opening-plan.md`
+
 ## P92 | Passwordless Helper Compatibility and Guacamole Text Input Defaults
 
 State: CLOSED

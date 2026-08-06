@@ -4,6 +4,57 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 138 | 2026-08-05
+
+Scope: repair stored-profile launcher identity handling and open two bounded
+stored-profile browser workspaces without disturbing retained browser owners.
+
+Actions:
+
+- Repaired nested browser-capability preflight parsing so explicit
+  browser-build, runtime-profile, custom-profile, and headed flags survive
+  global flag cleaning.
+- Added exact compatibility rows for the Last30days stealth Chromium profile
+  and the AuraCall stock Chrome profile, then proved both installed no-launch
+  preflights selected passed validation evidence.
+- Changed dashboard launcher session arguments to pass both the service
+  runtime-profile identity and exact custom profile path when access-plan
+  provides both.
+- Launched `stored-last30days-social` on its exact profile as PID `90765`, CDP
+  port `37077`, and display `:90`; direct CDP and screenshot readbacks showed
+  the authenticated Facebook feed.
+- Launched `stored-auracall-chatgpt` on its exact registered AuraCall path as
+  PID `95241`, CDP port `38441`, and display `:91`; direct CDP and screenshot
+  readbacks showed ChatGPT loaded but logged out.
+- Released both Guacamole route checkouts created by rejected shared-display
+  attempts. Route A and Route B returned to available. Preserved the existing
+  `litscout-e3-auracall` CDP endpoint.
+- Published the final embedded dashboard and executable. Both new browsers
+  remain running.
+
+Validation:
+
+- focused red then green Rust preflight parser regression
+- focused red then green dashboard launcher argument regression
+- Rust formatting, strict Clippy, focused Rust tests, dashboard and docs
+  production builds, patch hygiene, and installed preflight readbacks
+- direct process command-line, runtime-state, CDP target, HTTP screenshot,
+  service profile allocation, stream, dashboard local/public HTTP 200, route
+  release, and retained-browser readbacks
+
+Result:
+
+- Plan 0093 is closed. Stored-profile launches now retain both service identity
+  and exact browser-state paths, and the two requested browsers are available
+  as controllable CDP stream workspaces.
+- The installed executable SHA-256 is
+  `2c07c043a2af5a7063a161159f856c1e9c3974e31ceaf95300f2a46383fae32b`.
+- AuraCall's retained fresh ChatGPT authentication evidence is stale relative
+  to the current logged-out page. Login repair remains a separate authorization
+  boundary.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 137 | 2026-08-05
 
 Scope: make detected non-owned CDP browser tiles useful for capture, responsive

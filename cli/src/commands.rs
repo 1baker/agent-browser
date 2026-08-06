@@ -635,6 +635,27 @@ fn parse_service_browser_capability_preflight(
         }
         i += 1;
     }
+    // These options are also global launch flags, so the top-level CLI parser
+    // removes them from the nested command arguments before this parser runs.
+    // Preserve their explicit CLI values for the documented no-launch gate.
+    if flags.cli_browser_build && cmd.get("browserBuild").is_none() {
+        if let Some(browser_build) = flags.browser_build.as_deref() {
+            cmd["browserBuild"] = json!(browser_build);
+        }
+    }
+    if flags.cli_runtime_profile && cmd.get("runtimeProfile").is_none() {
+        if let Some(runtime_profile) = flags.runtime_profile.as_deref() {
+            cmd["runtimeProfile"] = json!(runtime_profile);
+        }
+    }
+    if flags.cli_profile && cmd.get("profile").is_none() {
+        if let Some(profile) = flags.profile.as_deref() {
+            cmd["profile"] = json!(profile);
+        }
+    }
+    if flags.cli_headed && cmd.get("headless").is_none() {
+        cmd["headless"] = json!(!flags.headed);
+    }
     if cmd.get("browserBuild").is_none() {
         return Err(ParseError::MissingArguments {
             context: "service browser-capability preflight".to_string(),
@@ -7459,6 +7480,32 @@ mod tests {
         assert_eq!(cmd["agentName"], "codex");
         assert_eq!(cmd["taskName"], "openCanvaWorkspace");
         assert!(cmd["serviceState"].is_object());
+    }
+
+    #[test]
+    fn test_service_browser_capability_preflight_preserves_cleaned_global_flags() {
+        let all_args = args(
+            "service browser-capability preflight --browser-build stealthcdp_chromium --runtime-profile last30days-facebook --profile /srv/browser-profiles/facebook --headed --target-service-id facebook",
+        );
+        let mut flags = default_flags();
+        flags.browser_build = Some("stealthcdp_chromium".to_string());
+        flags.cli_browser_build = true;
+        flags.runtime_profile = Some("last30days-facebook".to_string());
+        flags.cli_runtime_profile = true;
+        flags.profile = Some("/srv/browser-profiles/facebook".to_string());
+        flags.cli_profile = true;
+        flags.headed = true;
+        flags.cli_headed = true;
+
+        let cleaned = crate::flags::clean_args(&all_args);
+        let cmd = parse_command(&cleaned, &flags).unwrap();
+
+        assert_eq!(cmd["action"], "service_browser_capability_preflight");
+        assert_eq!(cmd["browserBuild"], "stealthcdp_chromium");
+        assert_eq!(cmd["runtimeProfile"], "last30days-facebook");
+        assert_eq!(cmd["profile"], "/srv/browser-profiles/facebook");
+        assert_eq!(cmd["headless"], false);
+        assert_eq!(cmd["targetServiceId"], "facebook");
     }
 
     #[test]

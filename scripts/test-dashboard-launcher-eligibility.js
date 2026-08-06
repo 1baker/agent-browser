@@ -505,6 +505,38 @@ assert.deepEqual(sessionArgs, [
   'https://example.test/start',
 ]);
 
+const callerSuppliedProfileArgs = createLauncherSessionArgsFromAccessPlan({
+  ...accessPlans[0],
+  selectedProfile: {
+    id: 'profile-ready',
+    userDataDir: '/srv/browser-profiles/profile-ready',
+  },
+  decision: {
+    ...accessPlans[0].decision,
+    serviceRequest: {
+      ...accessPlans[0].decision.serviceRequest,
+      request: {
+        ...accessPlans[0].decision.serviceRequest.request,
+        profile: '/srv/browser-profiles/profile-ready',
+      },
+    },
+  },
+}, {
+  sessionName: 'workspace-caller-profile',
+  executableId: 'stealth-exe',
+  browserHostId: 'local-host',
+});
+assert.deepEqual(
+  callerSuppliedProfileArgs.slice(4, 8),
+  [
+    '--runtime-profile',
+    'profile-ready',
+    '--profile',
+    '/srv/browser-profiles/profile-ready',
+  ],
+  'an access-plan service identity and exact profile path must both reach the CLI launch',
+);
+
 const rdpRequest = createLauncherServiceRequestFromAccessPlan(accessPlans[1], {
   viewStreamProvider: 'rdp_gateway',
 });

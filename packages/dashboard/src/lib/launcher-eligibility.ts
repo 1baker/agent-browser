@@ -425,11 +425,14 @@ export function createLauncherSessionArgsFromAccessPlan(
   if (executablePath) {
     args.push("--executable-path", executablePath);
   }
-  const runtimeProfile = stringField(request, "runtimeProfile");
   const profile = stringField(request, "profile");
+  const runtimeProfile = stringField(request, "runtimeProfile");
+  // The runtime profile preserves service identity while the explicit profile
+  // preserves the exact user-data path. The CLI accepts both together.
   if (runtimeProfile) {
     args.push("--runtime-profile", runtimeProfile);
-  } else if (profile) {
+  }
+  if (profile) {
     args.push("--profile", profile);
   }
   const browserHost = stringField(params, "browserHost");
