@@ -4,6 +4,55 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 139 | 2026-08-06
+
+Scope: open the exact guided launcher from actionable profile rows and close
+any live service-owned browser from the dashboard without extending lifecycle
+ownership to detected external browsers.
+
+Actions:
+
+- Routed profile-row Open browser through the existing browser/profile launcher,
+  preserving exact profile selection and automatic no-launch access planning.
+- Made workspace browser Close contract-aware and wired its confirmation to
+  `service_browser_close` for browser records that do not carry daemon ports.
+- Enabled Close in the Service browser table for every live service-owned
+  browser instead of only the currently selected daemon-session browser.
+- Added browser-specific confirmation copy that explains polite shutdown and
+  retained lifecycle history.
+- Preserved disabled lifecycle controls for detected non-owned browsers and
+  explicit contract-unavailable reasons for service-owned rows.
+- Updated CLI help, README, dashboard and service-mode docs, source skill, and
+  installed shared skill, then published the embedded dashboard.
+
+Validation:
+
+- focused red then green workspace-node, workspace-navigator, and Service
+  browser-table contracts
+- dashboard view-stream, rendered browser-row action, selected-context,
+  selected-chat, selected-console, launcher, and inspector tests
+- route-confusion gates, 34 focused Rust output tests, Rust formatting, strict
+  Clippy, dashboard and docs production builds, patch hygiene, and installed
+  runtime smoke
+- live dashboard inspection of all 485 stored profiles across 1,952 launcher
+  combinations, exact disposable-profile preflight, disposable service-owned
+  browser Close confirmation, session removal, and local/public HTTP 200
+
+Result:
+
+- Plan 0094 is closed. Actionable profile rows can wake the exact guided
+  launcher, and live service-owned browser tiles can be politely closed from
+  both lifecycle surfaces.
+- Profiles without compatible browser evidence remain visible but blocked by
+  the existing safety gate. Adding reviewed evidence from the UX is the next
+  recommended slice.
+- The installed dashboard SHA-256 is
+  `b2d74b07f2d649f34858c67e3830fc41427818cbbbb4a6fb4b75b0c56fabbb16`;
+  the executable SHA-256 is
+  `32af83cf90e0940183f83e4e7f02ecd4f1b3b6ffaada96d6863f866c6485e3be`.
+- The operator-owned untracked `--full-page` file remains excluded and
+  untouched.
+
 ## Turn 138 | 2026-08-05
 
 Scope: repair stored-profile launcher identity handling and open two bounded

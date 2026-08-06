@@ -357,8 +357,8 @@ assert.match(
 
 assert.match(
   servicePanel,
-  /const closeAvailable = Boolean\(closeSupported && onCloseBrowser && activeSessionName && browser\.id === `session:\$\{activeSessionName\}`\);/,
-  'Browser row Close must only enable for the active service browser row',
+  /const closeAvailable = Boolean\(closeSupported && onCloseBrowser && isLiveBrowserRecord\(browser\)\);/,
+  'Browser row Close must enable for every live service-owned browser row',
 );
 
 assert.match(

@@ -1348,6 +1348,7 @@ export function WorkspaceNavigator() {
   const [browserCapabilityRegistry, setBrowserCapabilityRegistry] = useState<LauncherBrowserCapabilityRegistry | null>(null);
   const [launcherAccessPlans, setLauncherAccessPlans] = useState<Record<string, LauncherAccessPlanPreview>>({});
   const [selectedLauncherRowId, setSelectedLauncherRowId] = useState<string | null>(null);
+  const [launcherRequestedProfileId, setLauncherRequestedProfileId] = useState<string | null>(null);
   const [launcherTargetUrl, setLauncherTargetUrl] = useState(DEFAULT_LAUNCH_TARGET_URL);
   const [launcherDisplayIsolation, setLauncherDisplayIsolation] = useState<LauncherDisplayIsolation>("shared_display");
   const [launcherViewStreamProvider, setLauncherViewStreamProvider] = useState<LauncherViewStreamPreference>("rdp_gateway");
@@ -1476,6 +1477,11 @@ export function WorkspaceNavigator() {
     };
   }, [activePort, deferredProfileDiscoveryQuery, newSessionOpen]);
 
+  const serviceRequestActions = useMemo(
+    () => serviceContracts?.contracts?.serviceRequest?.actions ?? [],
+    [serviceContracts?.contracts?.serviceRequest?.actions],
+  );
+
   const workspaceInput = useMemo<WorkspaceNodeInput>(() => {
     const daemonTabsByPort: Record<number, ReturnType<typeof getTabsForSession>> = {};
     const daemonEngineByPort: Record<number, string> = {};
@@ -1496,8 +1502,9 @@ export function WorkspaceNavigator() {
       jobs: Object.values(serviceState?.jobs ?? {}),
       incidents: serviceState?.incidents ?? [],
       browserSessionAuthority: serviceStatus?.browserSessionAuthority ?? null,
+      serviceRequestActions,
     };
-  }, [getEngineForSession, getTabsForSession, serviceStatus, sessions]);
+  }, [getEngineForSession, getTabsForSession, serviceRequestActions, serviceStatus, sessions]);
 
   const liveRailNodes = useMemo(() => deriveLiveWorkspaceNodes(workspaceInput), [workspaceInput]);
   const filteredNodes = useMemo(() => {
@@ -1602,6 +1609,16 @@ export function WorkspaceNavigator() {
     launcherTargetUrl,
     launcherViewStreamProvider,
   ]);
+
+  // Profile tiles reuse the guided launcher so exact identity and no-launch planning stay authoritative.
+  useEffect(() => {
+    if (!newSessionOpen || !launcherRequestedProfileId) return;
+    const row = launcherPreview.rows.find((candidate) => candidate.profileId === launcherRequestedProfileId);
+    if (!row) return;
+    setSelectedLauncherRowId(row.id);
+    void fetchLauncherAccessPlan(row);
+    setLauncherRequestedProfileId(null);
+  }, [fetchLauncherAccessPlan, launcherPreview.rows, launcherRequestedProfileId, newSessionOpen]);
 
   const selectLauncherRow = useCallback((row: LauncherEligibilityRow) => {
     setSelectedLauncherRowId(row.id);
@@ -1755,6 +1772,12 @@ export function WorkspaceNavigator() {
   const performNodeAction = useCallback(async (node: WorkspaceNode, actionId: WorkspaceNodeActionId) => {
     const action = node.actions.find((candidate) => candidate.id === actionId);
     if (!action?.enabled) return;
+    if (action.id === "launch" && node.profileId) {
+      setLauncherRequestedProfileId(node.profileId);
+      setProfileDiscoveryQuery("");
+      setNewSessionOpen(true);
+      return;
+    }
     if (action.id === "add-tab" && node.port) {
       dispatchAddTab(node.port);
       return;
@@ -1849,7 +1872,7 @@ export function WorkspaceNavigator() {
       return;
     }
     selectNode(node);
-  }, [activePort, dispatchAddTab, fetchServiceStatus, selectNode]);
+  }, [activePort, dispatchAddTab, fetchServiceStatus, selectNode, setNewSessionOpen]);
 
   const performPrimaryAction = useCallback((node: WorkspaceNode) => {
     const action = primaryAction(node);
@@ -1877,10 +1900,50 @@ export function WorkspaceNavigator() {
     setNewSessionOpen(false);
   }, [creating, dispatchCreateSession, newSessionBrowser, newSessionName, setNewSessionOpen]);
 
-  const confirmDangerAction = useCallback(() => {
+  // Lifecycle ownership stays behind the service contract and never extends to detected browsers.
+  const closeServiceOwnedBrowser = useCallback(async (node: WorkspaceNode) => {
+    const browserId = node.browserId ?? node.relatedIds.browserIds[0];
+    if (!browserId) {
+      setServiceError("The selected service browser has no stable browser ID.");
+      return;
+    }
+    setWorkspaceActionLoadingId(`${node.id}:close`);
+    setServiceError("");
+    try {
+      const resp = await fetchWithTimeout(`${serviceBase(activePort)}/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "service_browser_close",
+          serviceName: node.ownership.serviceName ?? "agent-browser-dashboard",
+          agentName: node.ownership.agentName ?? "dashboard-operator",
+          taskName: node.ownership.taskName ?? "workspace-close-browser",
+          params: { browserId },
+          jobTimeoutMs: 10000,
+        }),
+      });
+      const json = (await resp.json()) as ApiResponse<unknown>;
+      if (!json.success) throw new Error(json.error || "Service browser close request failed");
+      await fetchServiceStatus();
+    } catch (err) {
+      setServiceError(err instanceof Error ? err.message : "Service browser close request failed");
+    } finally {
+      setWorkspaceActionLoadingId(null);
+    }
+  }, [activePort, fetchServiceStatus]);
+
+  const confirmDangerAction = useCallback(async () => {
     if (!pendingDangerAction) return;
     if (pendingDangerAction.type === "close-all") {
       dispatchCloseAllSessions();
+      setPendingDangerAction(null);
+      return;
+    }
+    if (
+      pendingDangerAction.type === "close" &&
+      pendingDangerAction.node?.source === "service-browser"
+    ) {
+      await closeServiceOwnedBrowser(pendingDangerAction.node);
       setPendingDangerAction(null);
       return;
     }
@@ -1888,7 +1951,7 @@ export function WorkspaceNavigator() {
     if (port && pendingDangerAction.type === "close") dispatchCloseSession(port);
     if (port && pendingDangerAction.type === "kill") dispatchKillSession(port);
     setPendingDangerAction(null);
-  }, [dispatchCloseAllSessions, dispatchCloseSession, dispatchKillSession, pendingDangerAction]);
+  }, [closeServiceOwnedBrowser, dispatchCloseAllSessions, dispatchCloseSession, dispatchKillSession, pendingDangerAction]);
 
   const sessionBackedNodes = liveRailNodes.filter((node) =>
     node.source === "daemon-session"
@@ -2123,11 +2186,14 @@ export function WorkspaceNavigator() {
           <AlertDialogHeader>
             <AlertDialogTitle>
               {pendingDangerAction?.type === "kill" ? "Kill workspace" :
-                pendingDangerAction?.type === "close-all" ? "Close all workspaces" : "Close workspace"}
+                pendingDangerAction?.type === "close-all" ? "Close all workspaces" :
+                  pendingDangerAction?.node?.source === "service-browser" ? "Close browser" : "Close workspace"}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {pendingDangerAction?.type === "close-all"
                 ? "Close every live daemon session shown in the workspace navigator."
+                : pendingDangerAction?.node?.source === "service-browser"
+                  ? `Politely close the service-owned browser ${pendingDangerAction.node.label}. Its retained lifecycle record remains available for inspection.`
                 : `Apply this action to ${pendingDangerAction?.node?.label ?? "the selected workspace"}.`}
             </AlertDialogDescription>
           </AlertDialogHeader>

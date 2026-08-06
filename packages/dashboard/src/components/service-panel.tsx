@@ -3772,12 +3772,15 @@ function BrowserRowActions({
   const primaryViewStream = browserPrimaryViewStream(browser);
   const viewStreamAvailable = canOpenViewStream(primaryViewStream);
   const controlAvailable = canOpenControlViewStream(primaryViewStream);
-  const closeAvailable = Boolean(closeSupported && onCloseBrowser && activeSessionName && browser.id === `session:${activeSessionName}`);
+  const closeAvailable = Boolean(closeSupported && onCloseBrowser && isLiveBrowserRecord(browser));
   const repairAvailable = Boolean(repairSupported && onRepairBrowser && ["degraded", "faulted"].includes((browser.health ?? "").toLowerCase()));
   const closeTitle = browserRowCloseTitle({
     available: closeAvailable,
     supported: Boolean(closeSupported),
   });
+  const closeTargetContext = activeSessionName && browser.id === `session:${activeSessionName}`
+    ? "current session browser"
+    : "service-owned browser";
   const repairTitle = browserRowRepairTitle({
     available: repairAvailable,
     supported: Boolean(repairSupported),
@@ -3833,7 +3836,7 @@ function BrowserRowActions({
               variant="outline"
               className={cn("px-2 text-[10px]", density === "compact" ? "h-6" : "h-7")}
               disabled={acting}
-              title={closeTitle}
+              title={`${closeTitle} Target: ${closeTargetContext}.`}
             >
               Close
             </Button>

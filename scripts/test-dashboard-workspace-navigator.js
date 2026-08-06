@@ -324,6 +324,18 @@ assert.match(
 
 assert.match(
   navigator,
+  /if \(action\.id === "launch" && node\.profileId\)[\s\S]*setLauncherRequestedProfileId\(node\.profileId\)[\s\S]*setProfileDiscoveryQuery\(""\)[\s\S]*setNewSessionOpen\(true\)/,
+  'Profile workspace Launch must open the service-owned launcher for that exact stored profile',
+);
+
+assert.match(
+  navigator,
+  /launcherRequestedProfileId[\s\S]*launcherPreview\.rows\.find\(\(candidate\) => candidate\.profileId === launcherRequestedProfileId\)[\s\S]*setSelectedLauncherRowId\(row\.id\)[\s\S]*fetchLauncherAccessPlan\(row\)/,
+  'Opening a profile launcher must select the matching profile row and fetch its no-launch access plan',
+);
+
+assert.match(
+  navigator,
   /const launchedBrowserId = `session:\$\{sessionName\}`[\s\S]*freshStatus\?\.service_state\?\.browsers\?\.\[launchedBrowserId\][\s\S]*activeSessionIds\?\.includes\(sessionName\)[\s\S]*launchViewStream\(browser\)[\s\S]*setNewSessionOpen\(false\)[\s\S]*pushWorkspaceViewportSelectionUrl[\s\S]*pushServiceJobsView\(identity\.jobId\)/,
   'Workspace launcher must close after submit and prefer opening the launched session Guacamole viewport before falling back to Jobs',
 );
@@ -461,6 +473,25 @@ assert.match(
 );
 
 assert.match(
+  navigator,
+  /const closeServiceOwnedBrowser = useCallback\(async \(node: WorkspaceNode\)[\s\S]*action: "service_browser_close"[\s\S]*params: \{ browserId \}[\s\S]*await fetchServiceStatus\(\)/,
+  'Workspace navigator Close must queue the service-owned browser close action by stable browser ID and refresh state',
+);
+
+assert.match(
+  navigator,
+  /const confirmDangerAction = useCallback\(async \(\) => \{[\s\S]*pendingDangerAction\.node\?\.source === "service-browser"[\s\S]*await closeServiceOwnedBrowser\(pendingDangerAction\.node\)/,
+  'Close confirmation must route service browser nodes through service_browser_close instead of requiring a daemon port',
+);
+
+assert.match(
+  navigator,
+  /pendingDangerAction\?\.node\?\.source === "service-browser"[\s\S]*Close browser[\s\S]*Politely close the service-owned browser/,
+  'Service browser close must use browser-specific confirmation copy',
+);
+
+
+assert.match(
   css,
   /\.workspace-nav-header[\s\S]*\.workspace-nav-scope[\s\S]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)[\s\S]*\.workspace-nav-dismissed-restore[\s\S]*\.workspace-nav-row[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto/,
   'Workspace navigator CSS must keep compact controls and stable row dimensions',
@@ -506,6 +537,11 @@ for (const [label, text] of [
   ['skill', skill],
   ['CLI help', cliOutput],
 ]) {
+  assert.match(
+    text,
+    /profile[\s\S]*Open browser[\s\S]*service-owned browser[\s\S]*Close/i,
+    `${label} must document profile launch and service-owned browser close controls`,
+  );
   assert.match(
     text,
     /workspace[\s\S]*browser[\s\S]*session[\s\S]*tab[\s\S]*profile[\s\S]*job/,

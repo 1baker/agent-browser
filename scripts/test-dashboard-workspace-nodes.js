@@ -1257,6 +1257,29 @@ assert.deepEqual(workspaceNodeLiveControlEligibility(live), {
   reason: null,
 });
 
+const closeContractMissing = byId(deriveWorkspaceNodes({
+  serviceRequestActions: [],
+  serviceBrowsers: [{
+    id: 'browser-close-contract-missing',
+    health: 'ready',
+    pid: 9123,
+    cdpEndpoint: 'ws://127.0.0.1:49123/devtools/browser/close-contract-missing',
+  }],
+}), 'browser:browser-close-contract-missing');
+assert.equal(action(closeContractMissing, 'close').enabled, false);
+assert.match(action(closeContractMissing, 'close').reason ?? '', /service_browser_close/);
+
+const closeContractReady = byId(deriveWorkspaceNodes({
+  serviceRequestActions: ['service_browser_close'],
+  serviceBrowsers: [{
+    id: 'browser-close-contract-ready',
+    health: 'ready',
+    pid: 9124,
+    cdpEndpoint: 'ws://127.0.0.1:49124/devtools/browser/close-contract-ready',
+  }],
+}), 'browser:browser-close-contract-ready');
+assert.equal(action(closeContractReady, 'close').enabled, true);
+
 const cdpMissingStream = byId(nodes, 'browser:browser-cdp-missing-stream');
 assert.equal(cdpMissingStream.source, 'service-browser');
 assert.equal(cdpMissingStream.group, 'active');
@@ -1291,6 +1314,7 @@ const retainedProfileLauncher = byId(nodes, 'profile:profile-retained');
 assert.equal(retainedProfileLauncher.source, 'profile');
 assert.equal(retainedProfileLauncher.inventoryPlacement?.lane, 'launcher');
 assert.equal(action(retainedProfileLauncher, 'launch').enabled, true);
+assert.equal(action(retainedProfileLauncher, 'launch').label, 'Open browser');
 
 const disconnected = byId(nodes, 'browser:browser-disconnected');
 assert.equal(disconnected.group, 'needs-attention');

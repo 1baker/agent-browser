@@ -6,6 +6,25 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P94 | Profile Lifecycle UX
+
+State: CLOSED
+Current state: actionable profile rows expose Open browser and route their exact
+profile identity through the no-launch guided launcher. Every live
+service-owned browser can be politely closed from the workspace tree or Service
+browser table through the advertised service contract. Detected non-owned
+browsers remain lifecycle-disabled.
+
+### Next Recommendation
+
+Add an operator-reviewed compatibility-evidence onboarding surface for stored
+profile and browser pairs that the launcher currently shows as blocked. Keep
+launch unavailable until the existing capability and validation gates pass.
+
+### Evidence
+
+- `docs/dev/plans/0094-2026-08-06-profile-lifecycle-ux-plan.md`
+
 ## P93 | Stored-Profile Browser Opening
 
 State: CLOSED

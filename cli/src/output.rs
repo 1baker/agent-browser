@@ -5652,6 +5652,7 @@ Notes:
   - Service config mutation uses the path ID as authoritative and rejects a request body whose nested id conflicts with the path.
   - Daemon background reconciliation runs every 60000 ms by default; set --service-reconcile-interval 0 or service.reconcileIntervalMs: 0 to disable it.
   - Due active service monitors are enqueued through the same service worker every 60000 ms by default; set --service-monitor-interval 0 or service.monitorIntervalMs: 0 to disable it.
+  - In the dashboard workspace navigator, an available profile provides Open browser, which opens the launcher with that exact profile selected and runs the no-launch access-plan preflight. Every live service-owned browser provides Close in the workspace tree and Service browser table; detected non-owned browsers do not gain lifecycle controls.
   - Browser launch, close, and command-time stale-browser detection update the active session's persisted browser health record before relaunch.
   - Close first attempts polite browser shutdown, then force kill for owned browser processes. Polite shutdown failure records degraded browser health; force-kill failure records faulted health with an OS-degraded warning.
   - pnpm test:service-shutdown-health-live validates the polite-shutdown failure remedy against live service state.

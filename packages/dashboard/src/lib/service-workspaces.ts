@@ -445,6 +445,7 @@ export type WorkspaceNodeInput = {
   resources?: WorkspaceResourceRecord[];
   manualBrowsers?: WorkspaceManualBrowser[];
   browserSessionAuthority?: WorkspaceBrowserSessionAuthority | null;
+  serviceRequestActions?: readonly string[] | Set<string>;
   includeRetained?: boolean;
   includeHidden?: boolean;
 };
@@ -512,6 +513,8 @@ export function deriveWorkspaceNodes(input: WorkspaceNodeInput): WorkspaceNode[]
   const jobs = input.jobs ?? [];
   const incidents = input.incidents ?? [];
   const manualBrowsers = input.manualBrowsers ?? [];
+  const browserCloseSupported = input.serviceRequestActions === undefined ||
+    new Set(input.serviceRequestActions).has("service_browser_close");
   const authorityVerdictsByBrowserId = browserAuthorityVerdictsByBrowserId(input.browserSessionAuthority);
   const ownershipDiagnostics = deriveWorkspaceOwnershipDiagnostics({
     serviceBrowsers,
@@ -588,6 +591,7 @@ export function deriveWorkspaceNodes(input: WorkspaceNodeInput): WorkspaceNode[]
       incidents: relatedIncidents,
       diagnostics,
       authorityVerdict: authorityVerdictsByBrowserId.get(browser.id),
+      browserCloseSupported,
     });
     nodes.push(applyWorkspaceInventoryPlacement(node));
     browserIdsWithNodes.add(browser.id);
@@ -1041,6 +1045,7 @@ function createBrowserWorkspaceNode({
   incidents,
   diagnostics,
   authorityVerdict,
+  browserCloseSupported,
 }: {
   browser: WorkspaceServiceBrowser;
   sessions: WorkspaceServiceSession[];
@@ -1050,6 +1055,7 @@ function createBrowserWorkspaceNode({
   incidents: WorkspaceServiceIncident[];
   diagnostics: WorkspaceOwnershipDiagnostic[];
   authorityVerdict?: WorkspaceBrowserSessionAuthorityVerdict;
+  browserCloseSupported: boolean;
 }): WorkspaceNode {
   const ownership = firstOwnership(sessions, allocation);
   const primaryTab = primaryServiceTab(tabs);
@@ -1207,7 +1213,18 @@ function createBrowserWorkspaceNode({
       incidentIds: uniqueStrings(incidents.map((incident) => incident.id)),
     },
     actions: viewerClient.active
-      ? viewerClientActions(browserActions(browser, live, viewStream, blockedReason ?? effectiveAttentionReason, takeover), viewerClient.reason)
+      ? viewerClientActions(
+          browserActions(
+            browser,
+            live,
+            viewStream,
+            blockedReason ?? effectiveAttentionReason,
+            takeover,
+            undefined,
+            browserCloseSupported,
+          ),
+          viewerClient.reason,
+        )
       : browserActions(
           browser,
           live,
@@ -1215,6 +1232,7 @@ function createBrowserWorkspaceNode({
           blockedReason ?? effectiveAttentionReason,
           takeover,
           profileActionability,
+          browserCloseSupported,
         ),
   };
 }
@@ -2845,6 +2863,7 @@ function browserActions(
   attentionReason?: string | null,
   takeover?: WorkspaceNodeTakeover | null,
   profileActionability?: WorkspaceProfileActionability | null,
+  closeSupported = true,
 ): WorkspaceNodeAction[] {
   const canViewStream = live && Boolean(viewStream?.embeddable);
   const canControlStream = live && Boolean(viewStream?.controllable);
@@ -2866,7 +2885,16 @@ function browserActions(
     { id: "view", label: "View", enabled: canViewStream, reason: canViewStream ? null : live ? streamUnavailableReason || "No embeddable service-owned view stream." : "Browser is retained, not live." },
     { id: "control", label: "Control", enabled: canControlStream, reason: canControlStream ? null : live ? streamUnavailableReason || "No controllable service-owned view stream." : "Browser is retained, not live." },
     { id: "repair", label: "Repair", enabled: Boolean(attentionReason), reason: attentionReason ? null : "No service-owned repair reason is present." },
-    { id: "close", label: "Close", enabled: live, reason: live ? null : "Browser is already retained." },
+    {
+      id: "close",
+      label: "Close",
+      enabled: live && closeSupported,
+      reason: !live
+        ? "Browser is already retained."
+        : closeSupported
+          ? null
+          : "Service contract does not advertise service_browser_close.",
+    },
     { id: "external-open", label: "Open externally", enabled: canViewStream, reason: canViewStream ? null : live ? streamUnavailableReason || "No external stream URL is recorded." : "Browser is retained, not live." },
   ];
   return actions.filter((action) => action.id !== "external-open" || browser.viewStreams?.length);
@@ -2940,7 +2968,7 @@ function profileActions(
   const needsSeeding = Boolean(profileAttentionReason(allocation));
   const blocked = Boolean(profileBlockedReason(allocation));
   return [
-    { id: "launch", label: "Launch", enabled: !needsSeeding && !blocked, reason: needsSeeding || blocked ? reason : null },
+    { id: "launch", label: "Open browser", enabled: !needsSeeding && !blocked, reason: needsSeeding || blocked ? reason : null },
     { id: "seed", label: "Seed", enabled: needsSeeding, reason: needsSeeding ? null : "Profile readiness does not require manual seeding." },
   ];
 }

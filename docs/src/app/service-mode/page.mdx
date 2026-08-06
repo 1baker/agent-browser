@@ -386,6 +386,12 @@ The left workspace navigator uses separate <code>workspace</code>,
 <code>profile</code>, and <code>job</code> query parameters for selected
 workspace identity and related-record handoff. Its guided launcher queues
 supported browser/profile requests through <code>/api/service/request</code>.
+An available profile tile provides <strong>Open browser</strong>, which opens
+the launcher with that exact profile selected and runs its no-launch access-plan
+preflight. Every live service-owned browser provides <strong>Close</strong> in
+the workspace tree and Service browser table. Detected non-owned browsers
+retain screenshot, watch, and borrowed-input controls without lifecycle
+ownership.
 The launcher defaults to <code>shared_display</code>,
 <code>rdp_gateway</code>, and <code>manual_attached_desktop</code>. If an
 operator selects RDP gateway, the queued request is forced to
