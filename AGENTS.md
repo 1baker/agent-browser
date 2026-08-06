@@ -311,6 +311,8 @@ Read and follow:
 - `docs/dev/policies/0021-subagent-workflow-optimization.md`
 - `docs/dev/policies/0022-preview-artifact-review.md`
 - `docs/dev/policies/0023-upstream-fork-maintenance.md`
+- `docs/dev/policies/0024-notes-and-memories.md`
+- `docs/dev/policies/0026-subagent-runtime-governance.md`
 
 ## Scope
 
