@@ -25,6 +25,7 @@ import {
   DASHBOARD_WORKSPACE_SELECTION_EVENT,
   dashboardWorkspaceSelectionHasValue,
   readDashboardWorkspaceUrlSelection,
+  writeDashboardWorkspaceUrlSelection,
 } from "@/lib/workspace-url-selection";
 import {
   ServiceDetailInspector,
@@ -68,6 +69,28 @@ type DashboardAuthUser = {
 type DashboardAuthStatus = {
   authenticated: boolean;
   user?: DashboardAuthUser | null;
+};
+
+type RemoteViewHandoffResolution = {
+  status?: string;
+  resolved?: boolean;
+  reopenRequired?: boolean;
+  handoffId?: string;
+  handoffUrl?: string | null;
+  browserId?: string | null;
+  sessionName?: string | null;
+  tabId?: string | null;
+  targetId?: string | null;
+  viewStreamProvider?: string | null;
+  message?: string | null;
+  tab?: Record<string, unknown> | null;
+  open?: Record<string, unknown> | null;
+};
+
+type RemoteViewHandoffApiResponse = {
+  success: boolean;
+  data?: RemoteViewHandoffResolution;
+  error?: string | null;
 };
 
 type RuntimeManifest = {
@@ -120,6 +143,24 @@ function readWorkspaceViewportRoute(): boolean {
   if (view === "workspace:tile") return true;
   if (view !== "workspace:control" && view !== "workspace:view") return false;
   return dashboardWorkspaceSelectionHasValue(readDashboardWorkspaceUrlSelection());
+}
+
+function remoteViewHandoffIdFromPath(pathname: string): string | null {
+  const match = pathname.match(/^\/remote-view\/([^/]+)\/?$/);
+  if (!match?.[1]) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function remoteViewResolutionString(
+  record: Record<string, unknown> | null | undefined,
+  key: string,
+): string | null {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function readStoredBoolean(key: string, fallback: boolean): boolean {
@@ -192,6 +233,10 @@ function DashboardAuthGate({ initialSection }: { initialSection: DashboardSectio
     if (typeof window === "undefined") return;
     const next = new URLSearchParams(window.location.search).get("next");
     if (next?.startsWith("/") && !next.startsWith("//")) {
+      if (next.startsWith("/guacamole/")) {
+        window.location.assign(next);
+        return;
+      }
       window.history.replaceState({ dashboardAuth: true }, "", next);
     } else if (window.location.pathname === "/login") {
       window.history.replaceState({ dashboardAuth: true }, "", "/");
@@ -218,12 +263,160 @@ function DashboardAuthGate({ initialSection }: { initialSection: DashboardSectio
   }
 
   return (
-    <DashboardExperience
+    <RemoteViewHandoffGate
       initialSection={initialSection}
       user={user}
       onLogout={handleLogout}
     />
   );
+}
+
+function RemoteViewHandoffGate({
+  initialSection,
+  user,
+  onLogout,
+}: {
+  initialSection: DashboardSection;
+  user: DashboardAuthUser;
+  onLogout: () => void;
+}) {
+  const handoffId = typeof window === "undefined"
+    ? null
+    : remoteViewHandoffIdFromPath(window.location.pathname);
+  const [resolution, setResolution] = useState<RemoteViewHandoffResolution | null>(null);
+  const [resolving, setResolving] = useState(Boolean(handoffId));
+  const [error, setError] = useState("");
+
+  const resolveHandoff = useCallback(async (allowReopenClosed: boolean) => {
+    if (!handoffId) return;
+    setResolving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/service/request", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "service_remote_view_handoff_resolve",
+          serviceName: "agent-browser-dashboard",
+          agentName: user.username || "operator",
+          taskName: "durable-remote-view-handoff",
+          params: { handoffId, allowReopenClosed },
+          jobTimeoutMs: 90_000,
+        }),
+      });
+      const payload = (await response.json()) as RemoteViewHandoffApiResponse;
+      if (!response.ok || !payload.success || !payload.data) {
+        throw new Error(payload.error || "The remote-view handoff could not be resolved.");
+      }
+      const nextResolution = payload.data;
+      setResolution(nextResolution);
+      if (!nextResolution.resolved || nextResolution.status !== "ready") return;
+
+      const tab = nextResolution.tab ?? null;
+      const open = nextResolution.open ?? null;
+      const intent = open?.intent && typeof open.intent === "object"
+        ? open.intent as Record<string, unknown>
+        : null;
+      const serviceTabHandle = tab?.serviceTabHandle && typeof tab.serviceTabHandle === "object"
+        ? tab.serviceTabHandle as Record<string, unknown>
+        : null;
+      const browserId = nextResolution.browserId
+        ?? remoteViewResolutionString(tab, "browserId")
+        ?? remoteViewResolutionString(serviceTabHandle, "browserId");
+      const sessionName = nextResolution.sessionName
+        ?? remoteViewResolutionString(tab, "sessionId")
+        ?? remoteViewResolutionString(serviceTabHandle, "sessionName");
+      const targetId = nextResolution.targetId
+        ?? remoteViewResolutionString(tab, "targetId")
+        ?? remoteViewResolutionString(serviceTabHandle, "targetId");
+      const tabId = nextResolution.tabId
+        ?? remoteViewResolutionString(tab, "tabId")
+        ?? remoteViewResolutionString(tab, "id")
+        ?? remoteViewResolutionString(serviceTabHandle, "tabId")
+        ?? (targetId ? `target:${targetId}` : null);
+      const profileId = remoteViewResolutionString(tab, "profileId")
+        ?? remoteViewResolutionString(tab, "runtimeProfile")
+        ?? remoteViewResolutionString(serviceTabHandle, "profileId")
+        ?? remoteViewResolutionString(intent, "runtimeProfile")
+        ?? remoteViewResolutionString(intent, "profile");
+
+      const params = new URLSearchParams(window.location.search);
+      params.delete("next");
+      if (nextResolution.viewStreamProvider) {
+        params.set("view-provider", nextResolution.viewStreamProvider);
+      }
+      params.set("view", "workspace:control");
+      const search = params.toString();
+      window.history.replaceState(
+        { ...(window.history.state ?? {}), remoteViewHandoff: handoffId },
+        "",
+        `${window.location.pathname}${search ? `?${search}` : ""}`,
+      );
+      writeDashboardWorkspaceUrlSelection({
+        workspaceId: browserId ? `browser:${browserId}` : null,
+        browserId,
+        sessionId: sessionName,
+        tabId,
+        profileId,
+        jobId: handoffId,
+      }, "replace");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The remote-view handoff could not be resolved.");
+    } finally {
+      setResolving(false);
+    }
+  }, [handoffId, user.username]);
+
+  useEffect(() => {
+    if (handoffId) void resolveHandoff(false);
+  }, [handoffId, resolveHandoff]);
+
+  if (!handoffId) {
+    return <DashboardExperience initialSection={initialSection} user={user} onLogout={onLogout} />;
+  }
+
+  if (resolving) {
+    return <DashboardLoginScreen busy />;
+  }
+
+  if (resolution?.status === "closed" && resolution.reopenRequired) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background p-6">
+        <section className="w-full max-w-lg space-y-4 rounded-xl border bg-card p-6 shadow-sm">
+          <AlertTriangle className="size-6 text-amber-500" />
+          <h1 className="text-xl font-semibold">This browser tab was closed</h1>
+          <p className="text-sm text-muted-foreground">
+            {resolution.message || "Opening it again requires an explicit operator action."}
+          </p>
+          <div className="flex gap-3">
+            <Button onClick={() => void resolveHandoff(true)}>Reopen tab</Button>
+            <Button variant="outline" onClick={onLogout}>Sign out</Button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (error || resolution?.status === "not_found") {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background p-6">
+        <section className="w-full max-w-lg space-y-4 rounded-xl border bg-card p-6 shadow-sm">
+          <AlertTriangle className="size-6 text-destructive" />
+          <h1 className="text-xl font-semibold">Remote view unavailable</h1>
+          <p className="text-sm text-muted-foreground">
+            {error || resolution?.message || "The handoff no longer exists."}
+          </p>
+          <div className="flex gap-3">
+            {error ? <Button onClick={() => void resolveHandoff(false)}>Retry</Button> : null}
+            <Button variant="outline" onClick={onLogout}>Sign out</Button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  return <DashboardExperience initialSection={initialSection} user={user} onLogout={onLogout} />;
 }
 
 function DashboardLoginScreen({

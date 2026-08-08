@@ -121,6 +121,29 @@ fn page_index_for_target_id(pages: &[PageInfo], target_id: &str) -> Option<usize
     pages.iter().position(|p| p.target_id == target_id)
 }
 
+fn runtime_handoff_candidate_indices(
+    pages: &[PageInfo],
+    preferred_target_id: Option<&str>,
+) -> Vec<usize> {
+    let mut indices = Vec::with_capacity(pages.len());
+    if let Some(preferred_target_id) = preferred_target_id {
+        if let Some(index) = page_index_for_target_id(pages, preferred_target_id) {
+            indices.push(index);
+        }
+    }
+    for (index, page) in pages.iter().enumerate() {
+        if !indices.contains(&index) && page.url != "about:blank" && !page.url.is_empty() {
+            indices.push(index);
+        }
+    }
+    for index in 0..pages.len() {
+        if !indices.contains(&index) {
+            indices.push(index);
+        }
+    }
+    indices
+}
+
 /// Converts common error messages into AI-friendly, actionable descriptions.
 pub fn to_ai_friendly_error(error: &str) -> String {
     let lower = error.to_lowercase();
@@ -340,6 +363,7 @@ pub struct BrowserManager {
 const LIGHTPANDA_CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const LIGHTPANDA_CDP_CONNECT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LIGHTPANDA_TARGET_INIT_TIMEOUT: Duration = Duration::from_secs(10);
+const RUNTIME_HANDOFF_TARGET_INIT_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl BrowserManager {
     pub async fn launch(options: LaunchOptions, engine: Option<&str>) -> Result<Self, String> {
@@ -462,6 +486,29 @@ impl BrowserManager {
 
     pub async fn connect_cdp(url: &str) -> Result<Self, String> {
         Self::connect_cdp_inner(url, false, None).await
+    }
+
+    pub async fn connect_cdp_for_handoff(
+        url: &str,
+        preferred_target_id: Option<&str>,
+    ) -> Result<Self, String> {
+        let ws_url = resolve_cdp_url(url).await?;
+        let client = Arc::new(CdpClient::connect(&ws_url).await?);
+        let mut manager = Self {
+            client,
+            browser_process: None,
+            ws_url,
+            pages: Vec::new(),
+            active_page_index: 0,
+            default_timeout_ms: 25_000,
+            download_path: None,
+            ignore_https_errors: false,
+            visited_origins: HashSet::new(),
+        };
+        manager
+            .discover_and_attach_retained_targets_for_handoff(preferred_target_id)
+            .await?;
+        Ok(manager)
     }
 
     /// Connect to a provider CDP proxy where the WebSocket IS the page session.
@@ -608,6 +655,76 @@ impl BrowserManager {
         Ok(())
     }
 
+    async fn discover_and_attach_retained_targets_for_handoff(
+        &mut self,
+        preferred_target_id: Option<&str>,
+    ) -> Result<(), String> {
+        self.client
+            .send_command_typed::<_, Value>(
+                "Target.setDiscoverTargets",
+                &SetDiscoverTargetsParams { discover: true },
+                None,
+            )
+            .await?;
+
+        let result: GetTargetsResult = self
+            .client
+            .send_command_typed("Target.getTargets", &json!({}), None)
+            .await?;
+        let page_targets: Vec<TargetInfo> = result
+            .target_infos
+            .into_iter()
+            .filter(should_track_target)
+            .collect();
+        if page_targets.is_empty() {
+            return Err("Runtime handoff found no retained page targets".to_string());
+        }
+
+        for target in &page_targets {
+            let attach_result: AttachToTargetResult = self
+                .client
+                .send_command_typed(
+                    "Target.attachToTarget",
+                    &AttachToTargetParams {
+                        target_id: target.target_id.clone(),
+                        flatten: true,
+                    },
+                    None,
+                )
+                .await?;
+            self.pages.push(PageInfo {
+                target_id: target.target_id.clone(),
+                session_id: attach_result.session_id,
+                url: target.url.clone(),
+                title: target.title.clone(),
+                target_type: target.target_type.clone(),
+            });
+        }
+
+        let candidates = runtime_handoff_candidate_indices(&self.pages, preferred_target_id);
+        let mut last_error = None;
+        for index in candidates.iter().copied() {
+            let session_id = self.pages[index].session_id.clone();
+            match self
+                .enable_domains_with_timeout(&session_id, RUNTIME_HANDOFF_TARGET_INIT_TIMEOUT)
+                .await
+            {
+                Ok(()) => {
+                    self.active_page_index = index;
+                    self.activate_page(index).await?;
+                    return Ok(());
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+
+        Err(format!(
+            "Runtime handoff could not initialize any of {} retained page targets: {}",
+            candidates.len(),
+            last_error.unwrap_or_else(|| "no candidate was attempted".to_string())
+        ))
+    }
+
     pub async fn enable_domains_pub(&self, session_id: &str) -> Result<(), String> {
         self.enable_domains(session_id).await
     }
@@ -664,6 +781,48 @@ impl BrowserManager {
                     "flatten": true
                 })),
                 Some(session_id),
+            )
+            .await;
+        Ok(())
+    }
+
+    async fn enable_domains_with_timeout(
+        &self,
+        session_id: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        self.client
+            .send_command_with_timeout("Page.enable", None, Some(session_id), timeout)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.client
+            .send_command_with_timeout("Runtime.enable", None, Some(session_id), timeout)
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = self
+            .client
+            .send_command_with_timeout(
+                "Runtime.runIfWaitingForDebugger",
+                None,
+                Some(session_id),
+                timeout,
+            )
+            .await;
+        self.client
+            .send_command_with_timeout("Network.enable", None, Some(session_id), timeout)
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = self
+            .client
+            .send_command_with_timeout(
+                "Target.setAutoAttach",
+                Some(json!({
+                    "autoAttach": true,
+                    "waitForDebuggerOnStart": false,
+                    "flatten": true
+                })),
+                Some(session_id),
+                timeout,
             )
             .await;
         Ok(())
@@ -2477,6 +2636,42 @@ mod tests {
 
         assert_eq!(page_index_for_target_id(&pages, "visible-target"), Some(1));
         assert_eq!(page_index_for_target_id(&pages, "missing-target"), None);
+    }
+
+    #[test]
+    fn test_runtime_handoff_candidate_order_preserves_preferred_then_fallbacks() {
+        let pages = vec![
+            PageInfo {
+                target_id: "frozen-first".to_string(),
+                session_id: "session-1".to_string(),
+                url: "https://example.com/frozen".to_string(),
+                title: "Frozen".to_string(),
+                target_type: "page".to_string(),
+            },
+            PageInfo {
+                target_id: "preferred".to_string(),
+                session_id: "session-2".to_string(),
+                url: "https://example.com/preferred".to_string(),
+                title: "Preferred".to_string(),
+                target_type: "page".to_string(),
+            },
+            PageInfo {
+                target_id: "blank".to_string(),
+                session_id: "session-3".to_string(),
+                url: "about:blank".to_string(),
+                title: String::new(),
+                target_type: "page".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            runtime_handoff_candidate_indices(&pages, Some("preferred")),
+            vec![1, 0, 2]
+        );
+        assert_eq!(
+            runtime_handoff_candidate_indices(&pages, Some("missing")),
+            vec![0, 1, 2]
+        );
     }
 
     #[test]

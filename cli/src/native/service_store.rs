@@ -3,19 +3,35 @@
 //! The first service-mode store is JSON-backed and intentionally small. It gives
 //! later lifecycle work a durable contract without forcing a database choice yet.
 
-use std::fs;
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use super::service_model::ServiceState;
+use serde::{Deserialize, Serialize};
+
+use super::service_model::{RemoteViewHandoff, ServiceState};
 
 const SERVICE_DIR: &str = "service";
 const SERVICE_STATE_FILENAME: &str = "state.json";
+const REMOTE_VIEW_HANDOFFS_FILENAME: &str = "remote-view-handoffs.json";
+const REMOTE_VIEW_HANDOFFS_SCHEMA_VERSION: &str = "agent-browser.remote-view-handoffs.v1";
 static SERVICE_STATE_MUTATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct RemoteViewHandoffRegistry {
+    schema_version: String,
+    handoffs: BTreeMap<String, RemoteViewHandoff>,
+}
 
 pub trait ServiceStateStore {
     fn load(&self) -> Result<ServiceState, String>;
     fn save(&self, state: &ServiceState) -> Result<(), String>;
+
+    fn state_path(&self) -> Option<&Path> {
+        None
+    }
 }
 
 pub trait ServiceStateRepository {
@@ -67,10 +83,18 @@ impl LockedServiceStateRepository<JsonServiceStateStore> {
 
 impl ServiceStateStore for JsonServiceStateStore {
     fn load(&self) -> Result<ServiceState, String> {
-        let raw = match fs::read_to_string(&self.path) {
-            Ok(raw) => raw,
+        let mut state_file_missing = false;
+        let mut state = match fs::read_to_string(&self.path) {
+            Ok(raw) => serde_json::from_str(&raw).map_err(|err| {
+                format!(
+                    "Invalid service state JSON {}: {}",
+                    self.path.display(),
+                    err
+                )
+            })?,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(ServiceState::default())
+                state_file_missing = true;
+                ServiceState::default()
             }
             Err(err) => {
                 return Err(format!(
@@ -81,13 +105,11 @@ impl ServiceStateStore for JsonServiceStateStore {
             }
         };
 
-        let mut state: ServiceState = serde_json::from_str(&raw).map_err(|err| {
-            format!(
-                "Invalid service state JSON {}: {}",
-                self.path.display(),
-                err
-            )
-        })?;
+        let handoff_registry = load_remote_view_handoff_registry(&self.path)?;
+        if state_file_missing && handoff_registry.handoffs.is_empty() {
+            return Ok(ServiceState::default());
+        }
+        state.remote_view_handoffs.extend(handoff_registry.handoffs);
         state.mark_persisted_entity_sources();
         state.refresh_derived_views();
         Ok(state)
@@ -97,6 +119,7 @@ impl ServiceStateStore for JsonServiceStateStore {
         let mut normalized = state.clone();
         normalized.refresh_derived_views();
         normalized.remove_builtin_entity_defaults_for_persistence();
+        save_remote_view_handoff_registry(&self.path, &normalized.remote_view_handoffs)?;
         let serialized = serde_json::to_string_pretty(&normalized)
             .map_err(|err| format!("Failed to serialize service state: {}", err))?;
         let payload = format!("{}\n", serialized);
@@ -140,6 +163,10 @@ impl ServiceStateStore for JsonServiceStateStore {
 
         Ok(())
     }
+
+    fn state_path(&self) -> Option<&Path> {
+        Some(&self.path)
+    }
 }
 
 impl<S> ServiceStateRepository for LockedServiceStateRepository<S>
@@ -151,6 +178,11 @@ where
         let _guard = lock
             .lock()
             .map_err(|_| "Service state mutation lock was poisoned".to_string())?;
+        let _file_guard = self
+            .store
+            .state_path()
+            .map(|path| acquire_service_state_file_lock(path, ServiceStateFileLockMode::Shared))
+            .transpose()?;
         self.store.load()
     }
 
@@ -162,6 +194,11 @@ where
         let _guard = lock
             .lock()
             .map_err(|_| "Service state mutation lock was poisoned".to_string())?;
+        let _file_guard = self
+            .store
+            .state_path()
+            .map(|path| acquire_service_state_file_lock(path, ServiceStateFileLockMode::Exclusive))
+            .transpose()?;
         let mut state = self.store.load()?;
         let result = mutator(&mut state)?;
         self.store.save(&state)?;
@@ -209,10 +246,138 @@ fn temp_state_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{}.tmp.{}", file_name, std::process::id()))
 }
 
+fn remote_view_handoff_registry_path(state_path: &Path) -> PathBuf {
+    state_path.with_file_name(REMOTE_VIEW_HANDOFFS_FILENAME)
+}
+
+fn load_remote_view_handoff_registry(
+    state_path: &Path,
+) -> Result<RemoteViewHandoffRegistry, String> {
+    let path = remote_view_handoff_registry_path(state_path);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RemoteViewHandoffRegistry::default())
+        }
+        Err(err) => {
+            return Err(format!(
+                "Failed to read remote-view handoff registry {}: {}",
+                path.display(),
+                err
+            ))
+        }
+    };
+    serde_json::from_str(&raw).map_err(|err| {
+        format!(
+            "Invalid remote-view handoff registry JSON {}: {}",
+            path.display(),
+            err
+        )
+    })
+}
+
+fn save_remote_view_handoff_registry(
+    state_path: &Path,
+    handoffs: &BTreeMap<String, RemoteViewHandoff>,
+) -> Result<(), String> {
+    let path = remote_view_handoff_registry_path(state_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "Failed to create remote-view handoff registry directory {}: {}",
+                parent.display(),
+                err
+            )
+        })?;
+    }
+    let registry = RemoteViewHandoffRegistry {
+        schema_version: REMOTE_VIEW_HANDOFFS_SCHEMA_VERSION.to_string(),
+        handoffs: handoffs.clone(),
+    };
+    let payload = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&registry)
+            .map_err(|err| format!("Failed to serialize remote-view handoff registry: {err}"))?
+    );
+    let temp_path = temp_state_path(&path);
+    fs::write(&temp_path, payload).map_err(|err| {
+        format!(
+            "Failed to write temporary remote-view handoff registry {}: {}",
+            temp_path.display(),
+            err
+        )
+    })?;
+    fs::rename(&temp_path, &path).map_err(|err| {
+        let _ = fs::remove_file(&temp_path);
+        format!(
+            "Failed to replace remote-view handoff registry {}: {}",
+            path.display(),
+            err
+        )
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ServiceStateFileLockMode {
+    Shared,
+    Exclusive,
+}
+
+fn service_state_lock_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(SERVICE_STATE_FILENAME);
+    path.with_file_name(format!("{file_name}.lock"))
+}
+
+fn acquire_service_state_file_lock(
+    state_path: &Path,
+    mode: ServiceStateFileLockMode,
+) -> Result<File, String> {
+    if let Some(parent) = state_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "Failed to create service state directory {}: {}",
+                parent.display(),
+                err
+            )
+        })?;
+    }
+    let lock_path = service_state_lock_path(state_path);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|err| {
+            format!(
+                "Failed to open service state lock {}: {}",
+                lock_path.display(),
+                err
+            )
+        })?;
+    let result = match mode {
+        ServiceStateFileLockMode::Shared => file.lock_shared(),
+        ServiceStateFileLockMode::Exclusive => file.lock(),
+    };
+    result.map_err(|err| {
+        format!(
+            "Failed to acquire service state lock {}: {}",
+            lock_path.display(),
+            err
+        )
+    })?;
+    Ok(file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native::service_model::{BrowserHealth, BrowserHost, BrowserProcess, SitePolicy};
+    use crate::native::service_model::{
+        BrowserHealth, BrowserHost, BrowserProcess, RemoteViewHandoff, SitePolicy,
+    };
     use std::collections::BTreeMap;
 
     fn unique_state_path(label: &str) -> PathBuf {
@@ -309,6 +474,70 @@ mod tests {
 
         assert_eq!(result, "mutated");
         assert_eq!(state.browsers["browser-1"].health, BrowserHealth::Ready);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn service_state_file_lock_excludes_an_independent_writer() {
+        let path = unique_state_path("cross-process-service-state-lock");
+        let first = acquire_service_state_file_lock(&path, ServiceStateFileLockMode::Exclusive)
+            .expect("first writer should acquire the service-state lock");
+        let lock_path = service_state_lock_path(&path);
+        let second = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("second writer should open the stable lock file");
+
+        let error = second
+            .try_lock()
+            .expect_err("an independent writer must not enter while the lock is held");
+
+        assert!(matches!(error, std::fs::TryLockError::WouldBlock));
+        drop(first);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn durable_remote_view_handoffs_survive_a_legacy_state_writer() {
+        let path = unique_state_path("legacy-writer-remote-view-handoff");
+        let store = JsonServiceStateStore::new(&path);
+        let handoff = RemoteViewHandoff {
+            id: "handoff-a".to_string(),
+            state: "ready".to_string(),
+            browser_id: Some("browser-a".to_string()),
+            session_name: Some("session-a".to_string()),
+            view_stream_provider: Some(
+                crate::native::service_model::ViewStreamProvider::RdpGateway,
+            ),
+            ..RemoteViewHandoff::default()
+        };
+        store
+            .save(&ServiceState {
+                remote_view_handoffs: BTreeMap::from([(handoff.id.clone(), handoff)]),
+                ..ServiceState::default()
+            })
+            .expect("handoff should save");
+
+        let mut legacy_state: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&path).expect("saved state should be readable"),
+        )
+        .expect("saved state should be JSON");
+        legacy_state
+            .as_object_mut()
+            .expect("service state should be an object")
+            .remove("remoteViewHandoffs");
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&legacy_state).expect("legacy state should serialize"),
+        )
+        .expect("legacy writer should replace the primary state file");
+
+        let loaded = store
+            .load()
+            .expect("state should load after legacy rewrite");
+
+        assert_eq!(loaded.remote_view_handoffs["handoff-a"].id, "handoff-a");
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 

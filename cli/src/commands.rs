@@ -1446,6 +1446,12 @@ fn parse_service_profile_verify_seeding(
 }
 
 pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError> {
+    if let Some(raw) = flags.command_job_timeout_invalid.as_deref() {
+        return Err(ParseError::InvalidValue {
+            message: format!("Invalid --job-timeout-ms: expected positive milliseconds, got {raw}"),
+            usage: "<command> [args...]",
+        });
+    }
     let mut result = parse_command_inner(args, flags)?;
 
     // Inject AGENT_BROWSER_DEFAULT_TIMEOUT into any wait-family command that
@@ -1456,6 +1462,15 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
             if let Some(t) = flags.default_timeout {
                 result["timeout"] = json!(t);
             }
+        }
+    }
+
+    // Carry a caller-scoped deadline into the daemon worker. An
+    // action-specific value remains authoritative for compatibility with
+    // commands such as remote-view open.
+    if result.get("jobTimeoutMs").is_none() {
+        if let Some(timeout_ms) = flags.command_job_timeout_ms {
+            result["jobTimeoutMs"] = json!(timeout_ms);
         }
     }
 
@@ -5366,6 +5381,8 @@ mod tests {
             service_state: crate::native::service_model::ServiceState::default(),
             service_reconcile_interval_ms: None,
             service_job_timeout_ms: None,
+            command_job_timeout_ms: None,
+            command_job_timeout_invalid: None,
             service_monitor_interval_ms: None,
             service_recovery_retry_budget: 3,
             service_recovery_base_backoff_ms: 1_000,
@@ -6866,6 +6883,17 @@ mod tests {
     fn test_wait_no_default_timeout_omits_field() {
         let cmd = parse_command(&args("wait #element"), &default_flags()).unwrap();
         assert!(cmd.get("timeout").is_none());
+    }
+
+    #[test]
+    fn test_global_job_timeout_is_injected_into_ordinary_eval() {
+        let mut flags = default_flags();
+        flags.command_job_timeout_ms = Some(20_000);
+
+        let cmd = parse_command(&args("eval document.title"), &flags).unwrap();
+
+        assert_eq!(cmd["action"], "evaluate");
+        assert_eq!(cmd["jobTimeoutMs"], 20_000);
     }
 
     // === Connect (CDP) tests ===

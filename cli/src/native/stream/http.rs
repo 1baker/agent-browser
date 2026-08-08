@@ -13,6 +13,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::connection::resolve_port;
 use crate::connection::{attach_daemon_auth_token, get_socket_dir};
 use crate::flags::{launch_config_status, parse_flags};
+use crate::native::remote_view_handoff::apply_remote_view_handoff_route_hints;
 use crate::native::service_access::{
     apply_shared_profile_route_hints_for_service_request, parse_service_access_plan_query,
     service_access_plan_for_state,
@@ -1759,6 +1760,7 @@ fn service_request_command_with_state(
         }
     }
     if let Some(service_state) = service_state {
+        apply_remote_view_handoff_route_hints(service_state, &mut command);
         apply_shared_profile_route_hints_for_service_request(service_state, &mut command)?;
     }
     Ok(command)
@@ -5219,6 +5221,44 @@ mod tests {
         assert_eq!(
             command["routeDescriptor"]["dashboardEmbedUrl"],
             "https://dashboard.example/guacamole/#/client/route-a"
+        );
+    }
+
+    #[test]
+    fn service_request_command_maps_remote_view_handoff_resolution_params() {
+        let command = service_request_command(
+            r#"{"action":"service_remote_view_handoff_resolve","params":{"handoffId":"job-handoff-a","allowReopenClosed":true},"serviceName":"agent-browser-dashboard"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(command["action"], "service_remote_view_handoff_resolve");
+        assert_eq!(command["handoffId"], "job-handoff-a");
+        assert_eq!(command["allowReopenClosed"], true);
+    }
+
+    #[test]
+    fn service_request_handoff_resolution_routes_to_original_daemon_lane() {
+        let body = r#"{"action":"service_remote_view_handoff_resolve","params":{"handoffId":"job-handoff-a"},"serviceName":"agent-browser-dashboard"}"#;
+        let state = ServiceState {
+            remote_view_handoffs: std::collections::BTreeMap::from([(
+                "job-handoff-a".to_string(),
+                crate::native::service_model::RemoteViewHandoff {
+                    id: "job-handoff-a".to_string(),
+                    browser_id: Some("session:original-lane".to_string()),
+                    session_name: Some("original-lane".to_string()),
+                    ..crate::native::service_model::RemoteViewHandoff::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+
+        let command = service_request_command_with_state(body, Some(&state)).unwrap();
+
+        assert_eq!(command["browserId"], "session:original-lane");
+        assert_eq!(command["sessionName"], "original-lane");
+        assert_eq!(
+            service_request_relay_session("AgentBrowserDashboard", body, &command),
+            "original-lane"
         );
     }
 

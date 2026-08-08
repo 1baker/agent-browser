@@ -1239,6 +1239,9 @@ pub struct Flags {
     pub service_state: ServiceState,
     pub service_reconcile_interval_ms: Option<u64>,
     pub service_job_timeout_ms: Option<u64>,
+    /// Per-command worker deadline carried as top-level `jobTimeoutMs`.
+    pub command_job_timeout_ms: Option<u64>,
+    pub command_job_timeout_invalid: Option<String>,
     pub service_monitor_interval_ms: Option<u64>,
     pub service_recovery_retry_budget: u64,
     pub service_recovery_base_backoff_ms: u64,
@@ -1582,6 +1585,8 @@ pub fn parse_flags(args: &[String]) -> Flags {
         service_state,
         service_reconcile_interval_ms,
         service_job_timeout_ms,
+        command_job_timeout_ms: None,
+        command_job_timeout_invalid: None,
         service_monitor_interval_ms,
         service_recovery_retry_budget,
         service_recovery_base_backoff_ms,
@@ -1810,6 +1815,21 @@ pub fn parse_flags(args: &[String]) -> Flags {
                             color::warning_indicator(),
                             s
                         ),
+                    }
+                    i += 1;
+                }
+            }
+            "--job-timeout-ms" => {
+                if let Some(s) = args.get(i + 1) {
+                    match s.parse::<u64>() {
+                        Ok(ms) if ms > 0 => {
+                            flags.command_job_timeout_ms = Some(ms);
+                            flags.command_job_timeout_invalid = None;
+                        }
+                        _ => {
+                            flags.command_job_timeout_ms = None;
+                            flags.command_job_timeout_invalid = Some(s.clone());
+                        }
                     }
                     i += 1;
                 }
@@ -2267,6 +2287,7 @@ pub fn clean_args(args: &[String]) -> Vec<String> {
         "--idle-timeout",
         "--service-reconcile-interval",
         "--service-job-timeout",
+        "--job-timeout-ms",
         "--service-recovery-retry-budget",
         "--service-recovery-base-backoff",
         "--service-recovery-max-backoff",
@@ -2315,6 +2336,15 @@ mod tests {
     fn test_parse_headers_flag() {
         let flags = parse_flags(&args(r#"open example.com --headers {"Auth":"token"}"#));
         assert_eq!(flags.headers, Some(r#"{"Auth":"token"}"#.to_string()));
+    }
+
+    #[test]
+    fn command_job_timeout_is_global_and_removed_from_command_args() {
+        let input = args("--session social --job-timeout-ms 20000 eval --stdin");
+        let flags = parse_flags(&input);
+
+        assert_eq!(flags.command_job_timeout_ms, Some(20_000));
+        assert_eq!(clean_args(&input), args("eval --stdin"));
     }
 
     #[test]

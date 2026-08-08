@@ -273,6 +273,7 @@ impl ControlPlaneHandle {
         } else {
             id.clone()
         };
+        let command = command_with_service_job_id(command, &job_id);
         let timeout_ms = command
             .get("jobTimeoutMs")
             .and_then(|v| v.as_u64())
@@ -421,6 +422,16 @@ impl ControlPlaneHandle {
     fn browser_health(&self) -> BrowserHealth {
         self.status.browser_health()
     }
+}
+
+fn command_with_service_job_id(mut command: Value, job_id: &str) -> Value {
+    if let Some(object) = command.as_object_mut() {
+        object.insert(
+            "serviceJobId".to_string(),
+            Value::String(job_id.to_string()),
+        );
+    }
+    command
 }
 
 fn persist_reconciled_service_state(before: &ServiceState, reconciled: &ServiceState) {
@@ -1493,8 +1504,6 @@ async fn run_worker(
                                     response = execute_command(&request.command, &mut state) => response,
                                     _ = request.cancellation.cancelled() => {
                                         persist_service_job_cancelled(&request, "Service job was cancelled while running");
-                                        cleanup_exited_browser(&mut state).await;
-                                        status.set_browser_health(BrowserHealth::NotStarted);
                                         json!({
                                             "id": request.id.clone(),
                                             "success": false,
@@ -1506,8 +1515,6 @@ async fn run_worker(
                                     }
                                     _ = tokio::time::sleep(Duration::from_millis(ms)) => {
                                         persist_service_job_timed_out(&request);
-                                        cleanup_exited_browser(&mut state).await;
-                                        status.set_browser_health(BrowserHealth::NotStarted);
                                         json!({
                                             "id": request.id.clone(),
                                             "success": false,
@@ -1525,8 +1532,6 @@ async fn run_worker(
                                     response = execute_command(&request.command, &mut state) => response,
                                     _ = request.cancellation.cancelled() => {
                                         persist_service_job_cancelled(&request, "Service job was cancelled while running");
-                                        cleanup_exited_browser(&mut state).await;
-                                        status.set_browser_health(BrowserHealth::NotStarted);
                                         json!({
                                             "id": request.id.clone(),
                                             "success": false,
@@ -1567,11 +1572,8 @@ async fn run_worker(
                             == Some(true);
                         if cancelled {
                             persist_service_job_cancelled(&request, "Service job was cancelled while running");
-                            cleanup_exited_browser(&mut state).await;
-                            status.set_browser_health(BrowserHealth::NotStarted);
-                        } else {
-                            refresh_browser_health(&mut state, &status).await;
                         }
+                        refresh_browser_health(&mut state, &status).await;
                         if !timed_out && !cancelled {
                             persist_service_job_finished(&request, &response);
                         }
@@ -1643,6 +1645,10 @@ async fn cleanup_exited_browser(state: &mut DaemonState) {
     state.update_stream_client().await;
 }
 
+fn browser_health_requires_cleanup_after_interruption(health: BrowserHealth) -> bool {
+    health == BrowserHealth::ProcessExited
+}
+
 async fn refresh_browser_health(state: &mut DaemonState, status: &ControlPlaneStatus) {
     let Some(ref mut mgr) = state.browser else {
         status.set_browser_health(BrowserHealth::NotStarted);
@@ -1650,8 +1656,11 @@ async fn refresh_browser_health(state: &mut DaemonState, status: &ControlPlaneSt
     };
 
     if mgr.has_process_exited() {
-        status.set_browser_health(BrowserHealth::ProcessExited);
-        cleanup_exited_browser(state).await;
+        let health = BrowserHealth::ProcessExited;
+        status.set_browser_health(health);
+        if browser_health_requires_cleanup_after_interruption(health) {
+            cleanup_exited_browser(state).await;
+        }
         return;
     }
 
@@ -2926,8 +2935,7 @@ mod tests {
         let home = temp_home("control-plane-job-timeout");
         let guard = EnvGuard::new(&["HOME"]);
         guard.set("HOME", home.to_str().unwrap());
-        let handle =
-            ControlPlaneWorker::start_with_options(DaemonState::new(), None, Some(10), None);
+        let handle = ControlPlaneWorker::start(DaemonState::new());
         let response = handle
             .submit(json!({
                 "id": "test-timeout",
@@ -2936,6 +2944,7 @@ mod tests {
                 "agentName": "article-probe-agent",
                 "taskName": "probeACSwebsite",
                 "ms": 100,
+                "jobTimeoutMs": 10,
             }))
             .await;
 
@@ -2962,8 +2971,31 @@ mod tests {
         assert_eq!(job.task_name.as_deref(), Some("probeACSwebsite"));
         assert_eq!(job.result.as_ref().unwrap()["timedOut"], true);
 
+        let next_started = Instant::now();
+        let next = handle
+            .submit(json!({
+                "id": "test-after-timeout",
+                "action": "state_list",
+            }))
+            .await;
+        assert_eq!(next.get("success").and_then(Value::as_bool), Some(true));
+        assert!(next_started.elapsed() < Duration::from_millis(100));
+
         handle.shutdown().await;
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn interrupted_job_cleanup_requires_observed_process_exit() {
+        assert!(!browser_health_requires_cleanup_after_interruption(
+            BrowserHealth::Ready
+        ));
+        assert!(!browser_health_requires_cleanup_after_interruption(
+            BrowserHealth::CdpDisconnected
+        ));
+        assert!(browser_health_requires_cleanup_after_interruption(
+            BrowserHealth::ProcessExited
+        ));
     }
 
     #[tokio::test]
@@ -3113,5 +3145,13 @@ mod tests {
         drop(_permit);
         handle.shutdown().await;
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn queued_command_carries_its_stable_service_job_id() {
+        let command =
+            command_with_service_job_id(json!({"action": "remote_view_open"}), "job-handoff-a");
+
+        assert_eq!(command["serviceJobId"], "job-handoff-a");
     }
 }

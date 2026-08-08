@@ -651,6 +651,14 @@ and `service_remote_view_route_switch` consume that browser-first state to
 reattach or rebind retained RDP browsers without launching a new browser.
 Route-switch responses may include `routeSwitchParking` when the broker parked
 another live browser's route surface because no route-pool entry was available.
+Successful `remote_view_open` responses expose a durable authenticated
+`/remote-view/<handoff-id>` URL as `externalUrl` and `handoffUrl` while retaining
+the current provider connection as `providerExternalUrl`. Generic service
+request action `service_remote_view_handoff_resolve` accepts `params.handoffId`
+and optional `params.allowReopenClosed`. It replays durable intent without stale
+route, display, or Guacamole connection selectors, prefers the recorded target,
+and preserves the original view stream and control-input posture. Deliberately
+closed tabs require the explicit reopen option.
 
 `service-browser-capability-registry-upsert-response.v1.schema.json` describes
 the response envelope returned by HTTP `POST

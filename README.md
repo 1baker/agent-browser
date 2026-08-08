@@ -2792,6 +2792,15 @@ state. If the caller instead passes a runtime profile that is not a known
 service profile, the response includes `oneTimeProfileWarning` with the
 requested profile as `operator_supplied`, a recommended `managed_one_time`
 profile class, and a deterministic recommended profile id.
+Successful non-dry-run opens return an authenticated durable URL in
+`externalUrl` and `handoffUrl`, shaped as `/remote-view/<handoff-id>`. Keep
+`providerExternalUrl` and URLs under `routeBinding` only as evidence for the
+current provider connection. Opening the durable URL after dashboard login
+queues `service_remote_view_handoff_resolve`, prefers the originally retained
+browser tab, and reacquires expired Guacamole route state with the original view
+stream and control-input posture. Missing targets remain recoverable. A tab
+recorded as deliberately closed stays closed until the operator explicitly
+chooses **Reopen tab**.
 Dry runs return `operatorVisible.state=not_checked`. A typical HTTP
 request is:
 
@@ -2827,7 +2836,15 @@ parsing Guacamole hashes, XRDP displays, or Xauthority details. Run
 `agent-browser doctor remote-view --json`,
 `pnpm test:remote-view-open-fixture-live`, and
 `pnpm test:rdp-guac-many-to-many-live` before calling a workstation ready for
-the default remote-control lane. Set
+the default remote-control lane. The remote-control JSON keeps aggregate
+install health separate from its effective gate:
+`remoteControl.installDoctorReady` is the raw embedded install-doctor result,
+while `remoteControl.installReady` is the single-route classification.
+Duplicate-profile pressure may appear in
+`remoteControl.nonBlockingInstallIssueCodes` only when it is the sole install
+issue and readiness-impacting resource candidates are zero. The embedded
+install warning remains visible, and `remote-view open` still rejects a
+same-profile retained browser or lease conflict. Set
 `AGENT_BROWSER_REMOTE_VIEW_OPEN_TIMEOUT_MS` when slow Guacamole, XRDP, or
 operator-window proof paths need more than the fixture smoke default. Use
 `requestServiceRemoteViewRouteCheckout()`,
@@ -3360,7 +3377,7 @@ Service browser-health reconciliation runs in the daemon background every 60000 
 
 Due active service monitors are enqueued through the same service worker every 60000 ms by default. Set `service.monitorIntervalMs`, `--service-monitor-interval <ms>`, or `AGENT_BROWSER_SERVICE_MONITOR_INTERVAL_MS` to change the interval. Use `0` to disable it. Use `service monitors run-due`, `POST /api/service/monitors/run-due`, MCP `service_monitors_run_due`, or `runDueServiceMonitors()` to check due active monitors immediately.
 
-Service control jobs do not time out at the worker boundary by default. Set `service.jobTimeoutMs`, `--service-job-timeout <ms>`, or `AGENT_BROWSER_SERVICE_JOB_TIMEOUT_MS` to mark long-running dispatched jobs as `timed_out`. Use `0` to disable it.
+Service control jobs do not time out at the worker boundary by default. Set `service.jobTimeoutMs`, `--service-job-timeout <ms>`, or `AGENT_BROWSER_SERVICE_JOB_TIMEOUT_MS` to mark long-running dispatched jobs as `timed_out`. Use `0` to disable it. For one ordinary CLI command, pass `--job-timeout-ms <ms>` so the daemon cancels that job and releases its serialized queue before any longer caller-side subprocess deadline expires.
 
 Browser recovery defaults to 3 relaunch attempts, 1000 ms base backoff, and 30000 ms max backoff before marking a browser `faulted`. Set `service.recoveryRetryBudget`, `service.recoveryBaseBackoffMs`, and `service.recoveryMaxBackoffMs`, pass the matching `--service-recovery-*` flags, or use the `AGENT_BROWSER_SERVICE_RECOVERY_*` environment variables to tune this for a service host. Recovery-started trace events include `details.policySource.retryBudget`, `details.policySource.baseBackoffMs`, and `details.policySource.maxBackoffMs` so clients can audit whether each active value came from defaults, config, environment, or CLI flags.
 

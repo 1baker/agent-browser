@@ -994,6 +994,7 @@ export interface ServiceRequestActionDataMap {
   view_focus: ServiceViewFocusData;
   view_takeover: ServiceViewTakeoverData;
   remote_view_open: ServiceRemoteViewRouteMutationData;
+  service_remote_view_handoff_resolve: ServiceRemoteViewRouteMutationData;
   service_remote_view_route_preflight: ServiceRemoteViewRouteMutationData;
   service_remote_view_browser_reattach: ServiceRemoteViewRouteMutationData;
   service_remote_view_route_switch: ServiceRemoteViewRouteMutationData;

@@ -2290,6 +2290,36 @@ impl BrowserCapabilityRegistry {
     }
 }
 
+/// Durable intent and latest attachment for an operator remote-view URL.
+///
+/// Route, display, and browser target identifiers are retained only as the
+/// latest resolution evidence. Resolving the opaque handoff ID must reacquire
+/// replaceable infrastructure from `intent` instead of treating those IDs as
+/// durable routing authority.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RemoteViewHandoff {
+    pub id: String,
+    pub state: String,
+    pub intent: Value,
+    pub handoff_url: Option<String>,
+    pub desired_url: Option<String>,
+    pub profile_id: Option<String>,
+    pub browser_id: Option<String>,
+    pub session_name: Option<String>,
+    pub tab_id: Option<String>,
+    pub target_id: Option<String>,
+    pub view_stream_provider: Option<ViewStreamProvider>,
+    pub control_input: Option<ControlInputProvider>,
+    pub last_route_id: Option<String>,
+    pub last_route_pool_entry_id: Option<String>,
+    pub last_display_allocation_id: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub last_resolved_at: Option<String>,
+    pub last_resolution: Option<Value>,
+}
+
 /// Top-level snapshot of the browser service control plane.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -2302,6 +2332,7 @@ pub struct ServiceState {
     pub remote_view_routes: BTreeMap<String, RemoteViewRoute>,
     pub route_pool: BTreeMap<String, RoutePoolEntry>,
     pub remote_view_acquisition_leases: BTreeMap<String, RemoteViewAcquisitionLease>,
+    pub remote_view_handoffs: BTreeMap<String, RemoteViewHandoff>,
     pub viewer_leases: BTreeMap<String, ViewerLease>,
     pub profiles: BTreeMap<String, BrowserProfile>,
     pub browsers: BTreeMap<String, BrowserProcess>,
@@ -8000,6 +8031,54 @@ mod tests {
             },
         });
         assert_service_trace_response_contract(&response);
+    }
+
+    #[test]
+    fn service_state_round_trips_durable_remote_view_handoffs() {
+        let handoff = RemoteViewHandoff {
+            id: "job-handoff-a".to_string(),
+            state: "ready".to_string(),
+            intent: json!({
+                "url": "https://example.com/article",
+                "profile": "shared-social",
+                "viewStreamProvider": "rdp_gateway",
+                "controlInput": "manual_attached_desktop"
+            }),
+            handoff_url: Some("https://view.example/remote-view/job-handoff-a".to_string()),
+            desired_url: Some("https://example.com/article".to_string()),
+            profile_id: Some("shared-social".to_string()),
+            browser_id: Some("browser-a".to_string()),
+            session_name: Some("session-a".to_string()),
+            tab_id: Some("tab-a".to_string()),
+            target_id: Some("target-a".to_string()),
+            view_stream_provider: Some(ViewStreamProvider::RdpGateway),
+            control_input: Some(ControlInputProvider::ManualAttachedDesktop),
+            last_route_id: Some("route-a".to_string()),
+            last_route_pool_entry_id: Some("pool-a".to_string()),
+            last_display_allocation_id: Some("display-a".to_string()),
+            created_at: Some("2026-08-07T12:00:00Z".to_string()),
+            updated_at: Some("2026-08-07T12:01:00Z".to_string()),
+            last_resolved_at: Some("2026-08-07T12:01:00Z".to_string()),
+            last_resolution: Some(json!({"status": "ready"})),
+        };
+        let state = ServiceState {
+            remote_view_handoffs: BTreeMap::from([(handoff.id.clone(), handoff)]),
+            ..ServiceState::default()
+        };
+
+        let encoded = serde_json::to_value(&state).expect("service state should serialize");
+        let decoded: ServiceState =
+            serde_json::from_value(encoded.clone()).expect("service state should deserialize");
+
+        assert_eq!(decoded, state);
+        assert_eq!(
+            encoded["remoteViewHandoffs"]["job-handoff-a"]["viewStreamProvider"],
+            "rdp_gateway"
+        );
+        assert_eq!(
+            encoded["remoteViewHandoffs"]["job-handoff-a"]["handoffUrl"],
+            "https://view.example/remote-view/job-handoff-a"
+        );
     }
 
     #[test]

@@ -55,7 +55,8 @@ use super::remote_view_attachability::refresh_remote_view_attachability;
 use super::remote_view_handoff::{
     begin_route_bound_handoff_failure_recovery, begin_route_bound_handoff_plan_acquisition,
     complete_route_bound_handoff_failure_cleanup, complete_route_bound_handoff_open,
-    planned_route_bound_handoff_response,
+    planned_route_bound_handoff_response, remote_view_handoff_resolution_command,
+    remote_view_handoff_was_explicitly_closed,
     route_bound_handoff_checkout_command_with_visible_window_proof,
     route_bound_handoff_checkout_failure, route_bound_handoff_failure_cleanup_task_result,
     route_bound_handoff_focus_command, route_bound_handoff_focus_failure,
@@ -191,6 +192,8 @@ struct RuntimeHandoffDescriptor {
     engine: String,
     host: ServiceBrowserHost,
     close_browser_on_close: bool,
+    #[serde(default)]
+    active_target_id: Option<String>,
     prepared_at: String,
 }
 
@@ -282,6 +285,7 @@ pub(crate) fn action_skips_browser_launch(action: &str) -> bool {
             | "stream_status"
             | "view_takeover"
             | "remote_view_open"
+            | "service_remote_view_handoff_resolve"
             | "service_remote_view_route_preflight"
             | "service_remote_view_browser_reattach"
             | "service_remote_view_route_switch"
@@ -4623,6 +4627,9 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "view_focus" => handle_view_focus(cmd, state).await,
         "view_takeover" => handle_view_takeover(cmd, state).await,
         "remote_view_open" => handle_remote_view_open(cmd, state).await,
+        "service_remote_view_handoff_resolve" => {
+            handle_service_remote_view_handoff_resolve(cmd, state).await
+        }
         "service_remote_view_route_preflight" => {
             handle_service_remote_view_route_preflight(cmd, state).await
         }
@@ -9386,6 +9393,7 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
         engine: state.engine.clone(),
         host: current_service_browser_host(&state.session_id),
         close_browser_on_close: state.close_behavior == CloseBehavior::CloseBrowser,
+        active_target_id: manager.active_target_id().ok().map(str::to_string),
         prepared_at: OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .unwrap_or_else(|_| OffsetDateTime::now_utc().unix_timestamp().to_string()),
@@ -9432,7 +9440,11 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
         ));
     }
 
-    let manager = BrowserManager::connect_cdp(&descriptor.cdp_url).await?;
+    let manager = BrowserManager::connect_cdp_for_handoff(
+        &descriptor.cdp_url,
+        descriptor.active_target_id.as_deref(),
+    )
+    .await?;
     state.reset_input_state();
     state.attached_runtime_profile = descriptor.runtime_profile.clone();
     state.attached_browser_pid = descriptor.browser_pid;
@@ -9457,6 +9469,10 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
         "browserPid": descriptor.browser_pid,
         "cdpUrl": descriptor.cdp_url,
         "runtimeProfile": descriptor.runtime_profile,
+        "activeTargetId": state
+            .browser
+            .as_ref()
+            .and_then(|browser| browser.active_target_id().ok()),
         "retryRecordRemoved": retry_record_removed,
         "targetsReattached": state
             .browser
@@ -11190,8 +11206,17 @@ async fn handle_tab_new(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
 
 fn remote_view_open_reusable_live_target(
     pages: &[PageInfo],
+    preferred_target_id: Option<&str>,
     desired_origin: Option<&str>,
 ) -> Option<PageInfo> {
+    if let Some(preferred_target_id) = preferred_target_id {
+        if let Some(page) = pages
+            .iter()
+            .find(|page| page.target_id == preferred_target_id && !is_blank_url(&page.url))
+        {
+            return Some(page.clone());
+        }
+    }
     let desired_origin = desired_origin?;
     pages
         .iter()
@@ -11277,7 +11302,11 @@ async fn remote_view_open_acquire_tab(
     }
     let reusable_target = {
         let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-        remote_view_open_reusable_live_target(&mgr.pages_list(), desired_origin.as_deref())
+        remote_view_open_reusable_live_target(
+            &mgr.pages_list(),
+            cmd.get("preferredTargetId").and_then(Value::as_str),
+            desired_origin.as_deref(),
+        )
     };
 
     if let Some(page) = reusable_target {
@@ -11659,7 +11688,7 @@ async fn remote_view_open_wait_for_target_url(
             != "ready"
         {
             if let Some(compatible_page) =
-                remote_view_open_reusable_live_target(&pages, desired_origin.as_deref())
+                remote_view_open_reusable_live_target(&pages, None, desired_origin.as_deref())
             {
                 if target_id.as_deref() != Some(compatible_page.target_id.as_str()) {
                     if let Ok(compatible_switched) =
@@ -13167,6 +13196,8 @@ fn remote_view_open_persist_request_route_pool(
 
 async fn handle_remote_view_open(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let mut intent = normalize_remote_view_open_intent(cmd)?;
+    let handoff_id = optional_command_string(cmd, "remoteViewHandoffId")
+        .or_else(|| optional_command_string(cmd, "serviceJobId"));
     let browser_id = intent
         .browser_id
         .clone()
@@ -13478,6 +13509,7 @@ async fn handle_remote_view_open(cmd: &Value, state: &mut DaemonState) -> Result
     }
     let observed_at = service_remote_view_timestamp();
     complete_route_bound_handoff_open(CompleteRouteBoundHandoffOpenInput {
+        handoff_id: handoff_id.as_deref(),
         intent: &intent,
         planned_route_binding: &route_binding,
         acquisition_plan: &acquisition_plan,
@@ -13499,6 +13531,68 @@ async fn handle_remote_view_open(cmd: &Value, state: &mut DaemonState) -> Result
         reused_current_browser,
         visible_window_proof: &visible_window_proof,
     })
+}
+
+/// Resolve an opaque remote-view handoff by reacquiring ephemeral route state
+/// and preferring the originally retained browser target when it still exists.
+async fn handle_service_remote_view_handoff_resolve(
+    cmd: &Value,
+    state: &mut DaemonState,
+) -> Result<Value, String> {
+    let handoff_id = optional_command_or_params_string(cmd, "handoffId")
+        .or_else(|| optional_command_or_params_string(cmd, "remoteViewHandoffId"))
+        .ok_or_else(|| "service_remote_view_handoff_resolve requires handoffId".to_string())?;
+    let allow_reopen_closed =
+        optional_command_or_params_bool(cmd, "allowReopenClosed").unwrap_or(false);
+    let repository = LockedServiceStateRepository::default_json()?;
+    let service_state = repository.load_snapshot()?;
+    let Some(handoff) = service_state.remote_view_handoffs.get(&handoff_id).cloned() else {
+        return Ok(json!({
+            "status": "not_found",
+            "resolved": false,
+            "handoffId": handoff_id,
+            "message": "Remote-view handoff was not found",
+        }));
+    };
+
+    if !allow_reopen_closed && remote_view_handoff_was_explicitly_closed(&service_state, &handoff) {
+        return Ok(json!({
+            "status": "closed",
+            "resolved": false,
+            "reopenRequired": true,
+            "handoffId": handoff.id,
+            "handoffUrl": handoff.handoff_url,
+            "browserId": handoff.browser_id,
+            "sessionName": handoff.session_name,
+            "tabId": handoff.tab_id,
+            "targetId": handoff.target_id,
+            "viewStreamProvider": handoff.view_stream_provider,
+            "controlInput": handoff.control_input,
+            "message": "The retained tab was deliberately closed. Reopen requires an explicit operator action.",
+        }));
+    }
+
+    let service_job_id = optional_command_string(cmd, "serviceJobId")
+        .unwrap_or_else(|| format!("resolve:{}", handoff.id));
+    let resolution_command =
+        remote_view_handoff_resolution_command(&handoff, &service_job_id, allow_reopen_closed)?;
+    let opened = handle_remote_view_open(&resolution_command, state).await?;
+
+    Ok(json!({
+        "status": "ready",
+        "resolved": true,
+        "reopenedClosedTab": allow_reopen_closed,
+        "handoffId": handoff.id,
+        "handoffUrl": opened.get("handoffUrl"),
+        "externalUrl": opened.get("externalUrl"),
+        "providerExternalUrl": opened.get("providerExternalUrl"),
+        "browserId": opened.get("browserId"),
+        "sessionName": opened.get("sessionName"),
+        "tab": opened.get("tab"),
+        "viewStreamProvider": handoff.view_stream_provider,
+        "controlInput": handoff.control_input,
+        "open": opened,
+    }))
 }
 
 fn remote_view_open_ensure_managed_one_time_profile(
@@ -24849,10 +24943,43 @@ mod tests {
             },
         ];
 
-        let target =
-            remote_view_open_reusable_live_target(&pages, Some("https://example.com")).unwrap();
+        let target = remote_view_open_reusable_live_target(
+            &pages,
+            Some("same-origin-target"),
+            Some("https://example.com"),
+        )
+        .unwrap();
 
         assert_eq!(target.target_id, "same-origin-target");
+    }
+
+    #[test]
+    fn test_remote_view_open_reusable_live_target_prefers_handoff_target() {
+        let pages = vec![
+            PageInfo {
+                target_id: "same-origin-first".to_string(),
+                session_id: "session-first".to_string(),
+                url: "https://example.com/first".to_string(),
+                title: "First".to_string(),
+                target_type: "page".to_string(),
+            },
+            PageInfo {
+                target_id: "handoff-target".to_string(),
+                session_id: "session-handoff".to_string(),
+                url: "https://example.com/article".to_string(),
+                title: "Article".to_string(),
+                target_type: "page".to_string(),
+            },
+        ];
+
+        let target = remote_view_open_reusable_live_target(
+            &pages,
+            Some("handoff-target"),
+            Some("https://example.com"),
+        )
+        .unwrap();
+
+        assert_eq!(target.target_id, "handoff-target");
     }
 
     #[test]
@@ -24908,7 +25035,8 @@ mod tests {
         }];
 
         assert!(
-            remote_view_open_reusable_live_target(&pages, Some("https://example.com")).is_none()
+            remote_view_open_reusable_live_target(&pages, None, Some("https://example.com"))
+                .is_none()
         );
     }
 
@@ -27554,6 +27682,24 @@ mod tests {
         ));
 
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_runtime_handoff_descriptor_accepts_legacy_schema_v1_without_active_target() {
+        let descriptor: RuntimeHandoffDescriptor = serde_json::from_value(json!({
+            "schemaVersion": 1,
+            "sessionName": "legacy-session",
+            "cdpUrl": "ws://127.0.0.1:9222/devtools/browser/example",
+            "browserPid": 42,
+            "runtimeProfile": "legacy-profile",
+            "engine": "chrome",
+            "host": "attached_existing",
+            "closeBrowserOnClose": false,
+            "preparedAt": "2026-08-08T12:00:00Z"
+        }))
+        .expect("schema-v1 handoff descriptor should remain readable");
+
+        assert_eq!(descriptor.active_target_id, None);
     }
 
     #[test]

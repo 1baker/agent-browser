@@ -140,6 +140,15 @@ pool or access-plan response. `--provider rdp_gateway` remains a
 remote-view-open compatibility alias, but `--view-stream-provider rdp_gateway`
 is the canonical spelling because `--provider` means cloud browser provider in
 other command paths.
+Treat `remote_view_open.externalUrl` and `handoffUrl` as the durable operator
+links. They use `/remote-view/<handoff-id>` and survive dashboard authentication
+plus Guacamole route replacement. `providerExternalUrl` and route-binding URLs
+describe only the current provider connection. Resolve a stored link with
+service request action `service_remote_view_handoff_resolve` and
+`params.handoffId`. Resolution prefers the original retained target, falls back
+to compatible recovery when that target is stale, and preserves the original
+view stream and control-input posture. Do not send `allowReopenClosed: true`
+unless the operator explicitly asked to reopen a tab recorded as closed.
 Use service request action `service_remote_view_route_preflight`, HTTP
 `GET /api/service/remote-view/route-preflight`, MCP
 `service_remote_view_route_preflight`, or
@@ -203,6 +212,14 @@ be `ready`. For multi-viewer claims, also require `manyToMany.status` to be
 mismatch, missing Guacamole schema, permission gap, or unroutable dashboard
 embed is not a healthy remote-control browser even if the Chrome process is
 alive.
+
+Read `remoteControl.installDoctorReady` as the raw embedded install-doctor
+result and `remoteControl.installReady` as the effective single-route
+classification. Duplicate-profile pressure may be listed in
+`remoteControl.nonBlockingInstallIssueCodes` only when it is the sole install
+issue and readiness-impacting resource candidates are zero. Do not hide the
+embedded install warning or use this classification to bypass the
+`remote-view open` request's same-profile retained-browser and lease guard.
 
 Treat remote-view doctor child timeouts as inconclusive, not as failed install
 or readiness evidence. The doctor reports distinct `*_timed_out` issue codes
@@ -1106,7 +1123,7 @@ Service browser-health reconciliation runs in the daemon background every 60000 
 
 Due active service monitors are enqueued through the same service worker every 60000 ms by default. Set `service.monitorIntervalMs`, pass `--service-monitor-interval <ms>`, or set `AGENT_BROWSER_SERVICE_MONITOR_INTERVAL_MS` to change the scheduler interval. Use `0` to disable monitor scheduling. Use `agent-browser service monitors run-due`, HTTP `POST /api/service/monitors/run-due`, MCP `service_monitors_run_due`, or `runDueServiceMonitors()` to check due active monitors immediately. The run-due response includes aggregate counts and per-monitor `results` so clients can inspect target, outcome, result string, check timestamp, and stale profile IDs without reconstructing events. Use `agent-browser service monitors pause <id>` and `agent-browser service monitors resume <id>`, HTTP `POST /api/service/monitors/<id>/pause` and `POST /api/service/monitors/<id>/resume` routes, MCP `service_monitor_pause` and `service_monitor_resume`, or `pauseServiceMonitor()` and `resumeServiceMonitor()` to quiet or restore noisy monitors without clearing retained health history. Use `agent-browser service monitors triage <id>`, HTTP `POST /api/service/monitors/<id>/triage`, MCP `service_monitor_triage`, or `triageServiceMonitor()` to acknowledge the related monitor incident and clear reviewed failures in one queued operation. Use `agent-browser service monitors reset <id>`, HTTP `POST /api/service/monitors/<id>/reset-failures`, MCP `service_monitor_reset_failures`, or `resetServiceMonitorFailures()` to clear only a reviewed failure count while retaining the last failure evidence. The runner updates `lastCheckedAt`, `lastSucceededAt`, `lastFailedAt`, `lastResult`, and `consecutiveFailures`; failed probes set the monitor `state` to `faulted` and append a service incident event.
 
-Service control jobs do not time out at the worker boundary by default. Set `service.jobTimeoutMs`, pass `--service-job-timeout <ms>`, or set `AGENT_BROWSER_SERVICE_JOB_TIMEOUT_MS` to mark long-running dispatched jobs as `timed_out`. Use `0` to disable it.
+Service control jobs do not time out at the worker boundary by default. Set `service.jobTimeoutMs`, pass `--service-job-timeout <ms>`, or set `AGENT_BROWSER_SERVICE_JOB_TIMEOUT_MS` to mark long-running dispatched jobs as `timed_out`. Use `0` to disable it. For one ordinary CLI command, pass `--job-timeout-ms <ms>` so the daemon cancels that command and releases its serialized queue before any longer caller-side subprocess deadline expires.
 
 Browser recovery defaults to 3 relaunch attempts, 1000 ms base backoff, and 30000 ms max backoff before marking a browser `faulted`. Set `service.recoveryRetryBudget`, `service.recoveryBaseBackoffMs`, and `service.recoveryMaxBackoffMs`, pass `--service-recovery-retry-budget <n>`, `--service-recovery-base-backoff <ms>`, or `--service-recovery-max-backoff <ms>`, or set the matching `AGENT_BROWSER_SERVICE_RECOVERY_*` environment variables to tune this for a service host. Recovery-started trace events include `details.policySource.retryBudget`, `details.policySource.baseBackoffMs`, and `details.policySource.maxBackoffMs` so agents can see whether each active value came from defaults, config, environment, or CLI flags.
 

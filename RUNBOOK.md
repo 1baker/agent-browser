@@ -4,6 +4,158 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 142 | 2026-08-08
+
+Scope: verify installed timeout/queue behavior during the explicit Last30Days
+manual governed tick before pushing the completed remote-browser repair.
+
+Actions:
+
+- observed the installed Last30Days Facebook lane skip two frozen retained tabs,
+  switch to a responsive tab, and complete bounded auth evaluation;
+- observed query navigation job `r198316` fail at the page-operation timeout;
+- verified the serialized queue released and later tab, eval, navigation, and
+  service reconciliation jobs completed successfully;
+- preserved retained Chrome PID 96078 and all eight tabs. No browser or tab was
+  opened or closed.
+
+Validation:
+
+- manual tick `tick-848f61b8a22d7e603c7e473c16ba5fdf` terminalized
+  `complete_degraded` with seven items, zero cost/model use, zero incidents,
+  and zero notifications;
+- failed job `r198316` reports the ordinary page-operation timeout rather than
+  a queue stall; subsequent jobs `r998619`, `r498581`, `r461931`, `r922601`,
+  `r422781`, `r500611`, and `r617918` all succeeded;
+- current executable SHA-256 remains
+  `e899753a27005a79fe820f9128420eb0ea80ed8ea59a8719c64d9bc14c278d5f`.
+
+Result:
+
+- Plan 0097 remains closed: cancellation and queue release are proven in the
+  ordinary governed path. Last30Days now owns the separate post-auth navigation
+  recovery in Plan 0027.
+- Changes are ready for scoped commit and push; unrelated `--full-page` and
+  declaration-campaign evaluation artifacts remain excluded.
+
+Graphiti Write Status:
+
+- no new write; agent-browser jobs plus both repo runbooks are the durable
+  source-backed evidence.
+
+## Turn 141 | 2026-08-08
+
+Scope: complete durable authenticated remote-view handoffs, then repair ordinary
+CLI timeout layering, retained-target handoff recovery, and interrupted-command
+browser ownership for the Last30Days Facebook lane.
+
+Actions:
+
+- Added opaque authenticated `/remote-view/<handoff-id>` URLs, sidecar-backed
+  durable handoff persistence, authenticated dashboard resolution, bounded
+  route reacquisition, and explicit-close fail-closed behavior.
+- Added global `--job-timeout-ms` parsing and top-level command JSON carriage
+  while preserving action-specific timeout values and invalid-input rejection.
+- Made runtime handoff persist an optional preferred target and probe retained
+  targets under bounded Page, Runtime, and Network domain initialization,
+  retaining schema-v1 backward compatibility.
+- Changed control-plane cancellation cleanup so only an observed process exit
+  discards browser ownership; a timeout or cancelled future preserves a live or
+  reconnectable BrowserManager.
+- Updated CLI help, README, docs site, source skill, and installed shared skill.
+- Published and converged the release-mode executable without replacing the
+  retained Last30Days browser.
+
+Validation:
+
+- durable URL, dashboard auth, handoff sidecar, legacy-writer, resolver,
+  explicit-close, generated-client, and isolated live reacquisition gates
+- focused red/green parser, command JSON, timeout queue-release, legacy
+  handoff, target ordering, same-profile guard, and interruption cleanup tests
+- canonical Rust suite: 1,789 passed, 57 ignored, zero failed
+- Rust formatting, strict Clippy, dashboard/docs builds, patch checks,
+  installed runtime and skill convergence, install doctor, and remote-view
+  doctor
+- live one-second never-resolving eval followed by a 466 ms tab-list command;
+  retained PID 96078, seven tabs, and active index 3 were unchanged during the
+  agent-browser proof
+
+Result:
+
+- Plans 0096/P96 and 0097/P97 are closed. Installed executable SHA-256 is
+  `e899753a27005a79fe820f9128420eb0ea80ed8ea59a8719c64d9bc14c278d5f`;
+  runtime convergence and `remoteControl.status=ready` are current.
+- The first timeout proof exposed the prior unconditional cleanup branch and
+  launched default-profile Chrome PID 97130. Exact daemon ownership and start
+  time were proved; only that repair-created browser was closed. Retained PID
+  96078 was never closed or restarted, and no default-profile Chrome remains.
+- A later Last30Days proof opened one additional Facebook target, so current
+  browser readback is eight tabs at active index 5; the final Last30Days repair
+  preserves that complete set.
+- Changes remain local and uncommitted. Unrelated untracked files, including
+  `--full-page`, were untouched.
+
+Graphiti Write Status:
+
+- one compact closeout write was attempted as job
+  `7e1b6b06-e449-4668-b469-99118eb1f14b`; it timed out after its explicit
+  120-second bound before creating an episode UUID. No retry was submitted;
+  this runbook, Plan 0097/C04, and installed readbacks remain authoritative.
+
+## Turn 140 | 2026-08-07
+
+Scope: repair the Last30days single-route remote-control readiness false block
+without hiding duplicate-profile pressure or weakening target-profile launch
+guards.
+
+Actions:
+
+- Added a fail-closed classifier that distinguishes raw embedded install-doctor
+  success from effective single-route remote-control install readiness.
+- Accepted `service_duplicate_profile_pressure` only when it is the complete
+  structured issue set and readiness-impacting resource candidates equal zero.
+- Applied the shared classification to nested remote-control status, top-level
+  next-action recommendation, and remote-view issue projection.
+- Added `installDoctorReady`, effective `installReady`, and
+  `nonBlockingInstallIssueCodes` to the JSON contract while preserving the
+  complete embedded install report.
+- Updated CLI help, README, docs-site guidance, repo skill guidance, and the
+  installed shared skill.
+- Published and converged the installed `0.28.0` checkpoint without opening or
+  closing a browser.
+
+Validation:
+
+- observed-red then green cross-seam regression matching the original two
+  warning and zero readiness-candidate payload
+- fail-closed mixed, malformed, timeout, and positive-candidate cases
+- all 44 remote-view doctor tests and the same-profile retained-browser guard
+- canonical partitioned Rust suite, Rust formatting, strict Clippy, docs
+  production build, patch hygiene, installed help readback, and skill sync
+- installed workstation payload, dashboard manifest, runtime convergence,
+  remote-control readiness, daemon SHA-256, browser PID, URL, and service-state
+  readbacks
+
+Result:
+
+- Plan 0095 is closed. Current remote control reports all single-route
+  prerequisites ready and recommends `run_remote_view_open_live_gate`.
+- The installed executable SHA-256 is
+  `8582bf0900b4d974994846c4ff3985746dcbbf5ee2136699f68e56ea5e73726b`.
+- Publish reported a `p0065` resume error after the replacement daemon had
+  already attached. Direct readback proved the installed daemon still owns
+  original browser PID `19675` and its existing URL. The LitScout lane also
+  retained its existing ChatGPT target, and all four pre-publish ready browser
+  records remain ready.
+- Current resource warnings are zero because inactive daemon listeners were
+  retired during publish. The exact original duplicate-pressure branch remains
+  covered by its regression fixture.
+- No browser was opened or closed, no profile lease was released, and no
+  resource cleanup was applied. At this checkpoint the untracked `--full-page`,
+  declaration-campaign evaluation artifacts, and Last30Days handoff note
+  remained uncommitted and untouched; the handoff note is included only in the
+  later scoped P95-P97 integration recorded by Turns 141-142.
+
 ## Turn 139 | 2026-08-06
 
 Scope: open the exact guided launcher from actionable profile rows and close

@@ -1591,7 +1591,18 @@ export function WorkspaceRemoteViewport({
     ? selectedTabForBrowser(tabs, browser.id, viewportSelection.selection)
     : { tab: null, tabIndex: null, recoveredFromStaleSelection: false, staleSelectionId: null };
   const streamChoices = workspaceViewStreamChoices(browser?.viewStreams);
-  const stream = primaryViewStream(browser, browser ? streamPreferences[browser.id] : null);
+  const params = typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
+  const intendedProvider = params?.get("view-provider")?.trim().toLowerCase() || null;
+  const intendedStream = intendedProvider
+    ? streamChoices.find((stream) => stream.provider?.trim().toLowerCase() === intendedProvider)
+    : null;
+  const intendedStreamKey = intendedStream
+    ? workspaceViewStreamKey(intendedStream, streamChoices.indexOf(intendedStream))
+    : null;
+  const stream = primaryViewStream(
+    browser,
+    intendedStreamKey ?? (browser ? streamPreferences[browser.id] : null),
+  );
   const tileStreams = viewportSelection?.mode === "tile" ? workspaceViewportTiles(serviceStatus, streamPreferences) : [];
   const liveTileStreamCount = tileStreams.filter((tile) => Boolean(tile.frameUrl)).length;
   const streamUrl = resolveWorkspaceStreamUrl(stream);

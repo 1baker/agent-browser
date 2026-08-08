@@ -11,8 +11,8 @@ use super::remote_view_proof::{
     remote_view_operator_visible_state, remote_view_target_component_state,
 };
 use super::service_model::{
-    ControlInputProvider, DisplayAllocation, RemoteViewAcquisitionLease, RemoteViewRoute,
-    RoutePoolEntry, ViewStreamProvider,
+    ControlInputProvider, DisplayAllocation, RemoteViewAcquisitionLease, RemoteViewHandoff,
+    RemoteViewRoute, RoutePoolEntry, ServiceState, TabLifecycle, ViewStreamProvider,
 };
 use super::service_store::{
     JsonServiceStateStore, LockedServiceStateRepository, ServiceStateRepository,
@@ -33,6 +33,8 @@ pub struct RouteBoundHandoffPlannedResponseInput<'a> {
 }
 
 pub struct RouteBoundHandoffOpenedResponseInput<'a> {
+    pub handoff_id: Option<&'a str>,
+    pub handoff_url: Option<&'a str>,
     pub intent: &'a RemoteViewOpenIntent,
     pub planned_route_binding: &'a RemoteViewRouteBinding,
     pub final_route_binding: &'a RemoteViewRouteBinding,
@@ -55,6 +57,7 @@ pub struct RouteBoundHandoffOpenedResponseInput<'a> {
 }
 
 pub struct CompleteRouteBoundHandoffOpenInput<'a> {
+    pub handoff_id: Option<&'a str>,
     pub intent: &'a RemoteViewOpenIntent,
     pub planned_route_binding: &'a RemoteViewRouteBinding,
     pub acquisition_plan: &'a RemoteViewAcquisitionPlan,
@@ -458,6 +461,122 @@ fn route_descriptor_url(route_binding: &RemoteViewRouteBinding, key: &str) -> Op
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
+}
+
+/// Derive an authenticated dashboard handoff URL without exposing the
+/// provider's ephemeral route, connection, or browser target identifiers.
+pub fn durable_remote_view_handoff_url(
+    route_binding: &RemoteViewRouteBinding,
+    handoff_id: &str,
+) -> Option<String> {
+    let handoff_id = handoff_id.trim();
+    if handoff_id.is_empty() {
+        return None;
+    }
+
+    let public_url = route_descriptor_url(route_binding, "publicOperatorUrl")
+        .or_else(|| route_binding.external_url.clone())?;
+    let mut url = url::Url::parse(&public_url).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+
+    url.set_path("/");
+    url.path_segments_mut()
+        .ok()?
+        .pop_if_empty()
+        .push("remote-view")
+        .push(handoff_id);
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url.to_string())
+}
+
+/// Rebuild a `remote_view_open` request from durable intent while discarding
+/// route and display selectors that are expected to expire between opens.
+pub fn remote_view_handoff_resolution_command(
+    handoff: &RemoteViewHandoff,
+    service_job_id: &str,
+    allow_reopen_closed: bool,
+) -> Result<Value, String> {
+    let mut command = handoff
+        .intent
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "remote_view_handoff_intent_must_be_an_object".to_string())?;
+    for key in [
+        "routePoolEntryId",
+        "routeId",
+        "displayAllocationId",
+        "remoteHeadedDisplay",
+    ] {
+        command.remove(key);
+    }
+    command.insert(
+        "action".to_string(),
+        Value::String("remote_view_open".to_string()),
+    );
+    command.insert(
+        "remoteViewHandoffId".to_string(),
+        Value::String(handoff.id.clone()),
+    );
+    command.insert(
+        "serviceJobId".to_string(),
+        Value::String(service_job_id.to_string()),
+    );
+    if let Some(browser_id) = handoff.browser_id.as_ref() {
+        command.insert("browserId".to_string(), Value::String(browser_id.clone()));
+    }
+    if let Some(session_name) = handoff.session_name.as_ref() {
+        command.insert(
+            "sessionName".to_string(),
+            Value::String(session_name.clone()),
+        );
+    }
+    if !allow_reopen_closed {
+        if let Some(target_id) = handoff.target_id.as_ref() {
+            command.insert(
+                "preferredTargetId".to_string(),
+                Value::String(target_id.clone()),
+            );
+        }
+    }
+    Ok(Value::Object(command))
+}
+
+/// Return true only when retained service state records an intentional tab
+/// close. Missing or stale targets remain eligible for best-effort recovery.
+pub fn remote_view_handoff_was_explicitly_closed(
+    state: &ServiceState,
+    handoff: &RemoteViewHandoff,
+) -> bool {
+    state.tabs.values().any(|tab| {
+        let same_tab = handoff.tab_id.as_deref() == Some(tab.id.as_str());
+        let same_target =
+            handoff.target_id.is_some() && handoff.target_id.as_deref() == tab.target_id.as_deref();
+        (same_tab || same_target) && tab.lifecycle == TabLifecycle::Closed
+    })
+}
+
+/// Apply the retained browser/session lane for a handoff before HTTP or MCP
+/// request routing chooses the daemon that will perform resolution.
+pub fn apply_remote_view_handoff_route_hints(state: &ServiceState, command: &mut Value) {
+    if command.get("action").and_then(Value::as_str) != Some("service_remote_view_handoff_resolve")
+    {
+        return;
+    }
+    let Some(handoff_id) = command.get("handoffId").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(handoff) = state.remote_view_handoffs.get(handoff_id) else {
+        return;
+    };
+    if let Some(browser_id) = handoff.browser_id.as_ref() {
+        command["browserId"] = json!(browser_id);
+    }
+    if let Some(session_name) = handoff.session_name.as_ref() {
+        command["sessionName"] = json!(session_name);
+    }
 }
 
 fn route_bound_handoff_route_state(route_binding: &RemoteViewRouteBinding) -> &'static str {
@@ -1263,7 +1382,10 @@ pub fn opened_route_bound_handoff_response(
         "displayAllocationId": input.planned_route_binding.display_allocation_id,
         "routePoolEntryId": input.planned_route_binding.route_pool_entry_id,
         "frameUrl": input.planned_route_binding.frame_url,
-        "externalUrl": input.planned_route_binding.external_url,
+        "externalUrl": input.handoff_url.or(input.planned_route_binding.external_url.as_deref()),
+        "providerExternalUrl": input.final_route_binding.external_url,
+        "handoffId": input.handoff_id,
+        "handoffUrl": input.handoff_url,
         "routeDescriptor": input.planned_route_binding.route_descriptor,
         "routeBinding": input.final_route_binding.clone(),
         "acquisitionPlan": input.acquisition_plan,
@@ -1306,11 +1428,31 @@ pub fn complete_route_bound_handoff_open(
     )?;
     let browser_build_proof =
         route_bound_handoff_browser_build_proof(input.intent, input.launch_command, input.launch);
+    let handoff_url = input
+        .handoff_id
+        .and_then(|handoff_id| durable_remote_view_handoff_url(&final_route_binding, handoff_id));
+    if let Some(handoff_id) = input.handoff_id {
+        persist_remote_view_handoff(
+            input.repository,
+            PersistRemoteViewHandoffInput {
+                handoff_id,
+                handoff_url: handoff_url.as_deref(),
+                intent: input.intent,
+                route_binding: &final_route_binding,
+                browser_id: input.browser_id,
+                session_name: input.session_name,
+                tab: input.tab,
+                observed_at: input.observed_at,
+            },
+        )?;
+    }
     let acquisition_lease = serde_json::to_value(acquisition_lease)
         .map_err(|err| format!("route_bound_handoff_lease_serialize_failed: {err}"))?;
 
     Ok(opened_route_bound_handoff_response(
         RouteBoundHandoffOpenedResponseInput {
+            handoff_id: input.handoff_id,
+            handoff_url: handoff_url.as_deref(),
             intent: input.intent,
             planned_route_binding: input.planned_route_binding,
             final_route_binding: &final_route_binding,
@@ -1332,6 +1474,91 @@ pub fn complete_route_bound_handoff_open(
             visible_window_proof: input.visible_window_proof,
         },
     ))
+}
+
+struct PersistRemoteViewHandoffInput<'a> {
+    handoff_id: &'a str,
+    handoff_url: Option<&'a str>,
+    intent: &'a RemoteViewOpenIntent,
+    route_binding: &'a RemoteViewRouteBinding,
+    browser_id: &'a str,
+    session_name: &'a str,
+    tab: &'a Value,
+    observed_at: &'a str,
+}
+
+fn persist_remote_view_handoff(
+    repository: &LockedServiceStateRepository<JsonServiceStateStore>,
+    input: PersistRemoteViewHandoffInput<'_>,
+) -> Result<(), String> {
+    let intent = serde_json::to_value(input.intent)
+        .map_err(|error| format!("remote_view_handoff_intent_serialize_failed: {error}"))?;
+    let tab_id = input
+        .tab
+        .get("tabId")
+        .or_else(|| input.tab.get("id"))
+        .or_else(|| {
+            input
+                .tab
+                .get("serviceTabHandle")
+                .and_then(|handle| handle.get("tabId"))
+        })
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let target_id = input
+        .tab
+        .get("targetId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let profile_id = input
+        .tab
+        .get("profileId")
+        .or_else(|| input.tab.get("runtimeProfile"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| input.intent.runtime_profile.clone())
+        .or_else(|| input.intent.profile.clone());
+    let control_input =
+        route_bound_handoff_default_control_input_provider(input.intent.view_stream_provider);
+
+    repository.mutate(|state| {
+        let existing = state.remote_view_handoffs.get(input.handoff_id);
+        let created_at = existing
+            .and_then(|handoff| handoff.created_at.clone())
+            .or_else(|| Some(input.observed_at.to_string()));
+        state.remote_view_handoffs.insert(
+            input.handoff_id.to_string(),
+            RemoteViewHandoff {
+                id: input.handoff_id.to_string(),
+                state: "ready".to_string(),
+                intent,
+                handoff_url: input.handoff_url.map(str::to_string),
+                desired_url: input.intent.url.clone(),
+                profile_id,
+                browser_id: Some(input.browser_id.to_string()),
+                session_name: Some(input.session_name.to_string()),
+                tab_id,
+                target_id,
+                view_stream_provider: Some(input.intent.view_stream_provider),
+                control_input,
+                last_route_id: Some(input.route_binding.route_id.clone()),
+                last_route_pool_entry_id: input.route_binding.route_pool_entry_id.clone(),
+                last_display_allocation_id: Some(input.route_binding.display_allocation_id.clone()),
+                created_at,
+                updated_at: Some(input.observed_at.to_string()),
+                last_resolved_at: Some(input.observed_at.to_string()),
+                last_resolution: Some(json!({
+                    "status": "ready",
+                    "browserId": input.browser_id,
+                    "sessionName": input.session_name,
+                    "tabId": input.tab.get("tabId").or_else(|| input.tab.get("id")),
+                    "targetId": input.tab.get("targetId"),
+                    "routeId": input.route_binding.route_id,
+                })),
+            },
+        );
+        Ok(())
+    })
 }
 
 pub fn final_route_bound_handoff_route_binding(
@@ -2082,6 +2309,92 @@ mod tests {
         }
     }
 
+    #[test]
+    fn durable_handoff_url_uses_public_origin_and_opaque_id() {
+        let route_binding = command_test_route_binding();
+
+        let url = durable_remote_view_handoff_url(&route_binding, "job-opaque-a")
+            .expect("public operator route should produce a durable handoff URL");
+
+        assert_eq!(url, "https://guac.example/remote-view/job-opaque-a");
+        assert!(!url.contains("guacamole"));
+        assert!(!url.contains("client"));
+        assert!(!url.contains("route-a"));
+    }
+
+    #[test]
+    fn durable_handoff_url_percent_encodes_client_supplied_job_id_as_one_segment() {
+        let route_binding = command_test_route_binding();
+
+        let url = durable_remote_view_handoff_url(&route_binding, "job/opaque?#")
+            .expect("public operator route should encode an opaque handoff ID");
+
+        assert_eq!(url, "https://guac.example/remote-view/job%2Fopaque%3F%23");
+    }
+
+    #[test]
+    fn handoff_resolution_replays_intent_without_ephemeral_route_selectors() {
+        let handoff = RemoteViewHandoff {
+            id: "job-handoff-a".to_string(),
+            intent: json!({
+                "url": "https://example.com/article",
+                "browserId": "browser-a",
+                "sessionName": "session-a",
+                "viewStreamProvider": "rdp_gateway",
+                "controlInput": "manual_attached_desktop",
+                "routePoolEntryId": "pool-expired",
+                "routeId": "route-expired",
+                "displayAllocationId": "display-expired",
+                "remoteHeadedDisplay": ":31",
+                "dryRun": false
+            }),
+            browser_id: Some("session:browser-a".to_string()),
+            session_name: Some("session-a".to_string()),
+            target_id: Some("target-a".to_string()),
+            ..RemoteViewHandoff::default()
+        };
+
+        let command = remote_view_handoff_resolution_command(&handoff, "job-resolve-a", false)
+            .expect("persisted intent should produce a resolution command");
+
+        assert_eq!(command["action"], "remote_view_open");
+        assert_eq!(command["remoteViewHandoffId"], "job-handoff-a");
+        assert_eq!(command["serviceJobId"], "job-resolve-a");
+        assert_eq!(command["browserId"], "session:browser-a");
+        assert_eq!(command["sessionName"], "session-a");
+        assert_eq!(command["preferredTargetId"], "target-a");
+        assert!(command.get("routePoolEntryId").is_none());
+        assert!(command.get("routeId").is_none());
+        assert!(command.get("displayAllocationId").is_none());
+        assert!(command.get("remoteHeadedDisplay").is_none());
+        assert_eq!(command["viewStreamProvider"], "rdp_gateway");
+        assert_eq!(command["controlInput"], "manual_attached_desktop");
+    }
+
+    #[test]
+    fn handoff_resolution_treats_deliberately_closed_tab_as_terminal() {
+        let handoff = RemoteViewHandoff {
+            id: "job-handoff-a".to_string(),
+            tab_id: Some("target:target-a".to_string()),
+            target_id: Some("target-a".to_string()),
+            ..RemoteViewHandoff::default()
+        };
+        let state = ServiceState {
+            tabs: BTreeMap::from([(
+                "target:target-a".to_string(),
+                crate::native::service_model::BrowserTab {
+                    id: "target:target-a".to_string(),
+                    target_id: Some("target-a".to_string()),
+                    lifecycle: crate::native::service_model::TabLifecycle::Closed,
+                    ..crate::native::service_model::BrowserTab::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+
+        assert!(remote_view_handoff_was_explicitly_closed(&state, &handoff));
+    }
+
     fn command_test_acquisition_plan(
         route_binding: RemoteViewRouteBinding,
     ) -> RemoteViewAcquisitionPlan {
@@ -2692,6 +3005,7 @@ mod tests {
         });
 
         let response = complete_route_bound_handoff_open(CompleteRouteBoundHandoffOpenInput {
+            handoff_id: Some("job-handoff-a"),
             intent: &intent,
             planned_route_binding: &planned_route_binding,
             acquisition_plan: &acquisition_plan,
@@ -2725,10 +3039,26 @@ mod tests {
         assert_eq!(response["browserBuildProof"]["state"], "matched");
         assert_eq!(response["acquisitionLease"]["state"], "completed");
         assert_eq!(response["acquisitionLease"]["phase"], "checked_out");
+        assert_eq!(response["handoffId"], "job-handoff-a");
+        assert_eq!(
+            response["externalUrl"],
+            "https://guac.example/remote-view/job-handoff-a"
+        );
+        assert_eq!(
+            response["providerExternalUrl"],
+            "https://guac.example/#/client/route-a"
+        );
         let state = store.load().unwrap();
         assert_eq!(
             state.remote_view_acquisition_leases["lease-a"].state,
             "completed"
+        );
+        let handoff = &state.remote_view_handoffs["job-handoff-a"];
+        assert_eq!(handoff.browser_id.as_deref(), Some("session:a"));
+        assert_eq!(handoff.target_id.as_deref(), Some("target-2"));
+        assert_eq!(
+            handoff.handoff_url.as_deref(),
+            Some("https://guac.example/remote-view/job-handoff-a")
         );
 
         let _ = std::fs::remove_file(path);

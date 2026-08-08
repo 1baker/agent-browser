@@ -3,6 +3,7 @@ use std::io::{self, BufRead, Write};
 use serde_json::{json, Map, Value};
 
 use crate::connection::{send_command, Response};
+use crate::native::remote_view_handoff::apply_remote_view_handoff_route_hints;
 use crate::native::service_access::{
     apply_shared_profile_route_hints_for_service_request, parse_service_access_plan_query,
     service_access_plan_for_state,
@@ -5461,6 +5462,7 @@ fn service_request_command_with_state(
     }
     context.apply_target_profile_hints(&mut command);
     if let Some(service_state) = service_state {
+        apply_remote_view_handoff_route_hints(service_state, &mut command);
         apply_shared_profile_route_hints_for_service_request(service_state, &mut command)
             .map_err(|err| JsonRpcError::invalid_params(&err))?;
     }
@@ -13581,6 +13583,37 @@ mod tests {
         assert_eq!(
             queued_tool_command_session("browser_navigate", "AgentBrowserDashboard", &command),
             "AgentBrowserDashboard"
+        );
+    }
+
+    #[test]
+    fn service_request_handoff_resolution_uses_original_daemon_lane() {
+        let state = ServiceState {
+            remote_view_handoffs: std::collections::BTreeMap::from([(
+                "job-handoff-a".to_string(),
+                crate::native::service_model::RemoteViewHandoff {
+                    id: "job-handoff-a".to_string(),
+                    browser_id: Some("session:original-lane".to_string()),
+                    session_name: Some("original-lane".to_string()),
+                    ..crate::native::service_model::RemoteViewHandoff::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+        let (_, command) = service_request_command_with_state(
+            &json!({
+                "action": "service_remote_view_handoff_resolve",
+                "params": {"handoffId": "job-handoff-a"},
+            }),
+            Some(&state),
+        )
+        .unwrap();
+
+        assert_eq!(command["browserId"], "session:original-lane");
+        assert_eq!(command["sessionName"], "original-lane");
+        assert_eq!(
+            queued_tool_command_session("service_request", "default", &command),
+            "original-lane"
         );
     }
 

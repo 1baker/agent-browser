@@ -990,6 +990,57 @@ fn many_to_many_status(
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct RemoteControlInstallReadiness {
+    doctor_ready: bool,
+    ready: bool,
+    non_blocking_issue_codes: Vec<String>,
+}
+
+/// Classify embedded install-doctor output for single-route remote control.
+///
+/// The install doctor remains the authority for aggregate workstation health.
+/// Remote control may proceed through unrelated duplicate-profile pressure only
+/// when the structured report proves that no resource candidate affects
+/// readiness. Missing or mixed evidence fails closed.
+fn remote_control_install_readiness(install: &Value) -> RemoteControlInstallReadiness {
+    let doctor_ready = nested_bool(install, &["success"]);
+    if doctor_ready {
+        return RemoteControlInstallReadiness {
+            doctor_ready,
+            ready: true,
+            non_blocking_issue_codes: Vec::new(),
+        };
+    }
+
+    let issues = install
+        .pointer("/data/data/issues")
+        .and_then(Value::as_array);
+    let readiness_impacting_candidates = install
+        .pointer("/data/data/serviceResources/readinessImpactingCandidates")
+        .and_then(Value::as_u64);
+    let duplicate_pressure_only = issues.is_some_and(|issues| {
+        !issues.is_empty()
+            && issues.iter().all(|issue| {
+                issue.get("code").and_then(Value::as_str)
+                    == Some("service_duplicate_profile_pressure")
+            })
+    });
+    let duplicate_pressure_is_non_blocking = !doctor_command_timed_out(install)
+        && duplicate_pressure_only
+        && readiness_impacting_candidates == Some(0);
+
+    RemoteControlInstallReadiness {
+        doctor_ready,
+        ready: duplicate_pressure_is_non_blocking,
+        non_blocking_issue_codes: if duplicate_pressure_is_non_blocking {
+            vec!["service_duplicate_profile_pressure".to_string()]
+        } else {
+            Vec::new()
+        },
+    }
+}
+
 fn remote_control_status(
     install: &Value,
     rdp_gateway: &Value,
@@ -997,7 +1048,8 @@ fn remote_control_status(
     route_displays: &Value,
     viewer_prerequisites: &Value,
 ) -> Value {
-    let install_ready = nested_bool(install, &["success"]);
+    let install_readiness = remote_control_install_readiness(install);
+    let install_ready = install_readiness.ready;
     let install_doctor_timed_out = doctor_command_timed_out(install);
     let route_pool_ready = nested_bool(route_pool, &["data", "success"]);
     let rdp_gateway_ready = nested_bool(rdp_gateway, &["data", "success"]);
@@ -1101,6 +1153,8 @@ fn remote_control_status(
         "status": status,
         "ready": ready,
         "installReady": install_ready,
+        "installDoctorReady": install_readiness.doctor_ready,
+        "nonBlockingInstallIssueCodes": install_readiness.non_blocking_issue_codes,
         "installDoctorTimedOut": install_doctor_timed_out,
         "rdpGatewayReady": rdp_gateway_ready,
         "privateDisplayAllocatorReady": private_display_allocator_ready,
@@ -1274,7 +1328,7 @@ fn recommend_next_action(context: RecommendationContext<'_>) -> String {
         users,
         privileges,
     } = context;
-    if !nested_bool(install, &["success"]) && !doctor_command_timed_out(install) {
+    if !remote_control_install_readiness(install).ready && !doctor_command_timed_out(install) {
         if install_has_issue_code(install, "active_runtime_stale_executable")
             || install_has_issue_code(install, "active_runtime_stale_stream_backend")
         {
@@ -1487,7 +1541,7 @@ fn remote_view_issues(context: RemoteViewIssueContext<'_>) -> Vec<Value> {
         next_action,
     } = context;
 
-    if !nested_bool(install, &["success"]) {
+    if !remote_control_install_readiness(install).ready {
         if doctor_command_timed_out(install) {
             issues.push(remote_view_issue(
                 "install_doctor_timed_out",
@@ -2345,6 +2399,7 @@ mod tests {
         json!({
             "available": true,
             "data": {
+                "success": true,
                 "readiness": {
                     "components": [
                         {
@@ -2352,6 +2407,30 @@ mod tests {
                             "status": "ready"
                         }
                     ]
+                }
+            }
+        })
+    }
+
+    fn duplicate_pressure_only_install() -> Value {
+        json!({
+            "available": true,
+            "success": false,
+            "timedOut": false,
+            "data": {
+                "success": false,
+                "data": {
+                    "issues": [
+                        {
+                            "code": "service_duplicate_profile_pressure",
+                            "message": "duplicate live browser or profile lease pressure"
+                        }
+                    ],
+                    "serviceResources": {
+                        "candidateCount": 0,
+                        "readinessImpactingCandidates": 0,
+                        "duplicateProfilePressureWarnings": 2
+                    }
                 }
             }
         })
@@ -2868,6 +2947,117 @@ MaxSessions=50
         assert_eq!(status["installReady"], false);
         assert_eq!(status["installDoctorTimedOut"], true);
         assert_eq!(status["nextAction"], "rerun_install_doctor_after_timeout");
+    }
+
+    #[test]
+    fn duplicate_pressure_without_readiness_candidates_is_nonblocking_for_remote_control() {
+        let install = duplicate_pressure_only_install();
+        let route_pool = json!({"data": {"success": false}});
+        let route_displays = json!({"data": {"success": false}});
+        let viewer_prerequisites = json!({"ready": true});
+        let rdp_gateway = ready_rdp_gateway();
+
+        let status = remote_control_status(
+            &install,
+            &rdp_gateway,
+            &route_pool,
+            &route_displays,
+            &viewer_prerequisites,
+        );
+        assert_eq!(status["installDoctorReady"], false);
+        assert_eq!(status["installReady"], true);
+        assert_eq!(
+            status["nonBlockingInstallIssueCodes"],
+            json!(["service_duplicate_profile_pressure"])
+        );
+        assert_eq!(
+            status["nextAction"],
+            "repair_or_sync_guacamole_route_pool_before_creating_more_users"
+        );
+
+        let next_action = recommend_next_action(RecommendationContext {
+            install: &install,
+            rdp_gateway: &rdp_gateway,
+            route_pool: &route_pool,
+            route_displays: &route_displays,
+            display_access: &json!({"ready": false}),
+            viewer_prerequisites: &viewer_prerequisites,
+            users: &json!({"entries": []}),
+            privileges: &json!({"ready": true}),
+        });
+        assert_eq!(
+            next_action,
+            "repair_or_sync_guacamole_route_pool_before_creating_more_users"
+        );
+
+        let issues = remote_view_issues(RemoteViewIssueContext {
+            install: &install,
+            rdp_gateway: &rdp_gateway,
+            route_pool: &route_pool,
+            route_displays: &route_displays,
+            display_access: &json!({"ready": false}),
+            viewer_prerequisites: &viewer_prerequisites,
+            users: &json!({"entries": []}),
+            privileges: &json!({
+                "groupExists": true,
+                "userInGroup": true,
+                "helperExists": true,
+                "sudoersExists": true,
+                "helperCheck": {"success": true},
+                "helperDesktopSession": {"ready": true},
+                "helperStatus": {
+                    "success": true,
+                    "parsed": {
+                        "routeDesktopSession": {"ready": true},
+                        "displayAccess": {
+                            "supportsFilesystemX11Socket": true,
+                            "supportsAbstractX11Socket": true,
+                            "boundedXhostTimeoutSeconds": 2
+                        }
+                    }
+                }
+            }),
+            next_action: &next_action,
+        });
+        assert!(!issues.iter().any(|issue| {
+            issue.get("code").and_then(Value::as_str)
+                == Some("install_service_duplicate_profile_pressure")
+        }));
+    }
+
+    #[test]
+    fn remote_control_install_readiness_fails_closed_for_incomplete_or_mixed_evidence() {
+        let mut readiness_candidate = duplicate_pressure_only_install();
+        readiness_candidate["data"]["data"]["serviceResources"]["readinessImpactingCandidates"] =
+            json!(1);
+
+        let mut mixed_issue = duplicate_pressure_only_install();
+        mixed_issue["data"]["data"]["issues"] = json!([
+            {"code": "service_duplicate_profile_pressure"},
+            {"code": "active_runtime_stale_executable"}
+        ]);
+
+        let mut missing_candidate_summary = duplicate_pressure_only_install();
+        missing_candidate_summary["data"]["data"]
+            .as_object_mut()
+            .unwrap()
+            .remove("serviceResources");
+
+        let mut malformed_issue = duplicate_pressure_only_install();
+        malformed_issue["data"]["data"]["issues"] = json!([{"message": "missing code"}]);
+
+        for install in [
+            readiness_candidate,
+            mixed_issue,
+            missing_candidate_summary,
+            malformed_issue,
+            json!({"available": true, "success": false, "timedOut": true}),
+        ] {
+            let readiness = remote_control_install_readiness(&install);
+            assert!(!readiness.doctor_ready);
+            assert!(!readiness.ready);
+            assert!(readiness.non_blocking_issue_codes.is_empty());
+        }
     }
 
     #[test]

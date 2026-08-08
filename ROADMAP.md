@@ -6,6 +6,67 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P97 | CLI Command Timeout Layering Repair
+
+State: CLOSED
+Current state: ordinary CLI commands accept global `--job-timeout-ms`, timed-out
+jobs release the serialized queue without discarding live browser ownership,
+and runtime handoff skips frozen retained targets under bounded initialization.
+The installed executable and dashboard runtime are converged; remote control
+is ready and retained Last30Days PID 96078 remains live.
+
+### Next Recommendation
+
+Let Last30Days consume the installed inner-deadline and retained-target
+contracts. Preserve the process-exit-only cleanup rule in future control-plane
+changes.
+
+### Evidence
+
+- `docs/dev/plans/0097-2026-08-08-cli-command-timeout-layering-repair-plan.md`
+
+## P96 | Durable Remote-View Handoff
+
+State: CLOSED
+Current state: successful remote-view opens return authenticated opaque handoff
+URLs whose identity survives Guacamole connection, route, display, viewer, and
+target churn. A sidecar preserves handoff records across retained legacy daemon
+writes, and authenticated resolution reacquires current provider state for the
+same logical browser and tab while explicit close remains terminal.
+
+### Next Recommendation
+
+Consume the durable URL as the canonical operator handoff and keep raw provider
+routes as diagnostic evidence only. Preserve dashboard authentication, opaque
+public identity, exact profile ownership, and explicit-close fail-closed
+behavior in future resolver changes.
+
+### Evidence
+
+- `docs/dev/plans/0096-2026-08-07-durable-remote-view-handoff-plan.md`
+
+## P95 | Remote-Control Duplicate-Pressure Readiness Repair
+
+State: CLOSED
+Current state: remote-control readiness keeps raw install-doctor success
+separate from its effective single-route gate. Sole duplicate-profile pressure
+with zero readiness-impacting candidates remains visible but no longer blocks
+remote control. Mixed, malformed, timed-out, and readiness-impacting install
+reports still fail closed, and the actual open request retains its
+target-profile duplicate guard.
+
+### Next Recommendation
+
+Resume the bounded Last30days remote-control workflow from the installed
+`remoteControl.status=ready` gate. Treat the open request's target-profile
+conflict result as authoritative and do not weaken it if live ownership has
+changed since this closeout.
+
+### Evidence
+
+- `docs/dev/plans/0095-2026-08-07-remote-control-duplicate-pressure-readiness-repair-plan.md`
+- `docs/dev/notes/0095-2026-08-07-last30days-remote-control-duplicate-pressure-handoff.md`
+
 ## P94 | Profile Lifecycle UX
 
 State: CLOSED

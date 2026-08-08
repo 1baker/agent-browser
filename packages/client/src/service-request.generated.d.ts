@@ -24,6 +24,7 @@ export type ServiceRequestAction =
   | "view_focus"
   | "view_takeover"
   | "remote_view_open"
+  | "service_remote_view_handoff_resolve"
   | "service_remote_view_route_preflight"
   | "service_remote_view_browser_reattach"
   | "service_remote_view_route_switch"
@@ -1048,6 +1049,7 @@ export interface ServiceRequestActionDataMap {
   view_focus: ServiceViewFocusData;
   view_takeover: ServiceViewTakeoverData;
   remote_view_open: ServiceRemoteViewRouteMutationData;
+  service_remote_view_handoff_resolve: ServiceRemoteViewRouteMutationData;
   service_remote_view_route_preflight: ServiceRemoteViewRouteMutationData;
   service_remote_view_browser_reattach: ServiceRemoteViewRouteMutationData;
   service_remote_view_route_switch: ServiceRemoteViewRouteMutationData;
