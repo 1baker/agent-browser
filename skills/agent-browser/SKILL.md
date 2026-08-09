@@ -131,8 +131,13 @@ passes an unknown runtime profile instead, responses include
 recommended `managed_one_time` profile id.
 Dry runs return `operatorVisible.state=not_checked`.
 
-Software clients should use the same path through service request action
-`remote_view_open` or the generated `requestServiceRemoteViewOpen()` helper.
+Software clients that need a user-facing link should use the generated
+`requestServiceRemoteViewHandoff()` helper. It requests `remote_view_open` and
+returns only `handoffId` plus the authenticated durable `handoffUrl`, keeping
+raw provider connection URLs out of the ordinary client result. The lower-level
+`requestServiceRemoteViewOpen()` helper requires a durable handoff URL for real
+opens by default; use `allowRawProviderUrl: true` only for an explicit provider
+diagnostic or legacy infrastructure workflow.
 Pass caller labels and profile identity hints at the top level, and pass route
 selection material such as `provider`, `routePoolEntryId`, `routePoolEntry`,
 or `routePool` in `params` when a client already copied them from the route

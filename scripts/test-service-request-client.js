@@ -31,6 +31,7 @@ import {
   evaluateServiceTab,
   getServiceTabHandle,
   getServiceTabDiagnostics,
+  getServiceRemoteViewHandoffUrl,
   getServiceRemoteViewOpenOperatorVisible,
   heartbeatServiceViewerLease,
   isServiceCdpFreeActionAvailable,
@@ -56,11 +57,13 @@ import {
   requestServiceTabHandleRelease,
   requestServiceRemoteViewRouteCheckout,
   requestServiceRemoteViewOpen,
+  requestServiceRemoteViewHandoff,
   requestServiceRoutePoolRepair,
   requestServiceTab,
   requestServiceTabFromAccessPlan,
   requestServiceViewerLease,
   requireServiceRemoteViewOpenOperatorVisible,
+  requireServiceRemoteViewHandoffUrl,
   summarizeServiceSharedProfileAcquisition,
   summarizeServiceRemoteViewOpenProof,
   transferServiceFiles,
@@ -2233,6 +2236,10 @@ async function main() {
     success: true,
     data: {
       status: 'opened',
+      handoffId: 'handoff-route-a',
+      handoffUrl: 'https://agent-browser.example.test/remote-view/handoff-route-a',
+      externalUrl: 'https://agent-browser.example.test/remote-view/handoff-route-a',
+      providerExternalUrl: 'https://guac.example/#/client/route-a',
       routeId: 'route-a',
       displayAllocationId: 'display-a',
       browserId: 'session:rdp-a',
@@ -2326,6 +2333,14 @@ async function main() {
     url: 'https://www.linkedin.com/',
   });
   assert.equal(getServiceRemoteViewOpenOperatorVisible(remoteViewOpenResponse)?.state, 'ready');
+  assert.equal(
+    getServiceRemoteViewHandoffUrl(remoteViewOpenResponse),
+    'https://agent-browser.example.test/remote-view/handoff-route-a',
+  );
+  assert.equal(
+    requireServiceRemoteViewHandoffUrl(remoteViewOpenResponse),
+    'https://agent-browser.example.test/remote-view/handoff-route-a',
+  );
   assert.equal(isServiceRemoteViewOpenOperatorVisibleReady(remoteViewOpenResponse), true);
   const remoteViewOpenSummary = summarizeServiceRemoteViewOpenProof(remoteViewOpenResponse);
   assert.equal(remoteViewOpenSummary.ready, true);
@@ -2360,6 +2375,48 @@ async function main() {
     viewStreamProvider: 'rdp_gateway',
     url: 'https://www.linkedin.com/',
   });
+
+  const handoffOnlyWorkflow = createFetchRecorder(remoteViewOpenResponse);
+  const handoff = await requestServiceRemoteViewHandoff({
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: handoffOnlyWorkflow.fetch,
+    displayAllocationId: 'display-a',
+    routeId: 'route-a',
+    url: 'https://www.linkedin.com/',
+  });
+  assert.deepEqual(handoff, {
+    handoffId: 'handoff-route-a',
+    handoffUrl: 'https://agent-browser.example.test/remote-view/handoff-route-a',
+  });
+
+  const rawOnlyRemoteViewOpenWorkflow = createFetchRecorder({
+    success: true,
+    data: {
+      status: 'opened',
+      routeId: 'route-raw-only',
+      displayAllocationId: 'display-raw-only',
+      frameUrl: 'https://guac.example/#/client/raw-only',
+      providerExternalUrl: 'https://guac.example/#/client/raw-only',
+      operatorVisible: { state: 'ready' },
+    },
+  });
+  await assert.rejects(
+    () => requestServiceRemoteViewOpen({
+      baseUrl: 'http://127.0.0.1:4849',
+      fetch: rawOnlyRemoteViewOpenWorkflow.fetch,
+      displayAllocationId: 'display-raw-only',
+      routeId: 'route-raw-only',
+    }),
+    /remote-view open response is missing a durable handoff URL/,
+  );
+  await requestServiceRemoteViewOpen({
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: rawOnlyRemoteViewOpenWorkflow.fetch,
+    displayAllocationId: 'display-raw-only',
+    routeId: 'route-raw-only',
+    allowRawProviderUrl: true,
+  });
+  assert.equal(rawOnlyRemoteViewOpenWorkflow.calls[1].body.allowRawProviderUrl, undefined);
 
   const wrongTabSummary = summarizeServiceRemoteViewOpenProof({
     success: true,

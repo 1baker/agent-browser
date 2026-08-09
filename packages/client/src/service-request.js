@@ -53,6 +53,8 @@ const displayIsolationSet = new Set([
  * @typedef {import('./service-request.generated.js').ServiceControllerLeaseTakeoverOptions} ServiceControllerLeaseTakeoverOptions
  * @typedef {import('./service-request.generated.js').ServiceRemoteViewRouteCheckoutHttpOptions} ServiceRemoteViewRouteCheckoutHttpOptions
  * @typedef {import('./service-request.generated.js').ServiceRemoteViewRouteCheckoutOptions} ServiceRemoteViewRouteCheckoutOptions
+ * @typedef {import('./service-request.generated.js').ServiceRemoteViewOpenHttpOptions} ServiceRemoteViewOpenHttpOptions
+ * @typedef {import('./service-request.generated.js').ServiceRemoteViewHandoffLink} ServiceRemoteViewHandoffLink
  * @typedef {import('./service-request.generated.js').ServiceRemoteViewBrowserReattachHttpOptions} ServiceRemoteViewBrowserReattachHttpOptions
  * @typedef {import('./service-request.generated.js').ServiceRemoteViewBrowserReattachOptions} ServiceRemoteViewBrowserReattachOptions
  * @typedef {import('./service-request.generated.js').ServiceRemoteViewOpenProofSummary} ServiceRemoteViewOpenProofSummary
@@ -1376,10 +1378,10 @@ export async function requestServiceRemoteViewRoutePreflight({ baseUrl, fetch = 
 }
 
 /**
- * @param {ServiceRemoteViewRouteCheckoutHttpOptions} options
+ * @param {ServiceRemoteViewOpenHttpOptions} options
  */
 export async function requestServiceRemoteViewOpen({ baseUrl, fetch = globalThis.fetch, signal, ...request }) {
-  const { allowInfrastructureOnlyReadiness, ...requestFields } = request;
+  const { allowInfrastructureOnlyReadiness, allowRawProviderUrl, ...requestFields } = request;
   const response = await postServiceRequest({
     baseUrl,
     fetch,
@@ -1389,7 +1391,29 @@ export async function requestServiceRemoteViewOpen({ baseUrl, fetch = globalThis
   requireServiceRemoteViewOpenOperatorVisible(response, {
     allowInfrastructureOnlyReadiness,
   });
+  const data = serviceRemoteViewOpenData(response);
+  if (data?.dryRun !== true && allowInfrastructureOnlyReadiness !== true && allowRawProviderUrl !== true) {
+    requireServiceRemoteViewHandoffUrl(response);
+  }
   return response;
+}
+
+/**
+ * Request a route-bound browser view and return only its durable authenticated
+ * handoff identity. Provider connection URLs remain on lower-level diagnostic
+ * route responses and are never returned by this interface.
+ *
+ * @param {ServiceRemoteViewOpenHttpOptions} options
+ * @returns {Promise<ServiceRemoteViewHandoffLink>}
+ */
+export async function requestServiceRemoteViewHandoff(options) {
+  const { allowRawProviderUrl: _allowRawProviderUrl, ...handoffOptions } = options;
+  const response = await requestServiceRemoteViewOpen(handoffOptions);
+  const data = serviceRemoteViewOpenData(response);
+  return {
+    handoffId: stringOrNull(data?.handoffId),
+    handoffUrl: requireServiceRemoteViewHandoffUrl(response),
+  };
 }
 
 /**
@@ -1426,6 +1450,37 @@ function serviceRemoteViewOpenData(response) {
   const data = record.data;
   if (data && typeof data === 'object') return /** @type {Record<string, unknown>} */ (data);
   return /** @type {Record<string, unknown>} */ (record);
+}
+
+/**
+ * @param {unknown} response
+ * @returns {string | null}
+ */
+export function getServiceRemoteViewHandoffUrl(response) {
+  const data = serviceRemoteViewOpenData(response);
+  for (const candidate of [data?.handoffUrl, data?.externalUrl]) {
+    const value = stringOrNull(candidate);
+    if (!value) continue;
+    try {
+      const parsed = new URL(value, 'https://agent-browser.invalid');
+      if (parsed.pathname.startsWith('/remote-view/') && parsed.pathname.length > '/remote-view/'.length) {
+        return value;
+      }
+    } catch {
+      // Ignore malformed response URLs and fail closed below.
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {unknown} response
+ * @returns {string}
+ */
+export function requireServiceRemoteViewHandoffUrl(response) {
+  const handoffUrl = getServiceRemoteViewHandoffUrl(response);
+  if (handoffUrl) return handoffUrl;
+  throw new TypeError('remote-view open response is missing a durable handoff URL');
 }
 
 /**

@@ -2802,6 +2802,12 @@ browser tab, and reacquires expired Guacamole route state with the original view
 stream and control-input posture. Missing targets remain recoverable. A tab
 recorded as deliberately closed stays closed until the operator explicitly
 chooses **Reopen tab**.
+Software clients should call `requestServiceRemoteViewHandoff()` when they
+need a link for a user. It returns only `handoffId` and `handoffUrl`, so callers
+cannot accidentally publish the current Guacamole connection URL.
+`requestServiceRemoteViewOpen()` also requires a durable handoff URL for real
+opens by default. Set `allowRawProviderUrl: true` only for an explicit
+provider-diagnostic workflow against a legacy or infrastructure-only runtime.
 Dry runs return `operatorVisible.state=not_checked`. A typical HTTP
 request is:
 
@@ -2828,10 +2834,11 @@ agent-browser --json remote-view open https://www.facebook.com/ --runtime-profil
 }
 ```
 
-Use route descriptors as structured data. `routeDescriptor.localEmbedUrl` and
-`routeDescriptor.dashboardEmbedUrl` are for dashboard and harness embedding;
-`routeDescriptor.publicOperatorUrl` and `externalUrl` are for remote operator
-handoff; `routeDescriptor.healthUrl` is for readiness checks. Clients should
+Use route descriptors as structured diagnostic data.
+`routeDescriptor.localEmbedUrl` and `dashboardEmbedUrl` are for dashboard and
+harness embedding; `routeDescriptor.publicOperatorUrl` and `externalUrl`
+identify the current provider route; `routeDescriptor.healthUrl` is for
+readiness checks. Clients should
 pass route-pool entries or route descriptors through the request instead of
 parsing Guacamole hashes, XRDP displays, or Xauthority details. Run
 `agent-browser doctor remote-view --json`,

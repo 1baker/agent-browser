@@ -557,6 +557,11 @@ export interface ServiceRemoteViewRouteMutationData {
   [key: string]: unknown;
 }
 
+export interface ServiceRemoteViewHandoffLink {
+  handoffId: string | null;
+  handoffUrl: string;
+}
+
 export interface ServiceRemoteViewOpenProofSummary {
   ready: boolean;
   state: string | null;
@@ -1332,6 +1337,11 @@ export interface ServiceRemoteViewRouteCheckoutOptions extends Omit<ServiceReque
   params?: Record<string, unknown>;
 }
 
+export interface ServiceRemoteViewOpenHttpOptions extends ServiceRemoteViewRouteCheckoutHttpOptions {
+  /** Diagnostic escape hatch for legacy servers that return only provider URLs. */
+  allowRawProviderUrl?: boolean;
+}
+
 export interface ServiceRemoteViewBrowserReattachOptions extends Omit<ServiceRequest, "action" | "params"> {
   browserId?: string;
   profileId?: string;
@@ -1607,8 +1617,11 @@ export declare function requestServiceRemoteViewRoutePreflight(
   options: ServiceRemoteViewRouteCheckoutHttpOptions,
 ): Promise<ServiceRequestResponse<ServiceRemoteViewRouteMutationData>>;
 export declare function requestServiceRemoteViewOpen(
-  options: ServiceRemoteViewRouteCheckoutHttpOptions,
+  options: ServiceRemoteViewOpenHttpOptions,
 ): Promise<ServiceRequestResponse<ServiceRemoteViewRouteMutationData>>;
+export declare function requestServiceRemoteViewHandoff(
+  options: ServiceRemoteViewOpenHttpOptions,
+): Promise<ServiceRemoteViewHandoffLink>;
 export declare function requestServiceRemoteViewBrowserReattach(
   options: ServiceRemoteViewBrowserReattachHttpOptions,
 ): Promise<ServiceRequestResponse<ServiceRemoteViewRouteMutationData>>;
@@ -1616,6 +1629,8 @@ export declare function requestServiceRemoteViewRouteSwitch(
   options: ServiceRemoteViewBrowserReattachHttpOptions,
 ): Promise<ServiceRequestResponse<ServiceRemoteViewRouteMutationData>>;
 export declare function getServiceRemoteViewOpenOperatorVisible(response: unknown): Record<string, unknown> | null;
+export declare function getServiceRemoteViewHandoffUrl(response: unknown): string | null;
+export declare function requireServiceRemoteViewHandoffUrl(response: unknown): string;
 export declare function isServiceRemoteViewOpenOperatorVisibleReady(response: unknown): boolean;
 export declare function summarizeServiceRemoteViewOpenProof(response: unknown): ServiceRemoteViewOpenProofSummary;
 export declare function summarizeServiceSharedProfileAcquisition(
