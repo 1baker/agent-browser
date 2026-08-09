@@ -53,10 +53,10 @@ use super::remote_view::{
 };
 use super::remote_view_attachability::refresh_remote_view_attachability;
 use super::remote_view_handoff::{
-    begin_route_bound_handoff_failure_recovery, begin_route_bound_handoff_plan_acquisition,
-    complete_route_bound_handoff_failure_cleanup, complete_route_bound_handoff_open,
-    planned_route_bound_handoff_response, remote_view_handoff_resolution_command,
-    remote_view_handoff_was_explicitly_closed,
+    apply_retained_remote_view_route, begin_route_bound_handoff_failure_recovery,
+    begin_route_bound_handoff_plan_acquisition, complete_route_bound_handoff_failure_cleanup,
+    complete_route_bound_handoff_open, planned_route_bound_handoff_response,
+    remote_view_handoff_resolution_command, remote_view_handoff_was_explicitly_closed,
     route_bound_handoff_checkout_command_with_visible_window_proof,
     route_bound_handoff_checkout_failure, route_bound_handoff_failure_cleanup_task_result,
     route_bound_handoff_focus_command, route_bound_handoff_focus_failure,
@@ -110,10 +110,10 @@ use super::service_model::{
     BrowserHost as ServiceBrowserHost, BrowserProcess, BrowserProfile, BrowserSession, BrowserTab,
     ControlInputProvider, DisplayAllocation, JobState as ServiceJobState, LeaseState, MonitorState,
     ProfileAllocationPolicy, ProfileClass, ProfileKeyringPolicy, ProfileLeaseDisposition,
-    ProfileOrigin, ProfileSelectionReason, RemoteViewAcquisitionLease, RemoteViewRoute,
-    RoutePoolEntry, ServiceEntitySource, ServiceEvent, ServiceEventKind, ServiceState,
-    ServiceTabHandle, SessionCleanupPolicy, TabLifecycle, ViewStream, ViewStreamProvider,
-    ViewerLease,
+    ProfileOrigin, ProfileSelectionReason, RemoteViewAcquisitionLease, RemoteViewHandoff,
+    RemoteViewRoute, RoutePoolEntry, ServiceEntitySource, ServiceEvent, ServiceEventKind,
+    ServiceState, ServiceTabHandle, SessionCleanupPolicy, TabLifecycle, ViewStream,
+    ViewStreamProvider, ViewerLease,
 };
 use super::service_monitors::{
     parse_monitor_state, run_due_persisted_monitors, service_monitors_response,
@@ -13622,9 +13622,20 @@ async fn handle_service_remote_view_handoff_resolve(
 
     let service_job_id = optional_command_string(cmd, "serviceJobId")
         .unwrap_or_else(|| format!("resolve:{}", handoff.id));
-    let resolution_command =
+    let mut resolution_command =
         remote_view_handoff_resolution_command(&handoff, &service_job_id, allow_reopen_closed)?;
-    let opened = handle_remote_view_open(&resolution_command, state).await?;
+    apply_retained_remote_view_route(&service_state, &handoff, &mut resolution_command);
+    let opened = match handle_remote_view_open(&resolution_command, state).await {
+        Ok(opened) => opened,
+        Err(error) => {
+            if let Some(fallback) =
+                remote_view_handoff_provider_fallback(&service_state, &handoff, &error)
+            {
+                return Ok(fallback);
+            }
+            return Err(error);
+        }
+    };
 
     Ok(json!({
         "status": "ready",
@@ -13640,6 +13651,75 @@ async fn handle_service_remote_view_handoff_resolve(
         "viewStreamProvider": handoff.view_stream_provider,
         "controlInput": handoff.control_input,
         "open": opened,
+    }))
+}
+
+fn remote_view_handoff_provider_fallback(
+    service_state: &ServiceState,
+    handoff: &RemoteViewHandoff,
+    error: &str,
+) -> Option<Value> {
+    if handoff.view_stream_provider != Some(ViewStreamProvider::RdpGateway)
+        || !error.contains("already in use by PID")
+    {
+        return None;
+    }
+    let route = handoff
+        .last_route_id
+        .as_ref()
+        .and_then(|route_id| service_state.remote_view_routes.get(route_id))?;
+    let provider_url = route
+        .external_url
+        .as_deref()
+        .or_else(|| {
+            route
+                .route_descriptor
+                .as_ref()
+                .and_then(|descriptor| descriptor.get("publicOperatorUrl"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|url| !url.is_empty())?;
+    let tab = json!({
+        "id": handoff.tab_id,
+        "tabId": handoff.tab_id,
+        "targetId": handoff.target_id,
+        "browserId": handoff.browser_id,
+        "sessionId": handoff.session_name,
+        "profileId": handoff.profile_id,
+    });
+
+    Some(json!({
+        "status": "ready",
+        "resolved": true,
+        "bestEffort": true,
+        "providerFallback": true,
+        "providerFallbackUrl": provider_url,
+        "handoffId": handoff.id,
+        "handoffUrl": handoff.handoff_url,
+        "browserId": handoff.browser_id,
+        "sessionName": handoff.session_name,
+        "tabId": handoff.tab_id,
+        "targetId": handoff.target_id,
+        "tab": tab,
+        "viewStreamProvider": handoff.view_stream_provider,
+        "controlInput": handoff.control_input,
+        "externalUrl": provider_url,
+        "providerExternalUrl": provider_url,
+        "message": "The original browser daemon is unavailable, but its retained RDP provider route is still available for a best-effort reconnect.",
+        "open": {
+            "browserId": handoff.browser_id,
+            "sessionName": handoff.session_name,
+            "tab": tab,
+            "externalUrl": provider_url,
+            "providerExternalUrl": provider_url,
+            "route": route,
+            "intent": handoff.intent,
+            "operatorVisible": {
+                "state": "best_effort",
+                "reason": "live_profile_owned_outside_original_daemon",
+            },
+        },
     }))
 }
 
@@ -31578,6 +31658,55 @@ mod tests {
             Some("ready")
         );
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_remote_view_handoff_provider_fallback_preserves_retained_rdp_route() {
+        let handoff = RemoteViewHandoff {
+            id: "handoff-a".to_string(),
+            browser_id: Some("session:im-receipts".to_string()),
+            session_name: Some("im-receipts".to_string()),
+            tab_id: Some("target:tab-a".to_string()),
+            target_id: Some("tab-a".to_string()),
+            profile_id: Some("im-receipts-main".to_string()),
+            view_stream_provider: Some(ViewStreamProvider::RdpGateway),
+            last_route_id: Some("guacamole:2".to_string()),
+            ..RemoteViewHandoff::default()
+        };
+        let state = ServiceState {
+            remote_view_routes: BTreeMap::from([(
+                "guacamole:2".to_string(),
+                RemoteViewRoute {
+                    id: "guacamole:2".to_string(),
+                    provider: ViewStreamProvider::RdpGateway,
+                    external_url: Some(
+                        "https://dashboard.example/guacamole/#/client/route-b".to_string(),
+                    ),
+                    ..RemoteViewRoute::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+
+        let fallback = remote_view_handoff_provider_fallback(
+            &state,
+            &handoff,
+            "Chrome profile /tmp/profile is already in use by PID 42",
+        )
+        .unwrap();
+        assert_eq!(fallback["status"], "ready");
+        assert_eq!(fallback["resolved"], true);
+        assert_eq!(fallback["providerFallback"], true);
+        assert_eq!(
+            fallback["providerFallbackUrl"],
+            "https://dashboard.example/guacamole/#/client/route-b"
+        );
+        assert!(remote_view_handoff_provider_fallback(
+            &state,
+            &handoff,
+            "route provider unavailable"
+        )
+        .is_none());
     }
 
     #[tokio::test]

@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore, SemaphorePermit};
 use tokio_tungstenite::tungstenite::Message;
 
 #[cfg(windows)]
 use crate::connection::resolve_port;
-use crate::connection::{attach_daemon_auth_token, get_socket_dir};
+use crate::connection::{attach_daemon_auth_token, daemon_ready, get_socket_dir};
 use crate::flags::{launch_config_status, parse_flags};
 use crate::native::remote_view_handoff::apply_remote_view_handoff_route_hints;
 use crate::native::service_access::{
@@ -350,6 +350,16 @@ pub(super) async fn handle_http_request(
                 }
             };
             let relay_session_name = service_request_relay_session(session_name, body_str, &cmd);
+            if service_request_requires_relay_session_recovery(
+                session_name,
+                &relay_session_name,
+                &cmd,
+            ) {
+                if let Err(err) = ensure_service_daemon_session(&relay_session_name).await {
+                    write_json_result(&mut stream, Err(err), "502 Bad Gateway").await;
+                    return;
+                }
+            }
             let result = relay_service_command(&relay_session_name, cmd).await;
             write_json_result(&mut stream, result, "502 Bad Gateway").await;
             return;
@@ -1115,7 +1125,22 @@ fn stream_api_input_port(path: &str) -> Option<u16> {
     stream_api_port(path, "/input")
 }
 
+fn frame_snapshot_semaphore() -> &'static Semaphore {
+    static FRAME_SNAPSHOT_SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
+    FRAME_SNAPSHOT_SEMAPHORE.get_or_init(|| Semaphore::new(2))
+}
+
+fn try_acquire_frame_snapshot_permit() -> Option<SemaphorePermit<'static>> {
+    frame_snapshot_semaphore().try_acquire().ok()
+}
+
 async fn stream_api_frame_snapshot(port: u16) -> Value {
+    let Some(_permit) = try_acquire_frame_snapshot_permit() else {
+        return json!({
+            "success": false,
+            "error": "Another CDP frame snapshot is already in progress; retry after it completes.",
+        });
+    };
     let connect = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/", port));
     let Ok((mut ws, _)) = connect.await else {
         return json!({
@@ -1836,6 +1861,69 @@ fn service_request_relay_session(default_session: &str, body: &str, command: &Va
     }
 
     default_session.to_string()
+}
+
+fn service_request_requires_relay_session_recovery(
+    default_session: &str,
+    relay_session: &str,
+    command: &Value,
+) -> bool {
+    relay_session != default_session
+        && command.get("action").and_then(Value::as_str)
+            == Some("service_remote_view_handoff_resolve")
+}
+
+pub(super) async fn ensure_service_daemon_session(session_name: &str) -> Result<(), String> {
+    if daemon_ready(session_name) {
+        return Ok(());
+    }
+
+    let exe = std::env::current_exe()
+        .map_err(|err| format!("Cannot resolve executable for remote-view recovery: {err}"))?;
+    let mut command = tokio::process::Command::new(exe);
+    command
+        .args(["--session", session_name, "--json", "stream", "enable"])
+        .env_remove("AGENT_BROWSER_DAEMON")
+        .env_remove("AGENT_BROWSER_DAEMON_AUTH_TOKEN")
+        .env_remove("AGENT_BROWSER_SESSION")
+        .env_remove("AGENT_BROWSER_RUNTIME_PROFILE")
+        .env_remove("AGENT_BROWSER_PROFILE")
+        .env_remove("AGENT_BROWSER_CDP_URL")
+        .env_remove("AGENT_BROWSER_STREAM_PORT")
+        .env_remove("AGENT_BROWSER_DASHBOARD")
+        .env_remove("AGENT_BROWSER_DASHBOARD_PORT")
+        .env_remove("AGENT_BROWSER_HEADED")
+        .env_remove("AGENT_BROWSER_LEAVE_OPEN")
+        .env_remove("AGENT_BROWSER_EXECUTABLE_PATH")
+        .env_remove("AGENT_BROWSER_ARGS")
+        .env_remove("AGENT_BROWSER_EXTENSIONS")
+        .env_remove("AGENT_BROWSER_USER_AGENT")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    let status = tokio::time::timeout(Duration::from_secs(20), command.status())
+        .await
+        .map_err(|_| {
+            format!(
+                "Timed out reviving remote-view daemon session '{}'",
+                session_name
+            )
+        })?
+        .map_err(|err| {
+            format!(
+                "Failed to revive remote-view daemon session '{}': {}",
+                session_name, err
+            )
+        })?;
+
+    if daemon_ready(session_name) {
+        return Ok(());
+    }
+    Err(format!(
+        "Remote-view daemon session '{}' did not become ready (exit status {})",
+        session_name, status
+    ))
 }
 
 fn service_request_command_relay_hint<'a>(
@@ -5239,7 +5327,7 @@ mod tests {
     }
 
     #[test]
-    fn service_request_handoff_resolution_routes_to_original_daemon_lane() {
+    fn service_request_handoff_resolution_revives_original_daemon_lane() {
         let body = r#"{"action":"service_remote_view_handoff_resolve","params":{"handoffId":"job-handoff-a"},"serviceName":"agent-browser-dashboard"}"#;
         let state = ServiceState {
             remote_view_handoffs: std::collections::BTreeMap::from([(
@@ -5262,6 +5350,11 @@ mod tests {
             service_request_relay_session("AgentBrowserDashboard", body, &command),
             "original-lane"
         );
+        assert!(service_request_requires_relay_session_recovery(
+            "AgentBrowserDashboard",
+            "original-lane",
+            &command
+        ));
     }
 
     #[test]
@@ -6497,7 +6590,10 @@ fn content_type_for_dashboard_asset(ext: &str) -> &'static str {
 
 #[cfg(test)]
 mod dashboard_asset_tests {
-    use super::{content_type_for_dashboard_asset, runtime_manifest_json, serve_embedded_file};
+    use super::{
+        content_type_for_dashboard_asset, runtime_manifest_json, serve_embedded_file,
+        try_acquire_frame_snapshot_permit,
+    };
 
     fn assert_dashboard_route_body(body: &str, expected_section: &str) {
         if body.contains("Dashboard not built.") {
@@ -6581,5 +6677,16 @@ mod dashboard_asset_tests {
             .unwrap()
             .iter()
             .any(|feature| feature.as_str() == Some("workspace.noRetainedLiveRail")));
+    }
+
+    #[test]
+    fn frame_snapshot_concurrency_is_bounded() {
+        let first = try_acquire_frame_snapshot_permit().expect("first frame snapshot permit");
+        let second = try_acquire_frame_snapshot_permit().expect("second frame snapshot permit");
+        assert!(try_acquire_frame_snapshot_permit().is_none());
+
+        drop(first);
+        assert!(try_acquire_frame_snapshot_permit().is_some());
+        drop(second);
     }
 }

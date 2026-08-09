@@ -544,6 +544,94 @@ pub fn remote_view_handoff_resolution_command(
     Ok(Value::Object(command))
 }
 
+/// Reapply a retained remote-view route only when current service state proves
+/// that the handoff's browser and session still own its ready display and
+/// checked-out route. Invalid or stale retained selectors remain discarded so
+/// the caller can make a best-effort fresh acquisition.
+pub fn apply_retained_remote_view_route(
+    state: &ServiceState,
+    handoff: &RemoteViewHandoff,
+    command: &mut Value,
+) -> bool {
+    if command.get("action").and_then(Value::as_str) != Some("remote_view_open") {
+        return false;
+    }
+
+    let (
+        Some(browser_id),
+        Some(session_name),
+        Some(route_id),
+        Some(route_pool_entry_id),
+        Some(display_allocation_id),
+    ) = (
+        handoff.browser_id.as_deref(),
+        handoff.session_name.as_deref(),
+        handoff.last_route_id.as_deref(),
+        handoff.last_route_pool_entry_id.as_deref(),
+        handoff.last_display_allocation_id.as_deref(),
+    )
+    else {
+        return false;
+    };
+
+    let Some(route) = state.remote_view_routes.get(route_id) else {
+        return false;
+    };
+    if route.id != route_id
+        || !matches!(route.state.as_str(), "ready" | "pending" | "checked_out")
+        || route.browser_id.as_deref() != Some(browser_id)
+        || route.session_id.as_deref() != Some(session_name)
+        || route.display_allocation_id.as_deref() != Some(display_allocation_id)
+        || handoff
+            .view_stream_provider
+            .as_ref()
+            .is_some_and(|provider| provider != &route.provider)
+    {
+        return false;
+    }
+
+    let Some(route_pool_entry) = state.route_pool.get(route_pool_entry_id) else {
+        return false;
+    };
+    if route_pool_entry.id != route_pool_entry_id
+        || !matches!(route_pool_entry.state.as_str(), "checked_out" | "pending")
+        || route_pool_entry.route_id != route_id
+        || route_pool_entry.current_route_allocation_id.as_deref() != Some(route_id)
+        || route_pool_entry.provider != route.provider
+    {
+        return false;
+    }
+
+    let Some(display_allocation) = state.display_allocations.get(display_allocation_id) else {
+        return false;
+    };
+    if display_allocation.id != display_allocation_id
+        || display_allocation.state != "ready"
+        || display_allocation.owner_browser_id.as_deref() != Some(browser_id)
+        || display_allocation.owner_session_id.as_deref() != Some(session_name)
+        || !display_allocation
+            .route_ids
+            .iter()
+            .any(|candidate| candidate == route_id)
+    {
+        return false;
+    }
+
+    let Some(command) = command.as_object_mut() else {
+        return false;
+    };
+    command.insert(
+        "routePoolEntryId".to_string(),
+        Value::String(route_pool_entry_id.to_string()),
+    );
+    command.insert("routeId".to_string(), Value::String(route_id.to_string()));
+    command.insert(
+        "displayAllocationId".to_string(),
+        Value::String(display_allocation_id.to_string()),
+    );
+    true
+}
+
 /// Return true only when retained service state records an intentional tab
 /// close. Missing or stale targets remain eligible for best-effort recovery.
 pub fn remote_view_handoff_was_explicitly_closed(
@@ -2281,8 +2369,12 @@ fn route_bound_handoff_browser_build_mismatch_reason(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native::remote_view::{
+        normalize_remote_view_open_intent, plan_remote_view_acquisition,
+    };
     use crate::native::service_model::{
-        BrowserProcess, DisplayAllocation, RemoteViewRoute, ServiceState, ViewStreamProvider,
+        BrowserProcess, DisplayAllocation, RemoteViewRoute, RoutePoolEntry, ServiceState,
+        ViewStreamProvider,
     };
     use crate::native::service_store::ServiceStateStore;
     use std::collections::BTreeMap;
@@ -2370,6 +2462,154 @@ mod tests {
         assert!(command.get("remoteHeadedDisplay").is_none());
         assert_eq!(command["viewStreamProvider"], "rdp_gateway");
         assert_eq!(command["controlInput"], "manual_attached_desktop");
+    }
+
+    #[test]
+    fn handoff_resolution_reuses_retained_route_for_the_same_owner() {
+        let handoff = RemoteViewHandoff {
+            id: "job-handoff-a".to_string(),
+            intent: json!({
+                "viewStreamProvider": "rdp_gateway",
+                "controlInput": "manual_attached_desktop"
+            }),
+            browser_id: Some("session:browser-a".to_string()),
+            session_name: Some("session-a".to_string()),
+            view_stream_provider: Some(ViewStreamProvider::RdpGateway),
+            last_route_id: Some("route-a".to_string()),
+            last_route_pool_entry_id: Some("pool-a".to_string()),
+            last_display_allocation_id: Some("display-a".to_string()),
+            ..RemoteViewHandoff::default()
+        };
+        let state = ServiceState {
+            display_allocations: BTreeMap::from([(
+                "display-a".to_string(),
+                DisplayAllocation {
+                    id: "display-a".to_string(),
+                    owner_browser_id: Some("session:browser-a".to_string()),
+                    owner_session_id: Some("session-a".to_string()),
+                    state: "ready".to_string(),
+                    route_ids: vec!["route-a".to_string()],
+                    ..DisplayAllocation::default()
+                },
+            )]),
+            remote_view_routes: BTreeMap::from([(
+                "route-a".to_string(),
+                RemoteViewRoute {
+                    id: "route-a".to_string(),
+                    provider: ViewStreamProvider::RdpGateway,
+                    display_allocation_id: Some("display-a".to_string()),
+                    browser_id: Some("session:browser-a".to_string()),
+                    session_id: Some("session-a".to_string()),
+                    state: "ready".to_string(),
+                    ..RemoteViewRoute::default()
+                },
+            )]),
+            route_pool: BTreeMap::from([(
+                "pool-a".to_string(),
+                RoutePoolEntry {
+                    id: "pool-a".to_string(),
+                    provider: ViewStreamProvider::RdpGateway,
+                    route_id: "route-a".to_string(),
+                    frame_url: Some(
+                        "https://dashboard.example/guacamole/#/client/route-a".to_string(),
+                    ),
+                    external_url: Some(
+                        "https://dashboard.example/guacamole/#/client/route-a".to_string(),
+                    ),
+                    target: json!({
+                        "displayAllocationId": "display-a",
+                        "displayName": ":31"
+                    }),
+                    state: "checked_out".to_string(),
+                    current_route_allocation_id: Some("route-a".to_string()),
+                    ..RoutePoolEntry::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+        let mut command = remote_view_handoff_resolution_command(&handoff, "resolve-a", false)
+            .expect("persisted intent should produce a resolution command");
+
+        assert!(apply_retained_remote_view_route(
+            &state,
+            &handoff,
+            &mut command
+        ));
+        assert_eq!(command["routePoolEntryId"], "pool-a");
+        assert_eq!(command["routeId"], "route-a");
+        assert_eq!(command["displayAllocationId"], "display-a");
+
+        let intent = normalize_remote_view_open_intent(&command)
+            .expect("retained route command should normalize");
+        let plan =
+            plan_remote_view_acquisition(&state, &intent, None, "session:browser-a", "session-a")
+                .expect("retained route should bypass exhausted fresh capacity");
+        assert_eq!(plan.selected_route_pool_entry_id.as_deref(), Some("pool-a"));
+        assert_eq!(plan.selected_route_id, "route-a");
+        assert_eq!(plan.display_allocation_id, "display-a");
+    }
+
+    #[test]
+    fn handoff_resolution_discards_retained_route_for_a_foreign_owner() {
+        let handoff = RemoteViewHandoff {
+            id: "job-handoff-a".to_string(),
+            intent: json!({ "viewStreamProvider": "rdp_gateway" }),
+            browser_id: Some("session:browser-a".to_string()),
+            session_name: Some("session-a".to_string()),
+            view_stream_provider: Some(ViewStreamProvider::RdpGateway),
+            last_route_id: Some("route-a".to_string()),
+            last_route_pool_entry_id: Some("pool-a".to_string()),
+            last_display_allocation_id: Some("display-a".to_string()),
+            ..RemoteViewHandoff::default()
+        };
+        let state = ServiceState {
+            display_allocations: BTreeMap::from([(
+                "display-a".to_string(),
+                DisplayAllocation {
+                    id: "display-a".to_string(),
+                    owner_browser_id: Some("session:browser-b".to_string()),
+                    owner_session_id: Some("session-b".to_string()),
+                    state: "ready".to_string(),
+                    route_ids: vec!["route-a".to_string()],
+                    ..DisplayAllocation::default()
+                },
+            )]),
+            remote_view_routes: BTreeMap::from([(
+                "route-a".to_string(),
+                RemoteViewRoute {
+                    id: "route-a".to_string(),
+                    provider: ViewStreamProvider::RdpGateway,
+                    display_allocation_id: Some("display-a".to_string()),
+                    browser_id: Some("session:browser-b".to_string()),
+                    session_id: Some("session-b".to_string()),
+                    state: "ready".to_string(),
+                    ..RemoteViewRoute::default()
+                },
+            )]),
+            route_pool: BTreeMap::from([(
+                "pool-a".to_string(),
+                RoutePoolEntry {
+                    id: "pool-a".to_string(),
+                    provider: ViewStreamProvider::RdpGateway,
+                    route_id: "route-a".to_string(),
+                    state: "checked_out".to_string(),
+                    current_route_allocation_id: Some("route-a".to_string()),
+                    ..RoutePoolEntry::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+        let mut command = remote_view_handoff_resolution_command(&handoff, "resolve-a", false)
+            .expect("persisted intent should produce a resolution command");
+
+        assert!(!apply_retained_remote_view_route(
+            &state,
+            &handoff,
+            &mut command
+        ));
+        assert!(command.get("routePoolEntryId").is_none());
+        assert!(command.get("routeId").is_none());
+        assert!(command.get("displayAllocationId").is_none());
     }
 
     #[test]

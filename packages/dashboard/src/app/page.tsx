@@ -82,6 +82,7 @@ type RemoteViewHandoffResolution = {
   tabId?: string | null;
   targetId?: string | null;
   viewStreamProvider?: string | null;
+  providerFallbackUrl?: string | null;
   message?: string | null;
   tab?: Record<string, unknown> | null;
   open?: Record<string, unknown> | null;
@@ -312,6 +313,10 @@ function RemoteViewHandoffGate({
       const nextResolution = payload.data;
       setResolution(nextResolution);
       if (!nextResolution.resolved || nextResolution.status !== "ready") return;
+      if (nextResolution.providerFallbackUrl) {
+        window.location.assign(nextResolution.providerFallbackUrl);
+        return;
+      }
 
       const tab = nextResolution.tab ?? null;
       const open = nextResolution.open ?? null;

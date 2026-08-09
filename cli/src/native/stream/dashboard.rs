@@ -2,10 +2,12 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::env;
 use std::fmt;
+use std::sync::OnceLock;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::time::{timeout, Duration};
+use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::connection::get_socket_dir;
@@ -30,8 +32,19 @@ use super::http::{
 
 const DASHBOARD_SERVICE_BACKEND_SESSION: &str = "dashboard-service-backend";
 const DASHBOARD_LOCAL_PROXY_TIMEOUT: Duration = Duration::from_secs(2);
+const DASHBOARD_REMOTE_VIEW_HANDOFF_PROXY_TIMEOUT: Duration = Duration::from_secs(60);
 const DASHBOARD_STREAM_FRAME_PROXY_TIMEOUT: Duration = Duration::from_secs(7);
 const DASHBOARD_CDP_SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
+const DASHBOARD_SERVICE_STATUS_CACHE_TTL: Duration = Duration::from_secs(5);
+const DASHBOARD_SERVICE_STATUS_PROXY_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Default)]
+struct DashboardServiceStatusCache {
+    port: Option<u16>,
+    path: Option<String>,
+    completed_at: Option<Instant>,
+    response: Option<Vec<u8>>,
+}
 
 #[derive(Debug, Clone)]
 struct DashboardReadinessError {
@@ -96,6 +109,11 @@ pub async fn run_dashboard_server(port: u16) {
     if let Err(err) = dashboard_auth::ensure_dashboard_auth_config() {
         eprintln!("Failed to initialize dashboard auth: {}", err);
         return;
+    }
+    if let Err(err) =
+        super::http::ensure_service_daemon_session(DASHBOARD_SERVICE_BACKEND_SESSION).await
+    {
+        eprintln!("Failed to initialize dashboard service backend: {}", err);
     }
 
     let addr = format!("127.0.0.1:{}", port);
@@ -485,7 +503,8 @@ async fn handle_service_api_request(
     }
 
     if let Some(port) = dashboard_service_backend_port() {
-        match proxy_local_http_api_request(port, method, path, body).await {
+        let request_timeout = service_api_proxy_timeout(method, path, body);
+        match proxy_dashboard_service_api_request(port, method, path, body, request_timeout).await {
             Ok(response) => {
                 let status = http_response_status(&response).unwrap_or(0);
                 if !(200..300).contains(&status) {
@@ -608,6 +627,27 @@ fn service_request_target_session_name(path: &str, body: &str) -> Option<String>
         }
     }
     None
+}
+
+fn service_api_proxy_timeout(method: &str, path: &str, body: &str) -> Duration {
+    let (path, _) = split_path_query(path);
+    if method == "GET" && path == "/api/service/status" {
+        return DASHBOARD_SERVICE_STATUS_PROXY_TIMEOUT;
+    }
+    if method == "POST" && path == "/api/service/request" {
+        let action = serde_json::from_str::<Value>(body)
+            .ok()
+            .and_then(|request| {
+                request
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+        if action.as_deref() == Some("service_remote_view_handoff_resolve") {
+            return DASHBOARD_REMOTE_VIEW_HANDOFF_PROXY_TIMEOUT;
+        }
+    }
+    DASHBOARD_LOCAL_PROXY_TIMEOUT
 }
 
 fn service_request_focus_command_body(path: &str, body: &str) -> Option<(String, String)> {
@@ -863,6 +903,59 @@ async fn proxy_local_http_api_request_with_timeout(
             )
         })?;
     read_local_http_response(&mut backend, port, path, request_timeout).await
+}
+
+fn dashboard_service_status_cacheable(method: &str, path: &str) -> bool {
+    method == "GET" && split_path_query(path).0 == "/api/service/status"
+}
+
+fn dashboard_service_status_cache() -> &'static Mutex<DashboardServiceStatusCache> {
+    static CACHE: OnceLock<Mutex<DashboardServiceStatusCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(DashboardServiceStatusCache::default()))
+}
+
+async fn proxy_dashboard_service_api_request(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: &str,
+    request_timeout: Duration,
+) -> Result<Vec<u8>, DashboardReadinessError> {
+    if !dashboard_service_status_cacheable(method, path) {
+        return proxy_local_http_api_request_with_timeout(
+            port,
+            method,
+            path,
+            body,
+            request_timeout,
+        )
+        .await;
+    }
+
+    // Hold the cache lock across the backend request so simultaneous dashboard
+    // polls coalesce into one service-status projection.
+    let mut cache = dashboard_service_status_cache().lock().await;
+    if cache.port == Some(port)
+        && cache.path.as_deref() == Some(path)
+        && cache
+            .completed_at
+            .is_some_and(|completed_at| completed_at.elapsed() < DASHBOARD_SERVICE_STATUS_CACHE_TTL)
+    {
+        if let Some(response) = cache.response.as_ref() {
+            return Ok(response.clone());
+        }
+    }
+
+    let response =
+        proxy_local_http_api_request_with_timeout(port, method, path, body, request_timeout)
+            .await?;
+    if http_response_status(&response).is_some_and(|status| (200..300).contains(&status)) {
+        cache.port = Some(port);
+        cache.path = Some(path.to_string());
+        cache.completed_at = Some(Instant::now());
+        cache.response = Some(response.clone());
+    }
+    Ok(response)
 }
 
 fn http_response_status(response: &[u8]) -> Option<u16> {
@@ -2131,6 +2224,26 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_service_status_cache_only_coalesces_status_reads() {
+        assert!(dashboard_service_status_cacheable(
+            "GET",
+            "/api/service/status"
+        ));
+        assert!(dashboard_service_status_cacheable(
+            "GET",
+            "/api/service/status?full-tab-history=true"
+        ));
+        assert!(!dashboard_service_status_cacheable(
+            "POST",
+            "/api/service/status"
+        ));
+        assert!(!dashboard_service_status_cacheable(
+            "GET",
+            "/api/service/jobs"
+        ));
+    }
+
+    #[test]
     fn dashboard_service_backend_falls_back_to_default_then_first() {
         let default_sessions = vec![
             json!({ "session": "other", "port": 1111 }),
@@ -2175,6 +2288,24 @@ mod tests {
         assert_eq!(
             service_request_target_session_name("/api/service/request", body),
             None
+        );
+    }
+
+    #[test]
+    fn dashboard_service_request_allows_durable_handoff_resolution_to_finish() {
+        let body = r##"{"action":"service_remote_view_handoff_resolve","params":{"handoffId":"handoff-a"}}"##;
+
+        assert_eq!(
+            service_api_proxy_timeout("POST", "/api/service/request", body),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            service_api_proxy_timeout("POST", "/api/service/request", r##"{"action":"navigate"}"##),
+            DASHBOARD_LOCAL_PROXY_TIMEOUT
+        );
+        assert_eq!(
+            service_api_proxy_timeout("GET", "/api/service/status", ""),
+            DASHBOARD_SERVICE_STATUS_PROXY_TIMEOUT
         );
     }
 

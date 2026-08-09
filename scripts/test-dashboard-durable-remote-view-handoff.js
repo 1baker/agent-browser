@@ -37,6 +37,12 @@ assert.match(
 );
 
 assert.match(
+  dashboardPage,
+  /nextResolution\.providerFallbackUrl[\s\S]*window\.location\.assign\(nextResolution\.providerFallbackUrl\)/,
+  'a retained RDP provider fallback must remain reachable when the original browser daemon is gone',
+);
+
+assert.match(
   viewport,
   /params\?\.get\("view-provider"\)[\s\S]*stream\.provider\?\.trim\(\)\.toLowerCase\(\) === intendedProvider/,
   'workspace control must prefer the provider encoded by the durable handoff route',
