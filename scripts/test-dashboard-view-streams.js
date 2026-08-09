@@ -1038,6 +1038,30 @@ assert.doesNotMatch(
 );
 
 assert.match(
+  workspaceViewport,
+  /if \(state\.httpFallback\)[\s\S]*wsRef\.current\?\.close\(\)[\s\S]*return/,
+  'HTTPS frame fallback must stop the failing WebSocket reconnect loop',
+);
+
+assert.match(
+  workspaceViewport,
+  /const poll = async \(\)[\s\S]*AbortController[\s\S]*window\.setTimeout\(\(\) => void poll\(\), 900\)[\s\S]*controller\?\.abort\(\)/,
+  'HTTPS frame fallback must serialize polls and abort the active request during cleanup',
+);
+
+assert.doesNotMatch(
+  workspaceViewport,
+  /setInterval\(poll, 900\)/,
+  'HTTPS frame fallback must not accumulate overlapping frame requests',
+);
+
+assert.match(
+  workspaceViewport,
+  /readWorkspaceApiResponse[\s\S]*await response\.text\(\)[\s\S]*response\.statusText[\s\S]*postWorkspaceRecoveryRequest[\s\S]*readWorkspaceApiResponse/,
+  'Workspace recovery must turn a non-JSON gateway response into a readable HTTP error',
+);
+
+assert.match(
   rdpAutologinSetup,
   /INSERT INTO guacamole_connection_permission[\s\S]*SELECT entity_id, \{connection_id\}, 'READ'::guacamole_object_permission_type[\s\S]*WHERE type = 'USER'[\s\S]*ON CONFLICT DO NOTHING/,
   'XRDP autologin setup must grant current Guacamole users READ on the configured remote desktop connection',

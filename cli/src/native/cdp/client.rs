@@ -428,6 +428,15 @@ impl CdpClient {
     }
 }
 
+impl Drop for CdpClient {
+    fn drop(&mut self) {
+        // JoinHandle::drop detaches a task. Abort both background tasks so a
+        // short-lived client also releases its WebSocket and keepalive state.
+        self._reader_handle.abort();
+        self._keepalive_handle.abort();
+    }
+}
+
 type WsTx = Arc<
     Mutex<
         futures_util::stream::SplitSink<
@@ -597,5 +606,27 @@ mod tests {
         assert_eq!(client.pending_command_count().await, 0);
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn dropping_client_closes_background_websocket_tasks() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            websocket.next().await
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        drop(client);
+
+        let closed = tokio::time::timeout(Duration::from_millis(250), server).await;
+        assert!(
+            closed.is_ok(),
+            "dropping a CDP client must stop its reader and keepalive tasks"
+        );
     }
 }

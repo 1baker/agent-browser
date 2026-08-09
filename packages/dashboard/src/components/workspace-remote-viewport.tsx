@@ -108,6 +108,16 @@ type ApiResponse<T> = {
   error?: string | null;
 };
 
+async function readWorkspaceApiResponse<T extends { error?: string | null }>(response: Response): Promise<T> {
+  const body = await response.text();
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    const detail = body.trim().slice(0, 240) || response.statusText || "empty response";
+    throw new Error(`HTTP ${response.status}: ${detail}`);
+  }
+}
+
 function viewportRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -995,6 +1005,12 @@ function WorkspaceCdpStreamCanvas({
   }, []);
 
   useEffect(() => {
+    if (state.httpFallback) {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      wsRef.current?.close();
+      wsRef.current = null;
+      return;
+    }
     if (!websocketUrl) {
       setState((current) => ({
         ...current,
@@ -1115,19 +1131,23 @@ function WorkspaceCdpStreamCanvas({
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [appendConsoleLogs, drawFrame, streamPort, websocketUrl, refreshNonce]);
+  }, [appendConsoleLogs, drawFrame, state.httpFallback, streamPort, websocketUrl, refreshNonce]);
 
   useEffect(() => {
     if (!state.httpFallback || !streamPort) return;
     let disposed = false;
+    let timer: number | null = null;
+    let controller: AbortController | null = null;
 
     const poll = async () => {
+      controller = new AbortController();
       try {
         const response = await fetch(`/api/stream/${encodeURIComponent(streamPort)}/frame`, {
           cache: "no-store",
           credentials: "include",
+          signal: controller.signal,
         });
-        const json = await response.json() as {
+        const json = await readWorkspaceApiResponse<{
           success?: boolean;
           frame?: string | null;
           status?: {
@@ -1137,8 +1157,11 @@ function WorkspaceCdpStreamCanvas({
             viewportHeight?: number;
           } | null;
           error?: string | null;
-        };
+        }>(response);
         if (disposed) return;
+        if (!response.ok) {
+          throw new Error(json.error || `Frame request returned HTTP ${response.status}.`);
+        }
         if (json.frame) {
           drawFrame(json.frame);
         }
@@ -1159,14 +1182,17 @@ function WorkspaceCdpStreamCanvas({
           connected: false,
           message: err instanceof Error ? err.message : "HTTPS frame polling failed.",
         }));
+      } finally {
+        controller = null;
+        if (!disposed) timer = window.setTimeout(() => void poll(), 900);
       }
     };
 
     void poll();
-    const timer = window.setInterval(poll, 900);
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      controller?.abort();
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [drawFrame, state.httpFallback, streamPort]);
 
@@ -2104,8 +2130,8 @@ export function WorkspaceRemoteViewport({
         jobTimeoutMs: 5000,
       }),
     });
-    const json = (await resp.json()) as ApiResponse<unknown>;
-    if (!json.success) throw new Error(json.error || `${action} was not accepted`);
+    const json = await readWorkspaceApiResponse<ApiResponse<unknown>>(resp);
+    if (!resp.ok || !json.success) throw new Error(json.error || `${action} was not accepted`);
     return json;
   }, [activePort, activeSessionName]);
 
