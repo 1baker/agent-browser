@@ -140,7 +140,7 @@ fn parse_service_profile_lookup(
     Ok(cmd)
 }
 
-const REMOTE_VIEW_OPEN_USAGE: &str = "remote-view open [url] [--url <url>] [--runtime-profile <id>] [--browser-build <stock_chrome|stealthcdp_chromium|cdp_free_headed>] [--view-stream-provider <rdp_gateway>] [--provider <rdp_gateway>] [--profile <path>] [--route-pool-entry-id <id>] [--route-pool-entry-json <json>] [--route-id <id>] [--display <name>] [--display-allocation-id <id>] [--browser-id <id>] [--session-name <name>] [--service-name <name>] [--agent-name <name>] [--task-name <name>] [--job-timeout-ms <ms>] [--dry-run]";
+const REMOTE_VIEW_OPEN_USAGE: &str = "remote-view open [url] [--url <url>] [--runtime-profile <id>] [--browser-build <stock_chrome|stealthcdp_chromium|cdp_free_headed>] [--view-stream-provider <rdp_gateway>] [--provider <rdp_gateway>] [--profile <path>] [--route-pool-entry-id <id>] [--route-pool-entry-json <json>] [--route-id <id>] [--display <name>] [--display-allocation-id <id>] [--browser-id <id>] [--session-name <name>] [--service-name <name>] [--agent-name <name>] [--task-name <name>] [--job-timeout-ms <ms>] [--manual-login-launch] [--dry-run]";
 
 fn remote_view_route_pool_from_env_value(raw: Option<String>) -> Result<Option<Value>, ParseError> {
     let Some(raw) = raw else {
@@ -1209,6 +1209,9 @@ fn parse_remote_view_open(id: String, rest: &[&str], flags: &Flags) -> Result<Va
                 }
                 cmd["jobTimeoutMs"] = json!(timeout_ms);
                 i += 1;
+            }
+            "--manual-login-launch" => {
+                cmd["manualLoginLaunch"] = json!(true);
             }
             "--dry-run" => {
                 cmd["dryRun"] = json!(true);
@@ -7646,7 +7649,7 @@ mod tests {
 
     #[test]
     fn test_remote_view_open_builds_route_bound_service_action() {
-        let raw = args("--runtime-profile stealthcdp-default --display-isolation shared_display remote-view open linkedin.com --browser-build stealthcdp_chromium --provider rdp_gateway --route-pool-entry-id pool-a --service-name AuraCall --agent-name codex --task-name authenticateLinkedIn --dry-run");
+        let raw = args("--runtime-profile stealthcdp-default --display-isolation shared_display remote-view open linkedin.com --browser-build stealthcdp_chromium --provider rdp_gateway --route-pool-entry-id pool-a --service-name AuraCall --agent-name codex --task-name authenticateLinkedIn --manual-login-launch --dry-run");
         let flags = crate::flags::parse_flags(&raw);
         let clean = crate::flags::clean_args(&raw);
         let cmd = parse_command(&clean, &flags).unwrap();
@@ -7664,6 +7667,7 @@ mod tests {
         assert_eq!(cmd["serviceName"], "AuraCall");
         assert_eq!(cmd["agentName"], "codex");
         assert_eq!(cmd["taskName"], "authenticateLinkedIn");
+        assert_eq!(cmd["manualLoginLaunch"], true);
         assert_eq!(cmd["dryRun"], true);
     }
 

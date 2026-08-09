@@ -1014,6 +1014,7 @@ pub fn route_bound_handoff_record(input: RouteBoundHandoffRecordInput<'_>) -> Va
             "sessionName": input.session_name,
             "requestedBrowserBuild": input.intent.browser_build.as_deref(),
             "browserHost": input.intent.browser_host.as_str(),
+            "manualLoginLaunch": input.intent.manual_login_launch,
             "browserBuildProof": input.browser_build_proof.cloned(),
         },
         "route": {
@@ -2442,6 +2443,7 @@ mod tests {
             display_allocation_id: Some("display-a".to_string()),
             remote_headed_display: Some(":31".to_string()),
             display_isolation: Some("private_virtual_display".to_string()),
+            manual_login_launch: false,
             dry_run: false,
         }
     }
@@ -2634,6 +2636,7 @@ mod tests {
         let cmd = json!({
             "action": "remote_view_open",
             "provider": "should-not-leak-to-launch",
+            "manualLoginLaunch": true,
             "dryRun": true,
             "url": "https://example.com/"
         });
@@ -2645,6 +2648,7 @@ mod tests {
         assert_eq!(launch["displayIsolation"], "private_virtual_display");
         assert_eq!(launch["viewStreamProvider"], "rdp_gateway");
         assert_eq!(launch["controlInput"], "manual_attached_desktop");
+        assert_eq!(launch["manualLoginLaunch"], true);
         assert_eq!(launch["remoteHeadedDisplay"], ":31");
         assert_eq!(launch["routeId"], "route-a");
         assert_eq!(launch["displayAllocationId"], "display-a");
@@ -2813,6 +2817,7 @@ mod tests {
             display_allocation_id: Some("display-a".to_string()),
             remote_headed_display: Some(":31".to_string()),
             display_isolation: Some("shared_display".to_string()),
+            manual_login_launch: false,
             dry_run: false,
         };
         let route_binding = RemoteViewRouteBinding {
@@ -3373,6 +3378,7 @@ mod tests {
             display_allocation_id: Some("display-a".to_string()),
             remote_headed_display: Some(":31".to_string()),
             display_isolation: Some("shared_display".to_string()),
+            manual_login_launch: false,
             dry_run: false,
         };
         let route_binding = RemoteViewRouteBinding {
@@ -3801,6 +3807,7 @@ mod tests {
             display_allocation_id: None,
             remote_headed_display: None,
             display_isolation: Some("private_virtual_display".to_string()),
+            manual_login_launch: false,
             dry_run: false,
         };
         let launch_command = json!({

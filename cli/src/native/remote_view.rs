@@ -77,6 +77,9 @@ pub struct RemoteViewOpenIntent {
     pub display_allocation_id: Option<String>,
     pub remote_headed_display: Option<String>,
     pub display_isolation: Option<String>,
+    /// Preserve the minimal headed Chrome flag posture used by manual runtime
+    /// login while keeping the route-bound browser service-owned and CDP-ready.
+    pub manual_login_launch: bool,
     pub dry_run: bool,
 }
 
@@ -256,6 +259,7 @@ pub fn normalize_remote_view_open_intent(command: &Value) -> Result<RemoteViewOp
             .or_else(|| command_or_params_string(command, "display"))
             .or_else(|| command_or_params_string(command, "displayName")),
         display_isolation: command_or_params_string(command, "displayIsolation"),
+        manual_login_launch: command_or_params_bool(command, "manualLoginLaunch").unwrap_or(false),
         dry_run: command_or_params_bool(command, "dryRun").unwrap_or(false),
     })
 }
@@ -1961,6 +1965,7 @@ mod tests {
                 "url": "https://www.facebook.com/",
                 "viewStreamProvider": "rdp_gateway",
                 "routePoolEntryId": "pool-a",
+                "manualLoginLaunch": true,
                 "dryRun": true
             }
         }))
@@ -1974,6 +1979,7 @@ mod tests {
         assert_eq!(intent.browser_build.as_deref(), Some("stealthcdp_chromium"));
         assert_eq!(intent.view_stream_provider, ViewStreamProvider::RdpGateway);
         assert_eq!(intent.route_pool_entry_id.as_deref(), Some("pool-a"));
+        assert!(intent.manual_login_launch);
         assert!(intent.dry_run);
     }
 

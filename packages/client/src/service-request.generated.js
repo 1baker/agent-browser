@@ -164,7 +164,8 @@ export const SERVICE_REQUEST_BOOLEAN_FIELDS = [
   "returnByValue",
   "includeScreenshot",
   "captureEvidenceOnFailure",
-  "allowDuplicateProfileLane"
+  "allowDuplicateProfileLane",
+  "manualLoginLaunch"
 ];
 
 export const SERVICE_REQUEST_OBJECT_FIELDS = [

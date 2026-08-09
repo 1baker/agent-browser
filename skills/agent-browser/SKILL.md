@@ -97,6 +97,14 @@ legitimately exceed the daemon's default service-job timeout. It applies only
 to that open request and must be a positive integer; it does not reconfigure
 the daemon-wide `--service-job-timeout` policy.
 
+For a security-sensitive Google profile that was seeded in ordinary non-CDP
+Chrome and then closed normally, add `--manual-login-launch`. The resulting
+Route B browser remains service-owned and CDP-ready, but Chrome uses the same
+minimal headed flag posture as `runtime login --attachable`. This flag does
+not automate authentication and must use the exact seeded profile and browser
+build. Software clients use top-level `manualLoginLaunch: true` on
+`remote_view_open`; headless requests fail closed.
+
 Global flags may appear before or after `remote-view open`. Use `--session`
 for the agent-browser daemon session and `--session-name` for saved browser
 state. For a Facebook-style operator handoff, use:

@@ -152,6 +152,7 @@ export interface ServiceRequest {
   includeScreenshot?: boolean;
   captureEvidenceOnFailure?: boolean;
   allowDuplicateProfileLane?: boolean;
+  manualLoginLaunch?: boolean;
   monitorRunDueSummary?: Record<string, unknown>;
   serviceTabHandle?: ServiceTabHandle;
   probe?: Record<string, unknown>;

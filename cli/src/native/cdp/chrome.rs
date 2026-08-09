@@ -4051,6 +4051,32 @@ mod tests {
     }
 
     #[test]
+    fn test_build_args_remote_headed_manual_login_with_devtools_keeps_minimal_flags() {
+        let opts = LaunchOptions {
+            headless: false,
+            manual_login: true,
+            remote_headed: true,
+            ..Default::default()
+        };
+        let result = build_chrome_args(&opts, true).unwrap();
+
+        assert!(result
+            .args
+            .iter()
+            .any(|a| a.starts_with("--remote-debugging-port=")));
+        for excluded in [
+            "--no-first-run",
+            "--disable-background-networking",
+            "--disable-component-update",
+            "--disable-sync",
+            "--password-store=basic",
+            "--use-mock-keychain",
+        ] {
+            assert!(!result.args.iter().any(|a| a == excluded), "{excluded}");
+        }
+    }
+
+    #[test]
     fn test_build_args_profile_path_preserves_keychain_flags() {
         let opts = LaunchOptions {
             profile: Some("/tmp/my-profile".to_string()),

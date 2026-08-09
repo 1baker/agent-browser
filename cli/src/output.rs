@@ -5267,6 +5267,7 @@ Options:
   --agent-name <name>          Caller agent label for service trace records
   --task-name <name>           Caller task label for service trace records
   --job-timeout-ms <ms>        Positive per-request service job timeout for slow launches
+  --manual-login-launch        Use the minimal headed Chrome flag posture while keeping managed CDP
   --dry-run                    Show planned route, launch, tab, and checkout commands
   --json                       Output JSON
 
@@ -5287,6 +5288,7 @@ Global placement:
 Examples:
   agent-browser --json remote-view open https://www.facebook.com/ --view-stream-provider rdp_gateway
   agent-browser remote-view open https://www.facebook.com/ --runtime-profile last30days-facebook --browser-build stealthcdp_chromium --view-stream-provider rdp_gateway --job-timeout-ms 120000
+  agent-browser remote-view open https://messages.google.com/web/conversations --runtime-profile google-messages --browser-build stock_chrome --view-stream-provider rdp_gateway --manual-login-launch
   agent-browser --session facebook-route remote-view open https://www.facebook.com/ --runtime-profile last30days-facebook --session-name last30days-facebook --view-stream-provider rdp_gateway
   agent-browser remote-view open linkedin.com --route-pool-entry-id guacamole-rdp-a --display :11 --dry-run
 "##
@@ -5299,7 +5301,7 @@ agent-browser doctor - Diagnose local environment and browser connectivity
 
 Usage: agent-browser doctor windows-browser [--port <port>] [--host <host>] [--scan-ports] [--firewall] [--json]
        agent-browser doctor remote-view [--allow-shared-target] [--json]
-       agent-browser remote-view open [url] [--runtime-profile <id>] [--browser-build <build>] [--view-stream-provider rdp_gateway] [--route-pool-entry-id <id>] [--route-pool-entry-json <json>] [--display <name>] [--dry-run]
+       agent-browser remote-view open [url] [--runtime-profile <id>] [--browser-build <build>] [--view-stream-provider rdp_gateway] [--route-pool-entry-id <id>] [--route-pool-entry-json <json>] [--display <name>] [--manual-login-launch] [--dry-run]
 
 Subcommands:
   windows-browser       Diagnose WSL to Windows browser CDP routing without changing system state
@@ -5322,6 +5324,7 @@ Options:
   --route-pool-entry-json
                        Use one inline route-pool entry, including route descriptor URL roles, for remote-view open
   --display <name>      Bind remote-view open to the selected route display, for example :11
+  --manual-login-launch Use the minimal headed Chrome flag posture while keeping managed CDP
   --json               Output machine-readable diagnostics
 
 Environment:

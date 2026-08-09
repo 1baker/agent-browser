@@ -1499,6 +1499,17 @@ fn optional_command_or_params_bool(command: &Value, name: &str) -> Option<bool> 
     command_or_params_value(command, name).and_then(Value::as_bool)
 }
 
+fn manual_login_launch_from_command(command: &Value, headless: bool) -> Result<bool, String> {
+    let enabled = optional_command_or_params_bool(command, "manualLoginLaunch").unwrap_or(false);
+    if enabled && headless {
+        return Err(
+            "manual_login_launch_requires_headed: set headless=false for the minimal manual-login-safe Chrome launch posture"
+                .to_string(),
+        );
+    }
+    Ok(enabled)
+}
+
 fn command_or_params_value<'a>(command: &'a Value, name: &str) -> Option<&'a Value> {
     command
         .get(name)
@@ -5280,6 +5291,7 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         .get("runtimeAttachManaged")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let manual_login_launch = manual_login_launch_from_command(cmd, headless)?;
     let viewport_size = cmd.get("viewport").and_then(|viewport| {
         let width = viewport.get("width").and_then(|v| v.as_u64())?;
         let height = viewport.get("height").and_then(|v| v.as_u64())?;
@@ -5357,7 +5369,11 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         viewport_size,
         use_real_keychain: use_real_keychain_from_env(),
         keychain_password: keychain_password_from_env(),
-        manual_login: false,
+        // Service-owned Route B launches normally use the automation flag set.
+        // Security-sensitive Google profiles can explicitly request the same
+        // minimal headed flag posture as `runtime login --attachable` while
+        // retaining managed CDP and service lifecycle ownership.
+        manual_login: manual_login_launch,
         attachable: false,
         display: None,
         remote_headed: false,
@@ -24261,6 +24277,7 @@ mod tests {
             display_allocation_id: None,
             remote_headed_display: None,
             display_isolation: Some("private_virtual_display".to_string()),
+            manual_login_launch: false,
             dry_run: false,
         };
 
@@ -24300,6 +24317,7 @@ mod tests {
             display_allocation_id: None,
             remote_headed_display: None,
             display_isolation: Some("private_virtual_display".to_string()),
+            manual_login_launch: false,
             dry_run: false,
         };
         let service_state = ServiceState {
@@ -24341,6 +24359,7 @@ mod tests {
             display_allocation_id: None,
             remote_headed_display: None,
             display_isolation: Some("private_virtual_display".to_string()),
+            manual_login_launch: false,
             dry_run: true,
         };
 
@@ -24395,6 +24414,7 @@ mod tests {
             display_allocation_id: None,
             remote_headed_display: None,
             display_isolation: Some("private_virtual_display".to_string()),
+            manual_login_launch: false,
             dry_run: true,
         };
         let profile_id = remote_view_open_managed_one_time_profile_id(&intent);
@@ -25182,6 +25202,23 @@ mod tests {
             Some("private_virtual_display")
         );
         assert_eq!(options.display, None);
+    }
+
+    #[test]
+    fn manual_login_launch_accepts_params_only_for_headed_launches() {
+        let command = json!({
+            "params": {
+                "manualLoginLaunch": true
+            }
+        });
+
+        assert_eq!(
+            manual_login_launch_from_command(&command, false).unwrap(),
+            true
+        );
+        assert!(manual_login_launch_from_command(&command, true)
+            .unwrap_err()
+            .contains("manual_login_launch_requires_headed"));
     }
 
     #[test]
