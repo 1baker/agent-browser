@@ -1710,6 +1710,7 @@ fn service_request_command_with_state(
         "viewStreamProvider",
         "controlInputProvider",
         "displayIsolation",
+        "manualLoginLaunch",
         "serviceName",
         "agentName",
         "taskName",
@@ -5206,7 +5207,7 @@ mod tests {
     #[test]
     fn service_request_command_maps_remote_view_open_params() {
         let command = service_request_command(
-            r##"{"action":"remote_view_open","params":{"url":"https://www.linkedin.com/","routePoolEntryId":"pool-a","dryRun":true,"routeDescriptor":{"dashboardEmbedUrl":"https://dashboard.example/guacamole/#/client/route-a"}},"serviceName":"AuraCall","agentName":"codex","taskName":"authenticateLinkedIn","runtimeProfile":"stealthcdp-default"}"##,
+            r##"{"action":"remote_view_open","params":{"url":"https://www.linkedin.com/","routePoolEntryId":"pool-a","dryRun":true,"routeDescriptor":{"dashboardEmbedUrl":"https://dashboard.example/guacamole/#/client/route-a"}},"serviceName":"AuraCall","agentName":"codex","taskName":"authenticateLinkedIn","runtimeProfile":"stealthcdp-default","manualLoginLaunch":true}"##,
         )
         .unwrap();
 
@@ -5218,6 +5219,7 @@ mod tests {
         assert_eq!(command["agentName"], "codex");
         assert_eq!(command["taskName"], "authenticateLinkedIn");
         assert_eq!(command["runtimeProfile"], "stealthcdp-default");
+        assert_eq!(command["manualLoginLaunch"], true);
         assert_eq!(
             command["routeDescriptor"]["dashboardEmbedUrl"],
             "https://dashboard.example/guacamole/#/client/route-a"

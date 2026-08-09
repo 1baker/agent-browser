@@ -811,7 +811,36 @@ fn apply_service_profile_selection(
     options: &mut LaunchOptions,
     cmd: &Value,
 ) -> Option<ProfileSelectionReason> {
-    if options.profile.is_some() || options.runtime_profile.is_some() {
+    if options.profile.is_some() {
+        return None;
+    }
+    let service_owned_launch = cmd.get("action").and_then(Value::as_str) == Some("launch")
+        && optional_command_string(cmd, "serviceName").is_some();
+    let explicit_profile_id = service_owned_launch.then(|| {
+        optional_command_or_params_string(cmd, "runtimeProfile")
+            .or_else(|| optional_command_or_params_string(cmd, "profileId"))
+    });
+    if let Some(profile_id) = explicit_profile_id.flatten() {
+        let repository = LockedServiceStateRepository::default_json().ok()?;
+        let service_state = repository.load_snapshot().ok()?;
+        let profile = service_state.profiles.get(&profile_id)?;
+        options.runtime_profile = Some(profile_id);
+        if let Some(user_data_dir) = profile
+            .user_data_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            options.profile = Some(user_data_dir.to_string());
+        }
+        if profile.browser_build == Some(BrowserBuild::StockChrome)
+            && cmd.get("executablePath").is_none()
+        {
+            options.executable_path = None;
+        }
+        return Some(ProfileSelectionReason::ExplicitProfile);
+    }
+    if options.runtime_profile.is_some() {
         return None;
     }
     let request = ProfileSelectionRequest {
@@ -25212,10 +25241,7 @@ mod tests {
             }
         });
 
-        assert_eq!(
-            manual_login_launch_from_command(&command, false).unwrap(),
-            true
-        );
+        assert!(manual_login_launch_from_command(&command, false).unwrap());
         assert!(manual_login_launch_from_command(&command, true)
             .unwrap_err()
             .contains("manual_login_launch_requires_headed"));
@@ -25519,6 +25545,57 @@ mod tests {
         assert!(selected.is_none());
         assert_eq!(options.profile.as_deref(), Some("/tmp/explicit-profile"));
         assert!(options.runtime_profile.is_none());
+    }
+
+    #[test]
+    fn test_apply_service_profile_selection_resolves_explicit_runtime_profile_directory() {
+        let guard = EnvGuard::new(&["HOME"]);
+        let home = unique_socket_dir("explicit-runtime-profile-home");
+        fs::create_dir_all(&home).expect("test home should be created");
+        guard.set("HOME", home.to_str().expect("test home should be utf-8"));
+        let user_data_dir = home.join("paired-google-messages-profile");
+
+        let mut service_state = ServiceState::default();
+        service_state.profiles.insert(
+            "google-messages-main".to_string(),
+            BrowserProfile {
+                id: "google-messages-main".to_string(),
+                name: "Google Messages main".to_string(),
+                user_data_dir: Some(user_data_dir.display().to_string()),
+                browser_build: Some(BrowserBuild::StockChrome),
+                persistent: true,
+                ..BrowserProfile::default()
+            },
+        );
+        JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap())
+            .save(&service_state)
+            .expect("service state should be persisted");
+
+        let mut options = LaunchOptions {
+            runtime_profile: Some("google-messages-main".to_string()),
+            executable_path: Some("/tmp/environment-browser".to_string()),
+            ..LaunchOptions::default()
+        };
+        let selected = apply_service_profile_selection(
+            &mut options,
+            &json!({
+                "action": "launch",
+                "serviceName": "im-receipts",
+                "runtimeProfile": "google-messages-main",
+                "browserBuild": "stock_chrome"
+            }),
+        );
+
+        assert_eq!(selected, Some(ProfileSelectionReason::ExplicitProfile));
+        assert_eq!(
+            options.profile.as_deref(),
+            Some(user_data_dir.to_str().expect("path should be utf-8"))
+        );
+        assert_eq!(
+            options.runtime_profile.as_deref(),
+            Some("google-messages-main")
+        );
+        assert!(options.executable_path.is_none());
     }
 
     #[test]

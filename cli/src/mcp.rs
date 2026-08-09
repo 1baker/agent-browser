@@ -5461,6 +5461,9 @@ fn service_request_command_with_state(
         command["id"] = json!(new_id);
     }
     context.apply_target_profile_hints(&mut command);
+    if let Some(value) = arguments.get("manualLoginLaunch") {
+        command["manualLoginLaunch"] = value.clone();
+    }
     if let Some(service_state) = service_state {
         apply_remote_view_handoff_route_hints(service_state, &mut command);
         apply_shared_profile_route_hints_for_service_request(service_state, &mut command)
@@ -13482,7 +13485,8 @@ mod tests {
             "allowDuplicateProfileLane": true,
             "jobTimeoutMs": 1000,
             "profileLeasePolicy": "wait",
-            "profileLeaseWaitTimeoutMs": 2500
+            "profileLeaseWaitTimeoutMs": 2500,
+            "manualLoginLaunch": true
         }))
         .unwrap();
 
@@ -13505,6 +13509,7 @@ mod tests {
         assert_eq!(command["jobTimeoutMs"], 1000);
         assert_eq!(command["profileLeasePolicy"], "wait");
         assert_eq!(command["profileLeaseWaitTimeoutMs"], 2500);
+        assert_eq!(command["manualLoginLaunch"], true);
     }
 
     #[test]
