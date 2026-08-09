@@ -4,6 +4,79 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 144 | 2026-08-08
+
+Scope: close the Last30Days sequential-social handoff with downstream installed
+acceptance, without claiming an agent-browser source repair.
+
+Actions:
+
+- reconciled note 0098 with the retained agent-browser job IDs from installed
+  Last30Days 0.3.27 and the accepted 0.3.28 proof;
+- confirmed both prior tab-switch jobs succeeded after their 8-second callers
+  exited, while the fresh eval independently reached its 15-second worker
+  timeout;
+- recorded the exact client contract proven live: 3-second retained worker jobs
+  with 15-second callers, and 30/45 seconds only for a fresh auth target;
+- bound the downstream result to pushed Last30Days commit
+  `24474f62e5e11f1c51d5ab5adf0f0933764dce91`.
+
+Validation:
+
+- manual tick `tick-f273eb12d642b31d49a7f12959b93b87` accepted Facebook;
+  attempt `provider-attempt-5e5205b623e52dfd122dbbf2e4e668af` observed 19,
+  accepted two, rejected 17, and every browser operation succeeded;
+- PID 63205 remains ready on canonical `session:last30days-facebook` with 17
+  tabs; no duplicate browser launch or retained-tab closure occurred;
+- no agent-browser source, generated client, dashboard, docs command surface,
+  or installed executable changed in this closeout.
+
+Result:
+
+- the cross-repo blocker is closed as a downstream deadline-contract repair;
+  queue timing observability may remain future nonblocking backlog.
+
+Graphiti Write Status:
+
+- pending the shared closeout memory after both repository commits are pushed.
+
+## Turn 143 | 2026-08-08
+
+Scope: investigate the Last30Days sequential X-to-Facebook evaluation timeout
+without mutating retained PID 96078.
+
+Actions:
+
+- confirmed Plan 0097's timeout cleanup and queue-release repair is already in
+  `origin/main`;
+- separated the caller deadline from the dispatched worker deadline and found
+  that Last30Days allowed only 5 seconds of grace despite observing successful
+  commands taking 8.2 to 8.4 seconds in the same attempt;
+- found later ownership drift: PID 96078 remains ready as
+  `session:plan0058`, while `last30days-facebook` is an alias to that browser;
+- wrote the privacy-safe cross-repo investigation note and downstream alias
+  routing acceptance contract.
+
+Validation:
+
+- source inspection confirms `jobTimeoutMs` starts after worker dequeue;
+- installed service state confirms PID 96078 is ready with 17 retained tabs;
+- a diagnostic bare `tab list` accidentally auto-launched PID 47946 on the
+  drifted daemon; exact attribution was established and only PID 47946 was
+  closed. PID 96078 remained ready and unchanged.
+
+Result:
+
+- no agent-browser source repair is justified by the retained evidence yet;
+  the immediate proven repair belongs in Last30Days deadline layering and
+  exact alias-owner routing;
+- note 0098 is the durable agent-browser investigation handoff.
+
+Graphiti Write Status:
+
+- no write; note 0098, current source, installed jobs, and service readbacks are
+  sufficient durable evidence.
+
 ## Turn 142 | 2026-08-08
 
 Scope: verify installed timeout/queue behavior during the explicit Last30Days
