@@ -869,6 +869,11 @@ for ordinary sites, <code>runtime login --attachable</code> followed by
 <code>runtime attach</code>. For Google, Gmail, and similar SSO flows, sign in
 with detached <code>runtime login</code>, close Chrome, then relaunch the same
 profile with <code>--attachable</code> for automation.
+On Unix, a detached manual launch retains its effective X11 display even when
+that value came from inherited <code>DISPLAY</code>. Service status can then
+associate the manual browser with the governed remote-view route for that
+display, allowing its detected dashboard tile to expose the available remote
+View or Control action.
 Use <code>--leave-open</code> when you want <code>close</code> to detach from a
 managed runtime-profile browser instead of shutting it down.
 Runtime profiles can declare <code>browserFamily</code>. agent-browser refuses

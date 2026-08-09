@@ -469,6 +469,11 @@ agent-browser runtime login https://example.com --attachable
 agent-browser runtime attach
 ```
 
+On Unix, detached manual launches retain the effective X11 display even when
+it came from inherited `DISPLAY`. Service status uses that display identity to
+associate the browser with a governed remote-view route, so its detected
+dashboard tile can expose the available remote View or Control action.
+
 For Google, Gmail, and similar SSO flows, do not use `--attachable` for the
 initial sign-in. Live testing showed Google can reject sign-in when DevTools is
 enabled during the login ceremony, even with otherwise minimal Chrome flags.

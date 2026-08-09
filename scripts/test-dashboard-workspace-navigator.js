@@ -107,8 +107,8 @@ assert.match(
 
 assert.match(
   remoteViewport,
-  /function workspaceViewportBrowserFromSelectedContext[\s\S]*selectedWorkspaceContext\?\.stream[\s\S]*const browser = chooseWorkspaceViewportBrowser\(serviceBrowser, selectedContextBrowser \?\? daemonBrowser\)/,
-  'Workspace viewport must use a selected cdp_snapshot only as fallback when the same session is not linked to an openable service-owned browser stream',
+  /function workspaceViewportBrowserFromSelectedContext[\s\S]*selectedWorkspaceContextCanRenderViewport\(selectedWorkspaceContext\)[\s\S]*const browser = chooseWorkspaceViewportBrowser\(serviceBrowser, selectedContextBrowser \?\? daemonBrowser\)/,
+  'Workspace viewport must use any selected embeddable navigator stream as fallback, including manual-runtime RDP streams without a service-owned browser record',
 );
 
 assert.match(

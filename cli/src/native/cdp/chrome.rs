@@ -900,8 +900,15 @@ pub fn launch_chrome_detached(options: &LaunchOptions) -> Result<ManualChromeLau
         cmd.env(key, value);
     }
 
+    // Resolve the effective display once so the spawned browser and its
+    // retained manual-runtime record cannot disagree when DISPLAY is inherited.
     #[cfg(unix)]
-    if let Some(display) = headed_display_value(options) {
+    let launch_display = headed_display_value(options);
+    #[cfg(not(unix))]
+    let launch_display: Option<String> = None;
+
+    #[cfg(unix)]
+    if let Some(display) = launch_display.as_deref() {
         cmd.env("DISPLAY", display);
     }
 
@@ -960,7 +967,7 @@ pub fn launch_chrome_detached(options: &LaunchOptions) -> Result<ManualChromeLau
                 target_url: options.args.first().cloned(),
                 browser_family: options.expected_browser_family.clone(),
                 browser_build: options.expected_browser_family.clone(),
-                display: options.display.clone(),
+                display: launch_display.clone(),
                 started_at: time::OffsetDateTime::now_utc()
                     .format(&time::format_description::well_known::Rfc3339)
                     .ok(),
@@ -2433,7 +2440,12 @@ fn headed_display_value_with_override(
         .display
         .clone()
         .or_else(|| virtual_display.map(str::to_string))
-        .or_else(|| (std::env::var_os("DISPLAY").is_none()).then(|| ":0.0".to_string()))
+        .or_else(|| {
+            std::env::var("DISPLAY")
+                .ok()
+                .filter(|display| !display.trim().is_empty())
+        })
+        .or_else(|| Some(":0.0".to_string()))
 }
 
 #[cfg(target_os = "linux")]
@@ -3251,6 +3263,93 @@ mod tests {
             headed_display_value_with_override(&opts, Some(":91")),
             Some(":91".to_string())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_detached_manual_launch_records_inherited_display() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let guard = EnvGuard::new(&["HOME", "DISPLAY"]);
+        let home = TempDir::new("manual-runtime-inherited-display");
+        std::fs::create_dir_all(&*home).unwrap();
+        guard.set("HOME", home.to_str().unwrap());
+        guard.set("DISPLAY", ":91");
+
+        let fake_chrome = home.join("fake-chrome");
+        std::fs::write(&fake_chrome, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&fake_chrome, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let runtime_profile = "manual-inherited-display";
+        let launch = launch_chrome_detached(&LaunchOptions {
+            headless: false,
+            executable_path: Some(fake_chrome.display().to_string()),
+            runtime_profile: Some(runtime_profile.to_string()),
+            manual_login: true,
+            args: vec!["https://example.test/manual-login".to_string()],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let state = crate::runtime_profile::read_runtime_state(runtime_profile)
+            .unwrap()
+            .unwrap();
+        let _ = unsafe { libc::kill(launch.pid as i32, libc::SIGKILL) };
+
+        assert_eq!(
+            state
+                .launch_record
+                .as_ref()
+                .and_then(|record| record.display.clone()),
+            Some(":91".to_string())
+        );
+
+        let service_state = crate::native::service_model::ServiceState {
+            display_allocations: std::collections::BTreeMap::from([
+                (
+                    "display-00-stale".to_string(),
+                    crate::native::service_model::DisplayAllocation {
+                        id: "display-00-stale".to_string(),
+                        display_name: Some(":91".to_string()),
+                        state: "orphaned".to_string(),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "display-91".to_string(),
+                    crate::native::service_model::DisplayAllocation {
+                        id: "display-91".to_string(),
+                        display_name: Some(":91".to_string()),
+                        state: "ready".to_string(),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            remote_view_routes: std::collections::BTreeMap::from([(
+                "guacamole:91".to_string(),
+                crate::native::service_model::RemoteViewRoute {
+                    id: "guacamole:91".to_string(),
+                    display_allocation_id: Some("display-91".to_string()),
+                    frame_url: Some("http://127.0.0.1:8092/guacamole/#/client/test".to_string()),
+                    state: "ready".to_string(),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        let manual_browser =
+            crate::native::service_status_projection::manual_runtime_browser_projection(
+                &service_state,
+            )
+            .into_iter()
+            .find(|browser| browser.runtime_profile == runtime_profile)
+            .unwrap();
+
+        assert_eq!(
+            manual_browser.remote_view_route_id.as_deref(),
+            Some("guacamole:91")
+        );
+        assert!(manual_browser.remote_control_available);
     }
 
     #[cfg(target_os = "linux")]

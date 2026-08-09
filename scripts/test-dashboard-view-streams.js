@@ -31,7 +31,11 @@ import {
   workspaceViewportReadinessStatusLabel,
   workspaceViewportUxStateLabel,
 } from '../packages/dashboard/src/lib/workspace-viewport-state.ts';
-import { serviceBrowserForWorkspaceSelection } from '../packages/dashboard/src/lib/workspace-browser-selection.ts';
+import {
+  selectedWorkspaceContextCanRenderViewport,
+  serviceViewStreamForSelectedWorkspaceContext,
+  serviceBrowserForWorkspaceSelection,
+} from '../packages/dashboard/src/lib/workspace-browser-selection.ts';
 import {
   borrowForeignCdpControl,
   dispatchForeignCdpInput,
@@ -79,6 +83,74 @@ const selectableCdpScreencastStream = {
   readiness: { state: 'ready' },
   readOnly: false,
 };
+
+assert.equal(
+  selectedWorkspaceContextCanRenderViewport({
+    node: { id: 'manual-runtime:im-receipts-google-messages-main:37820' },
+    stream: {
+      provider: 'rdp_gateway',
+      url: 'https://agent-browser.example.test/guacamole/#/client/route-b',
+      embeddable: true,
+    },
+  }),
+  true,
+  'A detected manual-runtime RDP stream can drive the workspace viewport even without a service-owned browser record',
+);
+assert.equal(
+  selectedWorkspaceContextCanRenderViewport({
+    node: { id: 'manual-runtime:missing-stream:1' },
+    stream: { provider: 'rdp_gateway', url: null, embeddable: true },
+  }),
+  false,
+  'A selected workspace context still requires an embeddable stream URL',
+);
+assert.deepEqual(
+  serviceViewStreamForSelectedWorkspaceContext(
+    'manual-runtime:im-receipts-google-messages-main:37820',
+    {
+      provider: 'rdp_gateway',
+      url: 'http://127.0.0.1:8092/guacamole/#/client/route-b',
+      routeId: 'guacamole:2',
+      embeddable: true,
+      controllable: true,
+      controlInput: 'manual_attached_desktop',
+      operatorVisibleState: 'controllable',
+    },
+    {
+      id: 'guacamole:2',
+      provider: 'rdp_gateway',
+      frameUrl: 'http://127.0.0.1:8092/guacamole/#/client/route-b',
+      externalUrl: 'https://agent-browser.example.test/guacamole/#/client/route-b',
+      routeDescriptor: {
+        localEmbedUrl: 'http://127.0.0.1:8092/guacamole/#/client/route-b',
+        publicOperatorUrl: 'https://agent-browser.example.test/guacamole/#/client/route-b',
+      },
+    },
+  ),
+  {
+    id: 'selected:manual-runtime:im-receipts-google-messages-main:37820:rdp_gateway',
+    provider: 'rdp_gateway',
+    controlInput: 'manual_attached_desktop',
+    url: 'http://127.0.0.1:8092/guacamole/#/client/route-b',
+    frameUrl: 'http://127.0.0.1:8092/guacamole/#/client/route-b',
+    externalUrl: 'https://agent-browser.example.test/guacamole/#/client/route-b',
+    routeDescriptor: {
+      localEmbedUrl: 'http://127.0.0.1:8092/guacamole/#/client/route-b',
+      publicOperatorUrl: 'https://agent-browser.example.test/guacamole/#/client/route-b',
+    },
+    routeId: 'guacamole:2',
+    displayAllocationId: null,
+    connectionId: null,
+    connectionName: null,
+    routeSource: null,
+    providerMode: null,
+    viewerLeaseIds: undefined,
+    controllerLeaseId: null,
+    readOnly: undefined,
+    readiness: { state: 'controllable', reason: undefined },
+  },
+  'A manual-runtime selection keeps the route public operator URL instead of embedding its loopback-only Guacamole URL on public ingress',
+);
 
 assert.equal(
   foreignCdpScreenshotUrl(45011, 'target-a', 'png'),

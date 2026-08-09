@@ -6029,6 +6029,9 @@ Locked profiles:
   Normal launch commands automatically reuse a selected managed runtime
   browser only when agent-browser runtime state shows a live PID and a
   reachable DevTools port.
+  On Unix, runtime login records its effective X11 display, including an
+  inherited DISPLAY value, so service status can join the detached browser to
+  the governed remote-view route for that display.
   Runtime profiles can be marked with browserFamily values such as chrome or
   chromium. agent-browser refuses a mismatched resolved browser family by
   default. Set AGENT_BROWSER_ALLOW_PROFILE_BROWSER_MISMATCH=true only when an

@@ -44,7 +44,11 @@ import {
   type WorkspaceViewportPreflightState,
   type WorkspaceViewportTarget,
 } from "@/lib/workspace-viewport-controller";
-import { serviceBrowserForWorkspaceSelection } from "@/lib/workspace-browser-selection";
+import {
+  selectedWorkspaceContextCanRenderViewport,
+  serviceBrowserForWorkspaceSelection,
+  serviceViewStreamForSelectedWorkspaceContext,
+} from "@/lib/workspace-browser-selection";
 import {
   mergeWorkspaceViewStreams,
   selectWorkspaceViewStream,
@@ -94,6 +98,7 @@ type ServiceStatusData = {
   service_state?: {
     browsers?: Record<string, WorkspaceViewportBrowser>;
     tabs?: Record<string, WorkspaceViewportTab>;
+    remoteViewRoutes?: Record<string, ServiceViewStream>;
   };
 };
 
@@ -619,28 +624,13 @@ function daemonBrowserFromSession(session: SessionInfo | null): WorkspaceViewpor
 
 function workspaceViewportBrowserFromSelectedContext(
   context?: SelectedWorkspaceContext | null,
+  route?: ServiceViewStream | null,
 ): WorkspaceViewportBrowser | null {
   const stream = context?.stream;
   const node = context?.node;
-  if (!context || !node || !stream?.url || !stream.embeddable) return null;
-  const selectedStream: ServiceViewStream = {
-    id: `selected:${node.id}:${stream.provider ?? "stream"}`,
-    provider: stream.provider ?? undefined,
-    controlInput: stream.controlInput ?? null,
-    url: stream.url,
-    frameUrl: stream.url,
-    externalUrl: stream.url,
-    routeId: stream.routeId ?? null,
-    displayAllocationId: stream.displayAllocationId ?? null,
-    connectionId: stream.connectionId ?? null,
-    connectionName: stream.connectionName ?? null,
-    routeSource: stream.routeSource ?? null,
-    providerMode: stream.providerMode ?? null,
-    viewerLeaseIds: stream.viewerLeaseIds,
-    controllerLeaseId: stream.controllerLeaseId ?? null,
-    readOnly: stream.readOnly,
-    readiness: { state: stream.operatorVisibleState, reason: stream.operatorVisibleReason ?? stream.routeSummary },
-  };
+  if (!context || !node || !stream) return null;
+  const selectedStream = serviceViewStreamForSelectedWorkspaceContext(node.id, stream, route);
+  if (!selectedStream) return null;
   return {
     id: node.browserId ? `browser:${node.browserId}` : node.daemonSession ? `daemon:${node.daemonSession}` : node.id,
     displayName: node.label,
@@ -1580,8 +1570,12 @@ export function WorkspaceRemoteViewport({
         viewportSelection.selection,
       )
     : null;
-  const selectedContextBrowser = isCdpSnapshotStream(selectedWorkspaceContext?.stream)
-    ? workspaceViewportBrowserFromSelectedContext(selectedWorkspaceContext)
+  const selectedContextRouteId = selectedWorkspaceContext?.stream?.routeId ?? null;
+  const selectedContextRoute = selectedContextRouteId
+    ? serviceStatus?.service_state?.remoteViewRoutes?.[selectedContextRouteId] ?? null
+    : null;
+  const selectedContextBrowser = selectedWorkspaceContextCanRenderViewport(selectedWorkspaceContext)
+    ? workspaceViewportBrowserFromSelectedContext(selectedWorkspaceContext, selectedContextRoute)
     : null;
   const selectedDaemonSession = daemonSessionFromSelection(sessions, viewportSelection?.selection);
   const daemonBrowser = daemonBrowserFromSession(selectedDaemonSession);

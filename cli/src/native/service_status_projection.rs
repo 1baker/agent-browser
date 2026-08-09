@@ -18,16 +18,16 @@ pub fn manual_runtime_browser_projection(state: &ServiceState) -> Vec<ManualRunt
     let mut manual_browsers =
         crate::runtime_profile::list_manual_runtime_browsers().unwrap_or_default();
     for manual_browser in &mut manual_browsers {
-        let display_allocation_id = manual_browser.display.as_deref().and_then(|display| {
-            state
-                .display_allocations
-                .values()
-                .find(|allocation| allocation.display_name.as_deref() == Some(display))
-                .map(|allocation| allocation.id.as_str())
-        });
         let route = state.remote_view_routes.values().find(|route| {
-            display_allocation_id.is_some()
-                && route.display_allocation_id.as_deref() == display_allocation_id
+            let Some(display) = manual_browser.display.as_deref() else {
+                return false;
+            };
+            route
+                .display_allocation_id
+                .as_deref()
+                .and_then(|allocation_id| state.display_allocations.get(allocation_id))
+                .and_then(|allocation| allocation.display_name.as_deref())
+                == Some(display)
         });
         if let Some(route) = route {
             manual_browser.remote_view_route_id = Some(route.id.clone());
