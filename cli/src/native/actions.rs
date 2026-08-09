@@ -976,13 +976,16 @@ fn apply_service_browser_capability_selection(
             profile_id,
         );
     };
+    // Manual-login-safe service launches remain CDP-attached. Only the
+    // detached manual-login path is a capability-level CDP-free launch.
+    let cdp_free = options.manual_login && !options.attachable && !options.remote_headed;
     let selection = match select_browser_capability_launch_binding(
         &service_state,
         cmd,
         browser_build,
         profile_id.as_deref(),
         options.headless,
-        options.manual_login,
+        cdp_free,
     ) {
         Ok(selection) => selection,
         Err(reason) => {
@@ -26427,7 +26430,7 @@ mod tests {
                         "hostId": "linux-local",
                         "executableId": "stealth-current",
                         "cdpSupported": true,
-                        "cdpFreeLaunchSupported": true,
+                        "cdpFreeLaunchSupported": false,
                         "headedSupported": true,
                         "headlessSupported": true
                     })],
@@ -26465,6 +26468,8 @@ mod tests {
 
         let mut options = LaunchOptions {
             runtime_profile: Some("stealth-profile".to_string()),
+            manual_login: true,
+            remote_headed: true,
             ..LaunchOptions::default()
         };
         let resolution = apply_service_browser_capability_selection(
