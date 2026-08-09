@@ -88,10 +88,12 @@ terminated:
 5. A raw WebSocket connection to the page target sent
    `Runtime.evaluate` directly and received no command response within 18
    seconds.
-6. A separate connection to the browser WebSocket sent
-   `Target.attachToTarget` with `flatten=true`, then attempted the same
-   session-scoped `Runtime.evaluate`; no terminal evaluation response arrived
-   within 18 seconds.
+6. A separate connection to the browser WebSocket received successful replies
+   for `Browser.getVersion`, `Target.getTargets`, and
+   `Target.attachToTarget` with `flatten=true`. After the successful attach,
+   neither `Page.getFrameTree` nor a trivial `Runtime.evaluate` returned within
+   12 seconds. The browser-level socket and target attachment therefore remain
+   responsive while commands routed into the attached page session stall.
 
 These checks distinguish target inventory reachability from target command
 responsiveness. They also rule out the Last30Days JSON parsing layer as the
