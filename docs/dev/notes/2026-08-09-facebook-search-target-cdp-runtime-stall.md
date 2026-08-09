@@ -94,6 +94,10 @@ terminated:
    neither `Page.getFrameTree` nor a trivial `Runtime.evaluate` returned within
    12 seconds. The browser-level socket and target attachment therefore remain
    responsive while commands routed into the attached page session stall.
+7. The same direct page-WebSocket `Runtime.evaluate("1+1")` probe returned
+   `2` within five seconds on the retained LinkedIn, X, preview, and new-tab
+   page targets. Only the Facebook search target timed out. The failure is
+   page-target-specific, not a browser-wide CDP outage.
 
 These checks distinguish target inventory reachability from target command
 responsiveness. They also rule out the Last30Days JSON parsing layer as the
@@ -125,6 +129,7 @@ Recommended bounded investigation:
 2. Record whether `Target.attachToTarget`, `Runtime.evaluate`,
    `Page.getFrameTree`, and `DOM.getDocument` each receive a response after the
    target is visible in `/json/list`.
+   Use another retained page target as a same-browser positive control.
 3. Inspect the CDP reader loop and pending map to determine whether responses
    are absent from Chromium, received without the expected session or command
    ID, or received but not delivered to the pending caller.
