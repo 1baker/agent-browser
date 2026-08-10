@@ -154,3 +154,38 @@ the Facebook search page is visible in target inventory:
 
 The upstream Last30Days provider should be rerun only after those conditions
 are installed and independently verified.
+
+## Downstream Adaptive Proofs And Final Handoff
+
+Last30Days subsequently consumed its operator-bounded maximum of three adaptive
+attempts. These were distinct installed candidates, not blind retries:
+
+1. Service 0.3.40 opened a blank successor, closed the exact wedged predecessor,
+   navigated home, and successfully evaluated authentication before opening
+   desktop top search. The search command reached its deadline even though the
+   resulting target rendered.
+2. Service 0.3.41 changed to desktop posts-only search. Navigation returned,
+   but the next Runtime evaluation stalled. A separate raw page-WebSocket
+   Runtime probe received no response within 15 seconds.
+3. Service 0.3.42 navigated directly to mobile posts search and combined auth,
+   page-state, and extraction into one Runtime call. Facebook redirected the
+   mobile URL to the rendered desktop posts route, where that sole composite
+   call timed out after 30 seconds.
+
+The final provider attempt was
+`provider-attempt-556a632cf7e995cfa8c3fbf079200478` and ended
+`facebook_target_unresponsive` after 105 seconds with one request and zero
+observed, accepted, rejected, cost, or model-use counters. It emitted no auth,
+challenge, CAPTCHA, rate-limit, or quality signal.
+
+An additional direct `Page.captureScreenshot` command returned an immediate
+CDP internal error on the rendered Facebook target. Browser-level discovery,
+target inventory, and attachment remained responsive; direct Runtime controls
+continued to return on LinkedIn, X, preview, and new-tab targets in the same
+browser.
+
+Downstream route, renderer-replacement, capture-count, and clock adaptations
+are exhausted. The remaining work is an upstream agent-browser/Chromium target
+response investigation using a disposable authenticated fixture. Do not use,
+restart, clear, or close the retained default profile as an investigation
+shortcut.
