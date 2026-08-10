@@ -55,8 +55,10 @@ Result:
 
 Graphiti Write Status:
 
-- pending a compact source-backed closeout write after the repository commit is
-  pushed.
+- compact source-backed closeout job
+  `64a8beb5-806d-457a-84c6-2c7e4c51449d` was queued in
+  `agent_browser_main`, then timed out after 120 seconds with no episode UUID;
+  the durable memory write is therefore unconfirmed.
 
 ## Turn 144 | 2026-08-08
 
