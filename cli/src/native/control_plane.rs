@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1493,7 +1494,6 @@ async fn run_worker(
                         if let Ok(mut running) = running_cancellations.lock() {
                             running.insert(request.job_id.clone(), request.cancellation.clone());
                         }
-                        refresh_browser_health(&mut state, &status).await;
                         let timeout_ms = request.timeout_ms.or(service_job_timeout_ms);
                         let previous_cancellation = state
                             .current_cancellation
@@ -1573,11 +1573,15 @@ async fn run_worker(
                         if cancelled {
                             persist_service_job_cancelled(&request, "Service job was cancelled while running");
                         }
-                        refresh_browser_health(&mut state, &status).await;
                         if !timed_out && !cancelled {
                             persist_service_job_finished(&request, &response);
                         }
-                        let _ = request.response_tx.send(response);
+                        send_response_before_follow_up(
+                            request.response_tx,
+                            response,
+                            refresh_browser_health(&mut state, &status),
+                        )
+                        .await;
                         status.set_state(WorkerState::Ready);
                     }
                     WorkerMessage::Shutdown(done_tx) => {
@@ -1669,6 +1673,17 @@ async fn refresh_browser_health(state: &mut DaemonState, status: &ControlPlaneSt
     } else {
         status.set_browser_health(BrowserHealth::CdpDisconnected);
     }
+}
+
+async fn send_response_before_follow_up<F>(
+    response_tx: oneshot::Sender<Value>,
+    response: Value,
+    follow_up: F,
+) where
+    F: Future<Output = ()>,
+{
+    let _ = response_tx.send(response);
+    follow_up.await;
 }
 
 #[cfg(test)]
@@ -2983,6 +2998,28 @@ mod tests {
 
         handle.shutdown().await;
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn worker_response_is_delivered_before_follow_up_health_probe_finishes() {
+        let (response_tx, mut response_rx) = oneshot::channel();
+        let delivery = send_response_before_follow_up(
+            response_tx,
+            json!({ "success": false, "data": { "timedOut": true } }),
+            std::future::pending::<()>(),
+        );
+        tokio::pin!(delivery);
+
+        let response = tokio::time::timeout(Duration::from_millis(50), async {
+            tokio::select! {
+                response = &mut response_rx => response.expect("response sender should remain live"),
+                _ = &mut delivery => panic!("follow-up probe should remain pending"),
+            }
+        })
+        .await
+        .expect("worker response should not wait for the follow-up probe");
+
+        assert_eq!(response.pointer("/data/timedOut"), Some(&Value::Bool(true)));
     }
 
     #[test]

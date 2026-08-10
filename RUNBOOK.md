@@ -4,6 +4,60 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 145 | 2026-08-09
+
+Scope: repair the upstream renderer and command-delivery boundaries exposed by
+three exhausted Last30Days Facebook candidates, without consuming a fourth
+provider attempt or changing the retained Facebook browser.
+
+Actions:
+
+- used raw page and flattened browser CDP sessions to distinguish a
+  Facebook-target Runtime stall from browser inventory and transport health;
+- added Chromium renderer deadlines, browser-level navigation metadata,
+  cached evaluation metadata, and response-before-health worker ordering;
+- removed the pre-action health probe from the caller-bounded path;
+- added a Linux same-inode daemon identity fast path while retaining SHA-256 as
+  the rebuild, upgrade, and unavailable-procfs fallback;
+- published the debug candidate through browser-preserving executable handoff,
+  refreshed the source-free workstation payload, and closed the exact
+  disposable investigation sessions plus stale session metadata advertised by
+  doctor remedies.
+
+Validation:
+
+- focused red and green renderer-deadline, target-metadata, worker-response,
+  and executable-identity regressions;
+- 34 browser tests, 27 control-plane tests, 35 connection tests, 260 action
+  tests, and three CDP stream tests;
+- service CDP tab streaming live smoke and route-confusion no-launch gates;
+- Rust formatting, required production Clippy, dashboard production build,
+  selected validation, patch checks, installed binary/reference parity,
+  install doctor, and remote-view doctor;
+- the canonical partition passed 1,220 parallel-safe tests and the touched
+  serial partitions before the unrelated untouched Chrome test
+  `test_headed_display_fallback_not_used_when_display_set` rejected the current
+  production behavior of returning `DISPLAY=:9`;
+- broader all-target Clippy also surfaced twelve pre-existing test-only lint
+  rejections. Required production Clippy passed.
+
+Result:
+
+- installed executable and reference SHA-256 are
+  `17f393c716f63de5008a25045f1ead0a4377efb7936300c8e1bcce2247d5995b`;
+- installed baseline evaluation returned `2` in 455 ms, the infinite loop
+  returned a typed CDP failure in 4.546 seconds under a 6-second outer guard,
+  and immediate recovery returned `2` in 1.482 seconds;
+- install doctor is clean, runtime convergence is `converged`, remote-view and
+  remote-control status are ready, and the dashboard payload is current;
+- retained Facebook PID 63205 remained ready and was not restarted or closed;
+  no Last30Days provider attempt was submitted.
+
+Graphiti Write Status:
+
+- pending a compact source-backed closeout write after the repository commit is
+  pushed.
+
 ## Turn 144 | 2026-08-08
 
 Scope: close the Last30Days sequential-social handoff with downstream installed

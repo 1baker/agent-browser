@@ -511,6 +511,42 @@ fn current_executable_sha256() -> Result<String, String> {
     file_sha256(&path)
 }
 
+#[cfg(target_os = "linux")]
+fn daemon_process_uses_executable(
+    pid_path: &Path,
+    current_executable: &Path,
+    proc_root: &Path,
+) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let pid = fs::read_to_string(pid_path).ok()?;
+    let pid = pid.trim().parse::<u32>().ok()?;
+    if pid == 0 {
+        return None;
+    }
+    let current_metadata = fs::metadata(current_executable).ok()?;
+    let daemon_metadata = fs::metadata(proc_root.join(pid.to_string()).join("exe")).ok()?;
+    Some(
+        current_metadata.dev() == daemon_metadata.dev()
+            && current_metadata.ino() == daemon_metadata.ino(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn running_daemon_uses_current_executable(session: &str) -> Option<bool> {
+    let current_executable = env::current_exe().ok()?;
+    daemon_process_uses_executable(
+        &get_pid_path(session),
+        &current_executable,
+        Path::new("/proc"),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn running_daemon_uses_current_executable(_session: &str) -> Option<bool> {
+    None
+}
+
 fn allow_legacy_daemon_sha_reuse() -> bool {
     matches!(
         env::var("AGENT_BROWSER_ALLOW_LEGACY_DAEMON_SHA_REUSE")
@@ -569,11 +605,15 @@ pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult
         if daemon_ready(session) {
             // Check version: if the running daemon is from a different CLI
             // version (e.g. after an upgrade), kill it and start a fresh one.
-            let current_executable_sha = current_executable_sha256().ok();
-            let sha_matches = current_executable_sha
-                .as_deref()
-                .map(|sha| daemon_executable_sha_matches(session, sha))
-                .unwrap_or(true);
+            let sha_matches = if running_daemon_uses_current_executable(session) == Some(true) {
+                true
+            } else {
+                current_executable_sha256()
+                    .ok()
+                    .as_deref()
+                    .map(|sha| daemon_executable_sha_matches(session, sha))
+                    .unwrap_or(true)
+            };
             let version_matches = daemon_version_matches(session);
             let auth_token_available = daemon_auth_token_available(session);
             if opts.allow_stale_daemon_handoff && auth_token_available {
@@ -1516,5 +1556,38 @@ mod tests {
 
         let _ = fs::remove_file(&token_path);
         let _ = fs::remove_dir(&dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn daemon_executable_identity_fast_path_detects_replaced_binary() {
+        let dir = std::env::temp_dir().join(format!(
+            "ab-test-daemon-executable-identity-{}",
+            std::process::id()
+        ));
+        let proc_root = dir.join("proc");
+        let pid_path = dir.join("session.pid");
+        let current_executable = dir.join("agent-browser-current");
+        let replacement_executable = dir.join("agent-browser-replacement");
+        let daemon_executable = proc_root.join("42/exe");
+        let _ = fs::create_dir_all(daemon_executable.parent().unwrap());
+        fs::write(&pid_path, "42").unwrap();
+        fs::write(&current_executable, "same bytes").unwrap();
+        fs::write(&replacement_executable, "same bytes").unwrap();
+        std::os::unix::fs::symlink(&current_executable, &daemon_executable).unwrap();
+
+        assert_eq!(
+            daemon_process_uses_executable(&pid_path, &current_executable, &proc_root),
+            Some(true)
+        );
+
+        fs::remove_file(&daemon_executable).unwrap();
+        std::os::unix::fs::symlink(&replacement_executable, &daemon_executable).unwrap();
+        assert_eq!(
+            daemon_process_uses_executable(&pid_path, &current_executable, &proc_root),
+            Some(false)
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

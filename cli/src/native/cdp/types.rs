@@ -120,6 +120,18 @@ pub struct GetTargetsResult {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetTargetInfoParams {
+    pub target_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetTargetInfoResult {
+    pub target_info: TargetInfo,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AttachToTargetParams {
     pub target_id: String,
     pub flatten: bool,

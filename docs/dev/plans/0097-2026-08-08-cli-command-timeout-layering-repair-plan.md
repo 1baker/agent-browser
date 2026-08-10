@@ -2,7 +2,7 @@
 
 State: CLOSED
 Roadmap: P97
-Plan version: 3
+Plan version: 4
 Date: 2026-08-08
 
 ## Objective
@@ -23,9 +23,9 @@ is not forced to wait for the abandoned operation.
   falls back across retained targets under bounded Page/Runtime/Network domain
   initialization when a preferred or legacy target is frozen.
 - Installed executable SHA-256 is
-  `e899753a27005a79fe820f9128420eb0ea80ed8ea59a8719c64d9bc14c278d5f`;
+  `17f393c716f63de5008a25045f1ead0a4377efb7936300c8e1bcce2247d5995b`;
   runtime convergence and remote control are ready. The retained Last30Days
-  browser remains PID 96078.
+  browser remains PID 63205.
 
 ## Scope
 
@@ -131,6 +131,38 @@ is not forced to wait for the abandoned operation.
   passed with the retained browser untouched.
 - next_action_or_stop_reason: stop; Last30Days may consume the installed global
   command deadline and retained-target recovery contracts.
+
+## Checkpoint C05 | Post-closeout renderer termination correction
+
+- plan_version: 4
+- state_transition: CLOSED → CLOSED
+- progress_classification: corrective_adoption_from_downstream_failure
+- evidence: three distinct Last30Days candidates showed that cancelling the
+  worker future did not stop renderer JavaScript and that navigation readback
+  depended on Runtime. Direct CDP proved Chromium's renderer timeout interrupts
+  an infinite loop and leaves the same target usable. A system-call trace also
+  measured 5.75 seconds spent hashing the 289 MB debug executable before an
+  ordinary command.
+- implementation: Runtime evaluations now carry a renderer deadline;
+  navigation uses `Target.getTargetInfo`; evaluation uses cached target
+  metadata; worker responses precede follow-up health probes; Linux daemon
+  identity uses a same-inode fast path with SHA-256 fallback.
+- validation: focused browser, action, connection, control-plane, CDP stream,
+  and route-confusion gates passed. Required formatting and production Clippy
+  passed. The canonical partition passed 1,220 parallel-safe tests, all 35
+  connection tests, and all 260 action tests before stopping at the unrelated
+  stale `DISPLAY=:9` expectation in an untouched Chrome test.
+- installed_proof: installed SHA-256
+  `17f393c716f63de5008a25045f1ead0a4377efb7936300c8e1bcce2247d5995b`;
+  baseline evaluation returned in 455 ms, the infinite-loop evaluation returned
+  a typed CDP failure in 4.546 seconds under a 6-second outer guard, and the
+  immediate recovery evaluation returned `2` in 1.482 seconds. The disposable
+  browser was closed. Install doctor and remote-view doctor are ready with zero
+  issues; retained Facebook PID 63205 was not restarted or closed.
+- authority_classification: inherited corrective authority; no fourth
+  Last30Days provider attempt was consumed.
+- next_action_or_stop_reason: source and installed repair are complete; require
+  fresh operator authority before a downstream Facebook provider proof.
 
 ## Done Definition
 

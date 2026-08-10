@@ -6815,6 +6815,12 @@ async fn handle_content(state: &mut DaemonState) -> Result<Value, String> {
     Ok(json!({ "html": html, "origin": url }))
 }
 
+fn command_evaluation_timeout_ms(cmd: &Value) -> Option<u64> {
+    cmd.get("jobTimeoutMs")
+        .and_then(Value::as_u64)
+        .filter(|timeout_ms| *timeout_ms > 0)
+}
+
 async fn handle_evaluate(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     if cmd.get("serviceTabHandle").is_some() {
         return handle_bounded_service_evaluate(cmd, state).await;
@@ -6836,8 +6842,12 @@ async fn handle_evaluate(cmd: &Value, state: &mut DaemonState) -> Result<Value, 
         .and_then(|v| v.as_str())
         .ok_or("Missing 'script' parameter")?;
 
-    let result = mgr.evaluate(script, None).await?;
-    let url = mgr.get_url().await.unwrap_or_default();
+    let result = if let Some(timeout_ms) = command_evaluation_timeout_ms(cmd) {
+        mgr.evaluate_with_timeout(script, timeout_ms).await?
+    } else {
+        mgr.evaluate(script, None).await?
+    };
+    let url = mgr.active_page_url().unwrap_or_default().to_string();
     Ok(json!({ "result": result, "origin": url }))
 }
 
@@ -6884,11 +6894,11 @@ async fn handle_bounded_service_evaluate(
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
     let evaluate_outcome = tokio::time::timeout(
         tokio::time::Duration::from_millis(timeout_ms),
-        mgr.evaluate(script, None),
+        mgr.evaluate_with_timeout(script, timeout_ms),
     )
     .await;
-    let url = mgr.get_url().await.unwrap_or_default();
-    let title = mgr.get_title().await.unwrap_or_default();
+    let url = mgr.active_page_url().unwrap_or_default().to_string();
+    let title = mgr.active_page_title().unwrap_or_default().to_string();
     let result = match evaluate_outcome {
         Ok(Ok(result)) => result,
         Ok(Err(error)) => {
@@ -23518,6 +23528,21 @@ mod tests {
     use crate::test_utils::EnvGuard;
     use std::collections::BTreeMap;
     use std::fs;
+
+    #[test]
+    fn evaluate_uses_per_command_worker_deadline() {
+        let command = json!({
+            "action": "evaluate",
+            "script": "document.body.textContent",
+            "jobTimeoutMs": 3_000,
+        });
+
+        assert_eq!(command_evaluation_timeout_ms(&command), Some(3_000));
+        assert_eq!(
+            command_evaluation_timeout_ms(&json!({"action": "evaluate"})),
+            None
+        );
+    }
 
     fn unique_socket_dir(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()

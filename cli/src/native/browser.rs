@@ -117,6 +117,37 @@ fn update_page_target_info_in_pages(pages: &mut [PageInfo], target: &TargetInfo)
     false
 }
 
+fn navigation_metadata(target: &TargetInfo, requested_url: &str) -> (String, String) {
+    let url = if target.url.is_empty() {
+        requested_url.to_string()
+    } else {
+        target.url.clone()
+    };
+    (url, target.title.clone())
+}
+
+const MAX_RUNTIME_EVALUATION_TIMEOUT_MS: u64 = 25_000;
+const RUNTIME_EVALUATION_RESPONSE_GRACE_MS: u64 = 250;
+
+fn runtime_evaluation_timeout_ms(caller_timeout_ms: u64) -> u64 {
+    caller_timeout_ms
+        .min(MAX_RUNTIME_EVALUATION_TIMEOUT_MS)
+        .saturating_sub(RUNTIME_EVALUATION_RESPONSE_GRACE_MS)
+        .max(1)
+}
+
+fn bounded_evaluate_params(script: &str, caller_timeout_ms: u64) -> Value {
+    json!({
+        "expression": script,
+        "returnByValue": true,
+        "awaitPromise": true,
+        // This is Chromium's renderer-side deadline. The CDP client's separate
+        // 30-second transport deadline cannot stop a script that is still
+        // executing after its caller gives up.
+        "timeout": runtime_evaluation_timeout_ms(caller_timeout_ms),
+    })
+}
+
 fn page_index_for_target_id(pages: &[PageInfo], target_id: &str) -> Option<usize> {
     pages.iter().position(|p| p.target_id == target_id)
 }
@@ -893,8 +924,24 @@ impl BrowserManager {
                 .await?;
         }
 
-        let page_url = self.get_url().await.unwrap_or_else(|_| url.to_string());
-        let title = self.get_title().await.unwrap_or_default();
+        // Navigation metadata belongs to the browser-level Target domain. Do
+        // not make an otherwise successful navigation depend on renderer-side
+        // Runtime.evaluate calls for location.href and document.title. A busy
+        // or wedged renderer can still have authoritative URL/title metadata in
+        // Target.getTargetInfo.
+        let (page_url, title) = self
+            .refresh_active_target_metadata()
+            .await
+            .unwrap_or_else(|_| {
+                let fallback = self.pages.get(self.active_page_index);
+                (
+                    fallback
+                        .map(|page| page.url.clone())
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| url.to_string()),
+                    fallback.map(|page| page.title.clone()).unwrap_or_default(),
+                )
+            });
 
         // Track visited origin for cross-origin localStorage collection in save_state
         if let Ok(parsed) = url::Url::parse(&page_url) {
@@ -1018,20 +1065,28 @@ impl BrowserManager {
     }
 
     pub async fn evaluate(&self, script: &str, _args: Option<Value>) -> Result<Value, String> {
+        self.evaluate_with_timeout(script, self.default_timeout_ms)
+            .await
+    }
+
+    pub async fn evaluate_with_timeout(
+        &self,
+        script: &str,
+        timeout_ms: u64,
+    ) -> Result<Value, String> {
         let session_id = self.active_session_id()?.to_string();
 
-        let result: EvaluateResult = self
+        let result = self
             .client
-            .send_command_typed(
+            .send_command(
                 "Runtime.evaluate",
-                &EvaluateParams {
-                    expression: script.to_string(),
-                    return_by_value: Some(true),
-                    await_promise: Some(true),
-                },
+                Some(bounded_evaluate_params(script, timeout_ms)),
                 Some(&session_id),
             )
             .await?;
+        let result: EvaluateResult = serde_json::from_value(result).map_err(|error| {
+            format!("Failed to deserialize CDP response for Runtime.evaluate: {error}")
+        })?;
 
         if let Some(ref details) = result.exception_details {
             let msg = details
@@ -1043,6 +1098,23 @@ impl BrowserManager {
         }
 
         Ok(result.result.value.unwrap_or(Value::Null))
+    }
+
+    pub async fn refresh_active_target_metadata(&mut self) -> Result<(String, String), String> {
+        let target_id = self.active_target_id()?.to_string();
+        let result: GetTargetInfoResult = self
+            .client
+            .send_command_typed(
+                "Target.getTargetInfo",
+                &GetTargetInfoParams {
+                    target_id: target_id.clone(),
+                },
+                None,
+            )
+            .await?;
+        let metadata = navigation_metadata(&result.target_info, "");
+        self.update_page_target_info(&result.target_info);
+        Ok(metadata)
     }
 
     async fn evaluate_simple(&self, expression: &str) -> Result<Value, String> {
@@ -1202,6 +1274,12 @@ impl BrowserManager {
         self.pages
             .get(self.active_page_index)
             .map(|p| p.url.as_str())
+    }
+
+    pub fn active_page_title(&self) -> Option<&str> {
+        self.pages
+            .get(self.active_page_index)
+            .map(|p| p.title.as_str())
     }
 
     pub fn set_active_page_url(&mut self, url: &str) {
@@ -2562,7 +2640,10 @@ mod x11_focus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::net::TcpListener;
     use tokio::time::sleep;
+    use tokio_tungstenite::tungstenite::Message;
 
     #[test]
     fn test_should_track_popup_target_with_empty_url() {
@@ -2613,6 +2694,96 @@ mod tests {
         assert!(update_page_target_info_in_pages(&mut pages, &target));
         assert_eq!(pages[0].url, "https://example.com/popup");
         assert_eq!(pages[0].title, "Popup");
+    }
+
+    #[test]
+    fn test_navigation_metadata_uses_browser_level_target_info() {
+        let target = TargetInfo {
+            target_id: "facebook-search".to_string(),
+            target_type: "page".to_string(),
+            title: "OpenAI - Search Results".to_string(),
+            url: "https://www.facebook.com/search/posts/?q=OpenAI".to_string(),
+            attached: Some(true),
+            browser_context_id: None,
+        };
+
+        assert_eq!(
+            navigation_metadata(&target, "https://www.facebook.com/"),
+            (
+                "https://www.facebook.com/search/posts/?q=OpenAI".to_string(),
+                "OpenAI - Search Results".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn test_bounded_evaluate_params_carry_renderer_deadline() {
+        let params = bounded_evaluate_params("1 + 1", 45_000);
+
+        assert_eq!(params["expression"], "1 + 1");
+        assert_eq!(params["returnByValue"], true);
+        assert_eq!(params["awaitPromise"], true);
+        assert_eq!(params["timeout"], 24_750);
+    }
+
+    #[test]
+    fn test_bounded_evaluate_params_finish_before_short_caller_deadline() {
+        let params = bounded_evaluate_params("document.body.textContent", 6_000);
+
+        assert_eq!(params["timeout"], 5_750);
+    }
+
+    #[tokio::test]
+    async fn evaluate_with_timeout_sends_renderer_deadline_to_chromium() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let command = websocket.next().await.unwrap().unwrap();
+            let command: Value = serde_json::from_str(command.to_text().unwrap()).unwrap();
+            assert_eq!(command["method"], "Runtime.evaluate");
+            assert_eq!(command["sessionId"], "session-1");
+            assert_eq!(command["params"]["timeout"], 2_750);
+            websocket
+                .send(Message::Text(
+                    json!({
+                        "id": command["id"],
+                        "error": {"code": -32603, "message": "Internal error"}
+                    })
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let manager = BrowserManager {
+            client: Arc::new(client),
+            browser_process: None,
+            ws_url: format!("ws://{address}"),
+            pages: vec![PageInfo {
+                target_id: "target-1".to_string(),
+                session_id: "session-1".to_string(),
+                url: "data:text/html,ready".to_string(),
+                title: "ready".to_string(),
+                target_type: "page".to_string(),
+            }],
+            active_page_index: 0,
+            default_timeout_ms: 25_000,
+            download_path: None,
+            ignore_https_errors: false,
+            visited_origins: HashSet::new(),
+        };
+
+        let error = manager
+            .evaluate_with_timeout("while (true) {}", 3_000)
+            .await
+            .unwrap_err();
+        assert!(error.contains("CDP error (Runtime.evaluate): Internal error"));
+        server.await.unwrap();
     }
 
     #[test]

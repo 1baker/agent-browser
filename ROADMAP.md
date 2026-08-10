@@ -9,21 +9,25 @@ bounded implementation and validation plans remain under `docs/dev/plans/`.
 ## P97 | CLI Command Timeout Layering Repair
 
 State: CLOSED
-Current state: ordinary CLI commands accept global `--job-timeout-ms`, timed-out
-jobs release the serialized queue without discarding live browser ownership,
-and runtime handoff skips frozen retained targets under bounded initialization.
-The installed executable and dashboard runtime are converged; remote control
-is ready and retained Last30Days PID 96078 remains live.
+Current state: ordinary CLI commands carry global `--job-timeout-ms` into both
+the control-plane worker and Chromium's renderer, successful navigation reads
+browser-level target metadata, and terminal responses no longer wait for
+health probes. Linux daemon reuse avoids hashing the full executable when the
+live daemon and CLI share one inode. Installed executable SHA-256 is
+`17f393c716f63de5008a25045f1ead0a4377efb7936300c8e1bcce2247d5995b`;
+install and remote-view doctors are ready, and retained Last30Days PID 63205
+remains live.
 
 ### Next Recommendation
 
-Let Last30Days consume the installed inner-deadline and retained-target
-contracts. Preserve the process-exit-only cleanup rule in future control-plane
-changes.
+Require fresh operator authority before another Last30Days Facebook provider
+proof. Preserve renderer-side termination, process-exit-only cleanup, and
+response-before-health ordering in future control-plane changes.
 
 ### Evidence
 
 - `docs/dev/plans/0097-2026-08-08-cli-command-timeout-layering-repair-plan.md`
+- `docs/dev/notes/2026-08-09-facebook-search-target-cdp-runtime-stall.md`
 
 ## P96 | Durable Remote-View Handoff
 

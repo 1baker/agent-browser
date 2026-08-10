@@ -189,3 +189,69 @@ are exhausted. The remaining work is an upstream agent-browser/Chromium target
 response investigation using a disposable authenticated fixture. Do not use,
 restart, clear, or close the retained default profile as an investigation
 shortcut.
+
+## Upstream Repair Candidate And Independent Proof
+
+The upstream investigation continued without another Last30Days provider
+attempt and without changing the retained Facebook browser or profile. The
+primary agent used direct CDP, disposable agent-browser sessions, and a stock
+Chrome control to isolate four separate behaviors:
+
+1. Disposable stock Chrome and stealthcdp Chromium sessions both returned
+   ordinary Runtime results on Facebook public pages. The browser build and CDP
+   transport are therefore not generally unable to automate Facebook.
+2. On the retained Facebook search target, browser-level discovery and selected
+   Page commands still returned while Runtime and Debugger commands did not.
+   The same commands returned on other targets in that browser.
+3. Chromium accepted a renderer-side `Runtime.evaluate.timeout`. A direct raw
+   CDP infinite loop returned a typed protocol error after about one second,
+   and a subsequent `1+1` evaluation returned `2` on the same target. This
+   proves the renderer can be interrupted without closing the browser.
+4. A system-call trace showed that an ordinary debug CLI invocation spent about
+   5.75 seconds rereading and hashing the 289 MB executable before sending the
+   command. The daemon itself completed a raw authenticated baseline evaluation
+   in 377 ms total, the infinite-loop failure in 2.952 seconds total, and the
+   recovery evaluation in 242 ms total.
+
+The repair candidate addresses those findings at their owning seams:
+
+- Runtime evaluations carry a Chromium renderer deadline that expires before
+  the caller deadline. Cancelling the Rust future no longer leaves JavaScript
+  executing indefinitely in the renderer.
+- Successful navigation reads URL and title through browser-level
+  `Target.getTargetInfo`, so navigation no longer depends on a follow-up Runtime
+  evaluation against a busy renderer.
+- Evaluation responses use already known target metadata rather than adding a
+  second target command to the critical path.
+- The control-plane worker no longer performs a health probe before starting
+  the caller-bounded action. It sends the terminal response before its
+  post-action health probe.
+- On Linux, a live daemon that references the same executable inode as the CLI
+  uses a constant-time identity fast path. SHA-256 remains the fallback when
+  the inode differs or process metadata cannot be read, preserving rebuild and
+  upgrade detection.
+
+The final fresh disposable CLI proof used session
+`p0037-cli-final-timeout-proof` and closed it after validation:
+
+```text
+open                         4,632 ms  success
+baseline eval 1+1            2,059 ms  success, result 2
+infinite-loop eval           4,487 ms  typed CDP failure
+immediate recovery eval 1+1  1,383 ms  success, result 2
+close                                    success
+```
+
+The infinite loop was guarded by a 3,000 ms worker deadline and a 6,000 ms
+outer process deadline. It returned before the outer deadline, and the next
+evaluation proved that the renderer and session remained usable. This is an
+upstream adversarial proof, not a fourth Facebook provider attempt. The
+installed Last30Days provider was not rerun. The validated agent-browser
+candidate was installed with SHA-256
+`17f393c716f63de5008a25045f1ead0a4377efb7936300c8e1bcce2247d5995b`.
+An installed disposable proof improved the baseline to 455 ms, returned the
+typed infinite-loop failure in 4.546 seconds, and returned the immediate
+recovery result in 1.482 seconds before closing the disposable browser. Install
+doctor and remote-view doctor then reported ready with zero issues. Retained
+Facebook PID 63205 remained ready and was not restarted or closed. Fresh
+operator authority is still required for any downstream provider proof.
