@@ -2,8 +2,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CHROME_PATH="${AGENT_BROWSER_WINDOWS_CHROMIUM_PATH:-/mnt/c/Users/ecoch/AppData/Local/chromium-stealthcdp/current/chrome.exe}"
-PROFILE_ROOT="${AGENT_BROWSER_WINDOWS_PROFILE_SMOKE_ROOT:-/mnt/c/Users/ecoch/AppData/Local/Temp}"
+source "$ROOT/scripts/lib/wsl-windows-chromium-profile-paths.sh"
+
+if ! CHROME_PATH="$(resolve_wsl_windows_chromium_path)"; then
+  echo "Error: could not resolve a Windows Chromium executable from the stealthcdp manifest; set AGENT_BROWSER_WINDOWS_CHROMIUM_PATH" >&2
+  exit 1
+fi
+if ! PROFILE_ROOT="$(resolve_wsl_windows_profile_root "$CHROME_PATH")"; then
+  echo "Error: could not resolve a Windows temporary profile root; set AGENT_BROWSER_WINDOWS_PROFILE_SMOKE_ROOT" >&2
+  exit 1
+fi
 MODE="${AGENT_BROWSER_WINDOWS_PROFILE_SMOKE_MODE:-headed}"
 KEEP_PROFILE="${AGENT_BROWSER_WINDOWS_PROFILE_SMOKE_KEEP_PROFILE:-0}"
 SESSION="wsl-windows-profile-$(date +%s%N)"
@@ -14,19 +22,42 @@ RESULT_JSON="$TMP_WORK/result.json"
 STDERR_MATCHES="$TMP_WORK/stderr-matches.txt"
 
 cleanup() {
+  local original_status=$?
+  local cleanup_failed=0
+  local attempt
+
+  trap - EXIT
   AGENT_BROWSER_SOCKET_DIR="$SOCKET_DIR" \
     cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- \
     --session "$SESSION" close --all --json >/dev/null 2>&1 || true
   if [[ "$KEEP_PROFILE" != "1" ]]; then
-    rm -rf "$PROFILE_DIR"
+    ensure_wsl_windows_chromium_profile_stopped "$PROFILE_DIR" >/dev/null 2>&1 || true
+    for attempt in {1..20}; do
+      rm -rf "$PROFILE_DIR" 2>/dev/null || true
+      [[ ! -e "$PROFILE_DIR" ]] && break
+      sleep 0.25
+    done
+    if [[ -e "$PROFILE_DIR" ]]; then
+      echo "Error: could not remove Windows Chromium smoke profile: $PROFILE_DIR" >&2
+      cleanup_failed=1
+    fi
   fi
   rm -rf "$SOCKET_DIR"
   rm -rf "$TMP_WORK"
+
+  if [[ "$original_status" -eq 0 && "$cleanup_failed" -ne 0 ]]; then
+    original_status=1
+  fi
+  exit "$original_status"
 }
 trap cleanup EXIT
 
 if [[ ! -x "$CHROME_PATH" ]]; then
   echo "Error: Windows Chromium executable not found or not executable: $CHROME_PATH" >&2
+  exit 1
+fi
+if [[ ! -d "$PROFILE_ROOT" || ! -w "$PROFILE_ROOT" ]]; then
+  echo "Error: Windows profile root is missing or not writable: $PROFILE_ROOT" >&2
   exit 1
 fi
 
@@ -49,12 +80,15 @@ TMPDIR="$PROFILE_ROOT" \
 AGENT_BROWSER_SOCKET_DIR="$SOCKET_DIR" \
 AGENT_BROWSER_EXECUTABLE_PATH="$CHROME_PATH" \
   cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- \
-  --session "$SESSION" \
-  --profile "$PROFILE_DIR" \
-  open about:blank \
-  "${mode_flag[@]}" \
-  --timeout 20000 \
-  --json >"$RESULT_JSON"
+    --session "$SESSION" \
+    --profile "$PROFILE_DIR" \
+    open about:blank \
+    "${mode_flag[@]}" \
+    --timeout 20000 \
+    --json >"$RESULT_JSON" || {
+      cat "$RESULT_JSON" >&2
+      exit 1
+    }
 
 RESULT_JSON="$RESULT_JSON" python3 - <<'PY'
 import json

@@ -65,6 +65,9 @@ jobs:
       - name: Run Rust tests
         run: scripts/ci/rust-tests.sh
 
+      - name: Test WSL Windows Chromium path resolution
+        run: bash scripts/test-wsl-windows-chromium-profile-paths.sh
+
       - name: Run no-launch service smokes
         run: |
           node scripts/smoke-service-contracts-no-launch.js
