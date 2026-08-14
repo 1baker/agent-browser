@@ -620,11 +620,13 @@ fn live_runtime_status_for_flags(flags: &Flags) -> Option<RuntimeStatus> {
 fn daemon_profile_for_launch<'a>(
     profile: Option<&'a str>,
     live_runtime_status: Option<&RuntimeStatus>,
+    external_cdp: bool,
 ) -> Option<&'a str> {
-    // A live managed runtime profile is reached by CDP. Forwarding its
-    // user-data-dir as AGENT_BROWSER_PROFILE makes the daemon validate an
-    // impossible "CDP attach plus local profile launch" combination.
-    if live_runtime_status.is_some() {
+    // A live managed runtime profile or an explicitly supplied CDP endpoint is
+    // reached by CDP. Forwarding a user-data-dir as AGENT_BROWSER_PROFILE makes
+    // the daemon validate an impossible "CDP attach plus local profile launch"
+    // combination.
+    if live_runtime_status.is_some() || external_cdp {
         None
     } else {
         profile
@@ -1495,6 +1497,12 @@ fn main() {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
+    // Internal WSL-only helper. It owns a private loopback relay for one exact
+    // Windows Chromium DevTools endpoint and never enters ordinary CLI parsing.
+    if let Some(code) = native::cdp::chrome::run_wsl_windows_cdp_relay_from_env() {
+        std::process::exit(code);
+    }
+
     // Prevent MSYS/Git Bash path translation from mangling arguments
     #[cfg(windows)]
     {
@@ -1992,10 +2000,15 @@ fn main() {
         .as_ref()
         .and_then(|status| status.devtools_port)
         .map(|port| port.to_string());
-    let daemon_runtime_profile = live_runtime_status
-        .as_ref()
-        .map(|status| status.runtime_profile.as_str())
-        .or(selected_runtime_profile.as_deref());
+    let external_cdp = flags.cdp.is_some();
+    let daemon_runtime_profile = if external_cdp {
+        None
+    } else {
+        live_runtime_status
+            .as_ref()
+            .map(|status| status.runtime_profile.as_str())
+            .or(selected_runtime_profile.as_deref())
+    };
     let daemon_opts = DaemonOptions {
         headed: flags.headed,
         debug: flags.debug,
@@ -2012,7 +2025,11 @@ fn main() {
         proxy_password: proxy_password.as_deref(),
         ignore_https_errors: flags.ignore_https_errors,
         allow_file_access: flags.allow_file_access,
-        profile: daemon_profile_for_launch(flags.profile.as_deref(), live_runtime_status.as_ref()),
+        profile: daemon_profile_for_launch(
+            flags.profile.as_deref(),
+            live_runtime_status.as_ref(),
+            external_cdp,
+        ),
         state: flags.state.as_deref(),
         provider: flags.provider.as_deref(),
         device: flags.device.as_deref(),
@@ -3219,11 +3236,15 @@ mod tests {
         };
 
         assert_eq!(
-            daemon_profile_for_launch(Some("/tmp/profile"), None),
+            daemon_profile_for_launch(Some("/tmp/profile"), None, false),
             Some("/tmp/profile")
         );
         assert_eq!(
-            daemon_profile_for_launch(Some("/tmp/profile"), Some(&status)),
+            daemon_profile_for_launch(Some("/tmp/profile"), Some(&status), false),
+            None
+        );
+        assert_eq!(
+            daemon_profile_for_launch(Some("/tmp/profile"), None, true),
             None
         );
     }

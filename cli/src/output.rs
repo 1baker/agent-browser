@@ -5194,8 +5194,13 @@ the operator's browser to reach per-session localhost ports.
 The dashboard self-guards its API routes with a superuser login. On first
 start it creates ~/.agent-browser/dashboard-auth.json plus the mode-0600
 bootstrap credential file ~/.agent-browser/dashboard-auth.env. The default
-admin user and the codex observer user are superusers. Rotate or remove the
-bootstrap credential file after recording the intended operator password.
+admin user is a superuser and the codex user is an observer. Rotate or remove
+the bootstrap credential file after recording the intended operator password.
+For a localhost-only dashboard exposed exclusively through Tailscale Serve,
+set AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH=1 and explicitly allow operator
+logins with AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS. This mode accepts
+only HTTPS .ts.net requests carrying a matching Tailscale-User-Login header.
+Do not enable it on a listener also reached by Funnel or another reverse proxy.
 
 Options:
   --port <n>           Port for the dashboard server (default: 4848)
@@ -5203,6 +5208,10 @@ Options:
 Environment:
   AGENT_BROWSER_DASHBOARD_AUTH_FILE
                        Override the dashboard auth store path
+  AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH
+                       Trust allowlisted Tailscale Serve identity on HTTPS .ts.net requests
+  AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS
+                       Comma-separated exact Tailscale login allowlist
 
 Global Options:
   --json               Output as JSON
@@ -5304,7 +5313,7 @@ Usage: agent-browser doctor windows-browser [--port <port>] [--host <host>] [--s
        agent-browser remote-view open [url] [--runtime-profile <id>] [--browser-build <build>] [--view-stream-provider rdp_gateway] [--route-pool-entry-id <id>] [--route-pool-entry-json <json>] [--display <name>] [--manual-login-launch] [--dry-run]
 
 Subcommands:
-  windows-browser       Diagnose WSL to Windows browser CDP routing without changing system state
+  windows-browser       Diagnose operator-owned WSL to Windows browser CDP routing without changing system state
   remote-view           Diagnose install, RDP gateway, private display allocator, Guacamole local/public routes, XRDP, RDP user, privilege, config, route-display, and display-access state
   remote-view open      Select a service-owned remote-view route, launch on the bound display, open a tab, and return dashboard/external route URLs
 
@@ -5316,6 +5325,10 @@ Options:
   --allow-shared-target Treat shared Guacamole RDP targets as diagnostic-ready for route-pool inspection
   --browser-build <build>
                        Select the browser build for remote-view open, for example stealthcdp_chromium
+
+Managed WSL NAT launches of Windows Chromium use an automatic private loopback
+relay tied to the exact browser PID and profile. They do not require mirrored
+networking, firewall changes, an SSH tunnel, or a persistent terminal.
   --view-stream-provider rdp_gateway
                        Select the RDP gateway view stream for remote-view open
   --provider rdp_gateway

@@ -4,6 +4,48 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 146 | 2026-08-14
+
+Scope: retain WSL NAT and the home-network Bastion jump route while making
+Windows Chromium DevTools privately reachable from agent-browser without SSH,
+mirrored networking, a firewall rule, or a persistent terminal.
+
+Actions:
+
+- added an internal WSL-loopback relay that forwards each connection to
+  Windows loopback through a bounded PowerShell/.NET binary pump;
+- tied relay admission, health, handoff, and cleanup to one exact Windows
+  browser PID and translated profile identity, failing closed on zero or
+  multiple main-process matches;
+- generalized the executable-handoff smoke for Windows Chromium and documented
+  the NAT relay in CLI output, README, configuration docs, and the installed
+  agent-browser skill;
+- removed the active `srv1635328` SSH host block, its four authorized keys, and
+  its host-key records while preserving the Tailscale Bastion and desktop jump
+  routes.
+
+Validation:
+
+- disposable headed Windows Chromium launch/close passed under WSL NAT;
+- executable handoff preserved browser/relay PID 255174 and CDP endpoint
+  `127.0.0.1:37943`, then exact close removed both;
+- 1,866 Rust tests, formatting, strict Clippy, dashboard build/typecheck, docs
+  build, release build, focused path and handoff smokes, patch checks, and
+  installed dashboard runtime smoke passed;
+- retained LitScout target `F203CCD6CC8B212B3B55D16368150AEB` remained ready
+  at its exact conversation URL and no prompt was sent.
+
+Result:
+
+- installed executable, reference, and live dashboard manifest SHA-256 are
+  `0d1b1a771d57e2a084d10bcf5e74a47194dcf206af3b7f2c6dc8c428475f66bc`;
+- the no-prompt broker attach request stopped with HTTP 502 before admission;
+  zero matching `cdp_attach` jobs were committed, so there was no detach
+  obligation and the request was not retried;
+- install doctor is ready for launch configuration and live dashboard parity;
+  its remaining failure is the older source-free workstation payload hash plus
+  optional privileged RDP-helper prerequisites, outside this relay change.
+
 ## Turn 145 | 2026-08-09
 
 Scope: repair the upstream renderer and command-delivery boundaries exposed by

@@ -1303,9 +1303,26 @@ The dashboard includes an app-owned login screen. On first start it creates
 `~/.agent-browser/dashboard-auth.json` with hashed superuser credentials and a
 mode-0600 bootstrap credential file at
 `~/.agent-browser/dashboard-auth.env`. The default `admin` account and the
-`codex` observer account are superusers. `~/.agent-browser/.env` records
+`codex` observer account have superuser and observer roles respectively.
+`~/.agent-browser/.env` records
 `AGENT_BROWSER_DASHBOARD_AUTH_FILE` so the user-scoped service and foreground
 runs use the same credential store.
+
+For passwordless phone access over a private tailnet, keep the dashboard bound
+to localhost, expose it only with Tailscale Serve, and explicitly allow the
+operator login:
+
+```bash
+AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH=1
+AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS=operator@example.com
+```
+
+Tailscale authentication is accepted only when the request is HTTPS, its
+forwarded host ends in `.ts.net`, and `Tailscale-User-Login` exactly matches the
+comma-separated allowlist. Cookie login remains available. Do not enable this
+mode on a dashboard listener also reachable through Funnel, Cloudflare, or
+another reverse proxy; those routes do not provide Tailscale Serve's
+identity-header stripping guarantee.
 
 Dashboard sections have stable paths, so refreshes and shared links keep the
 selected area instead of returning to the home view. Use `/service` for the
@@ -1521,7 +1538,7 @@ AGENT_BROWSER_CONFIG=./ci-config.json agent-browser open example.com
 
 All options from the table above can be set in the config file using camelCase keys (e.g., `--executable-path` becomes `"executablePath"`, `--proxy-bypass` becomes `"proxyBypass"`). Unknown keys are ignored for forward compatibility.
 
-Set `service.defaultBrowserBuild` to `stealthcdp_chromium` when service-owned launches should prefer the patched Chromium posture. Ordinary launch and queued tab paths consume that default through the same access-plan resolver used by service clients, so a matching managed profile, site policy, remote view posture, and browser capability binding are applied unless the caller explicitly supplies a profile, browser host, headless mode, executable, or browser build. If no explicit default is configured and a ready `stealthcdp_chromium` manifest is available, fresh installs prefer that build automatically. `agent-browser install stealthcdp-chromium` installs the public `chromium-stealthcdp` Windows asset under `%LOCALAPPDATA%\chromium-stealthcdp` on Windows or the matching WSL-mounted `AppData/Local` directory when available, then exposes `current/manifest.json` and `current/chrome.exe`. When WSL launches that Windows `chrome.exe`, agent-browser translates mounted Windows paths such as `/mnt/c/...` to `C:\...` for Chrome arguments and adds `--no-sandbox`, which this host mode requires for the patched Windows build to expose DevTools. Provide the binary through `executablePath`, `AGENT_BROWSER_EXECUTABLE_PATH`, `AGENT_BROWSER_STEALTHCDP_CHROMIUM_MANIFEST_PATH`, `AGENT_BROWSER_STEALTHCDP_CHROMIUM_INSTALL_ROOT`, or `service.browserBuildManifests.stealthcdp_chromium.manifestPath`. A manifest path points at a promoted artifact `manifest.json`; agent-browser resolves the executable relative to that manifest and reports artifact metadata from the same source. `agent-browser service status` and `GET /api/service/status` include a no-launch `launchConfig` diagnostic with the selected default browser build, executable source, resolved executable path, manifest metadata, file-existence check, `profileSmoke` readiness for validating WSL Windows profile writes, and warnings when `stealthcdp_chromium` is selected without a usable binary or ready manifest.
+Set `service.defaultBrowserBuild` to `stealthcdp_chromium` when service-owned launches should prefer the patched Chromium posture. Ordinary launch and queued tab paths consume that default through the same access-plan resolver used by service clients, so a matching managed profile, site policy, remote view posture, and browser capability binding are applied unless the caller explicitly supplies a profile, browser host, headless mode, executable, or browser build. If no explicit default is configured and a ready `stealthcdp_chromium` manifest is available, fresh installs prefer that build automatically. `agent-browser install stealthcdp-chromium` installs the public `chromium-stealthcdp` Windows asset under `%LOCALAPPDATA%\chromium-stealthcdp` on Windows or the matching WSL-mounted `AppData/Local` directory when available, then exposes `current/manifest.json` and `current/chrome.exe`. When WSL launches that Windows `chrome.exe`, agent-browser translates mounted Windows paths such as `/mnt/c/...` to `C:\...` for Chrome arguments and adds `--no-sandbox`, which this host mode requires for the patched Windows build to expose DevTools. Under WSL NAT, it also starts a private agent-browser child relay from WSL `127.0.0.1` to the exact browser PID on Windows `127.0.0.1`. The relay requires no mirrored networking, firewall rule, SSH tunnel, persistent shell, or terminal tab, survives executable handoff, and exits with the owned browser. Missing or ambiguous profile identity fails closed. Provide the binary through `executablePath`, `AGENT_BROWSER_EXECUTABLE_PATH`, `AGENT_BROWSER_STEALTHCDP_CHROMIUM_MANIFEST_PATH`, `AGENT_BROWSER_STEALTHCDP_CHROMIUM_INSTALL_ROOT`, or `service.browserBuildManifests.stealthcdp_chromium.manifestPath`. A manifest path points at a promoted artifact `manifest.json`; agent-browser resolves the executable relative to that manifest and reports artifact metadata from the same source. `agent-browser service status` and `GET /api/service/status` include a no-launch `launchConfig` diagnostic with the selected default browser build, executable source, resolved executable path, manifest metadata, file-existence check, `profileSmoke` readiness for validating WSL Windows profile writes, and warnings when `stealthcdp_chromium` is selected without a usable binary or ready manifest.
 
 `stealthcdp_chromium` is worthwhile for the default service posture because it keeps the CDP control plane available while reducing the obvious automation signal exposed by ordinary DevTools-attached Chromium. It is not a captcha bypass and it does not replace site policy, pacing, or manual seeding rules, but it gives bot-sensitive sites a better baseline than stock headless Chrome when CDP-backed control is still acceptable.
 
@@ -1695,6 +1712,12 @@ Windows firewall and Hyper-V firewall query through PowerShell when available.
 The doctor also reports `profileSmoke.available`, `profileSmoke.command`, and
 `profileSmoke.reason` so operators can see whether the Windows
 `chromium-stealthcdp` profile-write smoke is ready to run.
+Managed Windows Chromium launches on WSL NAT do not require one of the
+operator-owned fixed-port routes reported by this doctor. Agent-browser owns a
+per-browser loopback relay, binds it only on WSL `127.0.0.1`, verifies one exact
+Windows browser PID and profile, and removes it with the browser. Keep the
+doctor and setup script for operator-owned browsers or explicit fixed-port
+diagnostics.
 
 Run `agent-browser doctor remote-view` before changing Guacamole or RDP setup.
 It is read-only and reports install state, Guacamole route-pool readiness, XRDP
@@ -1742,7 +1765,9 @@ available.
 When WSL launches a Windows `chrome.exe`, agent-browser translates mounted
 Windows paths in Chrome arguments, including profile, cache, download,
 extension, and positional path arguments, from `/mnt/<drive>/...` to
-`<drive>:\...` before launch.
+`<drive>:\...` before launch. In NAT mode it then exposes the exact Windows
+loopback DevTools endpoint through an agent-browser-owned WSL loopback relay;
+no SSH session or visible terminal is retained.
 When the Windows SSM debug instance is available, run
 `pnpm test:windows-browser-setup-powershell-live` to send the generated script
 to Windows and verify that the default invocation stays dry-run, prints rollback

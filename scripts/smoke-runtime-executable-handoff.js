@@ -31,13 +31,15 @@ for (let index = 0; index < args.length; index += 1) {
   }
 }
 
-const tempDir = mkdtempSync(join(tmpdir(), 'agent-browser-runtime-handoff-'));
+const tempRoot = process.env.AGENT_BROWSER_RUNTIME_HANDOFF_PROFILE_ROOT || tmpdir();
+const tempDir = mkdtempSync(join(tempRoot, 'agent-browser-runtime-handoff-'));
 const sessionName = `runtime-handoff-${process.pid}`;
 let browserPid = null;
 
 try {
   const profilePath = join(tempDir, 'profile');
-  const smokeUrl = 'data:text/html,<title>Runtime Handoff Smoke</title><h1>Runtime Handoff Smoke</h1>';
+  const smokeUrl = process.env.AGENT_BROWSER_RUNTIME_HANDOFF_URL
+    || 'data:text/html,<title>Runtime Handoff Smoke</title><h1>Runtime Handoff Smoke</h1>';
   runAgent(['--profile', profilePath, 'open', smokeUrl]);
   const before = runtimeReadback();
   browserPid = before.browserPid;
@@ -127,13 +129,15 @@ try {
 }
 
 function runtimeReadback() {
+  const expectedTitle = process.env.AGENT_BROWSER_RUNTIME_HANDOFF_EXPECTED_TITLE
+    || 'Runtime Handoff Smoke';
   const browserPidResponse = runAgent(['get', 'browser-pid']);
   const cdpUrlResponse = runAgent(['get', 'cdp-url']);
   let titleResponse;
   waitFor(() => {
     titleResponse = runAgent(['get', 'title']);
-    return titleResponse.data?.title === 'Runtime Handoff Smoke';
-  }, 'Runtime handoff smoke page did not finish loading');
+    return titleResponse.data?.title === expectedTitle;
+  }, `Runtime handoff smoke page did not finish loading: ${JSON.stringify(titleResponse)}`);
   const streamResponse = runAgent(['stream', 'status']);
   const serviceResponse = runAgent(['service', 'browsers']);
   const daemonPid = Number.parseInt(readFileSync(runtimePidPath(), 'utf8').trim(), 10);
@@ -151,7 +155,7 @@ function runtimeReadback() {
   assert(Number.isInteger(daemonPid) && daemonPid > 0, 'Daemon PID is missing');
   assert(Number.isInteger(currentBrowserPid) && currentBrowserPid > 0, 'Browser PID is missing');
   assert(typeof cdpUrl === 'string' && cdpUrl.length > 0, 'CDP endpoint is missing');
-  assert(title === 'Runtime Handoff Smoke', `Unexpected tab title '${title}'`);
+  assert(title === expectedTitle, `Unexpected tab title '${title}'`);
   assert(Number.isInteger(streamPort) && streamPort > 0, 'Runtime stream port is missing');
   assert(streamFilePort === streamPort, 'Runtime stream metadata does not match the daemon');
   return {

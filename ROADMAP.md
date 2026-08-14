@@ -6,6 +6,28 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P98 | WSL Windows DevTools Loopback Relay
+
+State: CLOSED
+Current state: WSL NAT launches of Windows Chromium now publish DevTools through
+an agent-browser-owned WSL `127.0.0.1` relay. The relay is bound to the exact
+Windows browser PID and profile, survives daemon executable handoff, and exits
+with the browser without SSH, mirrored networking, firewall changes, or a
+persistent shell. Installed executable SHA-256 is
+`0d1b1a771d57e2a084d10bcf5e74a47194dcf206af3b7f2c6dc8c428475f66bc`.
+
+### Next Recommendation
+
+Keep Bastion as the stateless Tailscale SSH jump host and keep browser control
+local to the desktop. Diagnose the retained service broker's pre-admission 502
+separately before attempting another exact-handle attach; do not retry against
+the retained ChatGPT target or send a prompt without new operator authority.
+
+### Evidence
+
+- `docs/dev/plans/0098-2026-08-14-wsl-windows-devtools-loopback-relay-plan.md`
+- `docs/dev/notes/2026-08-14-wsl-windows-devtools-loopback-relay.md`
+
 ## P97 | CLI Command Timeout Layering Repair
 
 State: CLOSED
