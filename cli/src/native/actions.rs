@@ -42,7 +42,9 @@ use super::element::RefMap;
 use super::inspect_server::InspectServer;
 use super::interaction;
 use super::network::{self, DomainFilter, EventTracker};
-use super::policy::{ActionPolicy, ConfirmActions, PolicyResult};
+use super::policy::{
+    action_consequence, ActionConsequence, ActionPolicy, ConfirmActions, PolicyResult,
+};
 use super::providers;
 use super::recording::{self, RecordingState};
 use super::remote_view::{
@@ -130,6 +132,18 @@ use super::snapshot::{self, SnapshotOptions};
 use super::state;
 use super::storage;
 use super::stream::{self, StreamServer};
+use super::task_authority::{
+    active_task_authority_pending_confirmation, admit_task_authority,
+    cleanup_task_authority_confirmations, decide_task_authority_confirmation,
+    finalize_task_authority_confirmation, finalize_task_authority_step, issue_task_authority,
+    load_task_authority_pending_confirmation, reconcile_task_authority, revoke_task_authority,
+    stage_task_authority_confirmation, task_authority_confirmation_status,
+    task_authority_ledger_root, task_authority_required_from_env, task_authority_status,
+    CleanupTaskAuthorityConfirmations, DecideTaskAuthorityConfirmation,
+    StageTaskAuthorityConfirmation, TaskAuthorityConfirmationRecord, TaskAuthorityContext,
+    TaskAuthorityDecision, TaskAuthorityIssuer, DEFAULT_CONFIRMATION_RECEIPT_MIN_AGE_SECONDS,
+    DEFAULT_CONFIRMATION_RECEIPT_RETENTION_COUNT,
+};
 use super::tracing::{self as native_tracing, TracingState};
 use super::webdriver::appium::AppiumManager;
 use super::webdriver::backend::{BrowserBackend, WebDriverBackend, WEBDRIVER_UNSUPPORTED_ACTIONS};
@@ -246,10 +260,52 @@ async fn relaunch_and_restore_page(
     Ok(())
 }
 
+/// Recover a locally owned browser after browser-level CDP loss without
+/// replaying the command that timed out. Externally attached browsers remain
+/// under their original owner's lifecycle authority and are left untouched.
+pub(crate) async fn recover_owned_browser_after_timeout(
+    state: &mut DaemonState,
+) -> Result<bool, String> {
+    let Some(manager) = state.browser.as_ref() else {
+        return Ok(false);
+    };
+    if manager.is_cdp_connection() {
+        return Ok(false);
+    }
+
+    if let Some(ref mut manager) = state.browser {
+        manager.force_close_owned_after_cdp_timeout().await?;
+    }
+    state.browser = None;
+    state.launch_hash = None;
+    state.attached_runtime_profile = None;
+    state.attached_browser_pid = None;
+    state.close_behavior = CloseBehavior::CloseBrowser;
+    state.screencasting = false;
+    state.reset_input_state();
+    state.update_stream_client().await;
+    auto_launch(state, &json!({})).await?;
+    Ok(true)
+}
+
 pub struct PendingConfirmation {
+    pub confirmation_id: String,
     pub action: String,
     pub cmd: Value,
+    pub consequence: ActionConsequence,
+    pub target_binding: ConfirmationTargetBinding,
+    pub requested_at: Instant,
+    pub durable_task_authority: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmationTargetBinding {
+    pub target_id: Option<String>,
+    pub url: Option<String>,
+}
+
+const CONFIRMATION_TTL: Duration = Duration::from_secs(60);
 
 pub(crate) fn action_skips_browser_launch(action: &str) -> bool {
     matches!(
@@ -278,6 +334,13 @@ pub(crate) fn action_skips_browser_launch(action: &str) -> bool {
             | "state_clear"
             | "state_clean"
             | "state_rename"
+            | "confirm"
+            | "deny"
+            | "task_authority_issue"
+            | "task_authority_reconcile"
+            | "task_authority_revoke"
+            | "task_authority_confirmation_cleanup"
+            | "task_authority_status"
             | "dependent_batch"
             | "device_list"
             | "stream_enable"
@@ -2357,7 +2420,15 @@ fn service_profile_lease_metadata_for_command(command: &Value) -> Option<Service
         .and_then(|value| value.as_str())
         .is_some_and(|action| {
             action.starts_with("service_")
-                || matches!(action, "runtime_handoff_prepare" | "runtime_handoff_resume")
+                || matches!(
+                    action,
+                    "runtime_handoff_prepare"
+                        | "runtime_handoff_resume"
+                        | "task_authority_issue"
+                        | "task_authority_reconcile"
+                        | "task_authority_revoke"
+                        | "task_authority_status"
+                )
         })
     {
         return None;
@@ -2773,6 +2844,10 @@ pub struct DaemonState {
     pub har_recording: bool,
     pub har_entries: Vec<HarEntry>,
     pub confirm_actions: Option<ConfirmActions>,
+    pub require_task_authority: bool,
+    task_authority_ledger_root: PathBuf,
+    confirmed_task_authority_id: Option<String>,
+    confirmed_control_plane_command_id: Option<String>,
     pub inspect_server: Option<InspectServer>,
     pub routes: Arc<RwLock<Vec<RouteEntry>>>,
     pub tracked_requests: Vec<TrackedRequest>,
@@ -2857,6 +2932,10 @@ impl DaemonState {
             har_recording: false,
             har_entries: Vec::new(),
             confirm_actions: ConfirmActions::from_env(),
+            require_task_authority: task_authority_required_from_env(),
+            task_authority_ledger_root: task_authority_ledger_root(),
+            confirmed_task_authority_id: None,
+            confirmed_control_plane_command_id: None,
             inspect_server: None,
             routes: Arc::new(RwLock::new(Vec::new())),
             tracked_requests: Vec::new(),
@@ -2901,7 +2980,7 @@ impl DaemonState {
             .unwrap_or(self.default_timeout_ms)
     }
 
-    fn reset_input_state(&mut self) {
+    pub(crate) fn reset_input_state(&mut self) {
         self.mouse_state = MouseState::default();
     }
 
@@ -4295,6 +4374,377 @@ fn active_target_binding(state: &DaemonState) -> Option<String> {
         .map(str::to_string)
 }
 
+fn confirmation_target_binding(cmd: &Value, state: &DaemonState) -> ConfirmationTargetBinding {
+    let service_handle = cmd.get("serviceTabHandle").and_then(Value::as_object);
+    let requested_target_id = service_handle
+        .and_then(|handle| handle.get("targetId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let requested_url = service_handle
+        .and_then(|handle| handle.get("url"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if requested_target_id.is_some() {
+        return ConfirmationTargetBinding {
+            target_id: requested_target_id,
+            url: requested_url,
+        };
+    }
+    ConfirmationTargetBinding {
+        target_id: state
+            .browser
+            .as_ref()
+            .and_then(|manager| manager.active_target_id().ok())
+            .map(str::to_string),
+        url: state
+            .browser
+            .as_ref()
+            .and_then(|manager| manager.active_page_url())
+            .map(str::to_string),
+    }
+}
+
+fn task_authority_decision(
+    cmd: &Value,
+    state: &DaemonState,
+    action: &str,
+    reserve_budget: bool,
+) -> Result<TaskAuthorityDecision, String> {
+    if matches!(
+        action,
+        "confirm"
+            | "deny"
+            | "task_authority_issue"
+            | "task_authority_reconcile"
+            | "task_authority_revoke"
+            | "task_authority_confirmation_cleanup"
+            | "task_authority_status"
+    ) {
+        return Ok(TaskAuthorityDecision::NotPresent);
+    }
+    let binding = confirmation_target_binding(cmd, state);
+    admit_task_authority(
+        cmd,
+        action,
+        action_consequence(action),
+        &TaskAuthorityContext {
+            session_id: &state.session_id,
+            target_id: binding.target_id.as_deref(),
+            url: binding.url.as_deref(),
+            confirmed_authority_id: state.confirmed_task_authority_id.as_deref(),
+            require_authority: state.require_task_authority,
+            ledger_root: state.task_authority_ledger_root.clone(),
+        },
+        reserve_budget,
+    )
+}
+
+fn finalize_ordered_task_response(
+    cmd: &Value,
+    state: &DaemonState,
+    ordered_step_admitted: bool,
+    response: Value,
+) -> Value {
+    if !ordered_step_admitted {
+        return response;
+    }
+    let binding = confirmation_target_binding(cmd, state);
+    let context = TaskAuthorityContext {
+        session_id: &state.session_id,
+        target_id: binding.target_id.as_deref(),
+        url: binding.url.as_deref(),
+        confirmed_authority_id: state.confirmed_task_authority_id.as_deref(),
+        require_authority: state.require_task_authority,
+        ledger_root: state.task_authority_ledger_root.clone(),
+    };
+    if let Err(error) = finalize_task_authority_step(cmd, &context, &response) {
+        return error_response(
+            cmd.get("id").and_then(Value::as_str).unwrap_or(""),
+            &format!("Task authority outcome finalization failed: {error}"),
+        );
+    }
+    response
+}
+
+fn task_authority_control_requires_confirmation(action: &str) -> bool {
+    matches!(
+        action,
+        "task_authority_issue" | "task_authority_reconcile" | "task_authority_revoke"
+    )
+}
+
+fn task_authority_active_target(state: &DaemonState) -> Result<(String, String), String> {
+    let binding = confirmation_target_binding(&json!({}), state);
+    Ok((
+        binding
+            .target_id
+            .ok_or("Task authority control requires a live retained target")?,
+        binding
+            .url
+            .ok_or("Task authority control requires the retained target URL")?,
+    ))
+}
+
+async fn handle_task_authority_issue(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
+    let request = cmd
+        .get("request")
+        .ok_or("Task authority issue requires request")?;
+    let request_object = request
+        .as_object()
+        .ok_or("Task authority issue request must be an object")?;
+    for field in ["taskName", "serviceName", "agentName"] {
+        let requested = request_object.get(field).and_then(Value::as_str);
+        let command = cmd.get(field).and_then(Value::as_str);
+        if requested != command {
+            return Err(format!(
+                "Task authority issue {field} must exactly match the command caller label"
+            ));
+        }
+    }
+    let (target_id, url) = task_authority_active_target(state)?;
+    issue_task_authority(
+        request,
+        &state.session_id,
+        &target_id,
+        &url,
+        &state.task_authority_ledger_root,
+    )
+}
+
+async fn handle_task_authority_revoke(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
+    let authority_id = cmd
+        .get("authorityId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("Task authority revoke requires authorityId")?;
+    let revoked_by = cmd.get("revokedBy").and_then(Value::as_str).unwrap_or("");
+    let reason = cmd.get("reason").and_then(Value::as_str).unwrap_or("");
+    let (target_id, url) = task_authority_active_target(state)?;
+    revoke_task_authority(
+        &state.task_authority_ledger_root,
+        &state.session_id,
+        authority_id,
+        revoked_by,
+        reason,
+        &target_id,
+        &url,
+    )
+}
+
+async fn handle_task_authority_reconcile(
+    cmd: &Value,
+    state: &DaemonState,
+) -> Result<Value, String> {
+    let predecessor_authority_id = cmd
+        .get("authorityId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("Task authority reconcile requires authorityId")?;
+    let request = cmd
+        .get("request")
+        .ok_or("Task authority reconcile requires request")?;
+    let request_object = request
+        .as_object()
+        .ok_or("Task authority reconcile request must be an object")?;
+    for field in ["taskName", "serviceName", "agentName"] {
+        if request_object.get(field).and_then(Value::as_str)
+            != cmd.get(field).and_then(Value::as_str)
+        {
+            return Err(format!(
+                "Task authority reconcile {field} must exactly match the command caller label"
+            ));
+        }
+    }
+    let (target_id, url) = task_authority_active_target(state)?;
+    reconcile_task_authority(
+        &state.task_authority_ledger_root,
+        &state.session_id,
+        predecessor_authority_id,
+        request,
+        &target_id,
+        &url,
+    )
+}
+
+async fn handle_task_authority_status(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
+    let mut status = task_authority_status(
+        &state.task_authority_ledger_root,
+        &state.session_id,
+        cmd.get("authorityId").and_then(Value::as_str),
+    )?;
+    status["confirmationStatus"] =
+        task_authority_confirmation_status(&state.task_authority_ledger_root, &state.session_id)?;
+    Ok(status)
+}
+
+async fn handle_task_authority_confirmation_cleanup(
+    cmd: &Value,
+    state: &DaemonState,
+) -> Result<Value, String> {
+    let requested_by: TaskAuthorityIssuer = serde_json::from_value(
+        cmd.get("requestedBy")
+            .cloned()
+            .ok_or("Task authority confirmation cleanup requires requestedBy")?,
+    )
+    .map_err(|error| format!("Invalid confirmation cleanup requestedBy: {error}"))?;
+    let retain_count = cmd
+        .get("retainCount")
+        .and_then(Value::as_u64)
+        .map(usize::try_from)
+        .transpose()
+        .map_err(|_| "Confirmation retainCount overflow")?
+        .unwrap_or(DEFAULT_CONFIRMATION_RECEIPT_RETENTION_COUNT);
+    let min_age_seconds = cmd
+        .get("minAgeSeconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_CONFIRMATION_RECEIPT_MIN_AGE_SECONDS);
+    cleanup_task_authority_confirmations(CleanupTaskAuthorityConfirmations {
+        root: &state.task_authority_ledger_root,
+        session_id: &state.session_id,
+        retain_count,
+        min_age_seconds,
+        requested_by,
+        apply: cmd.get("apply").and_then(Value::as_bool).unwrap_or(false),
+        review_sha256: cmd.get("reviewSha256").and_then(Value::as_str),
+    })
+}
+
+fn stage_confirmation(cmd: &Value, state: &mut DaemonState, action: &str) -> Value {
+    let now = Instant::now();
+    if let Some(pending) = state.pending_confirmation.as_ref() {
+        if now.duration_since(pending.requested_at) < CONFIRMATION_TTL {
+            return error_response(
+                cmd.get("id").and_then(Value::as_str).unwrap_or(""),
+                &format!(
+                    "Confirmation '{}' for action '{}' is still pending",
+                    pending.confirmation_id, pending.action
+                ),
+            );
+        }
+        state.pending_confirmation = None;
+    }
+    if !task_authority_control_requires_confirmation(action) {
+        match active_task_authority_pending_confirmation(
+            &state.task_authority_ledger_root,
+            &state.session_id,
+        ) {
+            Ok(Some(pending)) => {
+                return error_response(
+                    cmd.get("id").and_then(Value::as_str).unwrap_or(""),
+                    &format!(
+                        "Confirmation '{}' for action '{}' is still pending",
+                        pending.confirmation_id, pending.action
+                    ),
+                )
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return error_response(cmd.get("id").and_then(Value::as_str).unwrap_or(""), &error)
+            }
+        }
+    }
+
+    let confirmation_id = cmd
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("confirmation-{}", uuid::Uuid::new_v4()));
+    let consequence = action_consequence(action);
+    let mut target_binding = confirmation_target_binding(cmd, state);
+    if task_authority_control_requires_confirmation(action) {
+        let request = cmd.get("request");
+        if target_binding.target_id.is_none() {
+            target_binding.target_id = request
+                .and_then(|value| value.get("expectedTargetId"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        if target_binding.url.is_none() {
+            target_binding.url = request
+                .and_then(|value| value.get("expectedUrl"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+    }
+    let durable_task_authority = task_authority_control_requires_confirmation(action);
+    let durable_record = if durable_task_authority {
+        let Some(target_id) = target_binding.target_id.as_deref() else {
+            return error_response(
+                cmd.get("id").and_then(Value::as_str).unwrap_or(""),
+                "Task authority confirmation requires an exact retained target",
+            );
+        };
+        let Some(url) = target_binding.url.as_deref() else {
+            return error_response(
+                cmd.get("id").and_then(Value::as_str).unwrap_or(""),
+                "Task authority confirmation requires an exact retained URL",
+            );
+        };
+        match stage_task_authority_confirmation(StageTaskAuthorityConfirmation {
+            root: &state.task_authority_ledger_root,
+            session_id: &state.session_id,
+            confirmation_id: &confirmation_id,
+            action,
+            consequence_class: consequence.as_str(),
+            command: cmd,
+            target_id,
+            url,
+            ttl_seconds: CONFIRMATION_TTL.as_secs(),
+        }) {
+            Ok(record) => Some(record),
+            Err(error) => {
+                return error_response(cmd.get("id").and_then(Value::as_str).unwrap_or(""), &error)
+            }
+        }
+    } else {
+        None
+    };
+    state.pending_confirmation = Some(PendingConfirmation {
+        confirmation_id: confirmation_id.clone(),
+        action: action.to_string(),
+        cmd: cmd.clone(),
+        consequence,
+        target_binding: target_binding.clone(),
+        requested_at: now,
+        durable_task_authority,
+    });
+    let mut response = json!({
+        "id": cmd.get("id").cloned().unwrap_or(Value::Null),
+        "success": true,
+        "data": {
+            "confirmation_required": true,
+            "confirmation_id": confirmation_id.clone(),
+            "confirmationId": confirmation_id,
+            "action": action,
+            "category": consequence.as_str(),
+            "consequenceClass": consequence.as_str(),
+            "description": consequence.description(),
+            "expectedTargetBinding": target_binding,
+            "expiresInMs": CONFIRMATION_TTL.as_millis() as u64,
+            "durable": durable_task_authority,
+        },
+    });
+    if let Some(record) = durable_record {
+        response["data"]["requestSha256"] = json!(record.request_sha256);
+        response["data"]["requestedBy"] = json!(record.requested_by);
+        response["data"]["requestedAt"] = json!(record.requested_at);
+        response["data"]["expiresAt"] = json!(record.expires_at);
+    }
+    if let Some(authority) = cmd.get("taskAuthority") {
+        response["data"]["taskAuthority"] = json!({
+            "id": authority.get("id").cloned().unwrap_or(Value::Null),
+            "taskName": authority.get("taskName").cloned().unwrap_or(Value::Null),
+            "consequenceCeiling": authority
+                .get("consequenceCeiling")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "expiresAt": authority.get("expiresAt").cloned().unwrap_or(Value::Null),
+        });
+    }
+    response
+}
+
 /// Executes parsed commands under the outer control-plane request. Stable
 /// steps must preserve the active target identity; target-changing steps make
 /// the next step bind to the new active target.
@@ -4435,6 +4885,26 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     // Drain and apply pending CDP events (console, errors, screencast frames, target lifecycle)
     state.drain_cdp_events_background().await;
 
+    match task_authority_decision(cmd, state, action, false) {
+        Ok(TaskAuthorityDecision::RequiresConfirmation(_)) => {
+            return stage_confirmation(cmd, state, action);
+        }
+        Ok(TaskAuthorityDecision::NotPresent | TaskAuthorityDecision::Admitted(_)) => {}
+        Err(error) => return error_response(&id, &error),
+    }
+
+    if task_authority_control_requires_confirmation(action)
+        && state.confirmed_control_plane_command_id.as_deref() != Some(id.as_str())
+    {
+        if id.is_empty() {
+            return error_response(
+                &id,
+                "Task authority issue and revoke commands require a non-empty id",
+            );
+        }
+        return stage_confirmation(cmd, state, action);
+    }
+
     // Hot-reload and check action policy
     if let Some(ref mut policy) = state.policy {
         let _ = policy.reload();
@@ -4447,15 +4917,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                 );
             }
             PolicyResult::RequiresConfirmation => {
-                state.pending_confirmation = Some(PendingConfirmation {
-                    action: action.to_string(),
-                    cmd: cmd.clone(),
-                });
-                return json!({
-                    "id": id,
-                    "success": true,
-                    "data": { "confirmation_required": true, "action": action },
-                });
+                return stage_confirmation(cmd, state, action);
             }
         }
     }
@@ -4464,22 +4926,19 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     if action != "confirm" && action != "deny" {
         if let Some(ref ca) = state.confirm_actions {
             if ca.requires_confirmation(action) {
-                state.pending_confirmation = Some(PendingConfirmation {
-                    action: action.to_string(),
-                    cmd: cmd.clone(),
-                });
-                return json!({
-                    "id": id,
-                    "success": true,
-                    "data": {
-                        "confirmation_required": true,
-                        "confirmation_id": id,
-                        "action": action,
-                    },
-                });
+                return stage_confirmation(cmd, state, action);
             }
         }
     }
+
+    let ordered_step_admitted = match task_authority_decision(cmd, state, action, true) {
+        Ok(TaskAuthorityDecision::NotPresent) => false,
+        Ok(TaskAuthorityDecision::Admitted(admission)) => admission.step_id.is_some(),
+        Ok(TaskAuthorityDecision::RequiresConfirmation(_)) => {
+            return stage_confirmation(cmd, state, action);
+        }
+        Err(error) => return error_response(&id, &error),
+    };
 
     if action == "dependent_batch" {
         let action_started = std::time::Instant::now();
@@ -4507,7 +4966,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                 "daemonTotalMs": daemon_total_ms,
             });
         }
-        return response;
+        return finalize_ordered_task_response(cmd, state, ordered_step_admitted, response);
     }
 
     let skip_launch = action_skips_browser_launch(action)
@@ -4560,10 +5019,20 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                 );
             }
             if let BrowserRecoveryPersistence::Blocked(reason) = recovery_persistence {
-                return error_response(&id, &reason);
+                return finalize_ordered_task_response(
+                    cmd,
+                    state,
+                    ordered_step_admitted,
+                    error_response(&id, &reason),
+                );
             }
             if let Err(e) = auto_launch(state, cmd).await {
-                return error_response(&id, &format!("Auto-launch failed: {}", e));
+                return finalize_ordered_task_response(
+                    cmd,
+                    state,
+                    ordered_step_admitted,
+                    error_response(&id, &format!("Auto-launch failed: {}", e)),
+                );
             }
         }
 
@@ -4574,7 +5043,12 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         }
 
         if let Some(mismatch) = active_browser_profile_mismatch(cmd, state) {
-            return error_response(&id, &mismatch);
+            return finalize_ordered_task_response(
+                cmd,
+                state,
+                ordered_step_admitted,
+                error_response(&id, &mismatch),
+            );
         }
     }
 
@@ -4582,11 +5056,16 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     if matches!(state.backend_type, BackendType::WebDriver)
         && WEBDRIVER_UNSUPPORTED_ACTIONS.contains(&action)
     {
-        return error_response(
-            &id,
-            &format!(
-                "Action '{}' is not supported on the WebDriver backend",
-                action
+        return finalize_ordered_task_response(
+            cmd,
+            state,
+            ordered_step_admitted,
+            error_response(
+                &id,
+                &format!(
+                    "Action '{}' is not supported on the WebDriver backend",
+                    action
+                ),
             ),
         );
     }
@@ -4611,6 +5090,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "inspect" => handle_inspect(state).await,
         "title" => handle_title(state).await,
         "content" => handle_content(state).await,
+        "read_page" => handle_read_page(cmd, state).await,
         "evaluate" => handle_evaluate(cmd, state).await,
         "runtime_handoff_prepare" => handle_runtime_handoff_prepare(state).await,
         "runtime_handoff_resume" => handle_runtime_handoff_resume(state).await,
@@ -4740,6 +5220,13 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "stream_disable" => handle_stream_disable(state).await,
         "stream_status" => handle_stream_status(state).await,
         "service_status" => handle_service_status(cmd).await,
+        "task_authority_issue" => handle_task_authority_issue(cmd, state).await,
+        "task_authority_reconcile" => handle_task_authority_reconcile(cmd, state).await,
+        "task_authority_revoke" => handle_task_authority_revoke(cmd, state).await,
+        "task_authority_confirmation_cleanup" => {
+            handle_task_authority_confirmation_cleanup(cmd, state).await
+        }
+        "task_authority_status" => handle_task_authority_status(cmd, state).await,
         "service_reconcile" => handle_service_reconcile(cmd).await,
         "service_browser_close" => handle_service_browser_close(cmd, state).await,
         "service_browser_repair" => handle_service_browser_repair(cmd).await,
@@ -4858,7 +5345,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         _ => Err(format!("Not yet implemented: {}", action)),
     };
 
-    let mut resp = match result {
+    let resp = match result {
         Ok(mut data) => {
             let warning = take_response_warning(&mut data);
             let mut resp = success_response(&id, data);
@@ -4880,6 +5367,8 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         Err(e) => error_response(&id, &super::browser::to_ai_friendly_error(&e)),
     };
 
+    let mut resp = resp;
+
     let action_execution_ms =
         u64::try_from(action_started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -4894,31 +5383,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                         dialog.dialog_type, dialog.message
                     )),
                 );
-            }
-        }
-    }
-
-    if let Some(ref server) = state.stream_server {
-        let duration_ms = cmd_start.elapsed().as_millis() as u64;
-        let success = resp
-            .get("status")
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| s == "success");
-        let data = resp.get("data").cloned().unwrap_or(Value::Null);
-        server.broadcast_result(&id, action, success, &data, duration_ms);
-
-        if let Some(ref mgr) = state.browser {
-            server.broadcast_tabs(&mgr.tab_list(false)).await;
-
-            // Keep the stream server's CDP session in sync with the active tab
-            // so screencasting always targets the correct page.
-            if matches!(
-                action,
-                "tab_new" | "tab_switch" | "tab_close" | "open" | "navigate" | "view_focus"
-            ) {
-                let session_id = mgr.active_session_id().ok().map(|s| s.to_string());
-                server.set_cdp_session_id(session_id).await;
-                server.notify_client_changed();
             }
         }
     }
@@ -4943,6 +5407,33 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                     "daemonTotalMs": daemon_total_ms,
                 }),
             );
+        }
+    }
+
+    let resp = finalize_ordered_task_response(cmd, state, ordered_step_admitted, resp);
+
+    if let Some(ref server) = state.stream_server {
+        let duration_ms = cmd_start.elapsed().as_millis() as u64;
+        let success = resp
+            .get("status")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s == "success");
+        let data = resp.get("data").cloned().unwrap_or(Value::Null);
+        server.broadcast_result(&id, action, success, &data, duration_ms);
+
+        if let Some(ref mgr) = state.browser {
+            server.broadcast_tabs(&mgr.tab_list(false)).await;
+
+            // Keep the stream server's CDP session in sync with the active tab
+            // so screencasting always targets the correct page.
+            if matches!(
+                action,
+                "tab_new" | "tab_switch" | "tab_close" | "open" | "navigate" | "view_focus"
+            ) {
+                let session_id = mgr.active_session_id().ok().map(|s| s.to_string());
+                server.set_cdp_session_id(session_id).await;
+                server.notify_client_changed();
+            }
         }
     }
 
@@ -6813,6 +7304,75 @@ async fn handle_content(state: &mut DaemonState) -> Result<Value, String> {
         .await
         .unwrap_or_default();
     Ok(json!({ "html": html, "origin": url }))
+}
+
+const MAX_PAGE_RESOURCE_BYTES: u64 = 1_000_000;
+const MAX_PAGE_RESOURCE_TIMEOUT_MS: u64 = 60_000;
+
+async fn handle_read_page(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    let url = cmd
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or("Missing 'url' parameter")?;
+    let parsed = url::Url::parse(url).map_err(|error| format!("Invalid page URL: {error}"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Page reader only supports http and https URLs".to_string());
+    }
+    {
+        let domain_filter = state.domain_filter.read().await;
+        if let Some(filter) = domain_filter.as_ref() {
+            filter.check_url(url)?;
+        }
+    }
+
+    let max_bytes = cmd
+        .get("maxBytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(64_000);
+    let timeout_ms = cmd
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(15_000);
+    if max_bytes == 0 || max_bytes > MAX_PAGE_RESOURCE_BYTES {
+        return Err(format!(
+            "Page resource maxBytes must be between 1 and {MAX_PAGE_RESOURCE_BYTES}"
+        ));
+    }
+    if timeout_ms == 0 || timeout_ms > MAX_PAGE_RESOURCE_TIMEOUT_MS {
+        return Err(format!(
+            "Page resource timeoutMs must be between 1 and {MAX_PAGE_RESOURCE_TIMEOUT_MS}"
+        ));
+    }
+    let include_credentials = cmd
+        .get("includeCredentials")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let manager = state.browser.as_ref().ok_or("Browser not launched")?;
+    let active_target_url = manager.active_page_url().unwrap_or_default().to_string();
+    let active_target_title = manager.active_page_title().unwrap_or_default().to_string();
+    let result = manager
+        .read_page_resource(
+            url,
+            usize::try_from(max_bytes).map_err(|_| "Page resource maxBytes is too large")?,
+            timeout_ms,
+            include_credentials,
+        )
+        .await?;
+
+    Ok(json!({
+        "url": url,
+        "activeTargetUrl": active_target_url,
+        "activeTargetTitle": active_target_title,
+        "httpStatusCode": result.http_status_code,
+        "mimeType": result.mime_type,
+        "source": "Network.loadNetworkResource",
+        "bytesRead": result.bytes_read,
+        "bytesReturned": result.bytes_returned,
+        "truncated": result.truncated,
+        "includeCredentials": include_credentials,
+        "text": result.body,
+    }))
 }
 
 fn command_evaluation_timeout_ms(cmd: &Value) -> Option<u64> {
@@ -23014,32 +23574,195 @@ async fn handle_auth_login(cmd: &Value, state: &mut DaemonState) -> Result<Value
 }
 
 // ---------------------------------------------------------------------------
-// Confirmation handlers (stub)
+// Confirmation handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_confirm(_cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+fn take_matching_confirmation(
+    cmd: &Value,
+    state: &mut DaemonState,
+) -> Result<PendingConfirmation, String> {
+    let confirmation_id = cmd
+        .get("confirmationId")
+        .or_else(|| cmd.get("confirmation_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("Missing confirmationId")?;
     let pending = state
         .pending_confirmation
         .take()
         .ok_or("No pending confirmation")?;
+    if pending.confirmation_id != confirmation_id {
+        return Err(format!(
+            "Confirmation ID mismatch: expected '{}', got '{}'",
+            pending.confirmation_id, confirmation_id
+        ));
+    }
+    if let Some(expected_action) = cmd
+        .get("expectedAction")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        if pending.action != expected_action {
+            return Err(format!(
+                "Confirmation action mismatch: expected '{}', got '{}'",
+                expected_action, pending.action
+            ));
+        }
+    }
+    if pending.requested_at.elapsed() >= CONFIRMATION_TTL {
+        return Err(format!(
+            "Confirmation '{}' expired after {} seconds",
+            pending.confirmation_id,
+            CONFIRMATION_TTL.as_secs()
+        ));
+    }
+    Ok(pending)
+}
+
+fn task_authority_decision_actor(cmd: &Value) -> Result<TaskAuthorityIssuer, String> {
+    serde_json::from_value(
+        cmd.get("decidedBy")
+            .cloned()
+            .ok_or("Task authority confirmation requires decidedBy")?,
+    )
+    .map_err(|error| format!("Invalid task authority confirmation decidedBy: {error}"))
+}
+
+fn pending_from_durable_record(
+    record: &TaskAuthorityConfirmationRecord,
+) -> Result<PendingConfirmation, String> {
+    Ok(PendingConfirmation {
+        confirmation_id: record.confirmation_id.clone(),
+        action: record.action.clone(),
+        cmd: record.command().clone(),
+        consequence: ActionConsequence::parse(&record.consequence_class)
+            .ok_or("Durable confirmation has an invalid consequence class")?,
+        target_binding: ConfirmationTargetBinding {
+            target_id: Some(record.target_binding.target_id.clone()),
+            url: Some(record.target_binding.url.clone()),
+        },
+        requested_at: Instant::now(),
+        durable_task_authority: true,
+    })
+}
+
+fn decide_durable_task_authority_confirmation(
+    cmd: &Value,
+    state: &mut DaemonState,
+    decision: &str,
+) -> Result<Option<(PendingConfirmation, TaskAuthorityConfirmationRecord)>, String> {
+    let durable = load_task_authority_pending_confirmation(
+        &state.task_authority_ledger_root,
+        &state.session_id,
+    )?;
+    let in_memory_durable = state
+        .pending_confirmation
+        .as_ref()
+        .is_some_and(|pending| pending.durable_task_authority);
+    if durable.is_none() {
+        if in_memory_durable {
+            return Err(
+                "Pending task authority confirmation has no matching durable record".to_string(),
+            );
+        }
+        return Ok(None);
+    }
+    state.pending_confirmation = None;
+    let confirmation_id = cmd
+        .get("confirmationId")
+        .or_else(|| cmd.get("confirmation_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("Missing confirmationId")?;
+    let expected_action = cmd
+        .get("expectedAction")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("Task authority confirmation requires expectedAction")?;
+    let actor = task_authority_decision_actor(cmd)?;
+    let current = confirmation_target_binding(&json!({}), state);
+    let decided = decide_task_authority_confirmation(DecideTaskAuthorityConfirmation {
+        root: &state.task_authority_ledger_root,
+        session_id: &state.session_id,
+        confirmation_id,
+        expected_action,
+        decision,
+        decided_by: actor,
+        target_id: current.target_id.as_deref(),
+        url: current.url.as_deref(),
+    })?;
+    let pending = pending_from_durable_record(&decided)?;
+    Ok(Some((pending, decided)))
+}
+
+async fn handle_confirm(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    let durable = decide_durable_task_authority_confirmation(cmd, state, "confirm")?;
+    let (pending, durable_record) = if let Some((pending, record)) = durable {
+        (pending, Some(record))
+    } else {
+        let pending = take_matching_confirmation(cmd, state)?;
+        let current_target_binding = confirmation_target_binding(&pending.cmd, state);
+        if current_target_binding != pending.target_binding {
+            return Err(format!(
+                "Confirmation target changed before approval: expected {}, got {}",
+                serde_json::to_string(&pending.target_binding).unwrap_or_default(),
+                serde_json::to_string(&current_target_binding).unwrap_or_default()
+            ));
+        }
+        (pending, None)
+    };
 
     // Temporarily remove policy and confirm_actions to avoid re-triggering confirmation
     let policy = state.policy.take();
     let confirm_actions = state.confirm_actions.take();
+    let previous_confirmed_authority = state.confirmed_task_authority_id.take();
+    let previous_confirmed_control_plane = state.confirmed_control_plane_command_id.take();
+    state.confirmed_task_authority_id = pending
+        .cmd
+        .get("taskAuthority")
+        .and_then(|authority| authority.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    state.confirmed_control_plane_command_id = pending
+        .cmd
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let result = Box::pin(execute_command(&pending.cmd, state)).await;
+    state.confirmed_task_authority_id = previous_confirmed_authority;
+    state.confirmed_control_plane_command_id = previous_confirmed_control_plane;
     state.policy = policy;
     state.confirm_actions = confirm_actions;
+    if let Some(record) = durable_record.as_ref() {
+        finalize_task_authority_confirmation(&state.task_authority_ledger_root, record, &result)?;
+    }
 
-    Ok(json!({ "confirmed": true, "action": pending.action, "result": result }))
+    Ok(json!({
+        "confirmed": true,
+        "confirmationId": pending.confirmation_id,
+        "action": pending.action,
+        "consequenceClass": pending.consequence.as_str(),
+        "targetBinding": pending.target_binding,
+        "result": result,
+    }))
 }
 
-async fn handle_deny(_cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let pending = state
-        .pending_confirmation
-        .take()
-        .ok_or("No pending confirmation")?;
+async fn handle_deny(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    let pending = if let Some((pending, _)) =
+        decide_durable_task_authority_confirmation(cmd, state, "deny")?
+    {
+        pending
+    } else {
+        take_matching_confirmation(cmd, state)?
+    };
 
-    Ok(json!({ "denied": true, "action": pending.action }))
+    Ok(json!({
+        "denied": true,
+        "confirmationId": pending.confirmation_id,
+        "action": pending.action,
+        "consequenceClass": pending.consequence.as_str(),
+        "targetBinding": pending.target_binding,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -23528,6 +24251,284 @@ mod tests {
     use crate::test_utils::EnvGuard;
     use std::collections::BTreeMap;
     use std::fs;
+
+    fn confirm_actions(categories: &[&str]) -> ConfirmActions {
+        ConfirmActions {
+            categories: categories
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn agentic_confirmation_is_classified_and_denial_executes_no_action() {
+        let mut state = DaemonState::new();
+        state.confirm_actions = Some(confirm_actions(&["external_mutation"]));
+        let requested = execute_command(
+            &json!({ "id": "approval-1", "action": "click", "selector": "#submit" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(requested["success"], true);
+        assert_eq!(requested["data"]["confirmation_required"], true);
+        assert_eq!(requested["data"]["confirmation_id"], "approval-1");
+        assert_eq!(requested["data"]["consequenceClass"], "external_mutation");
+        assert_eq!(requested["data"]["expiresInMs"], 60_000);
+        assert_eq!(
+            requested["data"]["expectedTargetBinding"]["targetId"],
+            Value::Null
+        );
+        assert!(state.browser.is_none());
+
+        let denied = execute_command(
+            &json!({ "id": "deny-1", "action": "deny", "confirmationId": "approval-1" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(denied["success"], true);
+        assert_eq!(denied["data"]["denied"], true);
+        assert_eq!(denied["data"]["consequenceClass"], "external_mutation");
+        assert!(state.pending_confirmation.is_none());
+        assert!(state.browser.is_none());
+    }
+
+    #[tokio::test]
+    async fn agentic_confirmation_requires_exact_id_and_consumes_mismatch() {
+        let mut state = DaemonState::new();
+        state.confirm_actions = Some(confirm_actions(&["state_list"]));
+        let requested = execute_command(
+            &json!({ "id": "approval-expected", "action": "state_list" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(requested["data"]["confirmation_required"], true);
+
+        let rejected = execute_command(
+            &json!({ "id": "confirm-wrong", "action": "confirm", "confirmationId": "wrong" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(rejected["success"], false);
+        assert!(rejected["error"].as_str().unwrap().contains("ID mismatch"));
+        assert!(state.pending_confirmation.is_none());
+    }
+
+    #[tokio::test]
+    async fn confirmation_expected_action_cannot_approve_a_different_pending_control() {
+        let mut state = DaemonState::new();
+        state.confirm_actions = Some(confirm_actions(&["state_list"]));
+        let requested = execute_command(
+            &json!({ "id": "approval-expected-action", "action": "state_list" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(requested["data"]["confirmation_required"], true);
+
+        let rejected = execute_command(
+            &json!({
+                "id": "confirm-wrong-action",
+                "action": "confirm",
+                "confirmationId": "approval-expected-action",
+                "expectedAction": "task_authority_reconcile"
+            }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(rejected["success"], false);
+        assert!(rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("action mismatch"));
+        assert!(state.pending_confirmation.is_none());
+    }
+
+    #[tokio::test]
+    async fn agentic_confirmation_rejects_expiry_and_target_change() {
+        let mut expired = DaemonState::new();
+        expired.pending_confirmation = Some(PendingConfirmation {
+            confirmation_id: "expired".to_string(),
+            action: "state_list".to_string(),
+            cmd: json!({ "id": "expired", "action": "state_list" }),
+            consequence: ActionConsequence::ReadOnly,
+            target_binding: ConfirmationTargetBinding {
+                target_id: None,
+                url: None,
+            },
+            requested_at: Instant::now() - CONFIRMATION_TTL,
+            durable_task_authority: false,
+        });
+        let rejected = execute_command(
+            &json!({ "id": "confirm-expired", "action": "confirm", "confirmationId": "expired" }),
+            &mut expired,
+        )
+        .await;
+        assert_eq!(rejected["success"], false);
+        assert!(rejected["error"].as_str().unwrap().contains("expired"));
+
+        let mut changed = DaemonState::new();
+        changed.pending_confirmation = Some(PendingConfirmation {
+            confirmation_id: "target-bound".to_string(),
+            action: "state_list".to_string(),
+            cmd: json!({ "id": "target-bound", "action": "state_list" }),
+            consequence: ActionConsequence::ReadOnly,
+            target_binding: ConfirmationTargetBinding {
+                target_id: Some("target-before".to_string()),
+                url: Some("https://example.com/before".to_string()),
+            },
+            requested_at: Instant::now(),
+            durable_task_authority: false,
+        });
+        let rejected = execute_command(
+            &json!({ "id": "confirm-target", "action": "confirm", "confirmationId": "target-bound" }),
+            &mut changed,
+        )
+        .await;
+        assert_eq!(rejected["success"], false);
+        assert!(rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("target changed"));
+        assert!(changed.pending_confirmation.is_none());
+    }
+
+    #[tokio::test]
+    async fn agentic_confirmation_does_not_overwrite_live_pending_action() {
+        let mut state = DaemonState::new();
+        state.confirm_actions = Some(confirm_actions(&["state_list"]));
+        let first = execute_command(
+            &json!({ "id": "first", "action": "state_list" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(first["data"]["confirmation_id"], "first");
+
+        let second = execute_command(
+            &json!({ "id": "second", "action": "state_list" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(second["success"], false);
+        assert_eq!(
+            state.pending_confirmation.as_ref().unwrap().confirmation_id,
+            "first"
+        );
+    }
+
+    #[tokio::test]
+    async fn agentic_confirmation_executes_once_for_matching_id_and_target() {
+        let mut state = DaemonState::new();
+        state.confirm_actions = Some(confirm_actions(&["state_list"]));
+        let requested = execute_command(
+            &json!({ "id": "approval-ok", "action": "state_list" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(requested["data"]["confirmation_required"], true);
+
+        let confirmed = execute_command(
+            &json!({ "id": "confirm-ok", "action": "confirm", "confirmationId": "approval-ok" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(confirmed["success"], true);
+        assert_eq!(confirmed["data"]["confirmed"], true);
+        assert_eq!(confirmed["data"]["result"]["success"], true);
+        assert!(state.pending_confirmation.is_none());
+    }
+
+    #[tokio::test]
+    async fn task_authority_issue_always_requires_confirmation_and_denial_writes_nothing() {
+        let root = unique_socket_dir("task-authority-issue-confirmation");
+        let mut state = DaemonState::new();
+        state.task_authority_ledger_root = root.clone();
+        let requested = execute_command(
+            &json!({
+                "id": "issue-authority-1",
+                "action": "task_authority_issue",
+                "request": {
+                    "taskName": "research-task",
+                    "expectedTargetId": "target-1",
+                    "expectedUrl": "https://example.com/",
+                    "issuer": {"kind": "operator", "id": "operator-1"},
+                    "approvalReference": "approval-1",
+                    "expiresInSeconds": 300,
+                    "steps": [{"action": "title"}]
+                }
+            }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(requested["success"], true);
+        assert_eq!(requested["data"]["confirmation_required"], true);
+        assert_eq!(requested["data"]["consequenceClass"], "control_plane");
+        assert_eq!(requested["data"]["durable"], true);
+        state.pending_confirmation = None;
+        state.confirm_actions = Some(confirm_actions(&["state_list"]));
+        let competing = execute_command(
+            &json!({"id": "generic-after-restart", "action": "state_list"}),
+            &mut state,
+        )
+        .await;
+        assert_eq!(competing["success"], false);
+        assert!(competing["error"]
+            .as_str()
+            .unwrap()
+            .contains("still pending"));
+        state.confirm_actions = None;
+
+        let denied = execute_command(
+            &json!({
+                "id": "deny-authority-1",
+                "action": "deny",
+                "confirmationId": "issue-authority-1",
+                "expectedAction": "task_authority_issue",
+                "decidedBy": {"kind": "operator", "id": "operator-1"}
+            }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(denied["success"], true);
+        let status = task_authority_status(&root, &state.session_id, None).unwrap();
+        assert_eq!(status["count"], 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ordered_task_response_fails_closed_when_terminal_receipt_cannot_be_written() {
+        let root = unique_socket_dir("task-authority-outcome-fail-closed");
+        let mut state = DaemonState::new();
+        state.task_authority_ledger_root = root.clone();
+        let response = finalize_ordered_task_response(
+            &json!({
+                "id": "ordered-response-1",
+                "taskStepId": "authority-1:step-0",
+                "taskAuthority": {
+                    "id": "authority-1",
+                    "taskName": "research-task",
+                    "allowedOrigins": ["https://example.com"],
+                    "allowedActions": ["title"],
+                    "planSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "targetBinding": {
+                        "targetId": "target-1",
+                        "initialUrl": "https://example.com/start"
+                    },
+                    "evidenceBudget": {"maxActions": 1, "maxEvidenceBytes": 1024},
+                    "consequenceCeiling": "read_only",
+                    "expiresAt": "2099-01-01T00:00:00Z"
+                }
+            }),
+            &state,
+            true,
+            success_response("ordered-response-1", json!({"title": "Example"})),
+        );
+        assert_eq!(response["success"], false);
+        assert!(response["error"]
+            .as_str()
+            .unwrap()
+            .contains("outcome finalization failed"));
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn evaluate_uses_per_command_worker_deadline() {
@@ -27832,6 +28833,10 @@ mod tests {
             "runtime_handoff_prepare",
             "runtime_handoff_resume",
             "service_status",
+            "task_authority_issue",
+            "task_authority_reconcile",
+            "task_authority_revoke",
+            "task_authority_status",
             "service_reconcile",
             "service_job_cancel",
             "service_browser_retry",

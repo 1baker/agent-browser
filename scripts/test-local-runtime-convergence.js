@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 const script = readFileSync('scripts/converge-local-runtime.js', 'utf8');
 const installer = readFileSync('scripts/install-dashboard-user-service.sh', 'utf8');
 const publisher = readFileSync('scripts/publish-local-dashboard-runtime.js', 'utf8');
+const publisherOrchestration = readFileSync('scripts/lib/local-dashboard-publisher-orchestration.js', 'utf8');
 const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
 const plan = readFileSync('docs/dev/plans/0042-2026-06-22-runtime-convergence-plan.md', 'utf8');
 
@@ -35,8 +36,8 @@ assert.match(
 
 assert.match(
   script,
-  /report\.initial = readDoctors\('initial', \{ required: !options\.apply \}\)/,
-  'apply mode must proceed after repairable nonzero initial doctor JSON',
+  /report\.initial = readDoctors\('initial', \{ required: false \}\)/,
+  'dry-run and apply modes must inspect repairable nonzero initial doctor JSON',
 );
 
 assert.match(
@@ -149,14 +150,25 @@ assert.doesNotMatch(
 
 assert.match(
   installer,
+  /ExecStartPre=.*check:local-dashboard-retained-browser[\s\S]*ExecStart=.*converge:local-runtime -- --apply --skip-publish --json/,
+  'runtime-health interlock must verify a configured critical retained lane before mutation',
+);
+assert.match(
+  installer,
   /Description=agent-browser runtime health interlock[\s\S]*converge:local-runtime -- --apply --skip-publish --json/,
   'dashboard service installation must install the runtime-health interlock service',
 );
 
 assert.match(
-  publisher,
-  /prepareRuntimeHandoffs\(builtBin, installBin\)[\s\S]*installBinaryAtomically\(builtBin, installBin[\s\S]*resumeRuntimeHandoffs\(installBin\)/,
+  publisherOrchestration,
+  /adapters\.prepareRuntimeHandoffs\(builtBin, installBin\)[\s\S]*adapters\.installBinaryAtomically\([\s\S]*builtBin,[\s\S]*installBin,[\s\S]*adapters\.resumeRuntimeHandoffs\(installBin\)/,
   'local publishing must bracket executable replacement with daemon handoff',
+);
+
+assert.match(
+  publisher,
+  /runLocalDashboardPublisherOrchestration\([\s\S]*prepareRuntimeHandoffs,[\s\S]*installBinaryAtomically,[\s\S]*resumeRuntimeHandoffs,/,
+  'production publisher must wire real handoff and replacement adapters into tested orchestration',
 );
 
 assert.match(

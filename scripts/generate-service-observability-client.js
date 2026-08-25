@@ -771,6 +771,53 @@ export interface ServiceStatusResponse {
   [key: string]: unknown;
 }
 
+export interface LocalDashboardPublicationLockStatus {
+  path: string;
+  present: boolean;
+  ownerPid: number | null;
+  live: boolean;
+  stale: boolean;
+}
+
+export interface LocalDashboardPublicationTransactionStatus {
+  transactionId: string;
+  revision: number;
+  phase: string;
+  terminal: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+  installBin: string | null;
+  builtBin: string | null;
+  backupPath: string | null;
+  candidateSessionCount: number;
+  preparedHandoffCount: number;
+  resumedHandoffCount: number;
+  retainedBrowserExpectationRequired: boolean;
+  retainedBrowserExpectationVerified: boolean | null;
+  retainedBrowserExpectationStage: string | null;
+  failure: unknown;
+  recoveryError: unknown;
+}
+
+export interface LocalDashboardPublicationArtifactStatus {
+  path: string | null;
+  exists: boolean;
+  sha256: string | null;
+  classification: "replacement" | "backup" | "built_replacement" | "missing" | "unknown";
+  verified: boolean;
+}
+
+export interface LocalDashboardPublicationStatus {
+  schemaVersion: "agent-browser.local-dashboard-publication.v1";
+  journalPath: string;
+  exists: boolean;
+  lock: LocalDashboardPublicationLockStatus;
+  transaction: LocalDashboardPublicationTransactionStatus | null;
+  installedArtifact: LocalDashboardPublicationArtifactStatus | null;
+  recoverable: boolean;
+  recommendedAction: "none" | "wait_for_active_publisher" | "recover_only" | "investigate_installed_artifact" | "investigate_retained_browser";
+}
+
 export interface ServiceContractEndpoint {
   method?: string;
   route?: string;
@@ -2711,6 +2758,8 @@ ${Object.entries(constants)
   .join('\n')}
 
 export declare function getServiceStatus(options: ServiceObservabilityHttpOptions): Promise<ServiceStatusResponse>;
+/** Read local dashboard publication state without acquiring its lock or authorizing recovery. */
+export declare function getLocalDashboardPublicationStatus(options: ServiceObservabilityHttpOptions): Promise<LocalDashboardPublicationStatus>;
 export declare function getServiceContracts(options: ServiceObservabilityHttpOptions): Promise<ServiceContractsResponse>;
 export declare function getServiceBrowserCapabilityRegistry(options: ServiceObservabilityHttpOptions): Promise<ServiceBrowserCapabilityRegistryResponse>;
 /** Evaluate browser capability launch gates without starting Chrome. */

@@ -6,6 +6,594 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P123 | Compact Doctor JSON
+
+State: CLOSED
+
+P123 adds bounded, versioned `--compact --json` projections for install and
+remote-view doctors. The projections reuse the full authoritative probes while
+omitting high-volume executable, route, host, user, URL, hash, and child-report
+evidence from the default agent-facing readback.
+
+Source implementation, release validation, exact retained-lane rotation,
+guarded executable handoff, recovery-only dashboard restart, source-free
+payload refresh, and installed verification pass. Both installed compact
+doctors report zero issues; remote control and many-to-many readiness are
+ready. The retained Workshop profile, browser PID, target, and canonical URL
+survived publication, and no prompt or page interaction was sent.
+
+Evidence:
+
+- `docs/dev/plans/0123-2026-08-24-compact-doctor-json-plan.md`
+
+## P122 | Guarded Retained Lane Preparation
+
+State: CLOSED
+
+P122 removes the remaining manual navigation handoff from P121 without adding
+prompt authority. One command opens an exact URL through the required managed
+profile and route, verifies exact rendered target identity, uniquely
+rediscovers that URL and profile, and commits the existing marker-first
+retained-browser requirement.
+
+Implementation, documentation, source-free installation, focused and native
+fixtures, typecheck, strict lint, production builds, runtime convergence, skill
+parity, and diff hygiene pass. Route A was non-destructively parked, stable
+route allocation ids and exact pending-reservation ownership were repaired,
+and the disposable route-bound live preparation now passes.
+
+The deleted conversation correctly failed exact-URL reverification. After the
+operator explicitly authorized exactly one short prompt, the retained
+`chatgpt-pro` lane created one new Workshop conversation and no retry. The
+canonical URL, profile, session, PID, and CDP target were verified and committed
+to a separate private Workshop requirement while preserving the existing NYSE
+default authority. Guarded release publication reached terminal `ready`, the
+same retained target passed `final_readiness`, and the installed and release
+SHA-256 values match at
+`7704b89a579e6bb1678d43cbe3d3ea402197a411525cab83e9f6a641228755bb`.
+
+Evidence:
+
+- `docs/dev/plans/0122-2026-08-15-guarded-retained-lane-preparation-plan.md`
+- `docs/dev/notes/2026-08-15-guarded-retained-lane-preparation.md`
+
+## P121 | Installed Dashboard Publication Status Projection
+
+State: CLOSED
+Current state: the installed Rust runtime now projects bounded journal, lock,
+transaction, and artifact evidence into install doctor, authenticated HTTP,
+MCP, the generated client, and the Service dashboard. Recovery remains outside
+those surfaces and requires the explicit recovery-only command. Installed
+status readback is verified, and P122 established the exact retained Workshop
+browser needed for the final live criterion. Publication pins and rechecks an
+explicitly required browser identity
+before mutation, after handoff, at final readiness, and during recovery. Local
+Rust validation runs under isolated state instead of the operator home.
+Verified critical lanes can now be pinned in a private stable-identity
+requirement that all later publications enforce before build. The recurring
+source-checkout runtime interlock checks the same requirement before
+convergence mutation. The source-free workstation binary now performs its own
+no-launch exact-lane verification before direct apply or recurring reconcile
+mutation, including exact service-tab handle and loopback DevTools target
+proof. A source-free `retained-browser-status` command now audits that same
+authority without mutation, and native status/apply/reconcile load an optional
+requirement-path override from the normal agent-browser dotenv configuration.
+Pinning now commits a separate private `.required` enforcement record before
+the identity requirement. A crash between commits is retryable, and loss of
+only the requirement fails closed across repository publication plus native
+status, apply, and reconcile instead of silently reverting to unconfigured.
+The marker also precommits the exact requirement SHA-256, preventing a stale
+marker and replaced identity record from being accepted as one authority.
+The installed workstation substrate is now reconciled with two distinct XRDP
+route desktops and clean install and remote-view doctors. Source reconciliation
+pins its Guacamole viewer daemons to installed Linux Chrome instead of the
+ambient Windows browser default, and the release candidate passes the
+blocking-safe rendered remote-view fixture gate with exact target, X11 PID,
+deduplication, OCR, and cleanup evidence.
+Retained-lane enrollment can now discover one exact ready page beneath an
+operator-reviewed origin and path prefix, eliminating manual transfer of four
+identity fields while failing closed on ambiguity, unreadable live lanes,
+degraded health, incomplete identity, or prefix drift.
+
+Final installed proof reports the publication terminal `ready`, retained
+identity verified at `final_readiness`, matching installed and release SHA-256
+`7704b89a579e6bb1678d43cbe3d3ea402197a411525cab83e9f6a641228755bb`,
+and the exact `chatgpt-pro` PID, CDP target, and canonical Workshop URL still
+ready after handoff.
+
+### Next Recommendation
+
+Keep publication status read-only in doctor, HTTP, MCP, client, and dashboard
+surfaces. Use only the explicit recovery command for a reviewed nonterminal
+transaction, and keep the default NYSE requirement unchanged unless the
+operator explicitly chooses to retire it.
+
+### Evidence
+
+- `docs/dev/plans/0121-2026-08-15-installed-dashboard-publication-status-projection-plan.md`
+- `docs/dev/notes/2026-08-15-installed-dashboard-publication-status-projection.md`
+
+## P120 | Dashboard Publication Status and Recovery-Only Operations
+
+State: CLOSED
+Current state: publication status now reads journal, lock, and installed SHA
+evidence without acquiring a lock or creating state. Recovery-only reconciles a
+nonterminal journal but returns before build when there is nothing to recover.
+The operations are mutually exclusive and isolated command fixtures pass.
+
+### Next Recommendation
+
+Project bounded publication status into install doctor and the dashboard service
+surface so operators can see incomplete or blocked state without shell access;
+keep recovery as an explicit confirmed operation.
+
+### Evidence
+
+- `docs/dev/plans/0120-2026-08-15-dashboard-publication-status-recovery-only-plan.md`
+- `docs/dev/notes/2026-08-15-dashboard-publication-status-recovery-only.md`
+
+## P119 | Durable Dashboard Publication Journal
+
+State: CLOSED
+Current state: dashboard publication now holds an exact process lock and writes
+a secured, fsynced, revision-checked transaction before quiescence. Incomplete
+replacement, handoff, restart, readiness, and rollback phases recover from
+verified artifacts and exact handoff descriptors; unknown installed bytes block
+without restart. Isolated journal and recovery fixtures pass.
+
+### Next Recommendation
+
+Expose journal state through a read-only status surface and add explicit
+recovery-only operation so automation can inspect or reconcile an incomplete
+transaction without authorizing a new build.
+
+### Evidence
+
+- `docs/dev/plans/0119-2026-08-15-durable-dashboard-publication-journal-plan.md`
+- `docs/dev/notes/2026-08-15-durable-dashboard-publication-journal.md`
+
+## P118 | Dashboard Publisher Artifact Evidence
+
+State: CLOSED
+Current state: the publisher now verifies and reports built, installed source,
+backup, replacement, and restoration SHA-256 evidence. Restore failure keeps
+the initiating error primary, and an unverified installed artifact is never
+restarted. Isolated corruption and disappearance fixtures pass without touching
+the live runtime.
+
+### Next Recommendation
+
+Persist a hash-bound publication transaction journal before quiescence and
+advance it atomically through replacement, handoff, readiness, and rollback so
+crash recovery can reconcile the last committed phase idempotently.
+
+### Evidence
+
+- `docs/dev/plans/0118-2026-08-15-dashboard-publisher-artifact-evidence-plan.md`
+- `docs/dev/notes/2026-08-15-dashboard-publisher-artifact-evidence.md`
+
+## P117 | Isolated Dashboard Publisher Orchestration Fault Fixture
+
+State: CLOSED
+Current state: the publisher's build, backup, quiesce, replacement, handoff,
+restart, readiness, and rollback sequence now uses one injected orchestration
+module. A real-file fixture passes success, pre-handoff restoration,
+committed-handoff preservation, rollback restart failure, and pre-mutation
+failure scenarios without touching the live runtime.
+
+### Next Recommendation
+
+Make backup restoration evidence-bearing: record and verify source, backup,
+replacement, and restored hashes, and preserve the initiating publication
+failure if the restore copy itself fails.
+
+### Evidence
+
+- `docs/dev/plans/0117-2026-08-15-isolated-dashboard-publisher-orchestration-fault-plan.md`
+- `docs/dev/notes/2026-08-15-isolated-dashboard-publisher-orchestration-fault.md`
+
+## P116 | Isolated Dashboard Publisher Lifecycle Fixture
+
+State: CLOSED
+Current state: the publisher's standalone quiescence and restart transition now
+uses a reusable lifecycle module. A real-process Linux fixture passes normal,
+rollback, absent, stale-PID, and wrong-command scenarios without touching the
+live dashboard or retained browser. The fast Linux Dashboard CI job now runs
+the smoke-policy and lifecycle fixtures before its build.
+
+### Next Recommendation
+
+Extract the publisher's top-level build, replace, readiness, and rollback
+orchestration behind injectable adapters, then add one end-to-end fault fixture
+that proves backup restoration and restart sequencing without a live install.
+
+### Evidence
+
+- `docs/dev/plans/0116-2026-08-14-isolated-dashboard-publisher-lifecycle-fixture-plan.md`
+- `docs/dev/notes/2026-08-14-isolated-dashboard-publisher-lifecycle-fixture.md`
+
+## P115 | Capability-Resolved Dashboard Browser Smoke
+
+State: CLOSED
+Current state: dashboard rendered-page QA now resolves the installed patched
+Chromium capability, verifies its manifest and executable evidence, creates an
+isolated Windows-mounted disposable profile, and removes it after the exact
+smoke session closes. Required release publication rendered the dashboard,
+resumed the exact standalone listener it quiesced, and preserved the retained
+authenticated browser. Installed and reference binary SHA-256 is
+`07f2b9c0a85d4d30e1b4cb5bb9a077ca58539a4cfc863d15f77e495a7fe013e4`.
+
+### Next Recommendation
+
+Add an isolated publisher integration fixture for normal and rollback
+standalone restart transitions so this lifecycle boundary can be tested without
+performing a live release build.
+
+### Evidence
+
+- `docs/dev/plans/0115-2026-08-14-capability-resolved-dashboard-browser-smoke-plan.md`
+- `docs/dev/notes/2026-08-14-capability-resolved-dashboard-browser-smoke.md`
+
+## P114 | Dashboard Publisher Readiness Classification
+
+State: CLOSED
+Current state: local publication now commits required HTTP, asset-marker, and
+exact runtime-manifest readiness before disposable-browser QA. Known pre-render
+browser launch unavailability is structured and advisory by default, while
+required-browser mode and all rendered-page failures stay fatal. A standalone
+dashboard listener is replaced only after exact PID, user, command, and
+dashboard-mode verification.
+
+### Next Recommendation
+
+Resolve the disposable browser from installed host capability evidence so WSL
+visual QA can use the supported patched Windows Chromium lane without a general
+`--no-sandbox` launch default.
+
+### Evidence
+
+- `docs/dev/plans/0114-2026-08-14-dashboard-publisher-readiness-classification-plan.md`
+- `docs/dev/notes/2026-08-14-dashboard-publisher-readiness-classification.md`
+
+## P113 | Confirmation Ledger Checkpoints and Cleanup Review
+
+State: CLOSED
+Current state: exact retired confirmation membership now uses a bounded v2
+manifest and fixed-capacity immutable hash-linked segments with fail-closed
+integrity verification and legacy migration. Authenticated dashboard operators
+can preview retention policy, candidates, requester, exact review digest, and
+ledger proof before an explicit exact-digest apply. Shared Chrome environment
+and remote-view temporary-state tests are parallel deterministic.
+
+### Next Recommendation
+
+Separate publisher HTTP/dashboard readiness from optional disposable-Chrome
+readiness, and report WSL sandbox launch limitations as a browser-smoke
+diagnostic after a successful runtime handoff instead of an install failure.
+
+### Evidence
+
+- `docs/dev/plans/0113-2026-08-14-confirmation-ledger-checkpoint-dashboard-plan.md`
+- `docs/dev/notes/2026-08-14-confirmation-ledger-checkpoints-dashboard.md`
+
+## P112 | Authenticated Confirmation Principal and Receipt Retention
+
+State: CLOSED
+Current state: task-authority HTTP control mutations require an authenticated
+dashboard superuser and bind requester and decider evidence to that session.
+MCP binds the same fields to the OS-owned stdio transport principal. Conflicting
+caller claims fail closed. Terminal receipt cleanup is preview-first, exact
+review-digest gated, tombstone backed, and preserves pending plus indeterminate
+records.
+
+### Next Recommendation
+
+Bound or checkpoint the compact retired-ID tombstone ledger while preserving
+single-use membership evidence, expose cleanup review evidence in the dashboard,
+and isolate shared test temp paths so widened Rust tests remain deterministic
+under parallel execution.
+
+### Evidence
+
+- `docs/dev/plans/0112-2026-08-14-authenticated-confirmation-principal-retention-plan.md`
+- `docs/dev/notes/2026-08-14-authenticated-confirmation-principal-retention.md`
+
+## P111 | Durable Task Authority Confirmation
+
+State: CLOSED
+Current state: task-authority issue, reconcile, and revoke confirmations now
+survive daemon restart in a private single-use ledger bound to the exact
+requester, session, action, target, URL, request digest, and expiry. The exact
+matching requester must decide. Decision is committed before dispatch, crash
+after commit remains indeterminate, retries cannot replay or restage, and the
+Authorities workspace shows redacted restart and terminal evidence. Installed
+runtime convergence is
+`aef835d1fddcd9e5cb469901edb7667e531f38fd707d661fdff0ecbe418e85a8`.
+
+### Next Recommendation
+
+Bind requester and decider labels to the authenticated dashboard or MCP
+transport principal instead of accepting identity only as structured caller
+evidence. Add bounded terminal-receipt retention and an audited cleanup preview
+while preserving pending records, indeterminate receipts, and single-use
+restart semantics.
+
+### Evidence
+
+- `docs/dev/plans/0111-2026-08-14-durable-task-authority-confirmation-plan.md`
+- `docs/dev/notes/2026-08-14-durable-task-authority-confirmation.md`
+
+## P110 | Task Authority Dashboard Recovery
+
+State: CLOSED
+Current state: the Service dashboard now projects selected-session authority
+state, outcome counts, exact target identity, approved-plan progress, pending
+and completed reconciliation, and predecessor/replacement lineage. Recovery is
+enabled only for exactly one indeterminate receipt and one exact live target;
+the operator reviews a replacement plan before a separately staged,
+exact-session confirmation or denial. Installed runtime convergence is
+`66fcca318e238ee6bf027ffd8ad8a38676c2e237acf59dad23465ee764b6f258`.
+
+### Next Recommendation
+
+Persist pending confirmation intent and decision receipts so a daemon restart
+between staging and operator decision cannot erase the approval boundary.
+Bind the durable single-use record to operator identity, exact session, action,
+target, URL, request digest, and expiry, and surface restart/expiry status in
+the Authorities workspace without automatically confirming or restaging.
+
+### Evidence
+
+- `docs/dev/plans/0110-2026-08-14-task-authority-dashboard-recovery-plan.md`
+- `docs/dev/notes/2026-08-14-task-authority-dashboard-recovery.md`
+
+## P109 | Indeterminate Task Authority Reconciliation
+
+State: CLOSED
+Current state: one fresh exact-target-confirmed broker transaction now revokes
+an authority with exactly one indeterminate receipt and issues a deterministic
+replacement whose immutable envelope binds the predecessor authority, step,
+command, outcome state, and reconciliation ID. Interrupted and repeated
+requests resume idempotently; conflicting, terminal, ambiguous, replayed, or
+drifted evidence fails closed. Installed, reference, daemon, and dashboard
+runtime convergence is
+`e03bd1ca76409476fcfb9afa1c875118756c5b115e7a58b5414d019adbf6ec36`.
+
+### Next Recommendation
+
+Project the authority lineage and pending reconciliation state into the
+dashboard so an operator can inspect the stranded receipt and replacement plan
+before confirmation without reconstructing evidence from raw ledger files.
+
+### Evidence
+
+- `docs/dev/plans/0109-2026-08-14-indeterminate-task-authority-reconciliation-plan.md`
+- `docs/dev/notes/2026-08-14-indeterminate-task-authority-reconciliation.md`
+
+## P108 | Durable Task Outcome Receipts
+
+State: CLOSED
+Current state: one durable terminal finalizer now covers every ordered
+post-admission exit before response publication. Status distinguishes admitted,
+completed, failed, and crash-stranded indeterminate steps; exact response
+digests and post-action target evidence survive restart while the advanced
+cursor continues to reject replay. Installed/runtime/dashboard convergence is
+`58023942b0c1de84b2c38aef23b9dbc440796ab76576f0b67669fa585193e130`.
+
+### Next Recommendation
+
+Add an explicit broker reconciliation/replan operation for indeterminate
+receipts. It should preserve predecessor and unresolved-step lineage, require
+fresh exact-target confirmation, and mint a replacement authority without ever
+inferring success or automatically replaying the consumed step.
+
+### Evidence
+
+- `docs/dev/plans/0108-2026-08-14-durable-task-outcome-receipts-plan.md`
+- `docs/dev/notes/2026-08-14-durable-task-outcome-receipts.md`
+
+## P107 | Ordered Broker Task Plan
+
+State: CLOSED
+Current state: v2 broker issuance preserves ordered steps with unique step
+IDs, exact pre-action/requested URL bindings, fixed per-step evidence, and an
+envelope plan hash. Admission uses a durable cursor and writes per-command step
+receipts before dispatch. Debug and installed disposable proofs passed across a
+real daemon restart, and installed/runtime/dashboard convergence is
+`e760f6ad07012d9fc083a77b790f5f2aa2ee4d320e8b38f9c47815cf74311220`.
+
+### Next Recommendation
+
+Add durable terminal outcome receipts after command dispatch. Keep the cursor
+fail-closed and never replay an admitted step automatically, but let status
+distinguish completed, failed, and indeterminate execution so an operator can
+revoke and explicitly issue a replacement plan with accurate evidence.
+
+### Evidence
+
+- `docs/dev/plans/0107-2026-08-14-ordered-broker-task-plan-plan.md`
+- `docs/dev/notes/2026-08-14-ordered-broker-task-plan.md`
+
+## P106 | Broker Task Authority Issuer
+
+State: CLOSED
+Current state: retained agents obtain authority through first-class HTTP or MCP
+broker operations. Issuance derives the smallest unique actions and origins,
+exact action/evidence budgets, short expiry, caller labels, and exact target
+from explicit approved plan steps; it persists issuer and approval evidence and
+always stops for target-bound confirmation. Status is no-launch/read-only,
+revoke is confirmation-gated and durable, and required mode rejects authority
+without an exact active broker record. Installed and reference binary SHA-256
+is `86380304f45f9d8c6affc3c9caaffe85bbae26aaa18dbf260eae0d8b05cf7868`.
+
+### Next Recommendation
+
+Bind admission to an ordered broker plan cursor, not only an action set and
+aggregate budget. Persist step IDs, multiplicity, order, and per-step evidence
+receipts so an agent cannot replace one approved step with repeated use of a
+different allowed action, while retaining explicit replan and revoke paths.
+
+### Evidence
+
+- `docs/dev/plans/0106-2026-08-14-broker-task-authority-issuer-plan.md`
+- `docs/dev/notes/2026-08-14-broker-task-authority-issuer.md`
+
+## P105 | Durable Task Authority Envelope
+
+State: CLOSED
+Current state: retained agentic commands can carry one immutable authority that
+binds the exact caller task, target ID and initial URL, allowed origins,
+action/evidence budgets, consequence ceiling, and expiry. The daemon records
+usage atomically across restart and rejects missing authority in required mode,
+envelope drift, target/origin/task drift, expiry, and exhausted budgets before
+dispatch. Above-ceiling actions enter P104's fresh target-bound confirmation
+flow. Installed and reference binary SHA-256 is
+`9fe62980912e20c0e5c1db2c2b5538edcadba9adf106ab9a0d1ef3da6133c9df`.
+
+### Next Recommendation
+
+Make authority issuance a first-class broker operation: derive the smallest
+origin set and evidence budget from an approved plan, persist the issuer and
+revocation record, and expose a read-only authority status/usage receipt before
+adding any authenticated mutation workflow.
+
+### Evidence
+
+- `docs/dev/plans/0105-2026-08-14-durable-task-authority-envelope-plan.md`
+- `docs/dev/notes/2026-08-14-durable-task-authority-envelope.md`
+
+## P104 | Target-Bound Agentic Confirmation
+
+State: CLOSED
+Current state: confirmation policy now classifies actions by consequence,
+returns an exact approval ID with a 60-second lifetime, pins approval to the
+active target ID and URL, and rejects missing, wrong, expired, overwritten, or
+target-mismatched approvals. A disposable public-page proof and the installed
+runtime both allowed read-only inspection while stopping external mutation
+before execution. Installed and reference binary SHA-256 is
+`0f57a4b060d68473d13b07155cd6fc502393124244d18def9340c5e7f083b468`.
+
+### Next Recommendation
+
+Add a durable agentic task authority envelope above individual actions: bind a
+task to its allowed origins, retained target, evidence budget, consequence
+ceiling, and expiry, then require a fresh target-bound confirmation for every
+action that crosses that ceiling. Keep task planning and read-only collection
+separate from approval and mutation execution.
+
+### Evidence
+
+- `docs/dev/plans/0104-2026-08-14-target-bound-agentic-confirmation-plan.md`
+- `docs/dev/notes/2026-08-14-target-bound-agentic-confirmation.md`
+
+## P103 | Retained ChatGPT Lane Recovery
+
+State: CLOSED
+Current state: the exact `chatgpt-pro` browser and AuraCall session were
+restored without a prompt or duplicate lane. The current retained browser PID
+is `1046742`, and its target remains at the pinned `Architecture Review
+Boundaries` conversation through subsequent executable handoff.
+
+### Next Recommendation
+
+Preserve this lane as a retained broker target. Require explicit conversation
+identity and fresh operator authority before any prompt or composer action.
+
+### Evidence
+
+- `docs/dev/plans/0103-2026-08-14-retained-chatgpt-lane-recovery-plan.md`
+
+## P102 | WSL Windows CDP Streaming Fixture
+
+State: CLOSED
+Current state: the isolated CDP tab-streaming smoke preserves an explicit
+browser executable, gives WSL-launched Windows Chromium a disposable
+Windows-mounted profile, binds the first service request to that exact profile,
+and cleans up its own session and profile. Focused no-browser coverage and
+three live Windows Chromium runs passed, including two with the exact caller
+shape that had previously selected the wrong Linux fallback.
+
+### Next Recommendation
+
+Treat restoration of the former retained ChatGPT profile as separate work. Its
+recorded PID exited before P102 began; do not silently relaunch or submit a
+prompt while validating disposable browser fixtures.
+
+### Evidence
+
+- `docs/dev/plans/0102-2026-08-14-wsl-windows-cdp-streaming-fixture-plan.md`
+- `docs/dev/notes/2026-08-14-wsl-windows-cdp-streaming-fixture.md`
+
+## P101 | Bounded Non-Runtime Page Reader
+
+State: CLOSED
+Current state: `get page` now extracts bounded HTTP(S) evidence through
+Chromium network and IO commands in an exact-cleanup temporary background
+target. It uses no `Runtime.*` command, never navigates the active target,
+defaults credentials off, obeys domain policy, and publishes explicit source,
+identity, status, MIME, byte, and truncation evidence. The frozen public suite
+now passes 10/10 with zero retries. Installed runtime SHA-256 is
+`739201f613f5b5cf987347618908528cd05a57ca8fe2c064b1699d2728f7552b`.
+
+### Next Recommendation
+
+Define the next agentic-browser safety priority from authenticated-work gates:
+prefer a deterministic read-only retained-target task with explicit authority,
+identity pinning, consequence classification, and a human approval boundary
+before any external mutation.
+
+### Evidence
+
+- `docs/dev/plans/0101-2026-08-14-bounded-non-runtime-page-reader-plan.md`
+- `docs/dev/notes/2026-08-14-bounded-non-runtime-page-reader.md`
+
+## P100 | Post-Timeout Browser Health Circuit
+
+State: CLOSED
+Current state: renderer-facing timeouts are returned once and never replayed.
+Browser-level CDP health now drives one affected-target quarantine or one exact
+locally owned browser recovery, while service handles and external attachments
+remain untouched. The frozen full run improved from 8/10 with a delayed Node.js
+CDP refusal to 9/10 with WHATWG as the only bounded failure; all four later
+missions passed in the same session. Installed runtime SHA-256 is
+`6c6bcd338465639a3937b6a9c4c6f4a787b7e2847396cde451965603174968a8`.
+
+### Next Recommendation
+
+Add a bounded non-Runtime or precise-section evidence reader for monolithic
+standards pages. Preserve the no-replay timeout circuit and keep the frozen
+WHATWG mission as the acceptance test rather than replacing the difficult page.
+
+### Evidence
+
+- `docs/dev/plans/0100-2026-08-14-post-timeout-browser-health-circuit-plan.md`
+- `docs/dev/notes/2026-08-14-post-timeout-browser-health-circuit.md`
+
+## P99 | Agentic Research Concierge Evaluation
+
+State: CLOSED
+Current state: a ten-mission public, no-login research scorecard now verifies
+canonical URL, page identity, bounded source evidence, duration, and exact
+cleanup through one disposable Windows Chromium profile and agent-browser
+session. The final full run passed eight missions. The WHATWG single-page HTML
+standard exceeded its bounded renderer budget, and that stall later caused a
+CDP connection refusal on the final Node.js mission. The Node.js mission passed
+alone in 1.3 seconds, proving a delayed session-health cascade rather than
+source drift.
+
+### Next Recommendation
+
+Add a renderer-stall circuit breaker that verifies browser and target health
+after a timed-out job, replaces only the affected tab when browser CDP remains
+healthy, and performs one exact-browser recovery when the CDP endpoint is lost.
+Add a non-Runtime reader or precise-section routing for monolithic standards
+documents before expanding the benchmark into authenticated work.
+
+### Evidence
+
+- `docs/dev/plans/0099-2026-08-14-agentic-research-concierge-evaluation-plan.md`
+- `docs/dev/notes/2026-08-14-agentic-research-concierge-evaluation.md`
+
 ## P98 | WSL Windows DevTools Loopback Relay
 
 State: CLOSED
@@ -1242,6 +1830,8 @@ runtime identity.
 - `pnpm converge:local-runtime -- --apply --json` is the bounded local repair
   command for publish/restart, stale daemon remedies, Guacamole schema guard,
   route-pool readiness, and route display-access grants.
+- Dry-run convergence accepts repairable nonzero doctor JSON and reports the
+  exact `safeRemedies` without executing them.
 - Final installed readbacks reported install doctor ready, remote-view ready,
   `runtimeConvergence.status=converged`, and route-pool readiness
   `success=true`.

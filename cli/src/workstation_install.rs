@@ -17,7 +17,13 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command, Output, Stdio};
 
+use crate::native::retained_browser_requirement::{
+    verify_retained_browser_requirement_for_root, RetainedBrowserRequirementStatus,
+};
+
 const INSTALL_SCHEMA_VERSION: &str = "agent-browser.workstation-install.v1";
+const RETAINED_BROWSER_STATUS_SCHEMA_VERSION: &str =
+    "agent-browser.workstation-retained-browser-status.v1";
 const DEFAULT_DASHBOARD_PORT: u16 = 4848;
 const DEFAULT_GUACAMOLE_PORT: u16 = 8092;
 const MIN_WORKSTATION_FREE_DISK_BYTES: u64 = 6 * 1024 * 1024 * 1024;
@@ -57,8 +63,20 @@ const SYNC_ROUTE_POOL_SCRIPT: &str =
     include_str!("../../scripts/sync-rdp-guac-route-specific-user-pool.sh");
 const GRANT_ROUTE_DISPLAY_ACCESS_SCRIPT: &str =
     include_str!("../../scripts/grant-rdp-route-display-access.sh");
+const PREPARE_RETAINED_BROWSER_SCRIPT: &str =
+    include_str!("../../scripts/prepare-local-dashboard-retained-browser.js");
+const RETAINED_BROWSER_DISCOVERY_SCRIPT: &str =
+    include_str!("../../scripts/lib/local-dashboard-retained-browser-discovery.js");
+const RETAINED_BROWSER_GUARD_SCRIPT: &str =
+    include_str!("../../scripts/lib/local-dashboard-retained-browser-guard.js");
+const RETAINED_BROWSER_LIVE_SCRIPT: &str =
+    include_str!("../../scripts/lib/local-dashboard-retained-browser-live.js");
+const RETAINED_BROWSER_PREPARATION_SCRIPT: &str =
+    include_str!("../../scripts/lib/local-dashboard-retained-browser-preparation.js");
+const RETAINED_BROWSER_REQUIREMENT_SCRIPT: &str =
+    include_str!("../../scripts/lib/local-dashboard-retained-browser-requirement.js");
 const CONTROLLER_PACKAGE_JSON: &str = "{\n  \"private\": true,\n  \"type\": \"module\"\n}\n";
-const CONTROLLER_ASSETS: [(&str, &str, bool); 10] = [
+const CONTROLLER_ASSETS: [(&str, &str, bool); 16] = [
     (
         "scripts/smoke-rdp-guac-route-pool-readiness.js",
         ROUTE_POOL_READINESS_SCRIPT,
@@ -104,6 +122,36 @@ const CONTROLLER_ASSETS: [(&str, &str, bool); 10] = [
         ROUTE_DISPLAY_SELECTION_SCRIPT,
         false,
     ),
+    (
+        "scripts/prepare-local-dashboard-retained-browser.js",
+        PREPARE_RETAINED_BROWSER_SCRIPT,
+        true,
+    ),
+    (
+        "scripts/lib/local-dashboard-retained-browser-discovery.js",
+        RETAINED_BROWSER_DISCOVERY_SCRIPT,
+        false,
+    ),
+    (
+        "scripts/lib/local-dashboard-retained-browser-guard.js",
+        RETAINED_BROWSER_GUARD_SCRIPT,
+        false,
+    ),
+    (
+        "scripts/lib/local-dashboard-retained-browser-live.js",
+        RETAINED_BROWSER_LIVE_SCRIPT,
+        false,
+    ),
+    (
+        "scripts/lib/local-dashboard-retained-browser-preparation.js",
+        RETAINED_BROWSER_PREPARATION_SCRIPT,
+        false,
+    ),
+    (
+        "scripts/lib/local-dashboard-retained-browser-requirement.js",
+        RETAINED_BROWSER_REQUIREMENT_SCRIPT,
+        false,
+    ),
     ("package.json", CONTROLLER_PACKAGE_JSON, false),
 ];
 
@@ -145,6 +193,7 @@ struct WorkstationInstallReport {
     version: &'static str,
     dashboard_port: u16,
     guacamole_port: u16,
+    retained_browser_requirement: RetainedBrowserRequirementStatus,
     host_plan: HostPlan,
     paths: WorkstationPaths,
     phases: Vec<&'static str>,
@@ -152,6 +201,14 @@ struct WorkstationInstallReport {
     session_refresh_required: bool,
     reconcile_receipt: Option<String>,
     next_action: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkstationRetainedBrowserStatusReport {
+    schema_version: &'static str,
+    success: bool,
+    retained_browser_requirement: RetainedBrowserRequirementStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -179,7 +236,95 @@ pub fn run_workstation_command(args: &[String]) {
     match operation {
         Some("reconcile") => run_workstation_reconcile(json),
         Some("backup") => run_workstation_backup(json),
+        Some("prepare-retained-browser") => run_workstation_prepare_retained_browser(args, json),
+        Some("retained-browser-status") => run_workstation_retained_browser_status(json),
         _ => run_workstation_install(args),
+    }
+}
+
+/// Run the versioned source-free exact-URL preparation controller. The Node
+/// controller owns navigation-only acquisition, exact identity verification,
+/// and marker-first pinning; this launcher adds no browser action surface.
+fn run_workstation_prepare_retained_browser(args: &[String], json: bool) {
+    if !cfg!(target_os = "linux") {
+        fail(
+            "workstation retained-browser preparation is only supported on Linux",
+            json,
+        );
+    }
+    let root = match workstation_root() {
+        Ok(root) => root,
+        Err(error) => fail(&error, json),
+    };
+    let paths = install_paths(&root);
+    let script = paths
+        .support_dir
+        .join("scripts/prepare-local-dashboard-retained-browser.js");
+    if !script.is_file() {
+        fail(
+            "installed workstation retained-browser preparation controller is missing",
+            json,
+        );
+    }
+    let operation_index = args
+        .iter()
+        .position(|arg| arg == "prepare-retained-browser")
+        .unwrap_or(args.len());
+    let forwarded = args.iter().skip(operation_index.saturating_add(1));
+    let mut command = Command::new("node");
+    command
+        .arg(&script)
+        .args(forwarded)
+        .arg("--agent-browser-bin")
+        .arg(&paths.binary)
+        .current_dir(&paths.support_dir);
+    for (key, value) in workstation_command_env(&paths) {
+        command.env(key, value);
+    }
+    let status = command.status().unwrap_or_else(|error| {
+        fail(
+            &format!("Unable to run retained-browser preparation controller: {error}"),
+            json,
+        )
+    });
+    exit(status.code().unwrap_or(1));
+}
+
+/// Inspect the installed controller's durable retained-lane authority without
+/// acquiring a lock, invoking the service daemon, or launching a browser.
+fn run_workstation_retained_browser_status(json: bool) {
+    if !cfg!(target_os = "linux") {
+        fail(
+            "workstation retained-browser status is only supported on Linux",
+            json,
+        );
+    }
+    let root = match workstation_root() {
+        Ok(root) => root,
+        Err(error) => fail(&error, json),
+    };
+    let retained_browser_requirement = match verify_retained_browser_requirement_for_root(&root) {
+        Ok(status) => status,
+        Err(error) => fail(&error, json),
+    };
+    let report = WorkstationRetainedBrowserStatusReport {
+        schema_version: RETAINED_BROWSER_STATUS_SCHEMA_VERSION,
+        success: true,
+        retained_browser_requirement,
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .unwrap_or_else(|_| r#"{"success":false,"error":"serialization failed"}"#.into())
+        );
+    } else {
+        println!("Workstation retained browser requirement status.");
+        println!("  State: {}", report.retained_browser_requirement.state);
+        println!(
+            "  Requirement: {}",
+            report.retained_browser_requirement.requirement_path
+        );
     }
 }
 
@@ -219,6 +364,14 @@ fn run_workstation_install(args: &[String]) {
             parsed.json,
         );
     }
+    // Guard both first install and rerun apply before lock acquisition, sudo,
+    // payload staging, or service quiescence. Reconcile repeats this check
+    // immediately before its own first mutation to close time-of-check drift.
+    let retained_browser_requirement = match verify_retained_browser_requirement_for_root(&root) {
+        Ok(status) => status,
+        Err(error) => fail(&error, parsed.json),
+    };
+    phases.push("retained-browser-requirement-checked");
     let _install_lock = if parsed.mode == InstallMode::Apply {
         match WorkstationLock::acquire(&root) {
             Ok(lock) => Some(lock),
@@ -295,6 +448,7 @@ fn run_workstation_install(args: &[String]) {
         version: env!("CARGO_PKG_VERSION"),
         dashboard_port: parsed.dashboard_port,
         guacamole_port: parsed.guacamole_port,
+        retained_browser_requirement,
         host_plan,
         paths: WorkstationPaths {
             root: root.display().to_string(),
@@ -346,6 +500,7 @@ struct WorkstationReconcileReport {
     schema_version: &'static str,
     success: bool,
     version: &'static str,
+    retained_browser_requirement: RetainedBrowserRequirementStatus,
     steps: Vec<ReconcileStep>,
     route_pool: Vec<Value>,
     receipt_path: String,
@@ -376,12 +531,21 @@ fn reconcile_workstation_locked(
 ) -> Result<WorkstationReconcileReport, String> {
     require_installed_payload(paths)?;
     require_effective_groups()?;
+    // This check is intentionally native and precedes the first reconcile
+    // mutation. Calling the service CLI here could auto-launch a replacement
+    // browser and defeat the durable exact-lane authority.
+    let retained_browser_requirement = verify_retained_browser_requirement_for_root(root)?;
     let support_root = &paths.support_dir;
     let scripts_dir = support_root.join("scripts");
     let guacamole_dir = support_root.join("guacamole");
     let guacamole_env = paths.guacamole_state_dir.join(".env");
-    let command_env = workstation_command_env(paths);
+    let mut command_env = workstation_command_env(paths);
     let mut steps = Vec::new();
+
+    steps.push(ReconcileStep {
+        name: "retained-browser-requirement-checked",
+        success: true,
+    });
 
     quiesce_existing_user_units(paths)?;
     steps.push(ReconcileStep {
@@ -402,6 +566,11 @@ fn reconcile_workstation_locked(
     )?;
     steps.push(ReconcileStep {
         name: "chrome-ready",
+        success: true,
+    });
+    bind_route_viewer_executable(&mut command_env)?;
+    steps.push(ReconcileStep {
+        name: "route-viewer-browser-bound",
         success: true,
     });
 
@@ -589,6 +758,7 @@ fn reconcile_workstation_locked(
         schema_version: "agent-browser.workstation-reconcile.v1",
         success: true,
         version: env!("CARGO_PKG_VERSION"),
+        retained_browser_requirement,
         steps,
         route_pool: final_route_pool,
         receipt_path: receipt_path.display().to_string(),
@@ -711,6 +881,10 @@ fn print_reconcile_report(report: &WorkstationReconcileReport, json: bool) {
     } else {
         println!("Workstation reconciliation complete.");
         println!("  Version: {}", report.version);
+        println!(
+            "  Retained browser requirement: {}",
+            report.retained_browser_requirement.state
+        );
         println!("  Routes: {}", report.route_pool.len());
         println!("  Receipt: {}", report.receipt_path);
     }
@@ -910,6 +1084,9 @@ fn require_installed_payload(paths: &InstallPaths) -> Result<(), String> {
         paths
             .support_dir
             .join("scripts/smoke-rdp-guac-route-pool-readiness.js"),
+        paths
+            .support_dir
+            .join("scripts/prepare-local-dashboard-retained-browser.js"),
         paths.guacamole_secret_file.clone(),
     ];
     let missing = required
@@ -963,6 +1140,34 @@ fn workstation_command_env(paths: &InstallPaths) -> Vec<(String, String)> {
             String::new(),
         ),
     ]
+}
+
+fn bind_route_viewer_executable(command_env: &mut Vec<(String, String)>) -> Result<(), String> {
+    let installed_chrome = crate::install::find_installed_chrome()
+        .filter(|path| path.is_file())
+        .ok_or_else(|| {
+            "installed Linux Chrome is missing after workstation browser installation".to_string()
+        })?;
+    upsert_route_viewer_executable(command_env, &installed_chrome);
+    Ok(())
+}
+
+fn upsert_route_viewer_executable(
+    command_env: &mut Vec<(String, String)>,
+    installed_chrome: &Path,
+) {
+    let executable = installed_chrome.display().to_string();
+    if let Some((_, value)) = command_env
+        .iter_mut()
+        .find(|(key, _)| key == "AGENT_BROWSER_RDP_ROUTE_VIEWER_EXECUTABLE")
+    {
+        *value = executable;
+    } else {
+        command_env.push((
+            "AGENT_BROWSER_RDP_ROUTE_VIEWER_EXECUTABLE".to_string(),
+            executable,
+        ));
+    }
 }
 
 fn apply_command_environment(command: &mut Command, command_env: &[(String, String)]) {
@@ -1360,6 +1565,7 @@ fn validate_canonical_route_pool(route_pool: &[Value]) -> Result<(), String> {
         ("guacamole-rdp-b", "guacamole:2"),
     ];
     let mut displays = Vec::new();
+    let mut display_allocation_ids = Vec::new();
     for (id, route_id) in expected {
         let route = route_pool
             .iter()
@@ -1376,9 +1582,20 @@ fn validate_canonical_route_pool(route_pool: &[Value]) -> Result<(), String> {
             .filter(|display| !display.is_empty())
             .ok_or_else(|| format!("{id} is missing a selected route display"))?;
         displays.push(display.to_string());
+        let display_allocation_id = route
+            .pointer("/target/displayAllocationId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| format!("{id} is missing a stable display allocation id"))?;
+        display_allocation_ids.push(display_allocation_id.to_string());
     }
     if displays[0] == displays[1] {
         return Err("Canonical route pool resolved both routes to one display".to_string());
+    }
+    if display_allocation_ids[0] == display_allocation_ids[1] {
+        return Err(
+            "Canonical route pool resolved both routes to one display allocation id".to_string(),
+        );
     }
     Ok(())
 }
@@ -1794,7 +2011,7 @@ fn parse_port(value: Option<&String>, flag: &str) -> Result<u16, String> {
 }
 
 fn workstation_usage() -> &'static str {
-    "Usage: agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]"
+    "Usage: agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]\n       agent-browser install workstation retained-browser-status [--json]\n       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--json]"
 }
 
 #[derive(Debug)]
@@ -2497,17 +2714,51 @@ mod tests {
     }
 
     #[test]
+    fn route_viewer_uses_the_installed_linux_browser_instead_of_ambient_default() {
+        let paths = install_paths(Path::new("/tmp/workstation-route-viewer-env"));
+        let mut command_env = workstation_command_env(&paths);
+        upsert_route_viewer_executable(
+            &mut command_env,
+            Path::new("/home/test/.agent-browser/browsers/chrome-152/chrome"),
+        );
+        assert!(command_env.iter().any(|(key, value)| {
+            key == "AGENT_BROWSER_RDP_ROUTE_VIEWER_EXECUTABLE"
+                && value == "/home/test/.agent-browser/browsers/chrome-152/chrome"
+        }));
+
+        upsert_route_viewer_executable(
+            &mut command_env,
+            Path::new("/home/test/.agent-browser/browsers/chrome-153/chrome"),
+        );
+        let values = command_env
+            .iter()
+            .filter(|(key, _)| key == "AGENT_BROWSER_RDP_ROUTE_VIEWER_EXECUTABLE")
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            values,
+            vec!["/home/test/.agent-browser/browsers/chrome-153/chrome"]
+        );
+    }
+
+    #[test]
     fn canonical_route_pool_accepts_dynamic_distinct_displays() {
         let route_pool = vec![
             serde_json::json!({
                 "id": "guacamole-rdp-a",
                 "routeId": "guacamole:1",
-                "target": {"displayName": ":10"}
+                "target": {
+                    "displayName": ":10",
+                    "displayAllocationId": "remote-view-display:guacamole-rdp-a"
+                }
             }),
             serde_json::json!({
                 "id": "guacamole-rdp-b",
                 "routeId": "guacamole:2",
-                "target": {"displayName": ":11"}
+                "target": {
+                    "displayName": ":11",
+                    "displayAllocationId": "remote-view-display:guacamole-rdp-b"
+                }
             }),
         ];
         validate_canonical_route_pool(&route_pool).unwrap();
@@ -2519,12 +2770,18 @@ mod tests {
             serde_json::json!({
                 "id": "guacamole-rdp-a",
                 "routeId": "guacamole:4",
-                "target": {"displayName": ":10"}
+                "target": {
+                    "displayName": ":10",
+                    "displayAllocationId": "remote-view-display:guacamole-rdp-a"
+                }
             }),
             serde_json::json!({
                 "id": "guacamole-rdp-b",
                 "routeId": "guacamole:2",
-                "target": {"displayName": ":11"}
+                "target": {
+                    "displayName": ":11",
+                    "displayAllocationId": "remote-view-display:guacamole-rdp-b"
+                }
             }),
         ];
         assert!(validate_canonical_route_pool(&wrong_route)
@@ -2535,17 +2792,45 @@ mod tests {
             serde_json::json!({
                 "id": "guacamole-rdp-a",
                 "routeId": "guacamole:1",
-                "target": {"displayName": ":10"}
+                "target": {
+                    "displayName": ":10",
+                    "displayAllocationId": "remote-view-display:guacamole-rdp-a"
+                }
             }),
             serde_json::json!({
                 "id": "guacamole-rdp-b",
                 "routeId": "guacamole:2",
-                "target": {"displayName": ":10"}
+                "target": {
+                    "displayName": ":10",
+                    "displayAllocationId": "remote-view-display:guacamole-rdp-b"
+                }
             }),
         ];
         assert!(validate_canonical_route_pool(&collapsed_display)
             .unwrap_err()
             .contains("one display"));
+
+        let collapsed_allocation = vec![
+            serde_json::json!({
+                "id": "guacamole-rdp-a",
+                "routeId": "guacamole:1",
+                "target": {
+                    "displayName": ":10",
+                    "displayAllocationId": "remote-view-display:shared"
+                }
+            }),
+            serde_json::json!({
+                "id": "guacamole-rdp-b",
+                "routeId": "guacamole:2",
+                "target": {
+                    "displayName": ":11",
+                    "displayAllocationId": "remote-view-display:shared"
+                }
+            }),
+        ];
+        assert!(validate_canonical_route_pool(&collapsed_allocation)
+            .unwrap_err()
+            .contains("one display allocation id"));
     }
 
     #[test]

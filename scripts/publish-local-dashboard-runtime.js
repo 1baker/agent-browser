@@ -15,21 +15,64 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import {
+  evaluateLocalDashboardBrowserSmokeResult,
+} from './lib/local-dashboard-smoke-policy.js';
+import {
+  quiesceStandaloneDashboardForRuntimeHandoff,
+  restartOrStartDashboardRuntime,
+} from './lib/local-dashboard-publisher-lifecycle.js';
+import {
+  runLocalDashboardPublisherOrchestration,
+} from './lib/local-dashboard-publisher-orchestration.js';
+import {
+  createLocalDashboardPublicationJournal,
+  inspectLocalDashboardPublicationJournal,
+} from './lib/local-dashboard-publication-journal.js';
+import {
+  evaluateRetainedBrowserExpectation,
+  isLoopbackDevToolsUrl,
+  normalizeRetainedBrowserExpectation,
+} from './lib/local-dashboard-retained-browser-guard.js';
+import {
+  discoverRetainedBrowserExpectation,
+} from './lib/local-dashboard-retained-browser-discovery.js';
+import {
+  readRetainedBrowserRequirement,
+  resolveRetainedBrowserExpectation,
+  writeRetainedBrowserRequirement,
+} from './lib/local-dashboard-retained-browser-requirement.js';
 
 const rootDir = new URL('..', import.meta.url).pathname;
 const args = process.argv.slice(2);
 const options = {
   allowOutsideHome: false,
   dashboardUrl: process.env.AGENT_BROWSER_DASHBOARD_URL || 'http://127.0.0.1:4848/',
+  discoverRetainedExactUrl: '',
+  discoverRetainedProfile: '',
+  discoverRetainedUrlPrefix: '',
   expectMarkers: [],
+  expectRetainedCdpUrl: '',
+  expectRetainedProfile: '',
+  expectRetainedSession: '',
+  expectRetainedTarget: '',
+  expectRetainedUrl: '',
   installBin: process.env.AGENT_BROWSER_INSTALL_BIN || '',
   json: false,
+  journalStatus: false,
+  browserBuild: '',
   browserProfile: '',
   release: false,
+  recoverOnly: false,
+  retainedBrowserStatus: false,
+  retainedRequirementPath: process.env.AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT
+    || resolve(homedir(), '.agent-browser', 'publications', 'local-dashboard-retained-browser.json'),
+  requireBrowserSmoke: false,
   skipSmoke: false,
   syncReferenceBinaries: true,
   smokeBrowser: true,
   startIfMissing: false,
+  writeRetainedRequirement: false,
   workspaceSession: '',
 };
 
@@ -41,16 +84,44 @@ for (let index = 0; index < args.length; index += 1) {
     options.allowOutsideHome = true;
   } else if (arg === '--dashboard-url') {
     options.dashboardUrl = requiredValue(args, ++index, arg);
+  } else if (arg === '--discover-retained-url-prefix') {
+    options.discoverRetainedUrlPrefix = requiredValue(args, ++index, arg);
+  } else if (arg === '--discover-retained-exact-url') {
+    options.discoverRetainedExactUrl = requiredValue(args, ++index, arg);
+  } else if (arg === '--discover-retained-profile') {
+    options.discoverRetainedProfile = requiredValue(args, ++index, arg);
   } else if (arg === '--expect-marker') {
     options.expectMarkers.push(requiredValue(args, ++index, arg));
+  } else if (arg === '--expect-retained-cdp-url') {
+    options.expectRetainedCdpUrl = requiredValue(args, ++index, arg);
+  } else if (arg === '--expect-retained-profile') {
+    options.expectRetainedProfile = requiredValue(args, ++index, arg);
+  } else if (arg === '--expect-retained-session') {
+    options.expectRetainedSession = requiredValue(args, ++index, arg);
+  } else if (arg === '--expect-retained-target') {
+    options.expectRetainedTarget = requiredValue(args, ++index, arg);
+  } else if (arg === '--expect-retained-url') {
+    options.expectRetainedUrl = requiredValue(args, ++index, arg);
+  } else if (arg === '--browser-build') {
+    options.browserBuild = requiredValue(args, ++index, arg);
   } else if (arg === '--browser-profile') {
     options.browserProfile = requiredValue(args, ++index, arg);
   } else if (arg === '--install-bin') {
     options.installBin = requiredValue(args, ++index, arg);
   } else if (arg === '--json') {
     options.json = true;
+  } else if (arg === '--journal-status') {
+    options.journalStatus = true;
   } else if (arg === '--release') {
     options.release = true;
+  } else if (arg === '--recover-only') {
+    options.recoverOnly = true;
+  } else if (arg === '--retained-browser-status') {
+    options.retainedBrowserStatus = true;
+  } else if (arg === '--retained-requirement') {
+    options.retainedRequirementPath = requiredValue(args, ++index, arg);
+  } else if (arg === '--require-browser-smoke') {
+    options.requireBrowserSmoke = true;
   } else if (arg === '--skip-browser') {
     options.smokeBrowser = false;
   } else if (arg === '--skip-reference-sync') {
@@ -59,6 +130,8 @@ for (let index = 0; index < args.length; index += 1) {
     options.skipSmoke = true;
   } else if (arg === '--start-if-missing') {
     options.startIfMissing = true;
+  } else if (arg === '--write-retained-requirement') {
+    options.writeRetainedRequirement = true;
   } else if (arg === '--workspace-session') {
     options.workspaceSession = requiredValue(args, ++index, arg);
   } else if (arg === '--help' || arg === '-h') {
@@ -68,8 +141,81 @@ for (let index = 0; index < args.length; index += 1) {
     fail(`Unknown argument: ${arg}`);
   }
 }
+const selectedOperations = [
+  options.journalStatus,
+  options.recoverOnly,
+  options.retainedBrowserStatus,
+  options.writeRetainedRequirement,
+].filter(Boolean).length;
+if (selectedOperations > 1) {
+  fail('Journal status, recovery, retained browser status, and requirement write cannot be combined');
+}
+try {
+  const retainedExpectationRequested = [
+    options.expectRetainedCdpUrl,
+    options.expectRetainedProfile,
+    options.expectRetainedSession,
+    options.expectRetainedTarget,
+    options.expectRetainedUrl,
+  ].some(Boolean);
+  options.explicitRetainedBrowserExpectation = retainedExpectationRequested
+    ? normalizeRetainedBrowserExpectation({
+      sessionName: options.expectRetainedSession,
+      cdpUrl: options.expectRetainedCdpUrl,
+      profileId: options.expectRetainedProfile,
+      targetId: options.expectRetainedTarget,
+      url: options.expectRetainedUrl,
+    })
+    : null;
+  options.retainedRequirementPath = resolve(options.retainedRequirementPath);
+  options.retainedBrowserRequirement = options.journalStatus || options.recoverOnly
+    ? null
+    : readRetainedBrowserRequirement(options.retainedRequirementPath);
+  options.retainedBrowserExpectation = resolveRetainedBrowserExpectation({
+    explicit: options.explicitRetainedBrowserExpectation,
+    requirement: options.retainedBrowserRequirement,
+  });
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
+if (options.retainedBrowserStatus && !options.retainedBrowserExpectation) {
+  fail('--retained-browser-status requires an explicit or durable retained browser requirement');
+}
+if (options.writeRetainedRequirement && !options.explicitRetainedBrowserExpectation) {
+  if (!options.discoverRetainedUrlPrefix && !options.discoverRetainedExactUrl) {
+    fail('--write-retained-requirement requires explicit retained browser identity flags or a discovery URL selector');
+  }
+}
+if ((options.discoverRetainedUrlPrefix || options.discoverRetainedExactUrl) && !options.writeRetainedRequirement) {
+  fail('Retained browser discovery requires --write-retained-requirement');
+}
+if (options.discoverRetainedUrlPrefix && options.discoverRetainedExactUrl) {
+  fail('--discover-retained-url-prefix and --discover-retained-exact-url cannot be combined');
+}
+if ((options.discoverRetainedUrlPrefix || options.discoverRetainedExactUrl) && options.explicitRetainedBrowserExpectation) {
+  fail('Retained browser discovery cannot be combined with explicit retained browser identity flags');
+}
+if (options.discoverRetainedProfile && !options.discoverRetainedExactUrl) {
+  fail('--discover-retained-profile requires --discover-retained-exact-url');
+}
+if (
+  options.writeRetainedRequirement
+  && !options.discoverRetainedUrlPrefix
+  && !options.discoverRetainedExactUrl
+  && ['sessionName', 'profileId', 'targetId', 'url']
+    .some((field) => !options.explicitRetainedBrowserExpectation[field])
+) {
+  fail('--write-retained-requirement requires session, profile, target, and URL');
+}
 
 const report = {
+  operation: options.journalStatus
+    ? 'journal_status'
+    : options.recoverOnly
+      ? 'recover_only'
+      : options.retainedBrowserStatus
+        ? 'retained_browser_status'
+        : options.writeRetainedRequirement ? 'write_retained_browser_requirement' : 'publish',
   dashboardUrl: options.dashboardUrl,
   mode: options.release ? 'release' : 'debug',
   installBin: null,
@@ -80,9 +226,43 @@ const report = {
     after: null,
     action: 'none',
     quiesced: false,
+    standaloneDashboard: null,
   },
   smoke: null,
+  browserSmoke: {
+    requested: options.smokeBrowser
+      && !options.skipSmoke
+      && !options.retainedBrowserStatus
+      && !options.writeRetainedRequirement,
+    required: options.requireBrowserSmoke,
+    status: options.smokeBrowser
+      && !options.skipSmoke
+      && !options.retainedBrowserStatus
+      && !options.writeRetainedRequirement
+      ? 'pending'
+      : 'skipped',
+    classification: options.retainedBrowserStatus || options.writeRetainedRequirement
+      ? options.retainedBrowserStatus
+        ? 'retained_browser_status_only'
+        : 'retained_browser_requirement_write_only'
+      : options.skipSmoke
+      ? 'all_smoke_skipped'
+      : options.smokeBrowser ? null : 'browser_smoke_skipped',
+  },
   runtimeManifest: null,
+  retainedBrowserExpectation: null,
+  retainedBrowserDiscovery: null,
+  retainedBrowserRequirement: publicRetainedBrowserRequirement(
+    options.retainedBrowserRequirement,
+  ),
+  publicationJournal: null,
+  artifactEvidence: {
+    built: null,
+    source: null,
+    backup: null,
+    replacement: null,
+    restoration: null,
+  },
   referenceBinaries: [],
   handoffs: {
     prepared: [],
@@ -92,75 +272,155 @@ const report = {
     unsupportedActiveSessions: [],
   },
 };
+const publicationJournal = createLocalDashboardPublicationJournal({
+  journalPath: resolve(
+    homedir(),
+    '.agent-browser',
+    'publications',
+    'local-dashboard-publication.json',
+  ),
+});
 
 try {
   await run();
-  output({ success: true, ...report });
+  output(options.journalStatus
+    ? {
+      success: true,
+      operation: report.operation,
+      publicationJournalStatus: report.publicationJournalStatus,
+    }
+    : { success: true, ...report });
 } catch (error) {
-  output({
-    success: false,
-    error: error instanceof Error ? error.message : String(error),
-    ...report,
-  });
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  output(options.journalStatus
+    ? { success: false, operation: report.operation, error: errorMessage }
+    : { success: false, error: errorMessage, ...report });
   process.exit(1);
 }
 
 async function run() {
-  const installBin = resolveInstallBin();
-  report.installBin = installBin;
-  guardInstallPath(installBin);
-
-  runCommand('pnpm', ['build:dashboard']);
-
-  const cargoArgs = ['build', '--manifest-path', 'cli/Cargo.toml'];
-  if (options.release) cargoArgs.push('--release');
-  runCommand('cargo', cargoArgs);
-
-  const builtBin = resolve(rootDir, 'cli', 'target', options.release ? 'release' : 'debug', 'agent-browser');
-  if (!existsSync(builtBin)) {
-    throw new Error(`Built binary was not found: ${builtBin}`);
+  if (options.journalStatus) {
+    report.publicationJournalStatus = inspectLocalDashboardPublicationJournal({
+      journal: publicationJournal,
+      pathExists: existsSync,
+      sha256File,
+    });
+    return;
   }
-  report.builtBin = builtBin;
-
-  report.service.before = serviceStatus();
-  const beforeStat = existsSync(installBin) ? statSync(installBin) : null;
-  const backupPath = `${installBin}.pre-local-dashboard-${timestamp()}`;
-  if (beforeStat) {
-    copyFileSync(installBin, backupPath);
-    chmodSync(backupPath, beforeStat.mode & 0o777);
-    report.backupPath = backupPath;
-  }
-
-  quiesceDashboardForRuntimeHandoff();
-  try {
-    prepareRuntimeHandoffs(builtBin, installBin);
-    installBinaryAtomically(builtBin, installBin, beforeStat ? beforeStat.mode & 0o777 : 0o755);
-    if (options.syncReferenceBinaries) {
-      report.referenceBinaries = syncReferenceBinaries(builtBin);
+  if (options.retainedBrowserStatus || options.writeRetainedRequirement) {
+    report.installBin = resolveInstallBin();
+    if (options.writeRetainedRequirement && (
+      options.discoverRetainedUrlPrefix || options.discoverRetainedExactUrl
+    )) {
+      let discovery;
+      try {
+        discovery = await discoverRetainedBrowserExpectation({
+          urlPrefix: options.discoverRetainedUrlPrefix,
+          exactUrl: options.discoverRetainedExactUrl,
+          profileId: options.discoverRetainedProfile,
+          sessionNames: runtimeSessionNames(),
+          readDaemonPid: readRuntimePid,
+          isProcessLive: browserProcessIsLive,
+          readBrowser: async (sessionName, daemonPid) => serviceBrowserForSession(
+            runtimeDaemonClientBinary(daemonPid, report.installBin),
+            sessionName,
+          ),
+          readCdpTargets: readCdpTargetInventory,
+        });
+      } catch (error) {
+        report.retainedBrowserDiscovery = error?.discoveryEvidence ?? null;
+        throw error;
+      }
+      options.explicitRetainedBrowserExpectation = discovery.expectation;
+      options.retainedBrowserExpectation = resolveRetainedBrowserExpectation({
+        explicit: discovery.expectation,
+        requirement: options.retainedBrowserRequirement,
+      });
+      report.retainedBrowserDiscovery = {
+        urlPrefix: discovery.urlPrefix,
+        exactUrl: discovery.exactUrl,
+        profileId: discovery.profileId,
+        inspectedSessionCount: discovery.inspectedSessionCount,
+        matchedCandidateCount: discovery.matchedCandidateCount,
+      };
     }
-
-    resumeRuntimeHandoffs(installBin);
-    await restartOrStartDashboard(installBin);
-
-    if (!options.skipSmoke) {
-      report.smoke = runSmoke(installBin);
-      report.runtimeManifest = verifyRuntimeManifestReadback(installBin, report.smoke.runtimeManifest);
-    }
-  } catch (error) {
-    const browserHandoffStarted = report.handoffs.prepared.length > 0;
-    if (!browserHandoffStarted && backupPath && existsSync(backupPath)) {
-      installBinaryAtomically(backupPath, installBin, beforeStat ? beforeStat.mode & 0o777 : 0o755);
-      report.restoredBackup = true;
-    }
+    report.retainedBrowserExpectation = {
+      required: true,
+      pinned: null,
+      before: null,
+      afterHandoff: null,
+      final: null,
+    };
     try {
-      await restartOrStartDashboard(installBin, { restoring: true });
-    } catch (restoreError) {
-      report.restoreRestartError = restoreError instanceof Error ? restoreError.message : String(restoreError);
+      report.retainedBrowserExpectation.before =
+        await verifyRetainedBrowserExpectation(report.installBin, {
+          expectation: options.retainedBrowserExpectation,
+          stage: options.writeRetainedRequirement
+            ? 'requirement_write_preflight'
+            : 'read_only_preflight',
+        });
+    } catch (error) {
+      report.retainedBrowserExpectation.before = error?.retainedBrowserEvidence ?? null;
+      throw error;
     }
-    throw error;
-  } finally {
-    report.service.after = serviceStatus();
+    if (options.writeRetainedRequirement) {
+      const requirement = writeRetainedBrowserRequirement({
+        path: options.retainedRequirementPath,
+        evidence: report.retainedBrowserExpectation.before,
+      });
+      report.retainedBrowserRequirement = publicRetainedBrowserRequirement(requirement);
+    }
+    return;
   }
+  await runLocalDashboardPublisherOrchestration({
+    options,
+    report,
+    adapters: {
+      resolveInstallBin,
+      guardInstallPath,
+      buildDashboard: () => runCommand('pnpm', ['build:dashboard']),
+      buildRuntime: ({ release }) => {
+        const cargoArgs = ['build', '--manifest-path', 'cli/Cargo.toml'];
+        if (release) cargoArgs.push('--release');
+        runCommand('cargo', cargoArgs);
+      },
+      resolveBuiltBin: ({ release }) => resolve(
+        rootDir,
+        'cli',
+        'target',
+        release ? 'release' : 'debug',
+        'agent-browser',
+      ),
+      builtBinaryExists: existsSync,
+      serviceStatus,
+      backupInstalledBinary,
+      quiesceDashboardForRuntimeHandoff,
+      prepareRuntimeHandoffs,
+      installBinaryAtomically,
+      syncReferenceBinaries,
+      resumeRuntimeHandoffs,
+      restartOrStartDashboard,
+      runHttpReadinessSmoke,
+      verifyRuntimeManifestReadback,
+      verifyRetainedBrowserExpectation,
+      runBrowserSmokeDiagnostic,
+      pathExists: existsSync,
+      sha256File,
+      runtimeSessionNames,
+      discoverPreparedRuntimeHandoffs,
+      publicationJournal,
+    },
+  });
+}
+
+function backupInstalledBinary(installBin) {
+  if (!existsSync(installBin)) return null;
+  const beforeStat = statSync(installBin);
+  const mode = beforeStat.mode & 0o777;
+  const backupPath = `${installBin}.pre-local-dashboard-${timestamp()}`;
+  copyFileSync(installBin, backupPath);
+  chmodSync(backupPath, mode);
+  return { path: backupPath, mode };
 }
 
 function syncReferenceBinaries(builtBin) {
@@ -324,6 +584,46 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin) {
 
 function resumeRuntimeHandoffs(installBin) {
   for (const prepared of report.handoffs.prepared) {
+    const existing = serviceBrowserForSession(installBin, prepared.sessionName);
+    if (existing.success && existing.browser) {
+      const browser = existing.browser;
+      if (
+        prepared.browserPid !== null
+        && browser.pid !== prepared.browserPid
+      ) {
+        throw new Error(
+          `Runtime handoff recovery found a different browser PID for session ` +
+          `'${prepared.sessionName}': ${prepared.browserPid} -> ${browser.pid}`,
+        );
+      }
+      if (prepared.cdpUrl && browser.cdpEndpoint !== prepared.cdpUrl) {
+        throw new Error(
+          `Runtime handoff recovery found a different CDP endpoint for session ` +
+          `'${prepared.sessionName}': ${prepared.cdpUrl} -> ${browser.cdpEndpoint}`,
+        );
+      }
+      if (
+        !['closed', 'not_started'].includes(browser.health)
+        && (
+          browserProcessIsLive(browser.pid)
+          || (typeof browser.cdpEndpoint === 'string' && browser.cdpEndpoint.length > 0)
+        )
+      ) {
+        report.handoffs.resumed.push({
+          sessionName: prepared.sessionName,
+          browserPid: browser.pid ?? null,
+          cdpUrl: browser.cdpEndpoint ?? null,
+          runtimeProfile: browser.profileId ?? prepared.runtimeProfile ?? null,
+          targetsReattached: Array.isArray(browser.tabHandles)
+            ? browser.tabHandles.filter((tab) => tab?.valid === true).length
+            : null,
+          retryRecordRemoved: !existsSync(prepared.handoffPath || ''),
+          daemonPid: readRuntimePid(prepared.sessionName),
+          alreadyResumed: true,
+        });
+        continue;
+      }
+    }
     let resumed;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       resumed = runAgentJson(installBin, prepared.sessionName, ['handoff', 'resume']);
@@ -359,6 +659,40 @@ function resumeRuntimeHandoffs(installBin) {
       daemonPid: readRuntimePid(prepared.sessionName),
     });
   }
+}
+
+function discoverPreparedRuntimeHandoffs(candidateSessions) {
+  const handoffs = [];
+  for (const sessionName of candidateSessions) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(sessionName)) {
+      throw new Error(`Publication journal contains an invalid session name: ${sessionName}`);
+    }
+    const path = join(runtimeSocketDir(), `${sessionName}.handoff.json`);
+    if (!existsSync(path)) continue;
+    let descriptor;
+    try {
+      descriptor = JSON.parse(readFileSync(path, 'utf8'));
+    } catch (error) {
+      throw new Error(
+        `Prepared runtime handoff is invalid for session '${sessionName}': ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const schemaVersion = descriptor.schemaVersion ?? descriptor.schema_version;
+    const descriptorSessionName = descriptor.sessionName ?? descriptor.session_name;
+    if (schemaVersion !== 1 || descriptorSessionName !== sessionName) {
+      throw new Error(`Prepared runtime handoff identity mismatch for session '${sessionName}'`);
+    }
+    handoffs.push({
+      sessionName,
+      daemonPid: readRuntimePid(sessionName),
+      browserPid: descriptor.browserPid ?? descriptor.browser_pid ?? null,
+      cdpUrl: descriptor.cdpUrl ?? descriptor.cdp_url ?? null,
+      runtimeProfile: descriptor.runtimeProfile ?? descriptor.runtime_profile ?? null,
+      handoffPath: path,
+    });
+  }
+  return handoffs;
 }
 
 function runtimeDaemonClientBinary(daemonPid, fallbackBin) {
@@ -399,6 +733,90 @@ function serviceBrowserForSession(binary, sessionName) {
     browser: browsers.find((browser) => browser?.id === `session:${sessionName}`) || null,
     error: result.error,
   };
+}
+
+async function verifyRetainedBrowserExpectation(_binary, { expectation, stage }) {
+  const daemonPid = readRuntimePid(expectation.sessionName);
+  if (!browserProcessIsLive(daemonPid)) {
+    const evidence = evaluateRetainedBrowserExpectation({
+      browser: null,
+      cdpTargets: null,
+      expectation,
+      stage,
+    });
+    evidence.reason = 'retained_daemon_missing';
+    evidence.message =
+      `Required retained daemon session '${expectation.sessionName}' is not running`;
+    const error = new Error(
+      `Retained browser guard failed at ${stage}: ${evidence.reason}: ${evidence.message}`,
+    );
+    error.retainedBrowserEvidence = evidence;
+    throw error;
+  }
+  const daemonClientBin = runtimeDaemonClientBinary(daemonPid, report.installBin);
+  const serviceReadback = serviceBrowserForSession(
+    daemonClientBin,
+    expectation.sessionName,
+  );
+  if (!serviceReadback.success) {
+    const error = new Error(
+      `Retained browser guard could not read session '${expectation.sessionName}' ` +
+      `at ${stage}: ${serviceReadback.error}`,
+    );
+    error.retainedBrowserEvidence = {
+      required: true,
+      verified: false,
+      stage,
+      reason: 'retained_browser_service_read_failed',
+      message: serviceReadback.error,
+    };
+    throw error;
+  }
+  let cdpTargets = null;
+  let cdpError = null;
+  if (serviceReadback.browser?.cdpEndpoint) {
+    try {
+      cdpTargets = await readCdpTargetInventory(serviceReadback.browser.cdpEndpoint);
+    } catch (error) {
+      cdpError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  const evidence = evaluateRetainedBrowserExpectation({
+    browser: serviceReadback.browser,
+    cdpTargets,
+    expectation,
+    stage,
+  });
+  if (cdpError) evidence.cdpError = cdpError;
+  if (!evidence.verified) {
+    const error = new Error(
+      `Retained browser guard failed at ${stage}: ${evidence.reason}: ${evidence.message}` +
+      (cdpError ? ` (${cdpError})` : ''),
+    );
+    error.retainedBrowserEvidence = evidence;
+    throw error;
+  }
+  return evidence;
+}
+
+async function readCdpTargetInventory(cdpUrl) {
+  if (!isLoopbackDevToolsUrl(cdpUrl)) {
+    throw new Error('CDP target inventory endpoint must use loopback');
+  }
+  const endpoint = new URL(cdpUrl);
+  endpoint.protocol = endpoint.protocol === 'wss:' ? 'https:' : 'http:';
+  endpoint.pathname = '/json/list';
+  endpoint.search = '';
+  endpoint.hash = '';
+  const response = await fetch(endpoint, { signal: AbortSignal.timeout(5000) });
+  if (!response.ok) {
+    throw new Error(`CDP target inventory returned HTTP ${response.status}`);
+  }
+  const targets = await response.json();
+  if (!Array.isArray(targets)) {
+    throw new Error('CDP target inventory is not an array');
+  }
+  return targets;
 }
 
 function readRuntimePid(sessionName) {
@@ -463,22 +881,25 @@ function quiesceDashboardForRuntimeHandoff() {
     runCommand('systemctl', ['--user', 'stop', 'agent-browser-dashboard.service']);
     report.service.quiesced = true;
     report.service.action = 'stop-for-runtime-handoff';
+    return;
+  }
+  if (process.platform === 'linux') {
+    quiesceStandaloneDashboardForRuntimeHandoff({
+      runtimeSocketDir: runtimeSocketDir(),
+      service: report.service,
+    });
   }
 }
 
 async function restartOrStartDashboard(installBin, { restoring = false } = {}) {
-  const status = serviceStatus();
-  if (status.loadState === 'loaded') {
-    report.service.action = restoring ? 'restart-after-restore' : 'restart';
-    runCommand('systemctl', ['--user', 'restart', 'agent-browser-dashboard.service']);
-    return;
-  }
-  if (!options.startIfMissing) {
-    report.service.action = 'not-installed';
-    return;
-  }
-  report.service.action = restoring ? 'start-after-restore' : 'start';
-  runCommand(installBin, ['dashboard', 'start']);
+  restartOrStartDashboardRuntime({
+    installBin,
+    restoring,
+    startIfMissing: options.startIfMissing,
+    service: report.service,
+    serviceStatus,
+    runCommand,
+  });
 }
 
 function serviceStatus() {
@@ -517,7 +938,7 @@ function serviceStatus() {
   };
 }
 
-function runSmoke(installBin) {
+function smokeArgs(installBin, { skipBrowser }) {
   const smokeArgs = [
     'scripts/smoke-local-dashboard-runtime.js',
     '--dashboard-url',
@@ -529,20 +950,48 @@ function runSmoke(installBin) {
   for (const marker of options.expectMarkers) {
     smokeArgs.push('--expect-marker', marker);
   }
-  if (!options.smokeBrowser) smokeArgs.push('--skip-browser');
+  if (skipBrowser) smokeArgs.push('--skip-browser');
+  if (options.browserBuild) smokeArgs.push('--browser-build', options.browserBuild);
   if (options.browserProfile) smokeArgs.push('--browser-profile', options.browserProfile);
   if (options.workspaceSession) smokeArgs.push('--workspace-session', options.workspaceSession);
+  return smokeArgs;
+}
 
-  const result = spawnSync('node', smokeArgs, {
+function runSmokeProcess(installBin, { skipBrowser }) {
+  const commandArgs = smokeArgs(installBin, { skipBrowser });
+
+  const result = spawnSync('node', commandArgs, {
     cwd: rootDir,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const parsed = parseJson(result.stdout, 'local dashboard runtime smoke');
+  return { result, parsed };
+}
+
+function runHttpReadinessSmoke(installBin) {
+  const { result, parsed } = runSmokeProcess(installBin, { skipBrowser: true });
   if (result.status !== 0 || !parsed.success) {
-    throw new Error(`Local dashboard runtime smoke failed: ${parsed.error || result.stderr || result.stdout}`);
+    throw new Error(`Local dashboard HTTP readiness smoke failed: ${parsed.error || result.stderr || result.stdout}`);
   }
   return parsed;
+}
+
+function runBrowserSmokeDiagnostic(installBin) {
+  const { result, parsed } = runSmokeProcess(installBin, { skipBrowser: false });
+  const disposition = evaluateLocalDashboardBrowserSmokeResult({
+    processStatus: result.status,
+    parsed,
+    stderr: result.stderr,
+    stdout: result.stdout,
+    required: options.requireBrowserSmoke,
+  });
+  if (disposition.fatal) {
+    report.browserSmoke = disposition;
+    const error = new Error(`Local dashboard browser smoke failed: ${disposition.error}`);
+    throw error;
+  }
+  return disposition;
 }
 
 function verifyRuntimeManifestReadback(installBin, manifest) {
@@ -638,12 +1087,34 @@ function output(payload) {
     console.error(payload.error);
     return;
   }
+  if (payload.operation === 'journal_status') {
+    const status = payload.publicationJournalStatus;
+    console.log(`Publication journal: ${status.exists ? status.transaction.phase : 'absent'}`);
+    console.log(`Recommended action: ${status.recommendedAction}`);
+    return;
+  }
+  if (payload.operation === 'recover_only' && payload.recovery?.result === 'nothing_to_recover') {
+    console.log('No incomplete local dashboard publication requires recovery.');
+    return;
+  }
+  if (payload.operation === 'retained_browser_status') {
+    console.log('Retained browser publication guard: verified');
+    return;
+  }
+  if (payload.operation === 'write_retained_browser_requirement') {
+    console.log(`Retained browser publication requirement: ${payload.retainedBrowserRequirement.written ? 'written' : 'already pinned'}`);
+    return;
+  }
   console.log(`Published local dashboard runtime to ${payload.installBin}`);
   console.log(`Backup: ${payload.backupPath ?? 'none'}`);
   console.log(`Dashboard: ${payload.dashboardUrl}`);
   console.log(`Service PID: ${payload.service?.after?.mainPid ?? 'none'}`);
   if (payload.smoke?.browser) {
     console.log(`Browser smoke: ${payload.smoke.browser.smokeUrl}`);
+  } else if (payload.browserSmoke?.status === 'passed') {
+    console.log(`Browser smoke: ${payload.browserSmoke.evidence?.smokeUrl ?? 'passed'}`);
+  } else if (payload.browserSmoke?.status === 'unavailable') {
+    console.log(`Browser smoke: unavailable (${payload.browserSmoke.classification})`);
   }
 }
 
@@ -651,6 +1122,17 @@ function requiredValue(values, index, flag) {
   const value = values[index];
   if (!value) fail(`Missing value for ${flag}`);
   return value;
+}
+
+function publicRetainedBrowserRequirement(requirement) {
+  if (!requirement) return null;
+  return {
+    path: requirement.path,
+    exists: requirement.exists === true,
+    sha256: requirement.sha256 ?? null,
+    createdAt: requirement.createdAt ?? null,
+    written: requirement.written === true,
+  };
 }
 
 function fail(message) {
@@ -668,11 +1150,35 @@ visible dashboard runtime.
 
 Options:
   --dashboard-url <url>       Dashboard URL to smoke. Default: http://127.0.0.1:4848/
+  --discover-retained-url-prefix <url>
+                              With requirement write, discover exactly one ready target under this reviewed prefix.
+  --discover-retained-exact-url <url>
+                              With requirement write, discover exactly one ready target at this canonical URL.
+  --discover-retained-profile <id>
+                              Require the exact-URL discovery target to use this runtime profile.
   --expect-marker <text>      Require served HTML or JS bundle to contain text. Repeatable.
+  --expect-retained-session <name>
+                              Require this daemon session before mutation and after handoff.
+  --expect-retained-profile <id>
+                              Require and pin this retained runtime profile.
+  --expect-retained-target <id>
+                              Require exactly this CDP page target.
+  --expect-retained-url <url> Require the exact URL on the retained target.
+  --expect-retained-cdp-url <url>
+                              Require this browser DevTools endpoint before pinning.
+  --browser-build <build>     Require a verified build for disposable browser smoke.
   --browser-profile <path>    Use an isolated runtime profile for browser smoke.
   --install-bin <path>        Installed binary path. Default: ~/.local/bin/agent-browser.
+  --journal-status            Read publication journal and artifact status without locking or mutation.
+  --retained-browser-status   Verify only the required retained identity; no lock, build, or mutation.
+  --retained-requirement <path>
+                              Override the private durable retained-lane requirement path.
+  --write-retained-requirement
+                              Verify and privately pin explicit or uniquely discovered retained identity.
+  --recover-only              Recover one incomplete transaction; never start a new build.
   --release                   Build cli/target/release/agent-browser instead of debug.
-  --skip-browser              Skip browser smoke, keep HTTP and bundle marker smoke.
+  --skip-browser              Skip browser smoke, keep required HTTP and bundle readiness.
+  --require-browser-smoke     Fail when the disposable browser cannot launch.
   --skip-reference-sync        Do not sync ignored workspace and pnpm package binaries.
   --skip-smoke                Build, install, and restart without smoke.
   --start-if-missing          Start dashboard if the user service is not installed.

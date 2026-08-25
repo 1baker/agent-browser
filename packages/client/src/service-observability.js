@@ -58,6 +58,7 @@ export {
  * @typedef {import('./service-observability.generated.js').ServiceSessionsResponse} ServiceSessionsResponse
  * @typedef {import('./service-observability.generated.js').ServiceSitePoliciesResponse} ServiceSitePoliciesResponse
  * @typedef {import('./service-observability.generated.js').ServiceStatusResponse} ServiceStatusResponse
+ * @typedef {import('./service-observability.generated.js').LocalDashboardPublicationStatus} LocalDashboardPublicationStatus
  * @typedef {import('./service-observability.generated.js').ServiceTabsResponse} ServiceTabsResponse
  * @typedef {import('./service-observability.generated.js').ServiceTraceResponse} ServiceTraceResponse
  * @typedef {import('./service-observability.generated.js').ServiceTraceAttentionSummary} ServiceTraceAttentionSummary
@@ -123,6 +124,17 @@ export {
  */
 export function getServiceStatus(options) {
   return serviceGet(options, '/api/service/status');
+}
+
+/**
+ * Read the durable local dashboard publication transaction without acquiring
+ * its lock or authorizing recovery.
+ *
+ * @param {ServiceObservabilityHttpOptions} options
+ * @returns {Promise<LocalDashboardPublicationStatus>}
+ */
+export function getLocalDashboardPublicationStatus(options) {
+  return serviceGet(options, '/api/service/publications/local-dashboard');
 }
 
 /**

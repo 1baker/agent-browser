@@ -105,6 +105,18 @@ jobs:
       - name: Test dashboard contracts
         run: pnpm test:dashboard-incident-summary
 
+      - name: Test local dashboard publisher lifecycle
+        run: |
+          pnpm test:local-dashboard-smoke-policy
+          pnpm test:local-dashboard-publisher-lifecycle
+          pnpm test:local-dashboard-publisher-orchestration
+          pnpm test:local-dashboard-retained-browser-guard
+          pnpm test:local-dashboard-retained-browser-requirement
+          pnpm test:local-dashboard-retained-browser-watchdog
+          pnpm test:local-dashboard-publication-journal
+          pnpm test:local-dashboard-publication-operations
+          pnpm test:dashboard-publication-status-projection
+
       - name: Build dashboard
         run: pnpm build
         working-directory: packages/dashboard

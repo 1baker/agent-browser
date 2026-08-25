@@ -3,6 +3,9 @@ use std::io::{self, BufRead, Write};
 use serde_json::{json, Map, Value};
 
 use crate::connection::{send_command, Response};
+use crate::native::publication_status::{
+    local_dashboard_publication_status, LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE,
+};
 use crate::native::remote_view_handoff::apply_remote_view_handoff_route_hints;
 use crate::native::service_access::{
     apply_shared_profile_route_hints_for_service_request, parse_service_access_plan_query,
@@ -15,7 +18,11 @@ use crate::native::service_contracts::{
     SERVICE_BROWSER_CAPABILITY_REGISTRY_RESOURCE, SERVICE_CONTRACTS_RESOURCE,
     SERVICE_DISPLAY_ALLOCATIONS_MCP_RESOURCE, SERVICE_PROFILE_SEEDING_HANDOFF_UPDATE_MCP_TOOL_NAME,
     SERVICE_REMOTE_VIEW_ROUTES_MCP_RESOURCE, SERVICE_REMOTE_VIEW_ROUTE_PREFLIGHT_MCP_TOOL_NAME,
-    SERVICE_REQUEST_ACTIONS, SERVICE_ROUTE_POOL_MCP_RESOURCE, SERVICE_VIEWER_LEASES_MCP_RESOURCE,
+    SERVICE_REQUEST_ACTIONS, SERVICE_ROUTE_POOL_MCP_RESOURCE,
+    SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME,
+    SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME, SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME,
+    SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME, SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME,
+    SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME, SERVICE_VIEWER_LEASES_MCP_RESOURCE,
 };
 use crate::native::service_incidents::{
     service_incident_summary, service_incidents_response, ServiceIncidentFilters,
@@ -255,6 +262,12 @@ fn service_mcp_resources() -> Vec<Value> {
             "mimeType": "application/json",
             "description": "Retained service events in chronological order"
         }),
+        json!({
+            "uri": LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE,
+            "name": "Local dashboard publication status",
+            "mimeType": "application/json",
+            "description": "Read-only durable publication journal, lock, transaction, and installed-artifact evidence"
+        }),
     ]
 }
 
@@ -313,6 +326,7 @@ fn read_service_mcp_resource_from_state(uri: &str, state: &ServiceState) -> Resu
     state.refresh_profile_readiness();
     let contents = match uri {
         SERVICE_CONTRACTS_RESOURCE => service_contracts_metadata(),
+        LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE => local_dashboard_publication_status()?,
         SERVICE_ACCESS_PLAN_MCP_RESOURCE => {
             service_access_plan_for_state(&state, Default::default())
         }
@@ -1014,6 +1028,20 @@ fn service_mcp_tools() -> Vec<Value> {
                     "taskName": {
                         "type": "string",
                         "description": "Calling task name, for example probeACSwebsite."
+                    },
+                    "taskAuthority": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "description": "Broker-issued immutable task authority envelope."
+                    },
+                    "taskStepId": {
+                        "type": "string",
+                        "description": "Exact broker-assigned ID of the next ordered v2 authority step."
+                    },
+                    "taskEvidenceBytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Evidence reservation for the exact ordered authority step."
                     },
                     "targetServiceId": {
                         "type": "string",
@@ -2860,6 +2888,12 @@ fn service_mcp_tools() -> Vec<Value> {
         browser_tab_close_tool_schema(),
         browser_set_content_tool_schema(),
         browser_command_tool_schema(),
+        task_authority_issue_tool_schema(),
+        task_authority_status_tool_schema(),
+        task_authority_reconcile_tool_schema(),
+        task_authority_confirmation_tool_schema(),
+        task_authority_confirmation_cleanup_tool_schema(),
+        task_authority_revoke_tool_schema(),
         json!({
             "name": "service_trace",
             "title": "Read service trace",
@@ -4549,6 +4583,187 @@ fn browser_command_tool_schema() -> Value {
     })
 }
 
+fn task_authority_issue_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME,
+        "title": "Issue bounded browser task authority",
+        "description": "Ask the broker to derive and durably issue the smallest read/navigation authority for an approved plan on one exact retained target. The operation always requires target-bound confirmation.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string", "description": "Exact retained daemon session." },
+                "taskName": { "type": "string" },
+                "serviceName": { "type": "string" },
+                "agentName": { "type": "string" },
+                "expectedTargetId": { "type": "string" },
+                "expectedUrl": { "type": "string" },
+                "issuer": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "kind": { "type": "string", "enum": ["operator", "service"] },
+                        "id": { "type": "string" }
+                    },
+                    "required": ["kind", "id"]
+                },
+                "approvalReference": { "type": "string" },
+                "expiresInSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "action": { "type": "string" },
+                            "url": { "type": "string" },
+                            "evidenceBytes": { "type": "integer", "minimum": 1 }
+                        },
+                        "required": ["action"]
+                    }
+                }
+            },
+            "required": ["taskName", "expectedTargetId", "expectedUrl", "approvalReference", "expiresInSeconds", "steps"]
+        }
+    })
+}
+
+fn task_authority_status_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME,
+        "title": "Read browser task authority status",
+        "description": "Read broker issuer, approval, plan, revocation, expiry, usage, and remaining budget without launching or mutating a browser.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string", "description": "Exact retained daemon session." },
+                "authorityId": { "type": "string" }
+            },
+            "required": []
+        }
+    })
+}
+
+fn task_authority_revoke_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME,
+        "title": "Revoke browser task authority",
+        "description": "Durably revoke one broker-issued authority on its exact retained target. The operation always requires target-bound confirmation and is idempotent for matching evidence.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string", "description": "Exact retained daemon session." },
+                "authorityId": { "type": "string" },
+                "revokedBy": { "type": "string" },
+                "reason": { "type": "string" }
+            },
+            "required": ["authorityId", "reason"]
+        }
+    })
+}
+
+fn task_authority_reconcile_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME,
+        "title": "Reconcile indeterminate browser task authority",
+        "description": "Freshly confirm one exact retained target, durably revoke an authority with exactly one named indeterminate step, and mint one lineage-bound replacement without replaying the consumed step.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string" },
+                "authorityId": { "type": "string" },
+                "reconciliationId": { "type": "string" },
+                "unresolvedStepId": { "type": "string" },
+                "taskName": { "type": "string" },
+                "serviceName": { "type": "string" },
+                "agentName": { "type": "string" },
+                "expectedTargetId": { "type": "string" },
+                "expectedUrl": { "type": "string" },
+                "issuer": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "kind": { "type": "string", "enum": ["operator", "service"] },
+                        "id": { "type": "string" }
+                    },
+                    "required": ["kind", "id"]
+                },
+                "approvalReference": { "type": "string" },
+                "expiresInSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "action": { "type": "string" },
+                            "url": { "type": "string" },
+                            "evidenceBytes": { "type": "integer", "minimum": 1 }
+                        },
+                        "required": ["action"]
+                    }
+                }
+            },
+            "required": ["authorityId", "reconciliationId", "unresolvedStepId", "taskName", "expectedTargetId", "expectedUrl", "approvalReference", "expiresInSeconds", "steps"]
+        }
+    })
+}
+
+fn task_authority_confirmation_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME,
+        "title": "Confirm or deny a task authority control",
+        "description": "Resolve one pending exact-target task authority issue, reconcile, or revoke confirmation on the same retained daemon session.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string" },
+                "confirmationId": { "type": "string" },
+                "expectedAction": { "type": "string", "enum": ["task_authority_issue", "task_authority_reconcile", "task_authority_revoke"] },
+                "decision": { "type": "string", "enum": ["confirm", "deny"] },
+                "decidedBy": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "kind": { "type": "string", "enum": ["operator", "service"] },
+                        "id": { "type": "string" }
+                    },
+                    "required": ["kind", "id"]
+                }
+            },
+            "required": ["confirmationId", "expectedAction", "decision"]
+        }
+    })
+}
+
+fn task_authority_confirmation_cleanup_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME,
+        "title": "Preview or apply task authority confirmation receipt cleanup",
+        "description": "Preview deterministic terminal receipt retirement with verified checkpoint-ledger evidence, then apply only with the exact review digest. Pending and indeterminate receipts are always preserved.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string" },
+                "retainCount": { "type": "integer", "minimum": 0 },
+                "minAgeSeconds": { "type": "integer", "minimum": 0 },
+                "apply": { "type": "boolean" },
+                "reviewSha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+            },
+            "required": []
+        }
+    })
+}
+
 fn browser_read_tool_schema(spec: BrowserReadToolSpec) -> Value {
     json!({
         "name": spec.tool_name,
@@ -4748,6 +4963,22 @@ fn call_service_mcp_tool(
         }
         SERVICE_REMOTE_VIEW_ROUTE_PREFLIGHT_MCP_TOOL_NAME => {
             call_service_remote_view_route_preflight(arguments, session)
+        }
+        SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME => call_task_authority_issue(arguments, session),
+        SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME => {
+            call_task_authority_status(arguments, session)
+        }
+        SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME => {
+            call_task_authority_reconcile(arguments, session)
+        }
+        SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME => {
+            call_task_authority_confirmation(arguments, session)
+        }
+        SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME => {
+            call_task_authority_confirmation_cleanup(arguments, session)
+        }
+        SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME => {
+            call_task_authority_revoke(arguments, session)
         }
         "service_request" => call_service_request(arguments, session, configured_service_state),
         "browser_command" => call_browser_command(arguments, session),
@@ -5460,6 +5691,11 @@ fn service_request_command_with_state(
         let new_id = id.replacen("mcp-browser-command-", "mcp-service-request-", 1);
         command["id"] = json!(new_id);
     }
+    for field in ["taskAuthority", "taskStepId", "taskEvidenceBytes"] {
+        if let Some(value) = arguments.get(field) {
+            command[field] = value.clone();
+        }
+    }
     context.apply_target_profile_hints(&mut command);
     if let Some(value) = arguments.get("manualLoginLaunch") {
         command["manualLoginLaunch"] = value.clone();
@@ -6140,6 +6376,244 @@ fn call_service_request(
     state.refresh_profile_readiness();
     let (trace, command) = service_request_command_with_state(arguments, Some(&state))?;
     send_queued_tool_command("service_request", session, trace, command)
+}
+
+fn task_authority_mcp_session<'a>(
+    arguments: &'a Value,
+    default: &'a str,
+) -> Result<&'a str, JsonRpcError> {
+    let Some(value) = optional_string_argument(arguments, "sessionName")? else {
+        return Ok(default);
+    };
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(JsonRpcError::invalid_params(
+            "task authority sessionName is invalid",
+        ));
+    }
+    Ok(value)
+}
+
+fn task_authority_mcp_actor() -> Value {
+    #[cfg(unix)]
+    let id = format!("mcp-stdio:uid:{}", unsafe { libc::geteuid() });
+    #[cfg(not(unix))]
+    let id = "mcp-stdio:local-process-owner".to_string();
+    json!({"kind": "service", "id": id})
+}
+
+fn bind_task_authority_mcp_actor(
+    request: &mut serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<(), JsonRpcError> {
+    let actor = task_authority_mcp_actor();
+    if let Some(claimed) = request.get(field) {
+        if claimed != &actor {
+            return Err(JsonRpcError::invalid_params(&format!(
+                "task authority {field} must match the authenticated MCP stdio principal"
+            )));
+        }
+    }
+    request.insert(field.to_string(), actor);
+    Ok(())
+}
+
+fn call_task_authority_issue(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let task_name = required_string_argument(arguments, "taskName")?;
+    let service_name = optional_string_argument(arguments, "serviceName")?;
+    let agent_name = optional_string_argument(arguments, "agentName")?;
+    let trace = service_tool_trace(service_name, agent_name, Some(task_name));
+    let mut request = arguments
+        .as_object()
+        .cloned()
+        .ok_or_else(|| JsonRpcError::invalid_params("task authority issue requires arguments"))?;
+    request.remove("sessionName");
+    bind_task_authority_mcp_actor(&mut request, "issuer")?;
+    let mut command = json!({
+        "id": format!("mcp-task-authority-issue-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_issue",
+        "taskName": task_name,
+        "request": request,
+    });
+    apply_service_trace_fields(&mut command, service_name, agent_name, Some(task_name));
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME,
+        target_session,
+        trace,
+        command,
+    )
+}
+
+fn call_task_authority_status(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let authority_id = optional_string_argument(arguments, "authorityId")?;
+    let mut command = json!({
+        "id": format!("mcp-task-authority-status-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_status",
+    });
+    if let Some(authority_id) = authority_id {
+        command["authorityId"] = json!(authority_id);
+    }
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME,
+        target_session,
+        json!({}),
+        command,
+    )
+}
+
+fn call_task_authority_revoke(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let authority_id = required_string_argument(arguments, "authorityId")?;
+    let actor = task_authority_mcp_actor();
+    let revoked_by = actor["id"].as_str().unwrap_or("mcp-stdio");
+    if let Some(claimed) = optional_string_argument(arguments, "revokedBy")? {
+        if claimed != revoked_by {
+            return Err(JsonRpcError::invalid_params(
+                "task authority revokedBy must match the authenticated MCP stdio principal",
+            ));
+        }
+    }
+    let reason = required_string_argument(arguments, "reason")?;
+    let command = json!({
+        "id": format!("mcp-task-authority-revoke-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_revoke",
+        "authorityId": authority_id,
+        "revokedBy": revoked_by,
+        "reason": reason,
+    });
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME,
+        target_session,
+        json!({}),
+        command,
+    )
+}
+
+fn call_task_authority_reconcile(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let authority_id = required_string_argument(arguments, "authorityId")?;
+    let task_name = required_string_argument(arguments, "taskName")?;
+    let service_name = optional_string_argument(arguments, "serviceName")?;
+    let agent_name = optional_string_argument(arguments, "agentName")?;
+    let trace = service_tool_trace(service_name, agent_name, Some(task_name));
+    let mut request = arguments.as_object().cloned().ok_or_else(|| {
+        JsonRpcError::invalid_params("task authority reconcile requires arguments")
+    })?;
+    request.remove("sessionName");
+    request.remove("authorityId");
+    bind_task_authority_mcp_actor(&mut request, "issuer")?;
+    let mut command = json!({
+        "id": format!("mcp-task-authority-reconcile-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_reconcile",
+        "authorityId": authority_id,
+        "taskName": task_name,
+        "request": request,
+    });
+    apply_service_trace_fields(&mut command, service_name, agent_name, Some(task_name));
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME,
+        target_session,
+        trace,
+        command,
+    )
+}
+
+fn call_task_authority_confirmation(
+    arguments: &Value,
+    session: &str,
+) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let confirmation_id = required_string_argument(arguments, "confirmationId")?;
+    let expected_action = required_string_argument(arguments, "expectedAction")?;
+    if !matches!(
+        expected_action,
+        "task_authority_issue" | "task_authority_reconcile" | "task_authority_revoke"
+    ) {
+        return Err(JsonRpcError::invalid_params(
+            "task authority confirmation expectedAction is invalid",
+        ));
+    }
+    let decision = required_string_argument(arguments, "decision")?;
+    if !matches!(decision, "confirm" | "deny") {
+        return Err(JsonRpcError::invalid_params(
+            "task authority confirmation decision must be confirm or deny",
+        ));
+    }
+    let decided_by = task_authority_mcp_actor();
+    if let Some(claimed) = arguments.get("decidedBy") {
+        if claimed != &decided_by {
+            return Err(JsonRpcError::invalid_params(
+                "task authority decidedBy must match the authenticated MCP stdio principal",
+            ));
+        }
+    }
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME,
+        target_session,
+        json!({}),
+        json!({
+            "id": format!("mcp-task-authority-{decision}-{}", uuid::Uuid::new_v4()),
+            "action": decision,
+            "confirmationId": confirmation_id,
+            "expectedAction": expected_action,
+            "decidedBy": decided_by,
+        }),
+    )
+}
+
+fn call_task_authority_confirmation_cleanup(
+    arguments: &Value,
+    session: &str,
+) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let mut command = json!({
+        "id": format!("mcp-task-authority-confirmation-cleanup-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_confirmation_cleanup",
+        "requestedBy": task_authority_mcp_actor(),
+    });
+    for field in ["retainCount", "minAgeSeconds"] {
+        if let Some(value) = arguments.get(field) {
+            if value.as_u64().is_none() {
+                return Err(JsonRpcError::invalid_params(&format!(
+                    "task authority confirmation cleanup {field} must be a nonnegative integer"
+                )));
+            }
+            command[field] = value.clone();
+        }
+    }
+    if let Some(value) = arguments.get("apply") {
+        if value.as_bool().is_none() {
+            return Err(JsonRpcError::invalid_params(
+                "task authority confirmation cleanup apply must be boolean",
+            ));
+        }
+        command["apply"] = value.clone();
+    }
+    if let Some(value) = arguments.get("reviewSha256") {
+        command["reviewSha256"] = value.clone();
+    }
+    if command.get("apply").and_then(Value::as_bool) == Some(true)
+        && command
+            .get("reviewSha256")
+            .and_then(Value::as_str)
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .is_none()
+    {
+        return Err(JsonRpcError::invalid_params(
+            "task authority confirmation cleanup apply requires reviewSha256",
+        ));
+    }
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME,
+        target_session,
+        json!({}),
+        command,
+    )
 }
 
 fn call_browser_navigate(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -10609,6 +11083,7 @@ mod tests {
                 CHALLENGES_RESOURCE,
                 JOBS_RESOURCE,
                 EVENTS_RESOURCE,
+                LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE,
             ]
         );
     }
@@ -12678,6 +13153,39 @@ mod tests {
     #[test]
     fn browser_tool_schemas_include_target_profile_hints() {
         let tools = service_mcp_tools();
+        for name in [
+            SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME,
+            SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME,
+            SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME,
+            SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME,
+            SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME,
+            SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME,
+        ] {
+            assert!(tools.iter().any(|tool| tool["name"] == name));
+        }
+        let authority_confirmation = tools
+            .iter()
+            .find(|tool| tool["name"] == SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME)
+            .expect("task authority confirmation schema should be listed");
+        assert!(!authority_confirmation["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("decidedBy")));
+        assert!(call_task_authority_confirmation(
+            &json!({
+                "confirmationId": "confirmation-1",
+                "expectedAction": "task_authority_issue",
+                "decision": "confirm",
+                "decidedBy": {"kind": "operator", "id": "forged"}
+            }),
+            "default",
+        )
+        .unwrap_err()
+        .data
+        .unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("authenticated MCP stdio principal"));
         let service_request = tools
             .iter()
             .find(|tool| tool["name"] == "service_request")
@@ -12697,8 +13205,28 @@ mod tests {
         assert!(navigate["inputSchema"]["properties"]["loginIds"].is_object());
         assert!(service_request["inputSchema"]["properties"]["siteId"].is_object());
         assert!(service_request["inputSchema"]["properties"]["loginIds"].is_object());
+        assert!(service_request["inputSchema"]["properties"]["taskAuthority"].is_object());
+        assert!(service_request["inputSchema"]["properties"]["taskStepId"].is_object());
+        assert!(service_request["inputSchema"]["properties"]["taskEvidenceBytes"].is_object());
         assert!(service_trace["inputSchema"]["properties"]["targetServiceId"].is_null());
         assert!(service_trace["inputSchema"]["properties"]["siteId"].is_null());
+    }
+
+    #[test]
+    fn service_request_command_preserves_ordered_task_authority_fields() {
+        let authority = json!({"id": "authority-1", "planSha256": "abc"});
+        let (_, command) = service_request_command(&json!({
+            "action": "title",
+            "taskName": "inspect",
+            "taskAuthority": authority,
+            "taskStepId": "authority-1:step-0",
+            "taskEvidenceBytes": 4096,
+        }))
+        .unwrap();
+
+        assert_eq!(command["taskAuthority"], authority);
+        assert_eq!(command["taskStepId"], "authority-1:step-0");
+        assert_eq!(command["taskEvidenceBytes"], 4096);
     }
 
     #[test]

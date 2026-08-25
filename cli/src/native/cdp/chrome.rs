@@ -3429,6 +3429,7 @@ mod tests {
 
     #[test]
     fn test_build_args_headless_includes_headless_flag() {
+        let _guard = EnvGuard::new(&["HOME", "USERPROFILE"]);
         let opts = LaunchOptions {
             headless: true,
             ..Default::default()
@@ -3455,6 +3456,7 @@ mod tests {
 
     #[test]
     fn test_build_args_headed_no_headless_flag() {
+        let _guard = EnvGuard::new(&["HOME", "USERPROFILE"]);
         let opts = LaunchOptions {
             headless: false,
             ..Default::default()

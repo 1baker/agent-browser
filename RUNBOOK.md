@@ -4,6 +4,1302 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 179 | 2026-08-24
+
+Scope: add bounded doctor JSON for agent consumption without weakening the
+authoritative no-launch probes or retained-browser publication guard.
+
+Actions:
+
+- Added command-specific `--compact --json` projections for install doctor and
+  remote-view doctor with versioned schemas, total and omitted issue counts,
+  at most 20 issue details, readiness fields, and actionable remedies.
+- Updated CLI help, README, installation and command docs, and repository plus
+  installed agent-browser skill guidance.
+- Aligned native retained-browser verification with the publisher by requiring
+  the named daemon PID to exist and be live before persisted browser or CDP
+  evidence can verify an authority record.
+- Preserved the dirty worktree and all pre-existing live browser processes
+  during implementation validation.
+- After explicit operator authorization, restored `chatgpt-pro` on the exact
+  retained Workshop URL, archived the obsolete dead-target authority, and
+  marker-first pinned the unique replacement target without page interaction.
+- Guarded publication handed four active browser sessions to the replacement
+  executable. Recovered the old dashboard manifest through the explicit
+  recovery-only path with the user bus and canonical daemon socket directory.
+- Refreshed the source-free workstation payload without interactive sudo.
+
+Validation:
+
+- 8 compact-focused Rust tests and 14 retained-requirement tests
+- full install-doctor and remote-view-doctor focused suites
+- Rust formatting and strict Clippy
+- docs lint and production build
+- optimized Rust build and native payload copy
+- CodeGraph sync, installed-skill parity, direct plan audit, and diff hygiene
+
+Result:
+
+- Compact release output is approximately 78 percent smaller for install
+  doctor and 95 percent smaller for remote-view doctor than full JSON.
+- Guarded installation and recovery are complete. The publication journal is
+  terminal `recovered_ready`; installed, release, and workspace-native binary
+  SHA-256 are
+  `143fc1f682c9c1ef7d7fd1d51175d1a66330e58eeb146803481721d8be0bb4f1`.
+- Installed compact install and remote-view doctors report zero issues,
+  runtime convergence and remote control are ready, and the exact Workshop
+  target remains verified. No ChatGPT prompt or page interaction was sent.
+
+## Turn 178 | 2026-08-24
+
+Scope: reconcile the installed 0.28.0 workstation payload and repair
+convergence dry-run visibility.
+
+Actions:
+
+- Refreshed the source-free workstation payload manifest to the installed
+  `ff85f1f9` binary without interactive sudo.
+- Handed `figurelabs-saber` from the deleted executable to the current binary
+  while preserving its browser PID and exact CDP endpoint.
+- Made convergence dry-run parse repairable nonzero doctor JSON so it can
+  report `safeRemedies` without applying them.
+- Added a fixture for the nonzero stale-daemon preview path and aligned README,
+  installation docs, skill guidance, and roadmap evidence.
+
+Validation:
+
+- `pnpm test:local-runtime-convergence`
+- JavaScript syntax checks for the controller and fixture
+- targeted diff hygiene
+- installed no-launch retained-browser status
+- installed install doctor and remote-view doctor
+
+Result:
+
+- Retained-browser authority remains configured and verified without launch.
+- Install doctor reports the payload installed, runtime convergence complete,
+  zero stale runtimes, and no issues.
+- Remote-view doctor reports remote control and many-to-many readiness.
+- One optional source-checkout Guacamole schema ensure still looks for the old
+  unversioned compose path, but route readiness and both final doctors pass.
+
+## Turn 177 | 2026-08-15
+
+Scope: remove the manual managed-browser navigation handoff that blocks exact
+P121 retained-lane enrollment.
+
+Actions:
+
+- Opened P122 without weakening P121's read-only discovery contract.
+- Added exact-URL and required-profile selectors to retained-browser discovery.
+- Added a guarded preparation command that composes only route-bound
+  `remote-view open` and digest-bound retained requirement pinning.
+- Required exact rendered URL, profile, target, browser, session, and
+  operator-visible route agreement before unique discovery.
+- Added contract and isolated command fixtures that reject drift and prove no
+  page-interaction or prompt-submission action is invoked.
+
+Validation:
+
+- `pnpm test:local-dashboard-retained-browser-discovery`
+- `pnpm test:local-dashboard-retained-browser-preparation`
+- `pnpm test:local-dashboard-retained-browser-preparation-command`
+- JavaScript syntax checks for the new command and libraries
+- retained guard, requirement, watchdog, publisher operations, and publisher
+  orchestration fixtures
+- service-client typecheck
+- dashboard and docs production builds
+- runtime convergence contract and isolated fixture
+- package JSON parsing, installed skill SHA-256 parity, and full diff hygiene
+
+Result:
+
+- Focused fixtures pass. The live Workshop command remains intentionally
+  unexecuted under the active no-navigation and no-submission boundary.
+- Full docs lint remains red only on the pre-existing synchronous state update
+  in `docs/src/components/theme-toggle.tsx`; production compilation passes.
+- Next, finish widened validation and then run live exact-URL preparation only
+  after that navigation boundary is explicitly lifted.
+
+Follow-up:
+
+- Replaced the preparation command's repository publisher dependency with a
+  bounded live discovery, reverification, and marker-first writer module.
+- Embedded the controller and five dependencies in the versioned workstation
+  support payload and exposed
+  `agent-browser install workstation prepare-retained-browser`.
+- Repaired the docs lint baseline; full docs lint and build now pass.
+- The source-free workstation fixture, 20 native workstation tests, strict
+  Clippy, Rust formatting, preparation fixtures, and optimized build pass.
+- Candidate SHA-256 is
+  `954a01d3783912a129a1a23f6dc6c606dc455ce1991d380a64b0a898d2f29389`;
+  installed runtime remains unchanged pending exact retained-lane enrollment.
+- Added a disposable localhost live preparation smoke. It failed closed before
+  browser launch because Route A belongs to `away-auth-handoff` and Route B to
+  `nyse-developer-route`; both allocations are live.
+- Preserved both retained browsers and routes. No fixture authority file or
+  browser survived. The wrapper now returns the bounded structured child error
+  so route-capacity failures are actionable.
+- Relinked the optimized candidate after that embedded controller change.
+  Current SHA-256 is
+  `fc4fd837feeadbe9da3ffa9c2bab903a4af64005ad2504330e4e46498675bf0e`;
+  the installed binary remains unchanged.
+- A third live audit found both routes unchanged and zero apply-safe display
+  allocations. P122 is now blocked rather than repeatedly requesting manual
+  work. Unblock by freeing a route or approving a reviewed parking policy and
+  lifting only the exact-Workshop navigation prohibition; prompt submission
+  remains unauthorized.
+- After explicit delegation, parked only Route A's viewer binding and preserved
+  the `away-auth-handoff` and NYSE browser processes and targets.
+- Added stable route-specific display allocation ids, exact pending-acquisition
+  ownership checks, and runtime-profile-bound preparation daemon sessions.
+- The disposable localhost preparation then passed and cleaned up. The exact
+  Workshop navigation reached ChatGPT but redirected to `/project`, so exact
+  verification failed closed and neither authority file was created.
+- No prompt, click, type, fill, evaluate, upload, send, or submit action ran.
+  The optimized candidate is
+  `2bbfe6d53e7553424e88773d67f222f0105d2dc791fe67d5098b2022bd8a3e88`;
+  installation remains blocked on a real exact Workshop conversation URL.
+- After explicit authorization for exactly one short Workshop prompt, attached
+  directly to the surviving `chatgpt-pro` Chrome DevTools endpoint, submitted
+  one concise user turn, and captured canonical conversation
+  `6a80e64e-e830-83ea-b21f-9079abf27a1d`. No retry or second prompt ran.
+- Preserved the existing default NYSE retained requirement and committed a
+  separate mode-0600 Workshop requirement for session/profile `chatgpt-pro`,
+  target `91DBB20C67DFB0398978722D6B6FA85A`, and the exact new URL.
+- Guarded release publication completed at `final_readiness`; installed and
+  release SHA-256 both equal
+  `7704b89a579e6bb1678d43cbe3d3ea402197a411525cab83e9f6a641228755bb`.
+  Five daemon sessions are converged, the live dashboard manifest is ready,
+  remote-view doctor is ready, and the retained Workshop PID and target remain
+  exact. P122 is closed with no GitHub write.
+
+## Turn 176 | 2026-08-15
+
+Scope: remove error-prone retained-lane identity copying from the final P121
+operator handoff.
+
+Actions:
+
+- added a read-only discovery mode for requirement pinning that accepts one
+  reviewed origin and path prefix, scans live retained daemon and CDP evidence,
+  and derives the exact session, profile, target, PID, endpoint, and canonical
+  URL;
+- required exactly one ready page target and failed closed on zero or multiple
+  matches, service or CDP read failure, session mismatch, degraded health,
+  incomplete identity, and origin or path-prefix spoofing;
+- aligned the repository Node guard with the installed native verifier by
+  requiring `health=ready` before pinning;
+- isolated the convergence fixture's socket directory after widened validation
+  caught it reading a live unrelated `etf-paper-dashboard` token through the
+  inherited WSL runtime directory;
+- preserved the no-prompt boundary and inspected only no-launch service state.
+
+Validation:
+
+- the focused discovery, durable requirement, and JavaScript syntax checks
+  pass, and the widened publisher, publication-operations, watchdog,
+  source-free workstation, and isolated convergence fixtures pass;
+- current live discovery state contains zero ChatGPT targets, so no private
+  requirement or enforcement record was written;
+- the optimized source build and docs production build pass. The release
+  candidate SHA-256 is
+  `0e2186376c0795d6df684797f779ce94400f99fb8d582c68b03741918f306acf`;
+- live drift reconciliation found a separate terminal publisher transaction at
+  13:58 that installed an earlier unguarded candidate with SHA-256
+  `758c9f4d4e89941799dbe053357e50597e13b633e3e6013f8a5e7259d39b2984`.
+  No retained browser existed during that transaction.
+
+Outcome: after the operator opens the intended Workshop page, one reviewed
+project URL prefix is sufficient for exact fail-closed enrollment. P121 remains
+open for that operator-established lane, guarded installation, and installed
+no-prompt readback.
+
+## Turn 175 | 2026-08-15
+
+Scope: finish the post-relogin workstation reconciliation and make its
+disposable remote-view live gate deterministic.
+
+Actions:
+
+- completed the source-free workstation reconciliation after the required WSL
+  relogin and restored distinct route-specific XRDP desktops on `:10` and
+  `:11`;
+- made workstation reconciliation bind Guacamole viewer daemons to the
+  installed Linux Chrome instead of inheriting an ambient Windows StealthCDP
+  executable that cannot render on an XRDP display;
+- moved the local remote-view fixture server to a worker so synchronous CLI
+  probes cannot starve its HTTP event loop;
+- added a blocking-parent regression and made OCR require the unique stable
+  marker prefix while exact CDP URL and title checks retain full fixture
+  identity;
+- preserved the existing Workshop no-prompt boundary and used only disposable
+  local fixture profiles.
+
+Validation:
+
+- install doctor and remote-view doctor report ready with no issues; dashboard,
+  runtime interlock, and PostgreSQL backup timers are active;
+- 20 workstation Rust tests, the blocking-safe fixture regression, the
+  source-free workstation fixture, Rust formatting, strict Clippy, syntax, and
+  diff hygiene pass;
+- the optimized remote-view fixture gate passes with exact URL/title readback,
+  matching X11 PID, `route_bound_ready`, visible-window and OCR proof, one
+  active target after repeated opens, and automatic cleanup;
+- release candidate SHA-256 is
+  `a886febac4a3794bd0b20387e603406b319e9419c2047cd2b1b15cd404450eec`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: workstation remote control is operational and the release candidate's
+rendered route gate is deterministic. P121 remains open for an
+operator-established Workshop lane, durable pinning, guarded installation, and
+exact no-prompt retained-target readback. No ChatGPT prompt or GitHub write
+occurred.
+
+## Turn 174 | 2026-08-15
+
+Scope: bind the marker-first retained-browser enforcement record to exactly one
+stable-identity requirement.
+
+Actions:
+
+- added `requirementSha256` to the private v1 enforcement contract;
+- made crash retry reuse the marker's original timestamp and exact digest;
+- made Node and native readers reject a stale marker paired with changed
+  requirement bytes before service-state access;
+- preserved legacy markerless requirement reads and digest-bound those records
+  on the next idempotent pin;
+- added changed-evidence, replaced-bytes, native pre-state, and source-free
+  release-binary regressions;
+- updated README, installation docs, contract guidance, repository and
+  installed skills, P121, roadmap, and implementation evidence.
+
+Validation:
+
+- all 1,874 non-ignored Rust tests pass with 57 ignored; Rust formatting and
+  production-binary strict Clippy pass;
+- retained requirement/watchdog, publication operations/orchestration,
+  source-free workstation, dashboard, docs, schema, skill-parity, and diff
+  gates pass;
+- live optimized status remains `not_configured` and leaves service state plus
+  publication journal byte-identical;
+- release candidate SHA-256 is
+  `f129a45f9e7b70506808723637432038c6b9e94ccf9327ab24cb8c858f6b88b3`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: marker and requirement can no longer be mixed across enrollment
+attempts. P121 remains open until an operator-established Workshop lane can be
+pinned, safely published, and read back without a prompt. No browser or GitHub
+write occurred.
+
+## Turn 173 | 2026-08-15
+
+Scope: prevent a crashed or partially lost retained-browser pin from silently
+disabling the publication and workstation interlock.
+
+Actions:
+
+- added a private marker-first `.required` enforcement record with a bounded v1
+  contract and durable atomic commit;
+- made repository publication, read-only watchdog, native status, workstation
+  apply, and recurring reconcile fail closed when enforcement exists but the
+  identity requirement is missing;
+- rejected unsafe enforcement permissions, ownership, size, schema, and
+  symlink shape in both Node and native readers;
+- added simulated crash-after-marker, idempotent retry, deletion, unsafe-file,
+  no-build, no-state, and no-service-command regressions;
+- updated CLI help, README, installation docs, repository and installed skill
+  guidance, P121, roadmap, and implementation evidence.
+
+Validation:
+
+- all 1,873 non-ignored Rust tests pass with 57 ignored; Rust formatting and
+  production-binary strict Clippy pass;
+- focused retained-browser, watchdog, publisher operations/orchestration,
+  source-free workstation, dashboard, docs, schema, skill-parity, and diff
+  gates pass;
+- live optimized status reports unconfigured enforcement and leaves service
+  state plus publication journal byte-identical;
+- release candidate SHA-256 is
+  `ab15748e93330c2c4d61d1bc6b0ff2de18b86be3852869a2f83b657424b13165`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: a single missing requirement can no longer disable an enforced lane.
+P121 remains open because the retained Workshop lane and durable requirement
+are absent. No browser launch, prompt, navigation, typing, click, install, or
+GitHub write occurred.
+
+## Turn 172 | 2026-08-15
+
+Scope: make the source-free retained-lane watchdog independently auditable and
+configuration-equivalent to repository tooling.
+
+Actions:
+
+- added `install workstation retained-browser-status --json` as a native,
+  no-lock, no-daemon, no-launch, identity-redacted audit surface;
+- made native status, apply, and reconcile honor the configured durable
+  requirement path;
+- added the retained-requirement path to the normal dotenv allowlist so
+  `AGENT_BROWSER_ENV_FILE` and `~/.agent-browser/.env` work without exports;
+- added default, direct environment, dotenv, override, no-state, and invalid
+  configured-path regressions;
+- updated help, README, installation/configuration docs, repository and
+  installed skill guidance, P121, roadmap, and implementation evidence.
+
+Validation:
+
+- all 1,871 non-ignored Rust tests pass with 57 ignored; formatting and strict
+  Clippy pass;
+- source-free workstation fixture, dashboard and docs builds, installed skill
+  parity, and diff hygiene pass;
+- live optimized status reports `not_configured` and leaves service state plus
+  publication journal byte-identical;
+- release candidate SHA-256 is
+  `ce5a783994a8744de27e6f59c0be145ee64de78a4379248c50868b3dcddd7835`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: source-free retention status and configuration parity are ready. P121
+remains open because the retained Workshop lane and durable requirement are
+absent, so safe installation and exact no-prompt readback remain unproven. No
+browser launch, prompt, navigation, typing, click, install, or GitHub write
+occurred.
+
+## Turn 171 | 2026-08-15
+
+Scope: close the source-free workstation retention-watchdog bypass.
+
+Actions:
+
+- added a native bounded verifier for the private durable retained-browser
+  requirement, persisted service identity, live PID, and loopback DevTools
+  target inventory;
+- made workstation apply check before lock, sudo, staging, or quiescence and
+  made recurring binary-owned reconcile recheck before its first mutation;
+- required one exact ready browser, active session, valid service-tab handle,
+  profile, target, and canonical URL while keeping output identity-redacted;
+- added isolated exact-match, drift, ambiguity, unsafe-file, no-mutation, and
+  source-order regressions;
+- updated CLI help, README, docs, repository and installed skill guidance, P121,
+  and the implementation note.
+
+Validation:
+
+- all 1,870 non-ignored Rust tests pass with 57 ignored; formatting and strict
+  Clippy pass;
+- focused retained-browser, publication, convergence, source-free workstation,
+  host-provision, fresh-install, Guacamole, PostgreSQL, route-user, release,
+  service-client, dashboard, and docs gates pass;
+- installed skill parity and diff hygiene pass. Targeted MDX lint reports only
+  that the MDX file has no matching ESLint configuration;
+- release candidate SHA-256 is
+  `b8eaac13578f3380aca701e4ea127d2653b4d2a22fdbb73a1172e8738fc474dc`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: the binary-owned watchdog bypass is closed in source. P121 remains
+open because the retained Workshop lane and durable requirement are absent, so
+safe installation and exact no-prompt readback cannot yet be proven. No browser
+launch, prompt, navigation, typing, click, install, or GitHub write occurred.
+
+## Turn 170 | 2026-08-15
+
+Scope: make the exact retained-browser publication gate durable and recurring
+instead of dependent on repeated command-line flags.
+
+Actions:
+
+- added a private, bounded, owner-only, non-symlink requirement containing only
+  stable session, profile, target, and canonical URL identity;
+- made normal publication load and enforce that requirement before any build;
+- added verified idempotent pinning that excludes browser PID, browser ID, and
+  DevTools endpoint from durable state;
+- made the read-only check report `not_configured` when no critical lane exists
+  and fail closed on malformed or mismatched configured state;
+- added the same read-only gate before source-checkout user-service interlock
+  convergence.
+
+Validation:
+
+- retained requirement, guard, watchdog, publication operation,
+  orchestration, and local convergence fixtures pass;
+- a durable missing-lane fixture blocks publication before dashboard or Rust
+  build and changes no retained runtime state;
+- JSON schema parsing and script syntax pass.
+- all 1,861 non-ignored Rust tests pass with 57 ignored; formatting, strict
+  Clippy, client typecheck, dashboard and docs builds, workflow parsing,
+  installed skill parity, and diff hygiene pass;
+- release candidate SHA-256 is
+  `68303e1b9c89aa7e8a1f81cf7e646ac0f570208cf5c2559635cb186f95f40381`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: the flag-memory and recurring-watchdog gap is closed in source. P121
+remains open because the Workshop lane is absent, so the durable requirement
+cannot be safely pinned and installed acceptance cannot yet be proven. No
+browser launch, prompt, navigation, typing, click, install, or GitHub write
+occurred.
+
+## Turn 169 | 2026-08-15
+
+Scope: isolate the missing Workshop browser and make exact retained identity a
+fail-closed publication and recovery gate.
+
+Actions:
+
+- established that the browser process exited about eight minutes before the
+  P121 publication transaction; host and Chrome logs do not identify the
+  terminating actor;
+- added exact retained session, profile, target, URL, PID, and CDP pinning
+  before publication mutation, after handoff, at final readiness, and during
+  recovery;
+- added a read-only no-lock, no-build preflight that refuses an absent daemon
+  without auto-launching a replacement;
+- added a serial Rust validation wrapper with disposable home, agent root,
+  sockets, and runtime state;
+- projected only required, verified, and stage guard fields to installed status
+  and added a distinct terminal unverified classification.
+
+Validation:
+
+- retained guard, orchestration, recovery, journal, operations, lifecycle,
+  smoke policy, publication status, doctor, client, contract, parity, dashboard,
+  docs build, formatting, and strict Clippy gates pass;
+- the isolated full Rust suite passes 1,861 tests with 57 ignored and does not
+  change live publication or Workshop inventory hashes;
+- the exact Workshop read-only preflight returns `retained_daemon_missing` and
+  changes no service state, journal bytes, session inventory, or lock state;
+- release binary SHA-256 is
+  `03efdddf4bf80cdeb377e549f2d1ad818e493e6248a92aa661a32afdda9d39e9`.
+
+Outcome: P121 remains open only for live acceptance criterion 8. The release
+candidate is built but not installed because no retained Workshop lane exists
+to satisfy the new guard. No replacement browser, prompt, navigation, typing,
+click, recovery, installation, or GitHub write occurred.
+
+## Turn 168 | 2026-08-15
+
+Scope: expose durable dashboard publication status to installed operators while
+preserving the recovery-only authority boundary.
+
+Actions:
+
+- added a source-free Rust journal, lock, transaction, and installed-artifact
+  inspector with bounded reads and fail-closed validation;
+- projected status into install doctor, authenticated HTTP, MCP, service
+  contract metadata, generated client types, and the Service dashboard;
+- added a versioned JSON schema and isolated no-launch endpoint coverage;
+- kept recovery out of HTTP, MCP tools, and dashboard controls and marked the
+  exact recovery-only command as requiring explicit operator confirmation.
+
+Validation:
+
+- focused and widened Rust, doctor, HTTP, MCP, contract, client, dashboard,
+  publisher lifecycle, orchestration, journal, operations, parity, typecheck,
+  production build, documentation build, JSON, YAML, skill-parity, plan, lock,
+  and diff gates pass;
+- guarded publication completed terminal phase `ready`; installed and release
+  binary SHA-256 is
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`;
+- repository status, install doctor, authenticated HTTP, and MCP agree on a
+  verified replacement with no lock, no recoverable state, and action `none`;
+- no recovery, prompt submission, navigation, typing, click, or replacement
+  browser launch occurred.
+
+Outcome: installed publication projection is verified, but P121 remains open.
+The prior Workshop Chrome PID and CDP endpoint are gone and service state has no
+matching retained browser, session, or target. Exact retained-target readback is
+therefore blocked until the disappearance is isolated and a retained lane is
+available for no-prompt verification.
+
+## Turn 167 | 2026-08-15
+
+Scope: separate read-only publication inspection from explicit recovery
+authority and prevent recovery-only from authorizing a new build.
+
+Actions:
+
+- added read-only journal, lock, transaction, and installed-artifact status;
+- classified active publisher, recoverable transaction, absent journal, and
+  unknown installed artifact into exact next actions;
+- added recovery-only no-op before build and reused P119 recovery for incomplete
+  transactions;
+- rejected combined inspection and recovery flags;
+- added package commands plus isolated command and CI coverage.
+
+Validation:
+
+- focused status, recovery-only, journal, orchestration, lifecycle,
+  smoke-policy, and syntax checks pass;
+- disposable status creates no runtime directory, and recovery-only leaves no
+  binary, journal, or lock;
+- no live status, recovery, build, install, listener, daemon, or browser action
+  has occurred yet.
+
+Outcome: P120 is closed. Focused and widened status, recovery-only, journal,
+publisher, convergence, capability, parity, dashboard, client-type, syntax,
+production-build, package, YAML, skill-parity, plan-audit, cleanup, and diff
+gates pass. Docs-wide ESLint retains one existing effect error and one warning
+in untouched files. Live status returned no journal, no lock, and action `none`
+without creating state. Retained browser and installed runtime identity remain
+unchanged. No GitHub write, prompt, browser interaction, lifecycle, handoff,
+install, recovery, or live dashboard action occurred.
+
+## Turn 166 | 2026-08-15
+
+Scope: make dashboard publication artifact evidence durable and recover an
+interrupted transaction before any new build or mutation.
+
+Actions:
+
+- added a mode-0600, fsynced, atomically replaced, revision-checked journal and
+  exact PID publication lock;
+- checkpointed quiescence, handoff, replacement, resume, restart, readiness,
+  failure, and rollback phases;
+- recovered exact handoff descriptors and reconciled already-resumed browser
+  PID/CDP identity without replay;
+- recognized crash-after-replacement from durable built SHA evidence and repeated
+  reference sync from the verified installed binary;
+- added isolated journal, recovery, stale-lock, revision-conflict, corruption,
+  and fail-closed fixtures to fast Dashboard CI.
+
+Validation:
+
+- focused journal, orchestration, lifecycle, smoke-policy, and syntax checks
+  pass;
+- no live runtime, listener, daemon, browser, profile, or external service was
+  touched.
+
+Outcome: P119 is closed. Focused and widened journal, recovery, publisher,
+convergence, capability, parity, dashboard, client-type, syntax,
+production-build, package, YAML, skill-parity, plan-audit, cleanup, and diff
+gates pass. Docs-wide ESLint retains one existing effect error and one warning
+in untouched files. Read-only evidence shows the retained browser identity,
+dashboard manifest, and installed SHA unchanged; no production journal or lock
+was created. No GitHub write, prompt, browser interaction, lifecycle, handoff,
+install, recovery, or live dashboard action occurred.
+
+## Turn 165 | 2026-08-15
+
+Scope: bind publisher replacement and rollback to cryptographic artifact
+evidence and preserve the initiating error across restore failure.
+
+Actions:
+
+- added structured built, source, backup, replacement, restoration, and safe
+  restart SHA-256 evidence to the publisher report;
+- made backup mismatch fail before quiescence and replacement mismatch enter
+  verified rollback;
+- retained the original publication failure across missing-backup, restore-copy,
+  and restore-hash failures;
+- prohibited restart when the installed artifact matches neither the verified
+  backup nor verified replacement;
+- extended the existing isolated real-file and fast smoke-policy fixtures.
+
+Validation:
+
+- focused orchestration, publisher policy, convergence, and syntax checks pass;
+- no live runtime, listener, daemon, browser, profile, or external service was
+  touched.
+
+Outcome: P118 is closed. Focused and widened publisher, convergence,
+capability, parity, dashboard, client-type, syntax, production-build, package,
+YAML, skill-parity, plan-audit, cleanup, and diff gates pass. Docs-wide ESLint
+retains one existing effect error and one warning in untouched files. Read-only
+evidence shows the retained browser identity, dashboard manifest, and installed
+binary SHA unchanged. No GitHub write, prompt, browser interaction, lifecycle,
+handoff, install, or live dashboard action occurred.
+
+## Turn 164 | 2026-08-15
+
+Scope: make full dashboard publication sequencing and rollback fault-testable
+without a live build, install, service restart, or browser handoff.
+
+Actions:
+
+- extracted build, backup, quiesce, replacement, handoff, restart, readiness,
+  and rollback ordering into an injected production orchestration module;
+- added a real-file fixture for success, pre-handoff restore,
+  committed-handoff preservation, rollback restart failure, and pre-mutation
+  failure;
+- added `pnpm test:local-dashboard-publisher-orchestration` after lifecycle
+  coverage in the fast Linux Dashboard CI job.
+
+Validation:
+
+- focused orchestration, lifecycle, smoke-policy, and syntax checks pass;
+- temporary test artifacts are isolated and removed by exact root;
+- no live runtime, dashboard listener, daemon, retained browser, or external
+  service was touched.
+
+Outcome: P117 is closed. Focused publisher, convergence, capability, parity,
+dashboard, client-type, syntax, production-build, package, YAML, skill-parity,
+plan-audit, cleanup, and diff gates pass. Docs-wide ESLint retains one existing
+effect error and one existing warning in untouched files. Read-only evidence
+shows the retained browser identity, ready live dashboard manifest, and
+installed binary SHA unchanged. No GitHub write, prompt, click, typing,
+navigation, browser lifecycle, credential, attach, detach, daemon handoff,
+install, or live dashboard action occurred.
+
+## Turn 163 | 2026-08-14
+
+Scope: make standalone dashboard publisher restart and rollback transitions
+repeatably testable without a live release build or runtime handoff.
+
+Actions:
+
+- extracted exact standalone process inspection, quiescence, and restart
+  selection into a production lifecycle module;
+- added a Linux real-process fixture with isolated PID metadata and exact
+  executable, UID, environment, and signal evidence;
+- covered normal restart, rollback restart, absent dashboard, stale PID, and
+  wrong-command rejection paths;
+- exposed `pnpm test:local-dashboard-publisher-lifecycle` as the focused gate.
+- added both publisher policy and lifecycle fixtures to the fast Linux
+  Dashboard CI job before its build.
+
+Validation:
+
+- the lifecycle fixture, existing dashboard smoke policy, and JavaScript syntax
+  checks pass;
+- fixture cleanup uses only recorded exact PIDs and leaves no temporary process;
+- no live runtime, installed binary, dashboard listener, or browser was touched.
+
+Outcome: P116 is closed. The exact real-process lifecycle fixture and fast CI
+ordering pass; post-test inspection reports zero process or directory leaks.
+Convergence, capability, parity, dashboard, docs, syntax, YAML, package JSON,
+skill parity, plan audit, and diff gates pass. Read-only evidence shows the
+retained browser and live dashboard manifest unchanged. No GitHub write,
+browser interaction, credential action, live runtime action, or external
+mutation occurred.
+
+## Turn 162 | 2026-08-14
+
+Scope: resolve a verified disposable browser for strict dashboard rendered-page
+QA under WSL without weakening the general browser sandbox posture.
+
+Actions:
+
+- consumed installed `launchConfig` manifest, executable, artifact-smoke, and
+  WSL profile-smoke evidence before launch;
+- selected the first-class patched Chromium build and created an isolated
+  Windows-mounted temporary profile;
+- closed the exact disposable session and removed only its generated profile;
+- rejected stale or mismatched configured capability evidence before launch.
+- repaired the exact standalone-listener transition so a listener quiesced by
+  the publisher is resumed after handoff or rollback without widening
+  `--start-if-missing` authority.
+
+Validation:
+
+- focused resolver, cleanup-contract, unsafe-argument, syntax, and existing
+  dashboard smoke-policy tests passed;
+- one disposable live session rendered the dashboard app chrome and Workspaces
+  pane at `http://127.0.0.1:4848/` and left no generated profile;
+- retained PID 1046742, CDP endpoint, URL, and title remained unchanged.
+
+Outcome: P115 is closed. Required release publication rendered the dashboard,
+resumed the exact standalone listener without `--start-if-missing`, and left no
+disposable profile. Installed, release, and reference binary SHA-256 is
+`07f2b9c0a85d4d30e1b4cb5bb9a077ca58539a4cfc863d15f77e495a7fe013e4`.
+The retained browser PID and CDP endpoint remained unchanged and healthy.
+Doctor reports the live dashboard ready with zero stale runtimes; convergence
+remains partial only for the expected standalone diagnostic runtime. No GitHub
+write, prompt, typing, click, retained-page navigation, or credential action
+occurred.
+
+## Turn 161 | 2026-08-14
+
+Scope: separate authoritative dashboard publication readiness from disposable
+browser launch diagnostics without weakening rendered-page validation.
+
+Actions:
+
+- split required HTTP, marker, and runtime-manifest readiness from browser QA;
+- classified known pre-render launch unavailability as advisory by default and
+  retained explicit required-browser and post-launch fatal behavior;
+- added exact standalone dashboard PID, user, command, and mode verification
+  before a non-systemd listener can be retired.
+
+Validation:
+
+- focused policy, existing convergence, workspace inspector, syntax, parity,
+  formatting, production clippy, dashboard, docs, skill, and diff gates passed;
+- live publication served the required marker and exact runtime manifest, then
+  returned advisory `browser_launch_unavailable` for WSL Chrome exit 21;
+- installed/release SHA-256 is
+  `8afeb3a270ce54c85cc25a14292e75e6299eee4c5dcc087c9aaf2342e992929e`;
+- exact retained browser PID, CDP endpoint, URL, and title survived handoff.
+
+Outcome: P114 is closed. Runtime inventory is converged with zero stale
+runtimes and the live dashboard is ready. Doctor retains the pre-existing
+workstation payload drift and expected standalone-dashboard diagnostic state.
+No GitHub write, prompt, click, typing, navigation, credential operation, or
+retained-page mutation occurred.
+
+## Turn 160 | 2026-08-14
+
+Scope: checkpoint exact retired confirmation membership, expose cleanup review
+in the dashboard, and remove shared-state test races.
+
+Actions:
+
+- implemented a bounded active manifest with fixed-capacity immutable
+  hash-linked segments and fail-closed exact-membership integrity checks;
+- added authenticated dashboard retention preview and explicit exact-digest
+  apply with requester, candidate, and ledger proof;
+- serialized ambient HOME access in Chrome tests and isolated remote-view
+  handoff registries in unique per-test directories.
+
+Validation:
+
+- focused authority, integrity, dashboard, generated-client, contract, parity,
+  schema, formatting, build, and production-target strict-clippy gates passed;
+- the normal parallel Rust suite passed 1,852 tests with 57 ignored;
+- installed/release SHA-256 is
+  `efc8a0dba40989a757fd5660e93221ae3e92cd41c967feb0b0bbcdf87fa2506f`;
+- authenticated live HTTP and MCP previews verified schema v2 integrity without
+  applying cleanup, and the retained target was read without page mutation.
+
+Outcome: P113 is closed. Runtime inventory is converged with zero stale
+runtimes. The optional disposable-Chrome marker smoke remains blocked by WSL
+sandbox launch behavior, while direct authenticated dashboard checks pass.
+Strict all-target lint retains 12 pre-existing test warnings, and doctor retains
+the pre-existing workstation payload drift finding. No GitHub write, prompt,
+typing, click, navigation, or external mutation occurred.
+
+## Turn 159 | 2026-08-14
+
+Scope: bind durable task-authority actors to authenticated transports and add
+bounded terminal confirmation receipt cleanup.
+
+Actions:
+
+- required dashboard superuser authentication for HTTP issue, reconcile,
+  revoke, and confirmation mutations and injected the authenticated username;
+- derived MCP actors from the OS-owned stdio transport and rejected conflicting
+  structured caller identity claims;
+- added deterministic cleanup preview and exact review-digest apply, writing
+  retired confirmation IDs before receipt removal;
+- preserved pending and confirmed/dispatched indeterminate receipts and kept
+  retired confirmation IDs single-use.
+
+Validation:
+
+- focused authority, HTTP, MCP, generated-client, and dashboard tests passed;
+- one widened Rust suite passed 1,850 tests with 57 ignored;
+- a final parallel run exposed three unrelated shared-temp-state flakes, and
+  every affected test passed in isolation with one test thread;
+- formatting, production-target strict clippy, release, dashboard and docs
+  builds, contract parity, schema parse, install, and diff checks passed;
+- installed authenticated HTTP and MCP cleanup previews passed without apply;
+- the retained ChatGPT session identity was read back without page mutation.
+
+Outcome: P112 is closed. Installed and release binary SHA-256 are
+`b8416f50b572a9c4a7e9640e5cdae7b97eb226b06961b9a6630cc425bd9e9774`.
+Strict all-target clippy remains blocked by 11 pre-existing warnings in
+unrelated cumulative dirty test code. Install doctor remains nonzero only for
+the pre-existing `workstation_payload_partial_or_drifted` condition. No GitHub
+write, prompt submission, typing, click, navigation, or page mutation occurred.
+
+## Turn 158 | 2026-08-14
+
+Scope: preserve exact task-authority confirmation intent and single-use
+decisions across daemon restart.
+
+Actions:
+
+- added private durable pending and terminal confirmation records only for
+  task-authority issue, reconcile, and revoke controls;
+- bound each record to requester, session, action, target, URL, request digest,
+  creation time, and expiry, and required the exact requester as `decidedBy`;
+- archived decisions before dispatch, projected crash-after-commit as
+  indeterminate, and prevented decision replay, automatic confirmation, and
+  automatic restaging;
+- exposed redacted receipt status through HTTP, MCP, generated client types,
+  and the selected-session Authorities workspace.
+
+Validation:
+
+- restart, crash boundary, actor/session/action/target/URL/digest/expiry drift,
+  redaction, and terminal finalization regressions passed;
+- 1,849 Rust tests passed with 57 ignored; formatting, strict Clippy, release,
+  client, parity, dashboard, docs, contract, direct plan, and diff gates passed;
+- debug and installed disposable public smokes proved pending restart
+  preservation, zero restart execution, one exact decision, and replay
+  rejection with no authenticated profile, prompt, or page mutation;
+- installed and retained-lane readback preserved browser PID, target, URL, and
+  title. The known unmanaged dashboard listener required an exact detached
+  restart after publication, then manifest and bundle-marker checks passed.
+
+Outcome: P111 closed. The next boundary is authenticated transport-principal
+binding plus bounded terminal-receipt retention.
+
+## Turn 157 | 2026-08-14
+
+Scope: make durable task-authority state and indeterminate recovery operable
+from the selected-session Service dashboard.
+
+Actions:
+
+- added an Authorities workspace for state, target, plan progress, outcomes,
+  pending/completed reconciliation, and predecessor/replacement lineage;
+- derived replacement previews only from unconsumed steps and required exactly
+  one indeterminate receipt plus one exact live target before staging;
+- added exact-session HTTP, MCP, contract, and generated-client confirmation
+  decisions with an expected-action interlock and deny-on-close behavior;
+- colocated generated bootstrap credentials with an explicitly relocated
+  dashboard auth store so disposable tests do not touch real user credentials.
+
+Validation:
+
+- focused authority UI, client, HTTP, MCP, contract, and isolated-auth tests
+  passed; the serial Rust suite passed 1,846 tests with 57 ignored;
+- Rust formatting, strict Clippy, optimized release build, service API/MCP
+  parity, generated client checks, docs/dashboard production builds,
+  JavaScript syntax, validation selection, direct plan audit, installed-skill
+  parity, and diff hygiene passed;
+- debug and installed disposable public smokes rendered exact authority
+  lineage after local isolated login, denied a staged revoke without changing
+  authority, and cleaned up with no authenticated profile, prompt, or page
+  mutation.
+
+Result:
+
+- P110 is closed. Installed/reference executable SHA-256 is
+  `66fcca318e238ee6bf027ffd8ad8a38676c2e237acf59dad23465ee764b6f258`;
+  the live dashboard bundle SHA-256 is
+  `61465d64813a55daf57701fc214a73abcc6df57d386f4cf16d9fbab3a7622534`;
+- retained ChatGPT browser PID `1046742`, CDP port `39377`, target
+  `B0EC77F279E5434E33FEA97AB1742B1A`, URL, and title remained exact. No prompt
+  was sent and no GitHub write occurred;
+- install doctor has zero stale runtimes/listeners and retains only the
+  pre-existing `workstation_payload_partial_or_drifted` issue.
+
+## Turn 156 | 2026-08-14
+
+Scope: replace manual recovery of one indeterminate task receipt with a durable
+broker reconciliation transaction.
+
+Actions:
+
+- added stable reconciliation IDs, deterministic replacement authority IDs,
+  complete predecessor lineage, pending/completed revocation evidence, and
+  crash-resumable idempotency;
+- required exactly one matching indeterminate receipt and fresh exact-target
+  confirmation, while rejecting terminal, ambiguous, changed, tampered, or
+  replayed evidence;
+- exposed reconciliation through HTTP, MCP, generated clients, contracts,
+  help, README, docs, and repository plus installed skill guidance;
+- added an isolated public smoke that strands a bounded read after admission,
+  reconciles it, rejects predecessor replay, and executes one fresh read.
+
+Validation:
+
+- focused and serial Rust tests passed, with 1,844 passed and 57 ignored in the
+  widened suite; formatting, strict Clippy, release build, service API/MCP and
+  generated-client gates, docs/dashboard builds, direct plan audit, installed
+  smoke, retained-lane proof, and diff hygiene passed;
+- the live smoke used no authenticated profile, prompt, or page mutation.
+
+Result:
+
+- P109 is closed. The predecessor is durably revoked before replacement
+  publication, interrupted reconciliation resumes to one deterministic
+  replacement, and a consumed command is never replayable;
+- installed/reference executable SHA-256 is
+  `e03bd1ca76409476fcfb9afa1c875118756c5b115e7a58b5414d019adbf6ec36`;
+  the live dashboard bundle SHA-256 is
+  `3336d77c1a00965371f65389eff9c6d41d9687c2935d213b2f73da5aad6fb4df`;
+- retained ChatGPT browser PID `1046742`, CDP port `39377`, target
+  `B0EC77F279E5434E33FEA97AB1742B1A`, URL, and title remained exact. No prompt
+  was sent and no GitHub write occurred.
+
+## Turn 155 | 2026-08-14
+
+Scope: add durable terminal outcomes to ordered broker task receipts.
+
+Actions:
+
+- added one idempotent terminal finalizer across every post-admission command
+  exit, before result broadcast or response publication;
+- persisted completed/failed state, exact response SHA-256 and byte count,
+  post-action target/URL evidence, and finalization time;
+- projected admitted-only receipts as indeterminate without moving the cursor
+  backward or permitting replay, and added fail-closed receipt validation;
+- expanded status, docs, plan/roadmap evidence, repository/installed skill, and
+  the disposable public live smoke.
+
+Validation:
+
+- focused terminal-outcome regressions and the serial Rust suite passed 1,841
+  tests with 57 ignored; formatting, strict Clippy, optimized release build,
+  service contracts, API/MCP parity, generated client checks, docs/dashboard
+  builds, JavaScript syntax, direct plan audit, and diff hygiene passed;
+- debug and installed disposable public proofs passed completed/failed outcome
+  persistence, real handoff, replay rejection, response digests, revocation,
+  and cleanup without authentication or mutation;
+- the generic dashboard browser smoke reproduced its existing WSL Windows
+  Chromium/Linux-profile exit 21. The browser-free manifest/marker smoke and
+  the P108 Windows-profile live fixture passed.
+
+Result:
+
+- P108 is closed. Installed/reference executable SHA-256 is
+  `58023942b0c1de84b2c38aef23b9dbc440796ab76576f0b67669fa585193e130`;
+  live dashboard bundle SHA-256 is
+  `881e5a5203d9971063caa278eba2d32103b4db4ce8cce7f0a95584e98599b634`;
+- retained ChatGPT browser PID `1046742`, CDP port `39377`, target
+  `B0EC77F279E5434E33FEA97AB1742B1A`, URL, and title remain exact; no prompt was
+  sent;
+- doctor still reports the pre-existing workstation payload, Guacamole route,
+  route-display, group/helper/membership/sudoers gaps. No GitHub write or
+  unrelated dirty-worktree reconciliation occurred.
+
+## Turn 154 | 2026-08-14
+
+Scope: bind broker-issued authority to an ordered, crash-safe execution plan.
+
+Actions:
+
+- added v2 issuance with broker-assigned step IDs, exact pre-action/requested
+  URL bindings, fixed step evidence, and an envelope-bound plan hash;
+- added a validated durable cursor and per-command admission receipts written
+  before dispatch, with fail-closed missing/repeated/out-of-order/action/URL/
+  evidence/hash/ledger checks;
+- propagated `taskAuthority`, `taskStepId`, and `taskEvidenceBytes` through
+  HTTP, MCP `service_request`, generated clients, schemas, README, user docs,
+  and the repository plus installed skill;
+- documented immutable replanning as revoke plus newly confirmed issue;
+- expanded the public smoke to `title -> url -> title` and a real daemon
+  handoff after step 1, proving restart replay rejection without page mutation.
+
+Validation:
+
+- focused authority, HTTP, MCP, generated client, contract, and API/MCP parity
+  tests passed;
+- the serial Rust suite passed 1,837 tests with 57 ignored; formatting, strict
+  production Clippy, release build, service-contract smoke, docs/dashboard
+  production builds, JavaScript syntax, direct plan audit, and diff hygiene
+  passed;
+- debug and installed P107 disposable live proofs passed with exact cleanup,
+  no authentication, page mutation, prompt, or retained-profile use;
+- generic `test:service-request-live` remains blocked before page work by its
+  pre-existing disposable Chrome exit 21 despite configured `--no-sandbox`.
+
+Result:
+
+- P107 is closed. Installed/reference/live-dashboard executable SHA-256 is
+  `e760f6ad07012d9fc083a77b790f5f2aa2ee4d320e8b38f9c47815cf74311220`;
+  dashboard bundle SHA-256 is
+  `b4322cfab3888e1ce9f32aecc37229674641b644f7217d38398ed247df84eb82`;
+- the exact retained ChatGPT browser PID `1046742`, profile, CDP endpoint,
+  target `B0EC77F279E5434E33FEA97AB1742B1A`, canonical conversation URL, and
+  `Architecture Review Boundaries` title were preserved; no prompt was sent;
+- doctor has zero stale runtime listeners and a ready live dashboard, while
+  remaining partial state is limited to the existing workstation-payload and
+  interactive-sudo remote-view installation boundaries;
+- no GitHub write or unrelated dirty-worktree reconciliation occurred.
+
+## Turn 153 | 2026-08-14
+
+Scope: replace caller-constructed authority with a broker-issued, revocable,
+inspectable exact-target capability.
+
+Actions:
+
+- added confirmation-gated HTTP and MCP issue/revoke operations and no-launch
+  collection/exact status operations;
+- derived action/origin scope and action/evidence budgets from explicit bounded
+  plan steps, persisted issuer/approval/plan/hash/revocation evidence privately
+  and atomically, and required that record in fail-closed mode;
+- added generated client helpers, schema/contract metadata, caller-label and
+  profile-lease interlocks, allowed-action admission, docs, and installed skill;
+- added a disposable public retained-target smoke covering issue, status,
+  budget debit, exhaustion, and revoke without page mutation or prompt work.
+
+Validation:
+
+- focused authority, HTTP, MCP, service contract, generated client, and
+  profile-lease regressions passed;
+- the serial Rust suite passed 1,834 tests with 57 ignored; formatting, strict
+  production Clippy, client types/examples, API/MCP parity, docs/dashboard
+  production builds, release build, validation selection, targeted MDX lint,
+  JavaScript syntax, and diff hygiene passed;
+- all-target Clippy additionally reports ten unrelated pre-existing test-style
+  warnings in the preserved dirty worktree; no unrelated test churn was made;
+- debug and installed disposable public proofs passed with exact cleanup, no
+  authentication, prompt, composer work, or page mutation.
+
+Result:
+
+- P106 is closed. Installed, reference, and live-dashboard executable SHA-256
+  is `86380304f45f9d8c6affc3c9caaffe85bbae26aaa18dbf260eae0d8b05cf7868`;
+- handoff preserved browser PID `1046742`, CDP endpoint `127.0.0.1:39377`,
+  target `B0EC77F279E5434E33FEA97AB1742B1A`, canonical conversation URL, and
+  `Architecture Review Boundaries` title;
+- unavailable user systemd left the old 4848 process serving the prior binary.
+  Replacing only that exact deleted-executable listener produced a ready live
+  manifest with the installed hash;
+- install doctor has zero stale runtimes and a ready dashboard, but remains
+  partial for older workstation-payload provenance and the separate privileged
+  remote-view helper/group/sudoers installation requiring operator action;
+- no ChatGPT prompt, authenticated-site mutation, GitHub write, or unrelated
+  dirty-worktree reconciliation occurred.
+
+## Turn 152 | 2026-08-14
+
+Scope: add a durable task-level authority boundary above individual browser
+actions and P104 confirmation.
+
+Actions:
+
+- added a strict immutable `taskAuthority` contract for caller labels, allowed
+  origins, retained target and initial URL, action/evidence budgets,
+  consequence ceiling, and RFC 3339 expiry;
+- added an atomic per-session ledger keyed by authority identity and full
+  envelope hash so restart cannot reset budgets or accept envelope drift;
+- enforced authority before dispatch at the common daemon boundary and routed
+  above-ceiling actions through fresh exact-target confirmation;
+- propagated authority and evidence reservations through service HTTP and the
+  generated client contract, with required-mode and ledger-directory settings;
+- documented the contract and synchronized the repository and installed skill.
+
+Validation:
+
+- four authority regressions, HTTP propagation, P104 confirmation, client
+  contract/type/example, and API/MCP parity tests passed;
+- the serial Rust suite passed 1,828 tests with 57 ignored; formatting, strict
+  Clippy, docs production build/TypeScript, dashboard build, release build,
+  validation selection, and diff hygiene passed;
+- targeted MDX lint returned no errors and three no-matching-configuration
+  warnings; this checkout has no `plans:audit` package script;
+- debug and installed disposable public-page proofs passed with no login,
+  mutation, prompt, or cleanup residue.
+
+Result:
+
+- P105 is closed. Release, installed, reference, and live-dashboard executable
+  SHA-256 is
+  `9fe62980912e20c0e5c1db2c2b5538edcadba9adf106ab9a0d1ef3da6133c9df`;
+- executable handoff preserved retained browser PID `1046742`, CDP endpoint
+  `127.0.0.1:39377`, target `B0EC77F279E5434E33FEA97AB1742B1A`, canonical
+  conversation URL, and `Architecture Review Boundaries` title;
+- the unavailable user systemd bus left the prior dashboard listener active;
+  replacing only that exact listener reconciled the live runtime manifest;
+- install doctor reports zero stale runtimes and a ready live dashboard, but
+  remains partial for separate workstation-payload provenance and privileged
+  remote-view installation requiring operator action and interactive sudo;
+- no ChatGPT prompt, authenticated-site mutation, or GitHub write occurred.
+
+## Turn 151 | 2026-08-14
+
+Scope: replace the confirmation stub with a target-bound human approval
+boundary for retained-target agentic work.
+
+Actions:
+
+- classified browser actions into stable read-only, navigation, mutation,
+  credential, script, lifecycle, and control-plane consequence classes;
+- bound every pending approval to an exact confirmation ID, active target ID,
+  active URL, and 60-second lifetime;
+- rejected missing, wrong, expired, overwritten, and target-mismatched
+  approvals while preserving single execution for a matching approval;
+- added a disposable public-page smoke that proves read-only collection works,
+  denial mutates nothing, and a later target change invalidates approval;
+- documented category configuration and the fail-closed contract across CLI,
+  README, user docs, and the installed skill.
+
+Validation:
+
+- five focused confirmation regressions and thirteen policy tests passed;
+- the serial Rust suite passed 1,824 tests with 57 ignored; formatting, strict
+  Clippy, docs TypeScript/build, JavaScript syntax, validation selection, and
+  diff hygiene passed;
+- debug and installed public-page live proofs returned success with no
+  authenticated profile, mutation, prompt, or cleanup residue;
+- optimized publish handed the retained session to the replacement daemon with
+  browser PID `1046742`, the same CDP endpoint, and one reattached target;
+- the publisher's first final check found the old standalone dashboard listener
+  after the unavailable user systemd bus prevented restart. Terminating only
+  that exact deleted-executable listener and starting the installed dashboard
+  produced matching manifest and installed hashes.
+
+Result:
+
+- P104 is closed. Release, installed, and reference executable SHA-256 is
+  `0f57a4b060d68473d13b07155cd6fc502393124244d18def9340c5e7f083b468`;
+- install doctor confirms the current/workspace hash and ready live dashboard
+  with zero stale runtimes, while the separate workstation payload and
+  remote-view privileged helper remain partial pending interactive sudo;
+- the retained target still resolves to `Architecture Review Boundaries` at
+  `https://chatgpt.com/c/6a7f6bfc-61a8-83ea-82fc-59504c5f1bf2`;
+- two pre-build disposable public smoke attempts exposed a stale debug binary
+  and followed the Example Domain link. They used no authenticated state and
+  were cleaned exactly; rebuilt debug and installed proofs stopped mutation;
+- no ChatGPT prompt, authenticated-site action, or GitHub write occurred.
+
+## Turn 150 | 2026-08-14
+
+Scope: close the WSL Windows launch gap in the isolated CDP tab-streaming live
+fixture.
+
+Actions:
+
+- preserved explicit browser executable selection ahead of the fixture's
+  `/usr/bin/google-chrome` fallback;
+- placed Windows Chromium fixture profiles under Windows Temp and passed the
+  exact profile as top-level service-request authority;
+- added a no-browser precedence and profile-placement regression;
+- kept all three live runs limited to disposable data-URL tabs and exact
+  cleanup.
+
+Validation:
+
+- `pnpm test:service-cdp-tab-streaming-fixture` passed;
+- the live streaming smoke passed through the debug executable and through the
+  exact caller shape with only the Windows executable environment configured;
+- syntax, package metadata, validation selection, and diff hygiene passed;
+- no fixture profile or session remained after any run.
+
+Result:
+
+- P102 is closed and the previously failing WSL Windows streaming fixture now
+  completes end to end;
+- retained PID 184301 had already exited at `2026-08-14T20:48:18Z`, before the
+  first P102 file change at `2026-08-14T20:59:17Z`; P102 did not relaunch that
+  profile or send a prompt;
+- no GitHub write occurred.
+
+## Turn 149 | 2026-08-14
+
+Scope: close P99-F1 with a bounded evidence reader that remains usable when a
+monolithic page renderer stalls.
+
+Actions:
+
+- added `get page` with HTTP(S), domain-policy, byte, timeout, and explicit
+  credential controls;
+- implemented the fetch through one temporary background target using
+  `Network.loadNetworkResource` and bounded `IO.read`, with verified stream and
+  exact-target cleanup and no `Runtime.*` command;
+- preserved active-target identity and returned source, status, MIME, byte,
+  truncation, credential, and target metadata;
+- routed the frozen WHATWG mission deterministically through the reader and
+  retained the same reader as the single fallback after renderer evidence
+  failure on other missions;
+- documented, installed, and synchronized the repo and installed skill.
+
+Validation:
+
+- focused parser and mock-CDP tests passed, including success, truncation, read
+  failure, timeout, cleanup, no-Runtime, credential default, and original-target
+  checks;
+- the isolated WHATWG run and frozen ten-mission run passed; the full score was
+  10/10 in 48.468 seconds with zero retries and exact cleanup;
+- the deterministic serial Rust suite passed 1,816 tests with 57 ignored;
+  strict Clippy, formatting, docs TypeScript/build, route-confusion gates,
+  JavaScript syntax, validation selection, and diff hygiene passed;
+- targeted MDX lint had no errors and one no-matching-config warning. No package
+  plan-audit command exists in this checkout.
+- the generic CDP-tab-streaming live smoke remains blocked before navigation by
+  its isolated WSL Chrome launch and did not exercise this reader.
+
+Result:
+
+- P101 and P99-F1 are closed. Installed/debug/reference executable SHA-256 is
+  `739201f613f5b5cf987347618908528cd05a57ca8fe2c064b1699d2728f7552b`;
+- exact executable handoff preserved retained browser PID 184301, its CDP
+  endpoint, profile, target inventory, and `Architecture Review Boundaries`
+  conversation identity;
+- the installed public read returned HTTP 200 and 559 bytes with credentials
+  disabled, then exact before/after inventory remained unchanged;
+- no prompt, composer action, login, form submission, or GitHub write occurred.
+
+## Turn 148 | 2026-08-14
+
+Scope: close the delayed browser-health cascade exposed by the P99 public-web
+research benchmark.
+
+Actions:
+
+- added a no-replay post-timeout circuit that separates browser-level CDP loss
+  from active-renderer damage;
+- prepared a ready blank target before closing exactly one affected ordinary
+  owned target while preserving unrelated tabs and the browser process;
+- preserved service-tab handles and externally attached browser lifecycle
+  authority;
+- skipped polite CDP close only after browser-level disconnection, then
+  terminated the exact locally owned process and performed one blank relaunch;
+- documented, built, installed, and synchronized the behavior into the repo and
+  installed agent-browser skill.
+
+Validation:
+
+- focused tests, 1,811 Rust tests, formatting, strict Clippy, docs build and
+  TypeScript, route-confusion gates, release build, validation selection, diff
+  checks, and installed dashboard runtime smoke passed;
+- the full frozen benchmark improved from 8/10 with delayed CDP refusal to 9/10
+  with only the bounded WHATWG extraction failure;
+- Python, Rust, Git, and Node passed after WHATWG in the same session, and the
+  installed critical pair repeated that result;
+- the generic CDP-tab-streaming smoke remains blocked before navigation by its
+  disposable Linux Chrome launch configuration under WSL and did not exercise
+  this change.
+
+Result:
+
+- P99-F2 is closed and installed binary SHA-256 is
+  `6c6bcd338465639a3937b6a9c4c6f4a787b7e2847396cde451965603174968a8`;
+- handoff preserved retained browser PID 184301 and one current ChatGPT target;
+  read-only checks found `Architecture Review Boundaries` at its current URL and
+  no prompt was sent;
+- the next priority is P99-F1: a bounded precise-section or non-Runtime reader
+  for monolithic standards pages.
+
+## Turn 147 | 2026-08-14
+
+Scope: establish a public, no-login Browser Research Concierge benchmark before
+allowing authenticated or consequential agentic-browser missions.
+
+Actions:
+
+- added a ten-mission installed-runtime harness covering official IANA, RFC
+  Editor, W3C, WHATWG, Python, Rust, Git, and Node.js sources;
+- used one disposable Windows Chromium profile and named agent-browser session
+  with canonical URL, page identity, evidence, duration, zero-retry, and exact
+  cleanup checks;
+- replaced title-only identity with title, heading, or bounded body evidence so
+  valid RFC pages with empty HTML titles remain verifiable;
+- added focused mission selection, source-drift diagnostics, post-navigation
+  outcome verification, and one absolute mission deadline.
+
+Validation:
+
+- syntax, package JSON, and patch checks passed;
+- the initial real run scored 6/10 and exposed one stale evidence phrase, two
+  titleless RFC pages, and the monolithic WHATWG renderer stall;
+- the strengthened pre-budget run scored 9/10;
+- the final budgeted full run scored 8/10 with eight canonical evidence passes,
+  one bounded WHATWG service-job timeout, and one delayed Node.js CDP refusal;
+- the Node.js mission passed alone in 1.3 seconds, attributing its full-suite
+  failure to delayed session damage rather than source availability;
+- every run reported cleanup complete and no authenticated profile, prompt,
+  form submission, download, or other mutation was used.
+
+Result:
+
+- the evaluation harness is complete and intentionally exits nonzero when any
+  mission fails;
+- agent-browser is reliable for ordinary public documentation but not yet safe
+  for long-horizon agency after a renderer-stall timeout;
+- the next repair is a post-timeout health circuit breaker plus a bounded
+  non-Runtime or precise-section evidence reader.
+
 ## Turn 146 | 2026-08-14
 
 Scope: retain WSL NAT and the home-network Bastion jump route while making

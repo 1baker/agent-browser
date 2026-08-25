@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
-import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +15,7 @@ import {
   selectRouteOwnedStream,
   serviceEvaluateValue,
 } from './lib/remote-view-live-state.js';
+import { startBlockingSafeFixtureServer } from './lib/blocking-safe-fixture-server.js';
 import { assert, parseJsonOutput } from './smoke-utils.js';
 import { loadAgentBrowserEnvFromRealHome } from './smoke-remote-headed-utils.js';
 
@@ -48,9 +48,9 @@ function writeTextArtifact(name, value) {
   return path;
 }
 
-function createFixtureServer() {
+async function createFixtureServer() {
   const marker = `REMOTE VIEW OPEN FIXTURE ${process.pid}`;
-  const ocrMarker = 'REMOTE VIEW OPEN FIXTURE';
+  const ocrMarker = 'REMOTE VIEW OPEN';
   const html = [
     '<!doctype html>',
     '<html>',
@@ -62,25 +62,13 @@ function createFixtureServer() {
     '</body>',
     '</html>',
   ].join('');
-  const server = createServer((_req, res) => {
-    res.writeHead(200, {
-      'content-type': 'text/html; charset=utf-8',
-      'cache-control': 'no-store',
-    });
-    res.end(html);
-  });
-  return new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      resolve({
-        marker,
-        ocrMarker,
-        targetUrl: `http://127.0.0.1:${address.port}/`,
-        close: () => new Promise((done) => server.close(done)),
-      });
-    });
-  });
+  const server = await startBlockingSafeFixtureServer({ html });
+  return {
+    marker,
+    ocrMarker,
+    targetUrl: `http://${server.host}:${server.port}/`,
+    close: server.close,
+  };
 }
 
 function envValue(name) {

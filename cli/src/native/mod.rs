@@ -35,6 +35,8 @@ pub mod policy;
 #[allow(dead_code)]
 pub mod providers;
 #[allow(dead_code)]
+pub mod publication_status;
+#[allow(dead_code)]
 pub mod recording;
 #[allow(dead_code)]
 pub mod remote_view;
@@ -48,6 +50,8 @@ pub mod remote_view_handoff;
 pub mod remote_view_lease;
 #[allow(dead_code)]
 pub mod remote_view_proof;
+#[allow(dead_code)]
+pub mod retained_browser_requirement;
 #[allow(dead_code)]
 pub mod screenshot;
 #[allow(dead_code)]
@@ -86,6 +90,8 @@ pub mod state;
 pub mod storage;
 #[allow(dead_code)]
 pub mod stream;
+#[allow(dead_code)]
+pub mod task_authority;
 #[allow(dead_code)]
 pub mod tracing;
 #[allow(dead_code)]

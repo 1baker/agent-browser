@@ -336,7 +336,7 @@ Extensions from user-level and project-level configs are **concatenated**, not r
 
 The `AGENT_BROWSER_EXTENSIONS` environment variable and CLI `--extension` flags follow the standard priority rules (env replaces config, CLI appends).
 
-For local secret bootstrapping, agent-browser can also load `AGENT_BROWSER_ENV_FILE`, or `~/.agent-browser/.env` when that file exists. Environment variables from the real shell still win over the dotenv file. The dotenv loader accepts dashboard auth, Tailscale Serve identity allowlisting, keychain, and remote-headed view variables so a user-scoped dashboard service and foreground CLI launches share the same Guacamole display and stream metadata.
+For local secret bootstrapping, agent-browser can also load `AGENT_BROWSER_ENV_FILE`, or `~/.agent-browser/.env` when that file exists. Environment variables from the real shell still win over the dotenv file. The dotenv loader accepts dashboard auth, the durable retained-browser requirement path, Tailscale Serve identity allowlisting, keychain, and remote-headed view variables so a user-scoped dashboard service and foreground CLI launches share the same retention, Guacamole display, and stream metadata.
 
 ## Environment Variables
 
@@ -354,6 +354,8 @@ These environment variables configure additional daemon and runtime behavior:
     <tr><td><code>AGENT_BROWSER_DEFAULT_TIMEOUT</code></td><td>Default timeout in ms. Keep below 30000 to avoid IPC timeouts.</td><td><code>25000</code></td></tr>
     <tr><td><code>AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH</code></td><td>Trust allowlisted Tailscale Serve identity for HTTPS <code>.ts.net</code> dashboard requests. Keep the listener localhost-only and exclusive to Serve.</td><td>(disabled)</td></tr>
     <tr><td><code>AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS</code></td><td>Comma-separated exact Tailscale operator logins permitted as dashboard superusers.</td><td>(none)</td></tr>
+    <tr><td><code>AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT</code></td><td>Private durable exact-lane requirement used by publication and native workstation status, apply, and reconcile checks.</td><td><code>~/.agent-browser/publications/local-dashboard-retained-browser.json</code></td></tr>
+    <tr><td><code>AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH</code></td><td>Linux-local executable for <code>remote_headed</code> launches when the normal browser path was automatically selected from a manifest. Explicit executable choices still win.</td><td>(none)</td></tr>
     <tr><td><code>AGENT_BROWSER_SESSION_NAME</code></td><td>Auto-save/load state persistence name.</td><td>(none)</td></tr>
     <tr><td><code>AGENT_BROWSER_STATE_EXPIRE_DAYS</code></td><td>Auto-delete saved session states older than N days.</td><td><code>30</code></td></tr>
     <tr><td><code>AGENT_BROWSER_ENCRYPTION_KEY</code></td><td>64-char hex key for AES-256-GCM session encryption.</td><td>(none)</td></tr>
@@ -372,6 +374,8 @@ These environment variables configure additional daemon and runtime behavior:
     <tr><td><code>AGENT_BROWSER_REMOTE_VIEW_ROUTE_ID</code></td><td>Service-owned remote-view route identifier for providers that multiplex viewers.</td><td>(none)</td></tr>
     <tr><td><code>AGENT_BROWSER_GUACAMOLE_CONNECTION_ID</code></td><td>Guacamole connection id or route token for <code>rdp_gateway</code> streams.</td><td>(none)</td></tr>
     <tr><td><code>AGENT_BROWSER_GUACAMOLE_CONNECTION_NAME</code></td><td>Human-readable Guacamole connection name for <code>rdp_gateway</code> streams.</td><td>(none)</td></tr>
+    <tr><td><code>AGENT_BROWSER_GUACAMOLE_HEADER_USER</code></td><td>Local Guacamole principal injected only after dashboard authentication.</td><td>(current workstation user after workstation setup)</td></tr>
+    <tr><td><code>AGENT_BROWSER_GUACAMOLE_HTTP_PORT</code></td><td>Loopback Guacamole port used by the authenticated dashboard proxy.</td><td><code>8092</code></td></tr>
     <tr><td><code>AGENT_BROWSER_REMOTE_VIEW_PROVIDER</code></td><td>View stream provider label for <code>remote_headed</code> browser records, such as <code>cdp_screencast</code>, <code>novnc</code>, <code>rdp_gateway</code>, or <code>external_url</code>.</td><td><code>cdp_screencast</code></td></tr>
     <tr><td><code>AGENT_BROWSER_REMOTE_CONTROL_INPUT_PROVIDER</code></td><td>Control-input provider label for <code>remote_headed</code> browser records, such as <code>manual_attached_desktop</code> when an embedded RDP gateway supplies operator input.</td><td>Provider default</td></tr>
     <tr><td><code>AGENT_BROWSER_IDLE_TIMEOUT_MS</code></td><td>Auto-shutdown the daemon after N ms of inactivity (no commands received). Useful for ephemeral environments.</td><td>(disabled)</td></tr>
@@ -389,8 +393,10 @@ These environment variables configure additional daemon and runtime behavior:
     <tr><td><code>AGENT_BROWSER_MAX_OUTPUT</code></td><td>Max characters for page output (truncates beyond limit).</td><td>(unlimited)</td></tr>
     <tr><td><code>AGENT_BROWSER_ALLOWED_DOMAINS</code></td><td>Comma-separated allowed domain patterns (e.g., <code>example.com,*.example.com</code>).</td><td>(unrestricted)</td></tr>
     <tr><td><code>AGENT_BROWSER_ACTION_POLICY</code></td><td>Path to action policy JSON file.</td><td>(none)</td></tr>
-    <tr><td><code>AGENT_BROWSER_CONFIRM_ACTIONS</code></td><td>Comma-separated action categories requiring confirmation.</td><td>(none)</td></tr>
+    <tr><td><code>AGENT_BROWSER_CONFIRM_ACTIONS</code></td><td>Comma-separated exact actions or consequence categories requiring confirmation. Categories include <code>read_only</code>, <code>navigation</code>, <code>page_mutation</code>, <code>external_mutation</code>, <code>file_transfer</code>, <code>credentials</code>, <code>script_execution</code>, <code>browser_lifecycle</code>, and <code>control_plane</code>. Use <code>mutation</code> for the combined mutation-sensitive group.</td><td>(none)</td></tr>
     <tr><td><code>AGENT_BROWSER_CONFIRM_INTERACTIVE</code></td><td>Enable interactive confirmation prompts (auto-denies if stdin is not a TTY).</td><td>(disabled)</td></tr>
+    <tr><td><code>AGENT_BROWSER_REQUIRE_TASK_AUTHORITY</code></td><td>Require an active broker-issued immutable <code>taskAuthority</code> envelope on daemon browser commands. Confirm, deny, and broker issue/revoke/status operations remain available to manage authority.</td><td>(disabled)</td></tr>
+    <tr><td><code>AGENT_BROWSER_TASK_AUTHORITY_DIR</code></td><td>Directory for atomic durable task-authority usage ledgers.</td><td><code>~/.agent-browser/task-authority</code></td></tr>
     <tr><td><code>AGENT_BROWSER_ENGINE</code></td><td>Browser engine to use: <code>chrome</code> (default), <code>lightpanda</code>.</td><td><code>chrome</code></td></tr>
     <tr><td><code>AGENT_BROWSER_NO_AUTO_DIALOG</code></td><td>Disable automatic dismissal of <code>alert</code>/<code>beforeunload</code> dialogs.</td><td>(disabled)</td></tr>
     <tr><td><code>AI_GATEWAY_URL</code></td><td>Vercel AI Gateway base URL.</td><td><code>https://ai-gateway.vercel.sh</code></td></tr>

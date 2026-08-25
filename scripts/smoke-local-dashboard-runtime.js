@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { resolveDashboardSmokeBrowserCapability } from './lib/smoke-browser-fixture.js';
 
 const args = process.argv.slice(2);
 const options = {
@@ -11,6 +12,7 @@ const options = {
   expectMarkers: [],
   json: false,
   keepBrowser: false,
+  browserBuild: '',
   browserHost: '',
   browserProfile: '',
   skipBrowser: false,
@@ -35,6 +37,8 @@ for (let index = 0; index < args.length; index += 1) {
     options.json = true;
   } else if (arg === '--keep-browser') {
     options.keepBrowser = true;
+  } else if (arg === '--browser-build') {
+    options.browserBuild = requiredValue(args, ++index, arg);
   } else if (arg === '--browser-profile') {
     options.browserProfile = requiredValue(args, ++index, arg);
   } else if (arg === '--browser-host') {
@@ -65,6 +69,7 @@ const report = {
   runtimeManifest: null,
   markers: [],
   browser: null,
+  browserCapability: null,
 };
 let currentPhase = 'startup';
 const globalTimeout = setTimeout(() => {
@@ -133,9 +138,52 @@ async function run() {
   }
 
   if (!options.skipBrowser) {
-    currentPhase = 'browser smoke';
-    report.browser = await runBrowserSmoke(dashboardUrl);
+    currentPhase = 'resolve browser capability';
+    const capability = resolveBrowserCapability();
+    report.browserCapability = capability;
+    if (capability.status !== 'ready') {
+      throw new Error(`Dashboard smoke browser capability is unavailable: ${capability.failures.join(', ')}`);
+    }
+    options.browserBuild = capability.browserBuild || '';
+    options.browserProfile = capability.profilePath || '';
+    try {
+      currentPhase = 'browser smoke';
+      report.browser = await runBrowserSmoke(dashboardUrl);
+    } finally {
+      if (capability.disposableProfile && !options.keepBrowser) {
+        currentPhase = 'remove disposable browser profile';
+        rmSync(capability.profilePath, {
+          recursive: true,
+          force: true,
+          maxRetries: 20,
+          retryDelay: 250,
+        });
+      }
+    }
   }
+}
+
+function resolveBrowserCapability() {
+  const status = spawnSync(options.agentBrowserBin, ['--json', 'service', 'status'], {
+    cwd: new URL('..', import.meta.url),
+    env: process.env,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 30000,
+  });
+  if (status.error || status.status !== 0) {
+    throw new Error(`Could not read agent-browser launch capability: ${status.error?.message || status.stderr || `status ${status.status}`}`);
+  }
+  const parsed = parseJson(status.stdout, 'agent-browser service status');
+  if (!parsed.success || !parsed.data?.launchConfig) {
+    throw new Error(`agent-browser service status did not return launchConfig: ${status.stdout}`);
+  }
+  return resolveDashboardSmokeBrowserCapability({
+    launchConfig: parsed.data.launchConfig,
+    requestedBrowserBuild: options.browserBuild,
+    requestedProfile: options.browserProfile,
+    defaultProfileRoot: tmpdir(),
+  });
 }
 
 async function runBrowserSmoke(baseUrl) {
@@ -473,6 +521,9 @@ JSON.stringify({
 
 function baseAgentArgs() {
   const command = ['--json', '--session', options.session];
+  if (options.browserBuild) {
+    command.push('--browser-build', options.browserBuild);
+  }
   if (options.browserProfile) {
     command.push('--profile', options.browserProfile);
   }
@@ -669,6 +720,7 @@ Options:
   --dashboard-url <url>       Dashboard URL to verify. Default: http://127.0.0.1:4848/
   --expect-marker <text>      Require a served HTML or JS bundle to contain text. Repeatable.
   --agent-browser-bin <path>  agent-browser binary used for browser smoke.
+  --browser-build <build>     Require a verified browser build for the disposable smoke.
   --browser-profile <path>    Use an isolated runtime profile for the smoke browser.
   --browser-host <host>       Pass a browser host to agent-browser for the smoke browser.
   --workspace-session <name>  Open a workspace viewport route for a daemon session.

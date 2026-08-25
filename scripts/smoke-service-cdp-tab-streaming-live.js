@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { request } from 'node:http';
 import { createConnection } from 'node:net';
 
@@ -14,14 +15,22 @@ import {
   runCli,
 } from './smoke-utils.js';
 import { ensureStreamPort } from './smoke-remote-headed-utils.js';
+import {
+  createDisposableSmokeProfile,
+  isWslWindowsBrowserExecutable,
+  selectSmokeBrowserExecutable,
+} from './lib/smoke-browser-fixture.js';
 
 const context = createSmokeContext({
   prefix: 'ab-cdp-tab-stream-',
   sessionPrefix: 'cdp-tab-stream',
 });
 context.env.AGENT_BROWSER_ARGS = '--no-sandbox';
-if (!process.env.AGENT_BROWSER_SMOKE_AGENT_BROWSER_CMD && existsSync('/usr/bin/google-chrome')) {
-  context.env.AGENT_BROWSER_EXECUTABLE_PATH = '/usr/bin/google-chrome';
+const browserExecutable = selectSmokeBrowserExecutable({
+  configuredExecutable: context.env.AGENT_BROWSER_EXECUTABLE_PATH,
+});
+if (browserExecutable) {
+  context.env.AGENT_BROWSER_EXECUTABLE_PATH = browserExecutable;
 }
 
 const { session } = context;
@@ -36,6 +45,26 @@ const timeout = setTimeout(() => {
 
 let streamPort;
 let ws;
+let profilePath;
+
+function createFixtureProfile() {
+  const windowsTempRoot = isWslWindowsBrowserExecutable(browserExecutable)
+    ? execFileSync('wslpath', [
+        '-u',
+        execFileSync(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-Command', '[Console]::Out.Write([IO.Path]::GetTempPath())'],
+          { encoding: 'utf8' },
+        ).trim(),
+      ], { encoding: 'utf8' }).trim()
+    : null;
+  return createDisposableSmokeProfile({
+    browserExecutable,
+    defaultRoot: context.tempHome,
+    windowsTempRoot,
+    prefix: 'agent-browser-cdp-tab-stream-',
+  });
+}
 
 async function cleanup() {
   clearTimeout(timeout);
@@ -47,7 +76,9 @@ async function cleanup() {
   await closeSession(context);
   if (process.env.AGENT_BROWSER_SMOKE_PRESERVE === '1') {
     console.error(`Preserved smoke temp home: ${context.tempHome}`);
+    if (profilePath) console.error(`Preserved smoke browser profile: ${profilePath}`);
   } else {
+    if (profilePath) rmSync(profilePath, { recursive: true, force: true });
     context.cleanupTempHome();
   }
 }
@@ -77,10 +108,11 @@ function frameHash(frame) {
   return createHash('sha256').update(frame.data || '').digest('hex');
 }
 
-async function serviceRequest(action, params, taskName) {
+async function serviceRequest(action, params, taskName, requestOverrides = {}) {
   let response;
   try {
     response = await httpJsonWithTimeout(streamPort, 'POST', '/api/service/request', {
+      ...requestOverrides,
       action,
       serviceName,
       agentName,
@@ -333,6 +365,7 @@ class SmokeWebSocket {
 }
 
 try {
+  profilePath = createFixtureProfile();
   streamPort = await ensureStreamPort(context, 120000);
 
   await serviceRequest('navigate', {
@@ -340,7 +373,7 @@ try {
     args: ['--no-sandbox'],
     url: pageA,
     waitUntil: 'load',
-  }, 'openPageA');
+  }, 'openPageA', { profile: profilePath });
 
   const afterPageA = await waitForServiceTab('CDP Stream A', 'after page A launch');
   const browser = afterPageA.state?.browsers?.[browserId];

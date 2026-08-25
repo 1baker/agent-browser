@@ -65,7 +65,7 @@ process.on('SIGINT', () => process.exit(130));
 process.on('SIGTERM', () => process.exit(143));
 
 try {
-  report.initial = readDoctors('initial', { required: !options.apply });
+  report.initial = readDoctors('initial', { required: false });
   report.safeRemedies = staleDaemonRemedies(report.initial.install);
 
   if (options.apply) {

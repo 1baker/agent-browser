@@ -1,5 +1,9 @@
 use serde_json::{json, Value};
 
+use crate::native::publication_status::{
+    LOCAL_DASHBOARD_PUBLICATION_HTTP_ROUTE, LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE,
+};
+
 pub const SERVICE_CONTRACTS_RESOURCE: &str = "agent-browser://contracts";
 pub const SERVICE_CONTRACTS_HTTP_ROUTE: &str = "/api/service/contracts";
 pub const SERVICE_BROWSER_CAPABILITY_REGISTRY_RESOURCE: &str =
@@ -11,6 +15,12 @@ pub const SERVICE_BROWSER_CAPABILITY_PREFLIGHT_HTTP_ROUTE: &str =
 pub const SERVICE_REMOTE_VIEW_ROUTE_PREFLIGHT_HTTP_ROUTE: &str =
     "/api/service/remote-view/route-preflight";
 pub const SERVICE_REQUEST_HTTP_ROUTE: &str = "/api/service/request";
+pub const SERVICE_TASK_AUTHORITIES_HTTP_ROUTE: &str = "/api/service/task-authorities";
+pub const SERVICE_TASK_AUTHORITY_ISSUE_HTTP_ROUTE: &str = "/api/service/task-authorities/issue";
+pub const SERVICE_TASK_AUTHORITY_CONFIRMATION_HTTP_ROUTE: &str =
+    "/api/service/task-authorities/confirmation";
+pub const SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_HTTP_ROUTE: &str =
+    "/api/service/task-authorities/confirmations/cleanup";
 pub const SERVICE_PROFILE_ALLOCATION_HTTP_ROUTE: &str = "/api/service/profiles/<id>/allocation";
 pub const SERVICE_PROFILE_READINESS_HTTP_ROUTE: &str = "/api/service/profiles/<id>/readiness";
 pub const SERVICE_PROFILE_SEEDING_HANDOFF_HTTP_ROUTE: &str =
@@ -35,6 +45,14 @@ pub const SERVICE_ROUTE_POOL_MCP_RESOURCE: &str = "agent-browser://route-pool";
 pub const SERVICE_VIEWER_LEASES_MCP_RESOURCE: &str = "agent-browser://viewer-leases";
 pub const SERVICE_ACCESS_PLAN_MCP_TOOL_NAME: &str = "service_access_plan";
 pub const SERVICE_REQUEST_MCP_TOOL_NAME: &str = "service_request";
+pub const SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME: &str = "service_task_authority_issue";
+pub const SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME: &str =
+    "service_task_authority_confirmation";
+pub const SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME: &str =
+    "service_task_authority_confirmation_cleanup";
+pub const SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME: &str = "service_task_authority_reconcile";
+pub const SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME: &str = "service_task_authority_status";
+pub const SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME: &str = "service_task_authority_revoke";
 pub const SERVICE_BROWSER_CAPABILITY_PREFLIGHT_MCP_TOOL_NAME: &str =
     "service_browser_capability_preflight";
 pub const SERVICE_REMOTE_VIEW_ROUTE_PREFLIGHT_MCP_TOOL_NAME: &str =
@@ -93,6 +111,8 @@ pub const SERVICE_BROWSER_CAPABILITY_PREFLIGHT_RESPONSE_SCHEMA_ID: &str =
     "https://agent-browser.local/contracts/service-browser-capability-preflight-response.v1.schema.json";
 pub const SERVICE_REMOTE_VIEW_ROUTE_PREFLIGHT_RESPONSE_SCHEMA_ID: &str =
     "https://agent-browser.local/contracts/service-remote-view-route-preflight-response.v1.schema.json";
+pub const LOCAL_DASHBOARD_PUBLICATION_STATUS_SCHEMA_ID: &str =
+    "https://agent-browser.local/contracts/local-dashboard-publication-status.v1.schema.json";
 pub const SERVICE_REQUEST_CONTRACT_VERSION: &str = "v1";
 
 /// Actions accepted by HTTP `/api/service/request`, MCP `service_request`, and
@@ -222,6 +242,40 @@ pub fn service_contracts_metadata() -> Value {
                 "schemaId": SERVICE_REQUEST_MCP_TOOL_CALL_SCHEMA_ID,
                 "schemaPath": "docs/dev/contracts/service-request-mcp-tool-call.v1.schema.json",
                 "tool": SERVICE_REQUEST_MCP_TOOL_NAME,
+            },
+            "serviceTaskAuthority": {
+                "version": SERVICE_REQUEST_CONTRACT_VERSION,
+                "schemaId": "https://agent-browser.local/contracts/task-authority.v1.schema.json",
+                "schemaPath": "docs/dev/contracts/task-authority.v1.schema.json",
+                "http": {
+                    "issue": { "method": "POST", "route": SERVICE_TASK_AUTHORITY_ISSUE_HTTP_ROUTE },
+                    "status": { "method": "GET", "route": SERVICE_TASK_AUTHORITIES_HTTP_ROUTE },
+                    "confirmation": { "method": "POST", "route": SERVICE_TASK_AUTHORITY_CONFIRMATION_HTTP_ROUTE },
+                    "confirmationCleanup": { "method": "POST", "route": SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_HTTP_ROUTE },
+                    "reconcile": { "method": "POST", "route": "/api/service/task-authorities/<id>/reconcile" },
+                    "revoke": { "method": "POST", "route": "/api/service/task-authorities/<id>/revoke" },
+                },
+                "mcp": {
+                    "issueTool": SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME,
+                    "confirmationTool": SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME,
+                    "confirmationCleanupTool": SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME,
+                    "statusTool": SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME,
+                    "reconcileTool": SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME,
+                    "revokeTool": SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME,
+                },
+                "client": {
+                    "package": "@agent-browser/client/service-request",
+                    "helpers": ["issueServiceTaskAuthority", "getServiceTaskAuthorities", "getServiceTaskAuthority", "reconcileServiceTaskAuthority", "decideServiceTaskAuthorityConfirmation", "cleanupServiceTaskAuthorityConfirmations", "revokeServiceTaskAuthority"],
+                },
+                "controlMutationsRequireExactTargetConfirmation": true,
+                "statusIsNoLaunch": true,
+                "confirmationCleanup": {
+                    "previewIsNonMutating": true,
+                    "applyRequiresExactReviewSha256": true,
+                    "preservesPendingAndIndeterminate": true,
+                    "retiredIdLedger": "bounded_active_manifest_with_fixed_capacity_hash_chained_segments",
+                    "integrityFailureMode": "fail_closed",
+                },
             },
             "serviceBrowserCapabilityRegistryResponse": {
                 "version": SERVICE_REQUEST_CONTRACT_VERSION,
@@ -541,6 +595,24 @@ pub fn service_contracts_metadata() -> Value {
                     "supportedEscalations": ["browser_degraded", "monitor_attention", "os_degraded_possible"],
                 },
             },
+            "localDashboardPublicationStatus": {
+                "version": SERVICE_REQUEST_CONTRACT_VERSION,
+                "schemaId": LOCAL_DASHBOARD_PUBLICATION_STATUS_SCHEMA_ID,
+                "schemaPath": "docs/dev/contracts/local-dashboard-publication-status.v1.schema.json",
+                "http": {
+                    "method": "GET",
+                    "route": LOCAL_DASHBOARD_PUBLICATION_HTTP_ROUTE,
+                },
+                "mcp": {
+                    "resource": LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE,
+                },
+                "client": {
+                    "package": "@agent-browser/client/service-observability",
+                    "helpers": ["getLocalDashboardPublicationStatus"],
+                },
+                "readOnly": true,
+                "recoveryAuthorized": false,
+            },
         },
         "http": {
             "contractsRoute": SERVICE_CONTRACTS_HTTP_ROUTE,
@@ -563,6 +635,7 @@ pub fn service_contracts_metadata() -> Value {
             "serviceMonitorResumeRoute": SERVICE_MONITOR_RESUME_HTTP_ROUTE,
             "serviceMonitorResetFailuresRoute": SERVICE_MONITOR_RESET_FAILURES_HTTP_ROUTE,
             "serviceMonitorTriageRoute": SERVICE_MONITOR_TRIAGE_HTTP_ROUTE,
+            "localDashboardPublicationStatusRoute": LOCAL_DASHBOARD_PUBLICATION_HTTP_ROUTE,
         },
         "mcp": {
             "contractsResource": SERVICE_CONTRACTS_RESOURCE,
@@ -582,6 +655,7 @@ pub fn service_contracts_metadata() -> Value {
             "serviceMonitorResumeTool": SERVICE_MONITOR_RESUME_MCP_TOOL_NAME,
             "serviceMonitorResetFailuresTool": SERVICE_MONITOR_RESET_FAILURES_MCP_TOOL_NAME,
             "serviceMonitorTriageTool": SERVICE_MONITOR_TRIAGE_MCP_TOOL_NAME,
+            "localDashboardPublicationStatusResource": LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE,
         },
     })
 }
@@ -893,6 +967,22 @@ mod tests {
                 "monitor_attention",
                 "os_degraded_possible"
             ])
+        );
+        assert_eq!(
+            metadata["contracts"]["localDashboardPublicationStatus"]["schemaId"],
+            LOCAL_DASHBOARD_PUBLICATION_STATUS_SCHEMA_ID
+        );
+        assert_eq!(
+            metadata["contracts"]["localDashboardPublicationStatus"]["http"]["route"],
+            LOCAL_DASHBOARD_PUBLICATION_HTTP_ROUTE
+        );
+        assert_eq!(
+            metadata["contracts"]["localDashboardPublicationStatus"]["mcp"]["resource"],
+            LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE
+        );
+        assert_eq!(
+            metadata["contracts"]["localDashboardPublicationStatus"]["recoveryAuthorized"],
+            false
         );
     }
 }

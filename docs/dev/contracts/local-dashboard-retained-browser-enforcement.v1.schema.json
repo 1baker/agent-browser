@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-browser.dev/contracts/local-dashboard-retained-browser-enforcement.v1.schema.json",
+  "title": "Local Dashboard Retained Browser Enforcement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "createdAt", "requirementSha256"],
+  "properties": {
+    "schemaVersion": {
+      "const": "agent-browser.local-dashboard-retained-browser-enforcement.v1"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "requirementSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}
