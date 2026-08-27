@@ -1442,6 +1442,12 @@ agent-browser batch "state load auth.json" "open https://app.example.com/dashboa
 
 Use `--session-name` for lightweight cookie and storage reuse. For browser-level
 identity and long-lived authenticated automation, prefer `--runtime-profile`.
+On Linux, do not add manual `XDG_RUNTIME_DIR` exports merely to reach a
+user-service daemon. The CLI resolves an explicit `AGENT_BROWSER_SOCKET_DIR`
+first, then explicit `XDG_RUNTIME_DIR`, then the current user's secure
+`/run/user/<uid>/agent-browser` namespace. If that inferred directory is absent,
+owned by another user, or group/other accessible, it fails back to the home
+namespace. Keep explicit overrides for isolated tests and reviewed migrations.
 
 ```bash
 # Auto-save/restore cookies and localStorage across browser restarts

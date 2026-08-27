@@ -6291,6 +6291,20 @@ async fn handle_external_byop_adopt(cmd: &Value, state: &mut DaemonState) -> Res
     if cdp_url.is_some() == cdp_port.is_some() {
         return Err("external_byop_adopt requires exactly one of cdpUrl or cdpPort".to_string());
     }
+    let browser_pid = match cmd.get("browserPid").and_then(Value::as_u64) {
+        Some(pid) => {
+            let pid = u32::try_from(pid).map_err(|_| {
+                "external_byop_adopt browserPid must be a live positive process id".to_string()
+            })?;
+            if pid == 0 || !pid_is_running(pid) {
+                return Err(
+                    "external_byop_adopt browserPid must be a live positive process id".to_string(),
+                );
+            }
+            Some(pid)
+        }
+        None => None,
+    };
 
     let repository = LockedServiceStateRepository::default_json()?;
     let service_state = repository.load_snapshot()?;
@@ -6329,6 +6343,8 @@ async fn handle_external_byop_adopt(cmd: &Value, state: &mut DaemonState) -> Res
     } else {
         BrowserManager::connect_cdp(&cdp_port.unwrap().to_string()).await?
     };
+    state.attached_runtime_profile = Some(profile_id.clone());
+    state.attached_browser_pid = browser_pid;
     state.browser = Some(mgr);
     state.subscribe_to_browser_events();
     state.start_fetch_handler();
@@ -6395,6 +6411,7 @@ async fn handle_external_byop_adopt(cmd: &Value, state: &mut DaemonState) -> Res
         "profileId": profile_id,
         "profileOrigin": "external_byop",
         "browserHost": ServiceBrowserHost::AttachedExisting,
+        "browserPid": browser_pid,
         "targetId": target_id,
         "url": url,
         "title": title,
@@ -14325,7 +14342,7 @@ fn remote_view_open_ensure_managed_one_time_profile(
     intent: &mut super::remote_view::RemoteViewOpenIntent,
     dry_run: bool,
 ) -> Result<Value, String> {
-    if intent.runtime_profile.is_some() || intent.profile.is_some() {
+    if intent.profile.is_some() {
         return Ok(Value::Null);
     }
     if !remote_view_open_looks_like_one_time_operator_handoff(intent) {
@@ -14333,7 +14350,11 @@ fn remote_view_open_ensure_managed_one_time_profile(
     }
 
     let profile_id = remote_view_open_managed_one_time_profile_id(intent);
-    intent.runtime_profile = Some(profile_id.clone());
+    match intent.runtime_profile.as_deref() {
+        Some(runtime_profile) if runtime_profile != profile_id => return Ok(Value::Null),
+        Some(_) => {}
+        None => intent.runtime_profile = Some(profile_id.clone()),
+    }
 
     if let Some(profile) = service_state.profiles.get(&profile_id) {
         return Ok(json!({
@@ -14456,6 +14477,9 @@ fn remote_view_open_one_time_profile_warning(
         return Value::Null;
     }
     let recommended_profile_id = remote_view_open_managed_one_time_profile_id(intent);
+    if runtime_profile == recommended_profile_id {
+        return Value::Null;
+    }
     json!({
         "state": "warning",
         "code": "arbitrary_runtime_profile_for_one_time_handoff",
@@ -25608,6 +25632,53 @@ mod tests {
         assert_eq!(managed["profileId"], profile_id);
         assert_eq!(intent.runtime_profile.as_deref(), Some(profile_id.as_str()));
         assert_eq!(service_state.profiles.len(), 1);
+    }
+
+    #[test]
+    fn test_remote_view_open_registers_exact_recommended_managed_one_time_profile() {
+        let repository = LockedServiceStateRepository::default_json().expect("repository");
+        let mut intent = crate::native::remote_view::RemoteViewOpenIntent {
+            url: Some("https://direct.sos.state.tx.us/acct/acct-templogin.asp".to_string()),
+            runtime_profile: None,
+            profile: None,
+            browser_id: None,
+            session_name: None,
+            service_name: Some("sosdirect".to_string()),
+            agent_name: Some("codex".to_string()),
+            task_name: Some("temporary-login-payment".to_string()),
+            browser_build: Some("stock_chrome".to_string()),
+            browser_host: "remote_headed".to_string(),
+            view_stream_provider: ViewStreamProvider::RdpGateway,
+            control_input: "manual_attached_desktop".to_string(),
+            route_pool_entry_id: None,
+            route_id: None,
+            display_allocation_id: None,
+            remote_headed_display: None,
+            display_isolation: Some("private_virtual_display".to_string()),
+            manual_login_launch: false,
+            dry_run: true,
+        };
+        let recommended_profile_id = remote_view_open_managed_one_time_profile_id(&intent);
+        intent.runtime_profile = Some(recommended_profile_id.clone());
+        let mut service_state = ServiceState::default();
+
+        let managed = remote_view_open_ensure_managed_one_time_profile(
+            &repository,
+            &mut service_state,
+            &mut intent,
+            true,
+        )
+        .expect("exact recommended managed one-time profile");
+        let warning = remote_view_open_one_time_profile_warning(&intent, &service_state);
+
+        assert_eq!(managed["state"], "planned");
+        assert_eq!(managed["profileId"], recommended_profile_id);
+        assert_eq!(managed["profileClass"], "managed_one_time");
+        assert_eq!(
+            service_state.profiles[&recommended_profile_id].profile_class,
+            ProfileClass::ManagedOneTime
+        );
+        assert!(warning.is_null());
     }
 
     #[test]

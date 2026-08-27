@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { resolveRuntimeSocketDir } from './lib/runtime-socket-dir.js';
 
 const rootDir = new URL('..', import.meta.url).pathname;
 const args = process.argv.slice(2);
@@ -170,19 +171,11 @@ function runtimeReadback() {
 }
 
 function runtimePidPath() {
-  const socketDir = process.env.AGENT_BROWSER_SOCKET_DIR
-    || (process.env.XDG_RUNTIME_DIR
-      ? join(process.env.XDG_RUNTIME_DIR, 'agent-browser')
-      : join(process.env.HOME, '.agent-browser'));
-  return join(socketDir, `${sessionName}.pid`);
+  return join(resolveRuntimeSocketDir(), `${sessionName}.pid`);
 }
 
 function runtimeStreamPath() {
-  const socketDir = process.env.AGENT_BROWSER_SOCKET_DIR
-    || (process.env.XDG_RUNTIME_DIR
-      ? join(process.env.XDG_RUNTIME_DIR, 'agent-browser')
-      : join(process.env.HOME, '.agent-browser'));
-  return join(socketDir, `${sessionName}.stream`);
+  return join(resolveRuntimeSocketDir(), `${sessionName}.stream`);
 }
 
 function runAgent(commandArgs) {

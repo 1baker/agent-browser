@@ -175,6 +175,11 @@ assert.match(
   /!\['closed', 'not_started'\]\.includes\(browser\.health\)[\s\S]*alreadyResumed: true[\s\S]*function discoverPreparedRuntimeHandoffs[\s\S]*\.handoff\.json[\s\S]*descriptor\.schemaVersion \?\? descriptor\.schema_version/,
   'production recovery must discover exact handoff descriptors and reconcile already-resumed sessions',
 );
+assert.match(
+  publisher,
+  /serviceBrowserForSession\([\s\S]*prepared\.sessionName,[\s\S]*prepared,[\s\S]*expectedBrowser\.browserPid[\s\S]*browser\?\.pid == null[\s\S]*browser\?\.pid === expectedBrowser\.browserPid[\s\S]*expectedBrowser\.cdpUrl[\s\S]*browser\?\.cdpEndpoint === expectedBrowser\.cdpUrl/,
+  'handoff recovery must recognize an externally adopted browser by exact PID and CDP identity when its stable browser id differs from the daemon session',
+);
 assert.equal(
   packageJson.scripts['test:local-dashboard-smoke-policy'],
   'node scripts/test-local-dashboard-smoke-policy.js',

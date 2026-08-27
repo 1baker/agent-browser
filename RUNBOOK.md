@@ -4,6 +4,47 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 180 | 2026-08-27
+
+Scope: repair split daemon namespaces and deterministic managed one-time profile
+admission without disturbing retained browsers.
+
+Actions:
+
+- Added secure Linux runtime-directory inference shared by the Rust CLI,
+  convergence, dashboard publication, retained-browser verification, and
+  executable-handoff smoke discovery.
+- Preserved explicit socket and XDG overrides and rejected unsafe inferred
+  runtime directories before the existing home fallback.
+- Registered only the exact deterministic managed one-time profile recommended
+  by remote-view acquisition while retaining arbitrary-profile warnings.
+- Updated README, sessions docs, and repository plus installed skill guidance.
+
+Validation:
+
+- focused Rust connection, remote-view, close, and CDP stream tests
+- local convergence and dashboard publication fixture suites
+- route-confusion gates, release verifier fixture, lint, docs build, strict
+  Clippy, optimized build, CodeGraph sync, direct plan audit, and diff hygiene
+
+Result:
+
+- Source validation passes. Guarded publication found three legacy migration
+  defects and rolled back safely each time: unbounded old-daemon shutdown,
+  deleted proc-executable reuse, and broker ownership hidden behind a
+  differently named bridge service record. Each now has a source fix and
+  focused regression.
+- Guarded publication and explicit recovery reached terminal
+  `recovered_ready`. The source-free workstation payload is installed, compact
+  install and remote-view doctors report zero issues, remote control and
+  many-to-many readiness are ready, and runtime convergence reports five
+  runtimes with zero stale entries.
+- Installed and live dashboard executable SHA is
+  `96e141a23e3da440d7757e0ff994e6eca0caf672f8b22df3a23c42cd675b4c42`.
+  AuraCall, NYSE, both retained route viewers, and the default browser preserved
+  their PIDs; exact retained CDP and target checks pass. No ChatGPT prompt or
+  page interaction was sent.
+
 ## Turn 179 | 2026-08-24
 
 Scope: add bounded doctor JSON for agent consumption without weakening the

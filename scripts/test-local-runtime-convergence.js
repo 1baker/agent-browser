@@ -191,14 +191,14 @@ assert.match(
 
 assert.match(
   publisher,
-  /const daemonClientBin = runtimeDaemonClientBinary\(daemonPid, rollbackBin\)[\s\S]*serviceBrowserForSession\(daemonClientBin[\s\S]*runAgentJson\(daemonClientBin, sessionName, \['close'\]\)/,
-  'publisher inventory and idle retirement must use the running daemon executable without triggering hash replacement',
+  /const daemonClientBin = runtimeDaemonClientBinary\(daemonPid, rollbackBin\)[\s\S]*runAgentJson\(clientBin, sessionName, \['handoff', 'prepare'\]\)[\s\S]*serviceBrowserForSession\(daemonClientBin[\s\S]*runAgentJson\(daemonClientBin, sessionName, \['close'\]\)/,
+  'publisher must try authenticated handoff before service-record-based compatibility close',
 );
 
 assert.match(
   publisher,
-  /function runtimeDaemonClientBinary\(daemonPid, fallbackBin\)[\s\S]*`\/proc\/\$\{daemonPid\}\/exe`/,
-  'Linux publisher preflight must resolve the running daemon executable through procfs',
+  /resolveRuntimeDaemonClientBinary as runtimeDaemonClientBinary/,
+  'Linux publisher preflight must use the shared deleted-inode-safe daemon client resolver',
 );
 
 assert.match(

@@ -1,7 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { resolveRuntimeSocketDir } from './runtime-socket-dir.js';
+import {
+  resolveRuntimeDaemonClientBinary as runtimeDaemonClientBinary,
+} from './runtime-daemon-client-binary.js';
 
 import {
   discoverRetainedBrowserExpectation,
@@ -95,13 +98,7 @@ export async function discoverVerifyAndPinRetainedBrowser({
 }
 
 export function runtimeSocketDir() {
-  if (process.env.AGENT_BROWSER_SOCKET_DIR) {
-    return resolve(process.env.AGENT_BROWSER_SOCKET_DIR);
-  }
-  if (process.env.XDG_RUNTIME_DIR) {
-    return resolve(process.env.XDG_RUNTIME_DIR, 'agent-browser');
-  }
-  return resolve(homedir(), '.agent-browser');
+  return resolveRuntimeSocketDir();
 }
 
 function runtimeSessionNames(socketDir) {
@@ -134,14 +131,6 @@ function isProcessLive(pid) {
   } catch {
     return false;
   }
-}
-
-function runtimeDaemonClientBinary(daemonPid, fallbackBin) {
-  if (process.platform === 'linux' && Number.isInteger(daemonPid) && daemonPid > 0) {
-    const procExecutable = `/proc/${daemonPid}/exe`;
-    if (existsSync(procExecutable)) return procExecutable;
-  }
-  return fallbackBin;
 }
 
 function serviceBrowserForSession(binary, sessionName) {

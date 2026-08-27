@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { resolveRuntimeSocketDir } from './lib/runtime-socket-dir.js';
 
 const args = process.argv.slice(2);
 const options = {
@@ -430,10 +431,7 @@ function sleep(ms) {
 }
 
 function staleSessionMetadataNames({ minimumAgeMs = 60_000 } = {}) {
-  const socketDir = process.env.AGENT_BROWSER_SOCKET_DIR ||
-    (process.env.XDG_RUNTIME_DIR
-      ? join(process.env.XDG_RUNTIME_DIR, 'agent-browser')
-      : join(homedir(), '.agent-browser'));
+  const socketDir = resolveRuntimeSocketDir();
   if (!existsSync(socketDir)) return [];
   const observedAt = Date.now();
 

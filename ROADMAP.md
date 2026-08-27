@@ -6,6 +6,30 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P124 | Canonical Runtime Socket And Lifecycle Repair
+
+State: CLOSED
+
+P124 aligns interactive, noninteractive, and user-service clients on one secure
+Linux daemon namespace. It preserves explicit socket overrides, infers only a
+private current-user `/run/user/<uid>` directory, keeps the home namespace as a
+safe fallback, and removes the false unknown-profile warning for the exact
+managed one-time identity recommended by remote-view acquisition.
+
+Source regressions, focused lifecycle checks, route-confusion gates, docs build,
+lint, strict Clippy, and CodeGraph synchronization pass. Guarded live attempts
+rolled back safely and exposed legacy shutdown, deleted-inode, and bridge-record
+ownership migration gaps; source fixes and regressions now cover all three.
+Guarded publication, explicit recovery, source-free payload installation, and
+final no-launch doctors now pass. Exact retained browser PIDs, CDP endpoints,
+targets, profiles, and URLs survived the handoff. The installed and live
+dashboard executable SHA is
+`96e141a23e3da440d7757e0ff994e6eca0caf672f8b22df3a23c42cd675b4c42`.
+
+Evidence:
+
+- `docs/dev/plans/0124-2026-08-27-canonical-runtime-socket-and-lifecycle-repair-plan.md`
+
 ## P123 | Compact Doctor JSON
 
 State: CLOSED

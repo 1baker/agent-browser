@@ -5047,6 +5047,13 @@ Operations:
 
 Environment:
   AGENT_BROWSER_SESSION    Default session name
+  AGENT_BROWSER_SOCKET_DIR Explicit daemon socket directory
+  XDG_RUNTIME_DIR          Linux user runtime root for daemon sockets
+
+On Linux, when neither socket variable is set, agent-browser securely infers
+the current user's private /run/user/<uid>/agent-browser directory before the
+home fallback. This keeps noninteractive clients and user services in the same
+daemon namespace.
 
 Global Options:
   --json               Output as JSON

@@ -692,6 +692,14 @@ Each session has its own:
 - Navigation history
 - Authentication state
 
+On Linux, session clients and user services share the same daemon namespace.
+`AGENT_BROWSER_SOCKET_DIR` remains the explicit override, followed by
+`XDG_RUNTIME_DIR`. When a noninteractive shell does not export either value,
+agent-browser securely infers the current user's private
+`/run/user/<uid>/agent-browser` directory before using the home fallback. This
+lets commands reacquire service-owned sessions instead of starting duplicate
+daemons in `~/.agent-browser`.
+
 ## Configured Runtime Profiles
 
 The config file can now define managed runtime profiles directly. This is the

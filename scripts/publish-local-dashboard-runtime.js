@@ -42,6 +42,11 @@ import {
   resolveRetainedBrowserExpectation,
   writeRetainedBrowserRequirement,
 } from './lib/local-dashboard-retained-browser-requirement.js';
+import { resolveRuntimeSocketDir } from './lib/runtime-socket-dir.js';
+import { retirePreparedDaemon } from './lib/prepared-daemon-retirement.js';
+import {
+  resolveRuntimeDaemonClientBinary as runtimeDaemonClientBinary,
+} from './lib/runtime-daemon-client-binary.js';
 
 const rootDir = new URL('..', import.meta.url).pathname;
 const args = process.argv.slice(2);
@@ -484,9 +489,7 @@ function installBinaryAtomically(source, target, mode) {
 }
 
 function runtimeSocketDir() {
-  if (process.env.AGENT_BROWSER_SOCKET_DIR) return resolve(process.env.AGENT_BROWSER_SOCKET_DIR);
-  if (process.env.XDG_RUNTIME_DIR) return resolve(process.env.XDG_RUNTIME_DIR, 'agent-browser');
-  return resolve(homedir(), '.agent-browser');
+  return resolveRuntimeSocketDir();
 }
 
 function runtimeSessionNames() {
@@ -505,6 +508,33 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin) {
     for (const sessionName of runtimeSessionNames()) {
       const daemonPid = readRuntimePid(sessionName);
       const daemonClientBin = runtimeDaemonClientBinary(daemonPid, rollbackBin);
+      const prepared = runAgentJson(clientBin, sessionName, ['handoff', 'prepare']);
+      if (prepared.status === 0 && prepared.json?.success === true) {
+        const data = prepared.json.data || {};
+        if (data.prepared === true) {
+          const preparedHandoff = {
+            sessionName,
+            daemonPid,
+            browserPid: data.browserPid ?? null,
+            cdpUrl: data.cdpUrl ?? null,
+            runtimeProfile: data.runtimeProfile ?? null,
+            handoffPath: data.handoffPath ?? null,
+            strandedDaemonTermination: null,
+          };
+          report.handoffs.prepared.push(preparedHandoff);
+          try {
+            waitForDaemonExit(sessionName, daemonPid);
+          } catch {
+            preparedHandoff.strandedDaemonTermination =
+              retirePreparedDaemon(preparedHandoff);
+          }
+        } else {
+          report.handoffs.retiredIdleSessions.push({ sessionName, daemonPid });
+          waitForDaemonExit(sessionName, daemonPid);
+        }
+        continue;
+      }
+
       const serviceReadback = serviceBrowserForSession(daemonClientBin, sessionName);
       if (!serviceReadback.success) {
         throw new Error(
@@ -538,25 +568,6 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin) {
         continue;
       }
 
-      const prepared = runAgentJson(clientBin, sessionName, ['handoff', 'prepare']);
-      if (prepared.status === 0 && prepared.json?.success === true) {
-        const data = prepared.json.data || {};
-        if (data.prepared === true) {
-          report.handoffs.prepared.push({
-            sessionName,
-            daemonPid,
-            browserPid: data.browserPid ?? null,
-            cdpUrl: data.cdpUrl ?? null,
-            runtimeProfile: data.runtimeProfile ?? null,
-            handoffPath: data.handoffPath ?? null,
-          });
-        } else {
-          report.handoffs.retiredIdleSessions.push({ sessionName, daemonPid });
-        }
-        waitForDaemonExit(sessionName, daemonPid);
-        continue;
-      }
-
       report.handoffs.unsupportedActiveSessions.push({
         sessionName,
         daemonPid,
@@ -584,11 +595,16 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin) {
 
 function resumeRuntimeHandoffs(installBin) {
   for (const prepared of report.handoffs.prepared) {
-    const existing = serviceBrowserForSession(installBin, prepared.sessionName);
+    const existing = serviceBrowserForSession(
+      installBin,
+      prepared.sessionName,
+      prepared,
+    );
     if (existing.success && existing.browser) {
       const browser = existing.browser;
       if (
         prepared.browserPid !== null
+        && browser.pid !== null
         && browser.pid !== prepared.browserPid
       ) {
         throw new Error(
@@ -605,13 +621,13 @@ function resumeRuntimeHandoffs(installBin) {
       if (
         !['closed', 'not_started'].includes(browser.health)
         && (
-          browserProcessIsLive(browser.pid)
+          browserProcessIsLive(browser.pid ?? prepared.browserPid)
           || (typeof browser.cdpEndpoint === 'string' && browser.cdpEndpoint.length > 0)
         )
       ) {
         report.handoffs.resumed.push({
           sessionName: prepared.sessionName,
-          browserPid: browser.pid ?? null,
+          browserPid: browser.pid ?? prepared.browserPid ?? null,
           cdpUrl: browser.cdpEndpoint ?? null,
           runtimeProfile: browser.profileId ?? prepared.runtimeProfile ?? null,
           targetsReattached: Array.isArray(browser.tabHandles)
@@ -695,14 +711,6 @@ function discoverPreparedRuntimeHandoffs(candidateSessions) {
   return handoffs;
 }
 
-function runtimeDaemonClientBinary(daemonPid, fallbackBin) {
-  if (process.platform === 'linux' && Number.isInteger(daemonPid) && daemonPid > 0) {
-    const procExecutable = `/proc/${daemonPid}/exe`;
-    if (existsSync(procExecutable)) return procExecutable;
-  }
-  return fallbackBin;
-}
-
 function runAgentJson(binary, sessionName, commandArgs) {
   const result = spawnSync(binary, ['--json', '--session', sessionName, ...commandArgs], {
     cwd: rootDir,
@@ -725,13 +733,30 @@ function runAgentJson(binary, sessionName, commandArgs) {
   };
 }
 
-function serviceBrowserForSession(binary, sessionName) {
+function serviceBrowserForSession(binary, sessionName, expectedBrowser = null) {
   const result = runAgentJson(binary, sessionName, ['service', 'browsers']);
   const browsers = result.json?.data?.browsers || [];
+  const sessionBrowser = browsers.find(
+    (browser) => browser?.id === `session:${sessionName}`,
+  ) || null;
+  const exactIdentityBrowsers = expectedBrowser
+    ? browsers.filter((browser) =>
+      (
+        expectedBrowser.browserPid == null
+        || browser?.pid == null
+        || browser?.pid === expectedBrowser.browserPid
+      )
+      && (!expectedBrowser.cdpUrl || browser?.cdpEndpoint === expectedBrowser.cdpUrl))
+    : [];
+  const browser = sessionBrowser || (
+    exactIdentityBrowsers.length === 1 ? exactIdentityBrowsers[0] : null
+  );
   return {
     success: result.status === 0 && result.json?.success === true,
-    browser: browsers.find((browser) => browser?.id === `session:${sessionName}`) || null,
-    error: result.error,
+    browser,
+    error: exactIdentityBrowsers.length > 1
+      ? `Multiple service browsers match the prepared PID/CDP identity for '${sessionName}'`
+      : result.error,
   };
 }
 
