@@ -17,6 +17,7 @@ import {
 import { ensureStreamPort } from './smoke-remote-headed-utils.js';
 import {
   createDisposableSmokeProfile,
+  findLatestInstalledSmokeBrowser,
   isWslWindowsBrowserExecutable,
   selectSmokeBrowserExecutable,
 } from './lib/smoke-browser-fixture.js';
@@ -25,9 +26,9 @@ const context = createSmokeContext({
   prefix: 'ab-cdp-tab-stream-',
   sessionPrefix: 'cdp-tab-stream',
 });
-context.env.AGENT_BROWSER_ARGS = '--no-sandbox';
 const browserExecutable = selectSmokeBrowserExecutable({
   configuredExecutable: context.env.AGENT_BROWSER_EXECUTABLE_PATH,
+  fallbackExecutable: findLatestInstalledSmokeBrowser(),
 });
 if (browserExecutable) {
   context.env.AGENT_BROWSER_EXECUTABLE_PATH = browserExecutable;

@@ -2466,6 +2466,19 @@ fn apply_explicit_launch_identity_from_command(options: &mut LaunchOptions, comm
     }
 }
 
+fn explicit_launch_args_from_command(command: &Value) -> Option<Vec<String>> {
+    let args = command_or_params_value(command, "args")?;
+    Some(
+        args.as_array()
+            .map(|args| {
+                args.iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
+}
+
 fn apply_auto_launch_command_hints(
     options: &mut LaunchOptions,
     command: &Value,
@@ -2478,6 +2491,9 @@ fn apply_auto_launch_command_hints(
 ) {
     let effective_command = launch_command_with_effective_service_defaults(command, options);
     apply_explicit_launch_identity_from_command(options, &effective_command);
+    if let Some(args) = explicit_launch_args_from_command(&effective_command) {
+        options.args = args;
+    }
     apply_retained_remote_headed_launch_hints(options, retained_remote_headed);
     let service_host = apply_launch_host_hints(options, &effective_command);
     let selection_reason = apply_service_profile_selection(options, &effective_command);
@@ -26834,6 +26850,34 @@ mod tests {
             Some("http://agent-browser.localhost/guacamole/")
         );
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_apply_auto_launch_command_hints_uses_only_explicit_request_args() {
+        let command = json!({
+            "action": "navigate",
+            "params": {
+                "args": ["--no-sandbox"]
+            }
+        });
+        let mut options = LaunchOptions {
+            args: vec!["--ambient-sentinel".to_string()],
+            ..LaunchOptions::default()
+        };
+
+        apply_auto_launch_command_hints(&mut options, &command, None);
+
+        assert_eq!(options.args, vec!["--no-sandbox".to_string()]);
+
+        let command = json!({
+            "action": "navigate",
+            "args": []
+        });
+        options.args = vec!["--ambient-sentinel".to_string()];
+
+        apply_auto_launch_command_hints(&mut options, &command, None);
+
+        assert!(options.args.is_empty());
     }
 
     #[test]

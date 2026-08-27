@@ -1,5 +1,29 @@
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+
+export function findLatestInstalledSmokeBrowser({
+  homeDir = process.env.HOME,
+  exists = existsSync,
+  readDir = readdirSync,
+} = {}) {
+  if (!homeDir) return null;
+  const browsersRoot = join(homeDir, '.agent-browser', 'browsers');
+  let entries;
+  try {
+    entries = readDir(browsersRoot, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const versions = entries
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('chrome-'))
+    .map((entry) => entry.name)
+    .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
+  for (const version of versions) {
+    const executable = join(browsersRoot, version, 'chrome');
+    if (exists(executable)) return executable;
+  }
+  return null;
+}
 
 export function selectSmokeBrowserExecutable({
   configuredExecutable,

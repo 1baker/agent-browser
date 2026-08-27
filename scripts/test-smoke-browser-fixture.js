@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   createDisposableSmokeProfile,
+  findLatestInstalledSmokeBrowser,
   isWslWindowsBrowserExecutable,
   resolveDashboardSmokeBrowserCapability,
   resolveWslWindowsProfileRoot,
@@ -19,6 +20,18 @@ const windowsRoot = mkdtempSync(join(root, 'windows-'));
 const dashboardSmoke = readFileSync('scripts/smoke-local-dashboard-runtime.js', 'utf8');
 
 try {
+  const installedBrowserRoot = join(root, 'installed-home', '.agent-browser', 'browsers');
+  for (const version of ['chrome-152.0.7977.9', 'chrome-152.0.7977.64']) {
+    const versionRoot = join(installedBrowserRoot, version);
+    mkdirSync(versionRoot, { recursive: true });
+    writeFileSync(join(versionRoot, 'chrome'), 'fixture');
+  }
+  assert.equal(
+    findLatestInstalledSmokeBrowser({ homeDir: join(root, 'installed-home') }),
+    join(installedBrowserRoot, 'chrome-152.0.7977.64', 'chrome'),
+    'installed smoke browser selection should use numeric version order',
+  );
+
   const selected = selectSmokeBrowserExecutable({
     configuredExecutable: '/mnt/c/Users/Baker/AppData/Local/chromium/chrome.exe',
     fallbackExecutable: '/usr/bin/google-chrome',
