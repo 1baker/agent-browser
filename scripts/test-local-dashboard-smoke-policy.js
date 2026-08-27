@@ -177,8 +177,8 @@ assert.match(
 );
 assert.match(
   publisher,
-  /serviceBrowserForSession\([\s\S]*prepared\.sessionName,[\s\S]*prepared,[\s\S]*expectedBrowser\.browserPid[\s\S]*browser\?\.pid == null[\s\S]*browser\?\.pid === expectedBrowser\.browserPid[\s\S]*expectedBrowser\.cdpUrl[\s\S]*browser\?\.cdpEndpoint === expectedBrowser\.cdpUrl/,
-  'handoff recovery must recognize an externally adopted browser by exact PID and CDP identity when its stable browser id differs from the daemon session',
+  /runtime-handoff-browser-selection\.js[\s\S]*isRuntimeHandoffBrowserActive\(\{[\s\S]*expectedBrowser: prepared[\s\S]*removeVerifiedRuntimeHandoffRecord\(prepared\)[\s\S]*const selection = selectRuntimeHandoffBrowser\(\{/,
+  'handoff recovery must use the behaviorally tested identity, liveness, and retry cleanup helpers',
 );
 assert.equal(
   packageJson.scripts['test:local-dashboard-smoke-policy'],

@@ -6,6 +6,21 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P125 | Runtime Handoff Browser Identity Regression
+
+State: CLOSED
+
+P125 replaces source-pattern-only handoff recovery coverage with behavioral
+identity, liveness, ambiguity, and retry-record cleanup fixtures. Publication
+and retained-browser preparation share one browser selector, and a known stale
+PID can no longer pass recovery from a leftover CDP endpoint string.
+Focused and widened no-launch fixtures, lint, release verification, CodeGraph
+synchronization, validation selection, and diff hygiene pass.
+
+Evidence:
+
+- `docs/dev/plans/0125-2026-08-27-runtime-handoff-browser-identity-regression-plan.md`
+
 ## P124 | Canonical Runtime Socket And Lifecycle Repair
 
 State: CLOSED

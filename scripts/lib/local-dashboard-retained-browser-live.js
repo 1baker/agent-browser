@@ -5,6 +5,7 @@ import { resolveRuntimeSocketDir } from './runtime-socket-dir.js';
 import {
   resolveRuntimeDaemonClientBinary as runtimeDaemonClientBinary,
 } from './runtime-daemon-client-binary.js';
+import { selectRuntimeHandoffBrowser } from './runtime-handoff-browser-selection.js';
 
 import {
   discoverRetainedBrowserExpectation,
@@ -153,9 +154,10 @@ function serviceBrowserForSession(binary, sessionName) {
     // The bounded failure below intentionally excludes raw browser output.
   }
   const browsers = payload?.data?.browsers || [];
+  const selection = selectRuntimeHandoffBrowser({ browsers, sessionName });
   return {
-    success: result.status === 0 && payload?.success === true,
-    browser: browsers.find((browser) => browser?.id === `session:${sessionName}`) || null,
+    success: result.status === 0 && payload?.success === true && selection.error === null,
+    browser: selection.browser,
   };
 }
 

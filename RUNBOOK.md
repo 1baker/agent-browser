@@ -4,6 +4,38 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 181 | 2026-08-27
+
+Scope: replace static runtime-handoff alias coverage with behavioral recovery
+identity, liveness, and retry-record cleanup tests.
+
+Actions:
+
+- Extracted one fail-closed runtime handoff browser selector shared by guarded
+  publication and retained-browser preparation.
+- Made a known prepared browser PID authoritative over leftover CDP service
+  text and retained the exact live-PID bridge-alias recovery case.
+- Added exact, idempotent durable retry-record cleanup that preserves changed
+  records for investigation.
+
+Validation:
+
+- runtime handoff selection and local convergence fixtures
+- retained-browser live, discovery, and guard fixtures
+- publisher smoke policy, lifecycle, orchestration, journal, and operation
+  fixtures
+- route-confusion gates, lint, release-asset verification, CodeGraph sync,
+  validation selection, and diff hygiene
+
+Result:
+
+- Exact session and bridge-alias recovery behavior now has executable coverage.
+  Known stale PIDs, identity mismatches, and ambiguous matches fail closed.
+- Exact retry records are removed idempotently after already-resumed proof;
+  changed records remain available for investigation.
+- No browser or installed runtime was mutated. An unrelated `cli/src/mcp.rs`
+  edit that appeared during the turn remains untouched and outside this slice.
+
 ## Turn 180 | 2026-08-27
 
 Scope: repair split daemon namespaces and deterministic managed one-time profile

@@ -69,7 +69,7 @@
     "test:dashboard-workspace-nodes": "node --no-warnings --experimental-strip-types scripts/test-dashboard-workspace-nodes.js",
     "test:dashboard-task-authorities": "node --no-warnings --experimental-strip-types scripts/test-dashboard-task-authorities.js",
     "test:dashboard-workspace-navigator": "node scripts/test-dashboard-workspace-navigator.js",
-    "test:local-runtime-convergence": "node scripts/test-runtime-socket-dir.js && node scripts/test-runtime-daemon-client-binary.js && node scripts/test-prepared-daemon-retirement.js && node scripts/test-local-runtime-convergence.js && node scripts/test-local-runtime-convergence-fixture.js",
+    "test:local-runtime-convergence": "node scripts/test-runtime-socket-dir.js && node scripts/test-runtime-daemon-client-binary.js && node scripts/test-prepared-daemon-retirement.js && node scripts/test-runtime-handoff-browser-selection.js && node scripts/test-local-runtime-convergence.js && node scripts/test-local-runtime-convergence-fixture.js",
     "test:runtime-executable-handoff-live": "node scripts/smoke-runtime-executable-handoff.js",
     "test:route-handoff-audit": "node scripts/test-route-handoff-audit.js",
     "test:rdp-route-xsession": "node scripts/test-rdp-route-xsession.js",
