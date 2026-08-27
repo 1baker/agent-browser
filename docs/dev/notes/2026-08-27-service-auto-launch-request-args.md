@@ -29,6 +29,11 @@ argument inheritance across the service-owned launch boundary.
   partitions with 1,941 current tests and the configured ignored tests left
   ignored.
 - CodeGraph was synchronized with no pending files.
+- The local-dashboard smoke now captures up to 16 MiB from the installed
+  `service status` capability probe. This prevents Node's default synchronous
+  output limit from failing with `ENOBUFS` as live service state grows.
+- The focused smoke fixture and the live installed-runtime dashboard smoke both
+  passed after that bounded-buffer regression fix.
 
 ## Review and runtime evidence
 
@@ -57,15 +62,29 @@ preserved; no requirement file or browser state was replaced.
 These reconciliations were read-only. No ChatGPT prompt was sent, and neither
 the Workshop nor NYSE page was navigated during the checks.
 
-After those checks, initiating Pro guard
-`agent-browser-wsl-sandbox-20260827-r2` submitted exactly once to the retained
-Workshop conversation as response
-`resp_c691988b11a247f99bfc1578b0204511`. The broker sent the prompt and then
-reported `Remote Chrome connection lost before Aura-Call finished` before a
-verdict was durably captured. The guard prompt did not contain a recovery nonce,
-so no later rendered response can be proven to belong uniquely to this run.
-The request was not retried, the reviewing Pro pass was not started, and runtime
-publication remains blocked on a fresh, duplicate-safe review opportunity.
+After the failed r2 attempt, the local Pro guard was hardened with a unique
+per-run nonce, an immutable payload fingerprint, exclusive durable intent and
+state creation before submission, fail-closed ambiguous-submit handling, exact
+response metadata and canonical-URL validation, and assistant-message-only
+verdict parsing. Its 12 focused tests passed.
+
+The initiating guard `agent-browser-wsl-sandbox-20260827-r3` then completed on
+the exact retained Workshop conversation as response
+`resp_70b00a098f9d4c7abf963dcb04cb6964`, scoring 98 with high confidence and no
+findings. Only after that completion, the reviewing guard
+`agent-browser-wsl-sandbox-20260827-r4` completed on the same conversation as
+response `resp_437a8c8e56744eacb777ef741cdccf25`, scoring 99 with high confidence
+and no findings.
+
+Local-dashboard publication initially failed after executable handoff because
+the retained daemon was absent even though its Chrome process and exact target
+remained alive. The installed runtime reattached to that existing browser
+without launching or navigating it. Recovery then reached terminal phase
+`recovered_ready`, verified replacement executable SHA-256
+`a118001b1bbce585f5a367250f9d9218ebf18f06d93109eda2eb4c11e4bbff72`, and
+verified the retained-browser requirement during final recovery readiness. The
+exact NYSE target `EC562DE50CD4C7CC9438665FCD7422BB` remained at its required
+registration URL, and the post-fix installed-runtime dashboard smoke passed.
 
 ## Delegation receipt
 

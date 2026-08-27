@@ -170,6 +170,7 @@ function resolveBrowserCapability() {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 30000,
+    maxBuffer: 16 * 1024 * 1024,
   });
   if (status.error || status.status !== 0) {
     throw new Error(`Could not read agent-browser launch capability: ${status.error?.message || status.stderr || `status ${status.status}`}`);

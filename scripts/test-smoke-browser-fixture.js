@@ -151,6 +151,11 @@ try {
   );
   assert.match(
     dashboardSmoke,
+    /service', 'status'[\s\S]*maxBuffer: 16 \* 1024 \* 1024/,
+    'dashboard smoke must capture rich service status without ENOBUFS',
+  );
+  assert.match(
+    dashboardSmoke,
     /rmSync\(capability\.profilePath/,
     'dashboard smoke must remove its disposable profile',
   );
