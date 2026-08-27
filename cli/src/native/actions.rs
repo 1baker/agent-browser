@@ -2615,7 +2615,9 @@ fn active_browser_profile_mismatch(command: &Value, state: &DaemonState) -> Opti
     active_browser_profile_mismatch_message(
         optional_command_string(command, "runtimeProfile").as_deref(),
         optional_command_string(command, "profile").as_deref(),
-        browser.runtime_profile_name(),
+        browser
+            .runtime_profile_name()
+            .or(state.attached_runtime_profile.as_deref()),
         browser.browser_user_data_dir(),
         &state.session_id,
     )
@@ -5971,6 +5973,14 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
             state.update_stream_client().await;
         }
     } else {
+        if runtime_attach_managed {
+            state.attached_runtime_profile = launch_options.runtime_profile.clone();
+            state.attached_browser_pid =
+                runtime_profile_pid(launch_options.runtime_profile.as_deref())
+                    .or_else(|| state.browser.as_ref().and_then(BrowserManager::browser_pid));
+            state.close_behavior =
+                close_behavior_for_attached_browser(runtime_attach_managed, leave_open);
+        }
         persist_current_browser_health(
             state,
             service_host,
