@@ -353,24 +353,6 @@ function decodeHtml(value) {
     .replace(/&#x([0-9a-f]+);/gi, (_match, code) => String.fromCodePoint(Number.parseInt(code, 16)));
 }
 
-async function readBrowserField(field, deadlineAt) {
-  try {
-    const timeoutMs = remainingTime(deadlineAt, 5000);
-    const response = parseJsonOutput(
-      (await runCli(context, [
-        '--json',
-        '--session', context.session,
-        '--job-timeout-ms', String(Math.max(1, timeoutMs - 250)),
-        'get', field,
-      ], timeoutMs)).stdout,
-      `browser ${field} fallback`,
-    );
-    return response.data?.[field] || '';
-  } catch {
-    return '';
-  }
-}
-
 function remainingTime(deadlineAt, capMs) {
   return Math.max(1, Math.min(capMs, deadlineAt - Date.now()));
 }

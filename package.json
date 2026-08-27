@@ -12,6 +12,7 @@
     "agent-browser": "./bin/agent-browser.js"
   },
   "scripts": {
+    "lint": "eslint eslint.config.js \"scripts/**/*.js\"",
     "version:sync": "node scripts/sync-version.js",
     "version": "npm run version:sync && git add cli/Cargo.toml",
     "validation:select": "node scripts/dev/select-validation.js",
@@ -214,5 +215,9 @@
     "url": "https://github.com/CochranResearchGroup/agent-browser/issues"
   },
   "homepage": "https://agent-browser.dev",
-  "devDependencies": {}
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.9.1",
+    "globals": "^17.11.0"
+  }
 }

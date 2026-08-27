@@ -537,6 +537,7 @@ try {
     (state) => state?.hasViewport && state?.hasFrame,
     'client 2 connected workspace viewport',
   );
+  writeArtifact('client-2-connected.json', client2Connected);
   await new Promise((resolve) => setTimeout(resolve, 3000));
   const client1AfterClient2 = await evalInClient(context, clientASession, dashboardStateScript());
   const client2AfterClient2 = await evalInClient(context, clientBSession, dashboardStateScript());

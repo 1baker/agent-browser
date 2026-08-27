@@ -149,9 +149,8 @@ process.exit(71);
   const installedSha256 = hashFile(installedPath);
   const statusJournal = createLocalDashboardPublicationJournal({ journalPath: statusPath });
   statusJournal.acquire();
-  let statusRecord;
   try {
-    statusRecord = statusJournal.create({
+    statusJournal.create({
       installBin: installedPath,
       artifactEvidence: {
         built: { sha256: 'b'.repeat(64) },
