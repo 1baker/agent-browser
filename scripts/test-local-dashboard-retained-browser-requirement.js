@@ -18,7 +18,9 @@ import {
   LOCAL_DASHBOARD_RETAINED_BROWSER_ENFORCEMENT_SCHEMA,
   readRetainedBrowserRequirement,
   retainedBrowserEnforcementPath,
+  retainedBrowserRotationJournalPath,
   resolveRetainedBrowserExpectation,
+  rotateRetainedBrowserRequirement,
   writeRetainedBrowserRequirement,
 } from './lib/local-dashboard-retained-browser-requirement.js';
 
@@ -159,6 +161,127 @@ try {
   assert.equal(recovered.enforcement.exists, true);
   assert.equal(recovered.createdAt, crashedEnforcement.createdAt);
   assert.equal(recovered.enforcement.requirementSha256, recovered.sha256);
+
+  const rotationPath = join(root, 'rotation', 'retained-browser.json');
+  const rotationOld = writeRetainedBrowserRequirement({
+    path: rotationPath,
+    evidence,
+    now: () => '2026-08-15T12:00:00.000Z',
+  });
+  const replacementEvidence = {
+    ...evidence,
+    expected: {
+      ...expectation,
+      sessionName: 'replacement-session',
+      targetId: 'replacement-target',
+      url: 'https://example.test/replacement',
+    },
+    observed: {
+      ...observed,
+      sessionName: 'replacement-session',
+      browserId: 'session:replacement-session',
+      targetId: 'replacement-target',
+      url: 'https://example.test/replacement',
+    },
+  };
+  assert.throws(
+    () => rotateRetainedBrowserRequirement({
+      path: rotationPath,
+      evidence: replacementEvidence,
+      expectedSha256: rotationOld.sha256,
+      staleEvidence: { confirmed: false, reason: 'retained_daemon_missing' },
+    }),
+    /bounded proof that old authority is stale/,
+  );
+  assert.throws(
+    () => rotateRetainedBrowserRequirement({
+      path: rotationPath,
+      evidence: replacementEvidence,
+      expectedSha256: rotationOld.sha256,
+      staleEvidence: { confirmed: true, reason: 'retained_daemon_missing' },
+      now: () => '2026-08-16T12:00:00.000Z',
+      afterPhase: (phase) => {
+        if (phase === 'requirement_replaced') throw new Error('fixture crash during rotation');
+      },
+    }),
+    /fixture crash during rotation/,
+  );
+  assert.equal(existsSync(retainedBrowserRotationJournalPath(rotationPath)), true);
+  assert.throws(
+    () => readRetainedBrowserRequirement(rotationPath),
+    /does not match enforcement digest/,
+  );
+  const rotated = rotateRetainedBrowserRequirement({
+    path: rotationPath,
+    evidence: replacementEvidence,
+    expectedSha256: rotationOld.sha256,
+    staleEvidence: { confirmed: true, reason: 'retained_daemon_missing' },
+    now: () => '2099-01-01T00:00:00.000Z',
+  });
+  assert.equal(rotated.rotated, true);
+  assert.equal(rotated.previousSha256, rotationOld.sha256);
+  assert.equal(rotated.expectation.sessionName, 'replacement-session');
+  assert.equal(rotated.expectation.targetId, 'replacement-target');
+  assert.equal(rotated.enforcement.requirementSha256, rotated.sha256);
+  assert.equal(existsSync(retainedBrowserRotationJournalPath(rotationPath)), false);
+
+  for (const phase of ['prepared', 'requirement_replaced', 'enforcement_replaced', 'committed']) {
+    const phasePath = join(root, `rotation-${phase}`, 'retained-browser.json');
+    const phaseOld = writeRetainedBrowserRequirement({
+      path: phasePath,
+      evidence,
+      now: () => '2026-08-15T12:00:00.000Z',
+    });
+    assert.throws(
+      () => rotateRetainedBrowserRequirement({
+        path: phasePath,
+        evidence: replacementEvidence,
+        expectedSha256: phaseOld.sha256,
+        staleEvidence: { confirmed: true, reason: 'retained_daemon_missing' },
+        now: () => '2026-08-16T12:00:00.000Z',
+        afterPhase: (observedPhase) => {
+          if (observedPhase === phase) throw new Error(`fixture crash at ${phase}`);
+        },
+      }),
+      new RegExp(`fixture crash at ${phase}`),
+    );
+    assert.equal(existsSync(retainedBrowserRotationJournalPath(phasePath)), true);
+    if (phase === 'prepared') {
+      assert.throws(
+        () => rotateRetainedBrowserRequirement({
+          path: phasePath,
+          evidence: {
+            ...replacementEvidence,
+            observed: { ...replacementEvidence.observed, targetId: 'changed-retry-target' },
+          },
+          expectedSha256: phaseOld.sha256,
+          staleEvidence: { confirmed: true, reason: 'retained_daemon_missing' },
+        }),
+        /conflicts with requested replacement/,
+      );
+    }
+    const recoveredPhase = rotateRetainedBrowserRequirement({
+      path: phasePath,
+      evidence: replacementEvidence,
+      expectedSha256: phaseOld.sha256,
+      staleEvidence: { confirmed: true, reason: 'retained_daemon_missing' },
+    });
+    assert.equal(recoveredPhase.rotated, true);
+    assert.equal(recoveredPhase.expectation.targetId, 'replacement-target');
+    assert.equal(existsSync(retainedBrowserRotationJournalPath(phasePath)), false);
+  }
+
+  const digestConflictPath = join(root, 'rotation-digest-conflict', 'retained-browser.json');
+  writeRetainedBrowserRequirement({ path: digestConflictPath, evidence });
+  assert.throws(
+    () => rotateRetainedBrowserRequirement({
+      path: digestConflictPath,
+      evidence: replacementEvidence,
+      expectedSha256: '0'.repeat(64),
+      staleEvidence: { confirmed: true, reason: 'retained_daemon_missing' },
+    }),
+    /expectedSha256 does not match current requirement/,
+  );
 
   const requirementBytes = readFileSync(path);
   const replacedValue = JSON.parse(readFileSync(path, 'utf8'));

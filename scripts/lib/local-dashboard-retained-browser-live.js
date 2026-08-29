@@ -15,6 +15,9 @@ import {
   isLoopbackDevToolsUrl,
 } from './local-dashboard-retained-browser-guard.js';
 import {
+  readRetainedBrowserRequirement,
+  readRetainedBrowserRotationJournalForRequirement,
+  rotateRetainedBrowserRequirement,
   writeRetainedBrowserRequirement,
 } from './local-dashboard-retained-browser-requirement.js';
 
@@ -28,6 +31,7 @@ export async function discoverVerifyAndPinRetainedBrowser({
   profileId,
   requirementPath,
   expectedOpenedIdentity,
+  rotateExpectedSha256 = null,
   socketDir = runtimeSocketDir(),
   adapters,
 }) {
@@ -77,10 +81,38 @@ export async function discoverVerifyAndPinRetainedBrowser({
       evidence.message || 'The exact retained lane changed before requirement commit',
     );
   }
-  const requirement = writeRetainedBrowserRequirement({
-    path: requirementPath,
-    evidence,
-  });
+  const activeRotation = rotateExpectedSha256
+    ? readRetainedBrowserRotationJournalForRequirement(requirementPath)
+    : null;
+  if (activeRotation && activeRotation.expectedOldSha256 !== rotateExpectedSha256) {
+    throw liveError(
+      'retained_browser_rotation_digest_changed',
+      'Active retained browser rotation does not match the requested old digest',
+    );
+  }
+  const staleEvidence = rotateExpectedSha256
+    ? await confirmDurableRequirementIsStale({
+      requirement: activeRotation
+        ? {
+          exists: true,
+          enforcement: { exists: true },
+          expectation: activeRotation.oldExpectation,
+        }
+        : readRetainedBrowserRequirement(requirementPath),
+      adapters: liveAdapters,
+    })
+    : null;
+  const requirement = rotateExpectedSha256
+    ? rotateRetainedBrowserRequirement({
+      path: requirementPath,
+      evidence,
+      expectedSha256: rotateExpectedSha256,
+      staleEvidence,
+    })
+    : writeRetainedBrowserRequirement({
+      path: requirementPath,
+      evidence,
+    });
   return {
     discovery: {
       exactUrl: discovery.exactUrl,
@@ -94,8 +126,38 @@ export async function discoverVerifyAndPinRetainedBrowser({
       sha256: requirement.sha256 ?? null,
       createdAt: requirement.createdAt ?? null,
       written: requirement.written === true,
+      rotated: requirement.rotated === true,
+      previousSha256: requirement.previousSha256 ?? null,
     },
   };
+}
+
+async function confirmDurableRequirementIsStale({ requirement, adapters }) {
+  if (!requirement?.exists || !requirement.enforcement?.exists) {
+    throw liveError(
+      'retained_browser_rotation_requirement_missing',
+      'Stale rotation requires an enforced existing retained browser requirement',
+    );
+  }
+  const old = requirement.expectation;
+  const daemonPid = adapters.readDaemonPid(old.sessionName);
+  if (!adapters.isProcessLive(daemonPid)) {
+    return { confirmed: true, reason: 'retained_daemon_missing' };
+  }
+  const readback = await adapters.readBrowser(old.sessionName, daemonPid);
+  if (!readback?.success) {
+    throw liveError(
+      'retained_browser_rotation_staleness_unproven',
+      'The old retained browser daemon is live but its authority could not be inspected',
+    );
+  }
+  if (!readback.browser) {
+    return { confirmed: true, reason: 'retained_browser_missing' };
+  }
+  throw liveError(
+    'retained_browser_rotation_old_authority_live',
+    'The old retained browser authority is still live and cannot be rotated',
+  );
 }
 
 export function runtimeSocketDir() {

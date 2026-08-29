@@ -776,6 +776,10 @@ fn service_mcp_tools() -> Vec<Value> {
                         "type": "string",
                         "description": "Explicit profile id for readiness inspection."
                     },
+                    "runtimeProfile": {
+                        "type": "string",
+                        "description": "Explicit managed or registered profile id for routing and reuse planning."
+                    },
                     "browserBuild": {
                         "type": "string",
                         "enum": ["stock_chrome", "stealthcdp_chromium", "cdp_free_headed"],
@@ -10162,6 +10166,7 @@ fn access_plan_params_from_arguments(
         "sitePolicyId",
         "challengeId",
         "readinessProfileId",
+        "runtimeProfile",
     ] {
         if let Some(value) = optional_string_argument(arguments, name)? {
             params.push((name.to_string(), value.to_string()));
@@ -11049,6 +11054,20 @@ fn profile_seeding_handoff_resource(uri: &str) -> Option<(String, Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_plan_mcp_arguments_preserve_runtime_profile() {
+        let params = access_plan_params_from_arguments(&json!({
+            "serviceName": "AuraCall",
+            "runtimeProfile": "auracall-chatgpt-live",
+        }))
+        .expect("valid access-plan arguments");
+
+        assert!(params.contains(&(
+            "runtimeProfile".to_string(),
+            "auracall-chatgpt-live".to_string(),
+        )));
+    }
 
     fn assert_static_service_resource_uris(resources: &Value) {
         let uris = resources

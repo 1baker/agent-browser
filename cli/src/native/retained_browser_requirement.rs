@@ -17,6 +17,8 @@ pub const LOCAL_DASHBOARD_RETAINED_BROWSER_REQUIREMENT_SCHEMA: &str =
     "agent-browser.local-dashboard-retained-browser-requirement.v1";
 pub const LOCAL_DASHBOARD_RETAINED_BROWSER_ENFORCEMENT_SCHEMA: &str =
     "agent-browser.local-dashboard-retained-browser-enforcement.v1";
+pub const LOCAL_DASHBOARD_RETAINED_BROWSER_ROTATION_SCHEMA: &str =
+    "agent-browser.local-dashboard-retained-browser-rotation.v1";
 
 const MAX_REQUIREMENT_BYTES: u64 = 16 * 1024;
 const MAX_DAEMON_PID_BYTES: u64 = 64;
@@ -35,9 +37,12 @@ pub struct RetainedBrowserRequirementStatus {
     pub enforcement_configured: bool,
     pub enforcement_path: String,
     pub checked_without_launch: bool,
+    pub rotation_configured: bool,
+    pub rotation_path: String,
+    pub rotation_phase: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RequirementRecord {
     schema_version: String,
@@ -45,7 +50,7 @@ struct RequirementRecord {
     expectation: RetainedBrowserExpectation,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct EnforcementRecord {
     schema_version: String,
@@ -53,13 +58,27 @@ struct EnforcementRecord {
     requirement_sha256: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct RetainedBrowserExpectation {
     session_name: String,
     profile_id: String,
     target_id: String,
     url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RotationRecord {
+    schema_version: String,
+    operation_id: String,
+    created_at: String,
+    expected_old_sha256: String,
+    next_requirement_sha256: String,
+    stale_reason: String,
+    phase: String,
+    old_expectation: RetainedBrowserExpectation,
+    next_requirement: RequirementRecord,
 }
 
 pub fn verify_retained_browser_requirement_for_root(
@@ -91,6 +110,12 @@ pub fn retained_browser_enforcement_path(requirement_path: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
+pub fn retained_browser_rotation_path(requirement_path: &Path) -> PathBuf {
+    let mut path = requirement_path.as_os_str().to_os_string();
+    path.push(".rotation.json");
+    PathBuf::from(path)
+}
+
 fn verify_retained_browser_requirement_for_path(
     root: &Path,
     requirement_path: &Path,
@@ -104,11 +129,16 @@ fn verify_retained_browser_requirement_at_paths(
     socket_dir: &Path,
 ) -> Result<RetainedBrowserRequirementStatus, String> {
     let enforcement_path = retained_browser_enforcement_path(requirement_path);
+    let rotation_path = retained_browser_rotation_path(requirement_path);
     let enforcement = read_enforcement(&enforcement_path)?;
+    let rotation = read_rotation(&rotation_path)?;
     let enforcement_configured = enforcement.is_some();
     match fs::symlink_metadata(requirement_path) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if rotation.is_some() {
+                return Err(failure("retained_browser_rotation_requirement_missing"));
+            }
             if enforcement_configured {
                 return Err(failure("retained_browser_requirement_missing"));
             }
@@ -121,6 +151,9 @@ fn verify_retained_browser_requirement_at_paths(
                 enforcement_configured,
                 enforcement_path: enforcement_path.display().to_string(),
                 checked_without_launch: true,
+                rotation_configured: false,
+                rotation_path: rotation_path.display().to_string(),
+                rotation_phase: None,
             });
         }
         Err(_) => return Err(failure("retained_browser_requirement_invalid")),
@@ -136,8 +169,32 @@ fn verify_retained_browser_requirement_at_paths(
     let record: RequirementRecord = serde_json::from_slice(&requirement_bytes)
         .map_err(|_| failure("retained_browser_requirement_invalid"))?;
     validate_requirement(&record)?;
+    let requirement_sha256 = format!("{:x}", Sha256::digest(&requirement_bytes));
+    if let Some(rotation) = rotation.as_ref() {
+        let enforcement = enforcement
+            .as_ref()
+            .ok_or_else(|| failure("retained_browser_rotation_enforcement_missing"))?;
+        validate_rotation(rotation)?;
+        validate_rotation_pair(
+            &requirement_sha256,
+            &enforcement.requirement_sha256,
+            rotation,
+        )?;
+        return Ok(RetainedBrowserRequirementStatus {
+            schema_version: LOCAL_DASHBOARD_RETAINED_BROWSER_REQUIREMENT_SCHEMA,
+            configured: true,
+            verified: false,
+            state: "rotation_pending",
+            requirement_path: requirement_path.display().to_string(),
+            enforcement_configured,
+            enforcement_path: enforcement_path.display().to_string(),
+            checked_without_launch: true,
+            rotation_configured: true,
+            rotation_path: rotation_path.display().to_string(),
+            rotation_phase: Some(rotation.phase.clone()),
+        });
+    }
     if let Some(enforcement) = enforcement.as_ref() {
-        let requirement_sha256 = format!("{:x}", Sha256::digest(&requirement_bytes));
         if requirement_sha256 != enforcement.requirement_sha256 {
             return Err(failure("retained_browser_enforcement_digest_mismatch"));
         }
@@ -166,6 +223,9 @@ fn verify_retained_browser_requirement_at_paths(
         enforcement_configured,
         enforcement_path: enforcement_path.display().to_string(),
         checked_without_launch: true,
+        rotation_configured: false,
+        rotation_path: rotation_path.display().to_string(),
+        rotation_phase: None,
     })
 }
 
@@ -223,13 +283,127 @@ fn read_enforcement(path: &Path) -> Result<Option<EnforcementRecord>, String> {
     Ok(Some(record))
 }
 
+fn read_rotation(path: &Path) -> Result<Option<RotationRecord>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(failure("retained_browser_rotation_invalid")),
+    }
+    let bytes = read_bounded_regular_file(
+        path,
+        MAX_REQUIREMENT_BYTES,
+        true,
+        "retained_browser_rotation_invalid",
+        "retained_browser_rotation_permissions_invalid",
+    )?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| failure("retained_browser_rotation_invalid"))
+}
+
+fn validate_rotation(record: &RotationRecord) -> Result<(), String> {
+    if record.schema_version != LOCAL_DASHBOARD_RETAINED_BROWSER_ROTATION_SCHEMA {
+        return Err(failure("retained_browser_rotation_schema_unsupported"));
+    }
+    DateTime::parse_from_rfc3339(&record.created_at)
+        .map_err(|_| failure("retained_browser_rotation_created_at_invalid"))?;
+    validate_sha256(
+        &record.expected_old_sha256,
+        "retained_browser_rotation_old_digest_invalid",
+    )?;
+    validate_sha256(
+        &record.next_requirement_sha256,
+        "retained_browser_rotation_next_digest_invalid",
+    )?;
+    let expected_operation_id = format!(
+        "{}-{}",
+        &record.expected_old_sha256[..12],
+        &record.next_requirement_sha256[..12]
+    );
+    if record.operation_id != expected_operation_id {
+        return Err(failure("retained_browser_rotation_operation_id_invalid"));
+    }
+    if !matches!(
+        record.stale_reason.as_str(),
+        "retained_daemon_missing" | "retained_browser_missing"
+    ) {
+        return Err(failure("retained_browser_rotation_stale_reason_invalid"));
+    }
+    if !matches!(
+        record.phase.as_str(),
+        "prepared" | "requirement_replaced" | "enforcement_replaced" | "committed"
+    ) {
+        return Err(failure("retained_browser_rotation_phase_invalid"));
+    }
+    validate_expectation(&record.old_expectation)?;
+    validate_requirement(&record.next_requirement)?;
+    let mut serialized = serde_json::to_vec_pretty(&record.next_requirement)
+        .map_err(|_| failure("retained_browser_rotation_next_requirement_invalid"))?;
+    serialized.push(b'\n');
+    let next_sha256 = format!("{:x}", Sha256::digest(serialized));
+    if next_sha256 != record.next_requirement_sha256 {
+        return Err(failure(
+            "retained_browser_rotation_next_requirement_digest_mismatch",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rotation_pair(
+    requirement_sha256: &str,
+    enforcement_sha256: &str,
+    rotation: &RotationRecord,
+) -> Result<(), String> {
+    let old = rotation.expected_old_sha256.as_str();
+    let next = rotation.next_requirement_sha256.as_str();
+    if !matches!(requirement_sha256, value if value == old || value == next)
+        || !matches!(enforcement_sha256, value if value == old || value == next)
+    {
+        return Err(failure("retained_browser_rotation_digest_conflict"));
+    }
+    if requirement_sha256 == old && enforcement_sha256 == next {
+        return Err(failure("retained_browser_rotation_order_invalid"));
+    }
+    let phase_matches = match rotation.phase.as_str() {
+        "prepared" => {
+            (requirement_sha256 == old || requirement_sha256 == next) && enforcement_sha256 == old
+        }
+        "requirement_replaced" => {
+            requirement_sha256 == next && (enforcement_sha256 == old || enforcement_sha256 == next)
+        }
+        "enforcement_replaced" | "committed" => {
+            requirement_sha256 == next && enforcement_sha256 == next
+        }
+        _ => false,
+    };
+    if !phase_matches {
+        return Err(failure("retained_browser_rotation_phase_conflict"));
+    }
+    Ok(())
+}
+
+fn validate_sha256(value: &str, code: &str) -> Result<(), String> {
+    if value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(failure(code))
+    }
+}
+
 fn validate_requirement(record: &RequirementRecord) -> Result<(), String> {
     if record.schema_version != LOCAL_DASHBOARD_RETAINED_BROWSER_REQUIREMENT_SCHEMA {
         return Err(failure("retained_browser_requirement_schema_unsupported"));
     }
     DateTime::parse_from_rfc3339(&record.created_at)
         .map_err(|_| failure("retained_browser_requirement_created_at_invalid"))?;
-    let expectation = &record.expectation;
+    validate_expectation(&record.expectation)
+}
+
+fn validate_expectation(expectation: &RetainedBrowserExpectation) -> Result<(), String> {
     if !valid_session_name(&expectation.session_name) {
         return Err(failure("retained_browser_session_invalid"));
     }
@@ -487,7 +661,19 @@ mod tests {
 
     fn write_private_json(path: &Path, value: &Value) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
+        let mut bytes = serde_json::to_vec_pretty(value).unwrap();
+        bytes.push(b'\n');
+        fs::write(path, bytes).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn write_requirement_record(path: &Path, value: &Value) {
+        let record: RequirementRecord = serde_json::from_value(value.clone()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = serde_json::to_vec_pretty(&record).unwrap();
+        bytes.push(b'\n');
+        fs::write(path, bytes).unwrap();
         #[cfg(unix)]
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
     }
@@ -504,6 +690,35 @@ mod tests {
                 "requirementSha256": requirement_sha256
             }),
         );
+    }
+
+    fn write_rotation(requirement: &Path, next_requirement: &Value, phase: &str) -> String {
+        let old_sha256 = format!("{:x}", Sha256::digest(fs::read(requirement).unwrap()));
+        let next_record: RequirementRecord =
+            serde_json::from_value(next_requirement.clone()).unwrap();
+        let mut next_bytes = serde_json::to_vec_pretty(&next_record).unwrap();
+        next_bytes.push(b'\n');
+        let next_sha256 = format!("{:x}", Sha256::digest(next_bytes));
+        write_private_json(
+            &retained_browser_rotation_path(requirement),
+            &json!({
+                "schemaVersion": LOCAL_DASHBOARD_RETAINED_BROWSER_ROTATION_SCHEMA,
+                "operationId": format!("{}-{}", &old_sha256[..12], &next_sha256[..12]),
+                "createdAt": "2026-08-16T12:00:00.000Z",
+                "expectedOldSha256": old_sha256,
+                "nextRequirementSha256": next_sha256,
+                "staleReason": "retained_daemon_missing",
+                "phase": phase,
+                "oldExpectation": {
+                    "sessionName": "workshop-retained",
+                    "profileId": "chatgpt-pro",
+                    "targetId": "target-exact",
+                    "url": "https://chatgpt.test/c/exact"
+                },
+                "nextRequirement": next_requirement
+            }),
+        );
+        next_sha256
     }
 
     fn start_cdp(targets: Value) -> (String, thread::JoinHandle<()>) {
@@ -834,6 +1049,109 @@ mod tests {
         assert!(status.enforcement_configured);
         assert_eq!(status.requirement_path, configured.display().to_string());
         server.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rotation_crash_matrix_is_distinct_and_fail_closed_without_launch() {
+        let root = fixture_root("rotation-crash-matrix");
+        let requirement = requirement_path(&root);
+        seed_fixture(
+            &root,
+            "ws://127.0.0.1:9/devtools/browser/not-contacted",
+            "https://chatgpt.test/c/exact",
+        );
+        write_enforcement(&requirement);
+        let next_requirement = json!({
+            "schemaVersion": LOCAL_DASHBOARD_RETAINED_BROWSER_REQUIREMENT_SCHEMA,
+            "createdAt": "2026-08-16T12:00:00.000Z",
+            "expectation": {
+                "sessionName": "replacement-retained",
+                "profileId": "chatgpt-pro",
+                "targetId": "replacement-target",
+                "url": "https://chatgpt.test/c/replacement"
+            }
+        });
+        let next_sha256 = write_rotation(&requirement, &next_requirement, "prepared");
+
+        let prepared = verify_fixture(&root).unwrap();
+        assert_eq!(prepared.state, "rotation_pending");
+        assert!(!prepared.verified);
+        assert!(prepared.rotation_configured);
+        assert_eq!(prepared.rotation_phase.as_deref(), Some("prepared"));
+
+        write_requirement_record(&requirement, &next_requirement);
+        let requirement_replaced_before_phase = verify_fixture(&root).unwrap();
+        assert_eq!(requirement_replaced_before_phase.state, "rotation_pending");
+        assert_eq!(
+            requirement_replaced_before_phase.rotation_phase.as_deref(),
+            Some("prepared")
+        );
+
+        let rotation_path = retained_browser_rotation_path(&requirement);
+        let mut rotation: Value =
+            serde_json::from_slice(&fs::read(&rotation_path).unwrap()).unwrap();
+        rotation["phase"] = json!("requirement_replaced");
+        write_private_json(&rotation_path, &rotation);
+        let requirement_replaced = verify_fixture(&root).unwrap();
+        assert_eq!(requirement_replaced.state, "rotation_pending");
+        assert_eq!(
+            requirement_replaced.rotation_phase.as_deref(),
+            Some("requirement_replaced")
+        );
+
+        write_private_json(
+            &retained_browser_enforcement_path(&requirement),
+            &json!({
+                "schemaVersion": LOCAL_DASHBOARD_RETAINED_BROWSER_ENFORCEMENT_SCHEMA,
+                "createdAt": "2026-08-16T12:00:00.000Z",
+                "requirementSha256": next_sha256
+            }),
+        );
+        let enforcement_replaced_before_phase = verify_fixture(&root).unwrap();
+        assert_eq!(enforcement_replaced_before_phase.state, "rotation_pending");
+
+        for phase in ["enforcement_replaced", "committed"] {
+            rotation["phase"] = json!(phase);
+            write_private_json(&rotation_path, &rotation);
+            let pending = verify_fixture(&root).unwrap();
+            assert_eq!(pending.state, "rotation_pending");
+            assert_eq!(pending.rotation_phase.as_deref(), Some(phase));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rotation_rejects_impossible_old_requirement_new_enforcement_order() {
+        let root = fixture_root("rotation-invalid-order");
+        let requirement = requirement_path(&root);
+        seed_fixture(
+            &root,
+            "ws://127.0.0.1:9/devtools/browser/not-contacted",
+            "https://chatgpt.test/c/exact",
+        );
+        write_enforcement(&requirement);
+        let next_requirement = json!({
+            "schemaVersion": LOCAL_DASHBOARD_RETAINED_BROWSER_REQUIREMENT_SCHEMA,
+            "createdAt": "2026-08-16T12:00:00.000Z",
+            "expectation": {
+                "sessionName": "replacement-retained",
+                "profileId": "chatgpt-pro",
+                "targetId": "replacement-target",
+                "url": "https://chatgpt.test/c/replacement"
+            }
+        });
+        let next_sha256 = write_rotation(&requirement, &next_requirement, "prepared");
+        write_private_json(
+            &retained_browser_enforcement_path(&requirement),
+            &json!({
+                "schemaVersion": LOCAL_DASHBOARD_RETAINED_BROWSER_ENFORCEMENT_SCHEMA,
+                "createdAt": "2026-08-16T12:00:00.000Z",
+                "requirementSha256": next_sha256
+            }),
+        );
+        let error = verify_fixture(&root).unwrap_err();
+        assert!(error.contains("retained_browser_rotation_order_invalid"));
         fs::remove_dir_all(root).unwrap();
     }
 

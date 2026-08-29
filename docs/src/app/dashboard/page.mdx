@@ -122,6 +122,13 @@ lane cannot satisfy preparation. It has no page interaction or prompt-submission
 The preparation controller is included in the versioned source-free workstation
 support payload and does not require the repository checkout.
 
+For a dead prior lane, add
+<code>--rotate-stale-requirement-sha256 CURRENT_SHA256</code> to that same
+preparation command. This is an explicit compare-and-swap operation: it refuses
+healthy or uncertain old authority, rechecks the replacement, journals the two
+private authority-file updates, and keeps dashboard publication fail closed
+until the new pair is fully committed.
+
 The command builds <code>packages/dashboard/out</code>, rebuilds the local CLI,
 backs up and replaces <code>~/.local/bin/agent-browser</code>, restarts
 <code>agent-browser-dashboard.service</code>, and verifies the live dashboard

@@ -5074,7 +5074,7 @@ agent-browser install - Install browser binaries
 Usage: agent-browser install [--with-deps] [--with-remote-view-privileges]
        agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]
        agent-browser install workstation retained-browser-status [--json]
-       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--json]
+       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--rotate-stale-requirement-sha256 <sha256>] [--json]
        agent-browser install workstation reconcile [--json]
        agent-browser install workstation backup [--json]
        agent-browser install stealthcdp-chromium [--force]
@@ -5112,7 +5112,10 @@ The source-free workstation preparation command removes the manual navigation
 handoff. It invokes only route-bound remote-view open for the exact URL, proves
 the requested profile and rendered identity, then uniquely rediscovers and
 marker-first pins that same lane. It exposes no page interaction or prompt
-submission action.
+submission action. If retained-browser-status proves the old daemon is gone,
+--rotate-stale-requirement-sha256 performs an explicit digest-bound replacement.
+It refuses live or unreadable old authority, journals the two private-file
+updates, fails closed during a partial commit, and resumes safely after a crash.
 
 Workstation apply reruns stop the managed dashboard, runtime interlock, and
 backup timer during reconciliation, then reactivate them after final readiness.
@@ -5155,6 +5158,8 @@ Options:
   --url-prefix <url>    Reviewed origin and path boundary for preparation
   --runtime-profile <id>
                        Required managed profile for preparation
+  --rotate-stale-requirement-sha256 <sha256>
+                       Replace only a proven-dead retained requirement matching this digest
 
 Examples:
   agent-browser install
@@ -5168,6 +5173,7 @@ Examples:
   agent-browser install workstation --apply --json
   agent-browser install workstation retained-browser-status --json
   agent-browser install workstation prepare-retained-browser --url https://example.com/project/conversation --url-prefix https://example.com/project/ --runtime-profile work --json
+  agent-browser install workstation prepare-retained-browser --url https://example.com/project/conversation --url-prefix https://example.com/project/ --runtime-profile work --rotate-stale-requirement-sha256 <sha256> --json
   agent-browser install workstation reconcile --json
   agent-browser install workstation backup --json
 "##

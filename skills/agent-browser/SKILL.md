@@ -100,6 +100,14 @@ submit, or prompt action and fails closed on any mismatch or ambiguity.
 The installed versioned controller is source-free and does not depend on pnpm
 or a repository checkout.
 
+If native status proves the old requirement is dead, rerun preparation with
+`--rotate-stale-requirement-sha256 <current-requirement-sha256>`. Rotation is
+explicit and compare-and-swap guarded: it refuses a live or unreadable old
+authority, freshly verifies the replacement, journals both private-file
+updates, fails closed during a partial commit, and resumes the same digest-bound
+operation after interruption. Never delete or rename the requirement or its
+`.required` enforcement record to recover a stale lane.
+
 After apply, use `agent-browser install doctor --compact --json` for bounded
 readiness and remedy output. Use full `agent-browser install doctor --json`
 only when detailed evidence is required. Both modes verify the installed

@@ -71,12 +71,17 @@ const RETAINED_BROWSER_GUARD_SCRIPT: &str =
     include_str!("../../scripts/lib/local-dashboard-retained-browser-guard.js");
 const RETAINED_BROWSER_LIVE_SCRIPT: &str =
     include_str!("../../scripts/lib/local-dashboard-retained-browser-live.js");
+const RUNTIME_SOCKET_DIR_SCRIPT: &str = include_str!("../../scripts/lib/runtime-socket-dir.js");
+const RUNTIME_DAEMON_CLIENT_BINARY_SCRIPT: &str =
+    include_str!("../../scripts/lib/runtime-daemon-client-binary.js");
+const RUNTIME_HANDOFF_BROWSER_SELECTION_SCRIPT: &str =
+    include_str!("../../scripts/lib/runtime-handoff-browser-selection.js");
 const RETAINED_BROWSER_PREPARATION_SCRIPT: &str =
     include_str!("../../scripts/lib/local-dashboard-retained-browser-preparation.js");
 const RETAINED_BROWSER_REQUIREMENT_SCRIPT: &str =
     include_str!("../../scripts/lib/local-dashboard-retained-browser-requirement.js");
 const CONTROLLER_PACKAGE_JSON: &str = "{\n  \"private\": true,\n  \"type\": \"module\"\n}\n";
-const CONTROLLER_ASSETS: [(&str, &str, bool); 16] = [
+const CONTROLLER_ASSETS: [(&str, &str, bool); 19] = [
     (
         "scripts/smoke-rdp-guac-route-pool-readiness.js",
         ROUTE_POOL_READINESS_SCRIPT,
@@ -140,6 +145,21 @@ const CONTROLLER_ASSETS: [(&str, &str, bool); 16] = [
     (
         "scripts/lib/local-dashboard-retained-browser-live.js",
         RETAINED_BROWSER_LIVE_SCRIPT,
+        false,
+    ),
+    (
+        "scripts/lib/runtime-socket-dir.js",
+        RUNTIME_SOCKET_DIR_SCRIPT,
+        false,
+    ),
+    (
+        "scripts/lib/runtime-daemon-client-binary.js",
+        RUNTIME_DAEMON_CLIENT_BINARY_SCRIPT,
+        false,
+    ),
+    (
+        "scripts/lib/runtime-handoff-browser-selection.js",
+        RUNTIME_HANDOFF_BROWSER_SELECTION_SCRIPT,
         false,
     ),
     (
@@ -307,9 +327,10 @@ fn run_workstation_retained_browser_status(json: bool) {
         Ok(status) => status,
         Err(error) => fail(&error, json),
     };
+    let success = !retained_browser_requirement.configured || retained_browser_requirement.verified;
     let report = WorkstationRetainedBrowserStatusReport {
         schema_version: RETAINED_BROWSER_STATUS_SCHEMA_VERSION,
-        success: true,
+        success,
         retained_browser_requirement,
     };
     if json {
@@ -325,6 +346,9 @@ fn run_workstation_retained_browser_status(json: bool) {
             "  Requirement: {}",
             report.retained_browser_requirement.requirement_path
         );
+    }
+    if !report.success {
+        exit(1);
     }
 }
 
@@ -371,6 +395,12 @@ fn run_workstation_install(args: &[String]) {
         Ok(status) => status,
         Err(error) => fail(&error, parsed.json),
     };
+    if retained_browser_requirement.configured && !retained_browser_requirement.verified {
+        fail(
+            "retained browser requirement is not ready; resume the digest-bound rotation before workstation apply",
+            parsed.json,
+        );
+    }
     phases.push("retained-browser-requirement-checked");
     let _install_lock = if parsed.mode == InstallMode::Apply {
         match WorkstationLock::acquire(&root) {
@@ -535,6 +565,12 @@ fn reconcile_workstation_locked(
     // mutation. Calling the service CLI here could auto-launch a replacement
     // browser and defeat the durable exact-lane authority.
     let retained_browser_requirement = verify_retained_browser_requirement_for_root(root)?;
+    if retained_browser_requirement.configured && !retained_browser_requirement.verified {
+        return Err(
+            "retained browser requirement is not ready; resume the digest-bound rotation before workstation reconcile"
+                .to_string(),
+        );
+    }
     let support_root = &paths.support_dir;
     let scripts_dir = support_root.join("scripts");
     let guacamole_dir = support_root.join("guacamole");
@@ -2011,7 +2047,7 @@ fn parse_port(value: Option<&String>, flag: &str) -> Result<u16, String> {
 }
 
 fn workstation_usage() -> &'static str {
-    "Usage: agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]\n       agent-browser install workstation retained-browser-status [--json]\n       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--json]"
+    "Usage: agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]\n       agent-browser install workstation retained-browser-status [--json]\n       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--rotate-stale-requirement-sha256 <sha256>] [--json]"
 }
 
 #[derive(Debug)]
@@ -2702,6 +2738,32 @@ mod tests {
         assert!(manifest.contains(r#""controllerAssets""#));
         assert!(manifest.contains(r#""guacamoleBundleManifestSha256""#));
         assert!(manifest.contains(r#""agent-browser-runtime-interlock.timer""#));
+    }
+
+    #[test]
+    fn retained_browser_controller_packages_runtime_dependencies() {
+        for (path, expected_content) in [
+            (
+                "scripts/lib/runtime-socket-dir.js",
+                RUNTIME_SOCKET_DIR_SCRIPT,
+            ),
+            (
+                "scripts/lib/runtime-daemon-client-binary.js",
+                RUNTIME_DAEMON_CLIENT_BINARY_SCRIPT,
+            ),
+            (
+                "scripts/lib/runtime-handoff-browser-selection.js",
+                RUNTIME_HANDOFF_BROWSER_SELECTION_SCRIPT,
+            ),
+        ] {
+            let asset = CONTROLLER_ASSETS
+                .iter()
+                .find(|(candidate, _, _)| *candidate == path)
+                .expect("retained-browser controller runtime dependency must be packaged");
+
+            assert_eq!(asset.1, expected_content);
+            assert!(!asset.2);
+        }
     }
 
     #[test]

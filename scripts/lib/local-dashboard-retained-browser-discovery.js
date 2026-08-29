@@ -122,7 +122,27 @@ export async function discoverRetainedBrowserExpectation({
 }
 
 export function normalizeRetainedExactUrl(value) {
-  const parsed = normalizeRetainedUrlPrefix(value);
+  let parsed;
+  try {
+    parsed = new URL(String(value || ''));
+  } catch {
+    throw discoveryError(
+      'retained_browser_discovery_exact_url_invalid',
+      'Retained browser discovery exact URL must be an absolute HTTP or HTTPS URL',
+    );
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw discoveryError(
+      'retained_browser_discovery_exact_url_invalid',
+      'Retained browser discovery exact URL must be HTTP or HTTPS without credentials',
+    );
+  }
+  if (parsed.search) {
+    throw discoveryError(
+      'retained_browser_discovery_exact_url_invalid',
+      'Retained browser discovery exact URL cannot contain a query string',
+    );
+  }
   return parsed;
 }
 

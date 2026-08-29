@@ -36,6 +36,20 @@ assert.equal(
   retainedUrlMatchesExact(`${target.url}/wrong`, target.url),
   false,
 );
+assert.equal(
+  retainedUrlMatchesExact(
+    'https://sso.ice.com/index.html#/pageLogin',
+    'https://sso.ice.com/index.html#/pageLogin',
+  ),
+  true,
+);
+assert.throws(
+  () => retainedUrlMatchesExact(
+    'https://example.test/callback?code=secret',
+    'https://example.test/callback?code=secret',
+  ),
+  /retained_browser_discovery_exact_url_invalid/,
+);
 
 const adapters = ({ browsers = { 'workshop-retained': browser }, targets = [target] } = {}) => ({
   urlPrefix: prefix,

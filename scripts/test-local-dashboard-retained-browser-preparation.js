@@ -34,6 +34,21 @@ assert.deepEqual(buildRetainedBrowserPinArgs(request), [
   '--json',
 ]);
 
+const fragmentRequest = normalizeRetainedBrowserPreparationRequest({
+  url: 'https://sso.ice.com/index.html#/pageLogin',
+  urlPrefix: 'https://sso.ice.com/index.html',
+  runtimeProfile: 'nyse-developer',
+});
+assert.equal(fragmentRequest.url, 'https://sso.ice.com/index.html#/pageLogin');
+assert.equal(fragmentRequest.urlPrefix, 'https://sso.ice.com/index.html');
+assert.throws(
+  () => normalizeRetainedBrowserPreparationRequest({
+    ...fragmentRequest,
+    url: 'https://sso.ice.com/index.html?code=secret',
+  }),
+  /retained_browser_discovery_exact_url_invalid/,
+);
+
 const payload = {
   success: true,
   data: {
@@ -65,6 +80,19 @@ const payload = {
   },
 };
 assert.equal(verifyRetainedBrowserRemoteViewResult(payload, request).targetId, 'target-workshop');
+assert.equal(
+  verifyRetainedBrowserRemoteViewResult({
+    ...payload,
+    data: {
+      ...payload.data,
+      operatorVisible: {
+        ...payload.data.operatorVisible,
+        target: { ...payload.data.operatorVisible.target, profileId: null },
+      },
+    },
+  }, request).targetId,
+  'target-workshop',
+);
 
 await assert.rejects(
   async () => normalizeRetainedBrowserPreparationRequest({
@@ -76,6 +104,7 @@ await assert.rejects(
 for (const changed of [
   { operatorVisible: { ...payload.data.operatorVisible, state: 'wrong_tab' } },
   { operatorVisible: { ...payload.data.operatorVisible, target: { ...payload.data.operatorVisible.target, url: 'https://chatgpt.com/c/wrong' } } },
+  { operatorVisible: { ...payload.data.operatorVisible, target: { ...payload.data.operatorVisible.target, profileId: 'wrong-profile' } } },
   { routeBoundHandoff: { profile: { id: 'wrong-profile', runtimeProfile: 'wrong-profile' } } },
   { sharedAcquisition: { ...payload.data.sharedAcquisition, sessionName: 'wrong-session' } },
 ]) {

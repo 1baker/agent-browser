@@ -1526,6 +1526,16 @@ action. Any URL, profile, identity, or uniqueness mismatch fails closed.
 The controller and its bounded libraries are versioned workstation support
 assets, so this command does not require a repository checkout or pnpm.
 
+When `retained-browser-status` proves the prior daemon is gone, rotate that
+stale identity explicitly by adding
+`--rotate-stale-requirement-sha256 <sha256-of-the-current-requirement>` to the
+same preparation command. The digest is a compare-and-swap boundary; a healthy
+or unreadable old lane is never rotated. The controller revalidates the new
+exact route and uses a private crash-recovery journal while the requirement and
+`.required` digest are replaced. Ordinary status, apply, and reconcile checks
+remain fail closed during a partial rotation. Do not delete either authority
+file as a recovery shortcut.
+
 The pin command verifies the rendered target before writing
 `~/.agent-browser/publications/local-dashboard-retained-browser.json` as a
 private mode-0600 file. It stores only stable session, profile, target, and URL

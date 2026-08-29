@@ -162,6 +162,14 @@ precommits the SHA-256 of the exact allowed requirement bytes. Retry reuses that
 commit, while a stale marker paired with a replaced requirement fails before
 service-state access.
 
+If status proves the retained daemon is gone, the preparation command accepts
+<code>--rotate-stale-requirement-sha256 CURRENT_SHA256</code> for an explicit
+compare-and-swap replacement. It refuses a live or unreadable old authority,
+freshly verifies the new exact lane, and journals the requirement and
+<code>.required</code> updates. A partial rotation stays fail closed and the
+same digest-bound command resumes it after interruption. Do not delete either
+authority file to clear a stale lane.
+
 <code>agent-browser install doctor --json</code> verifies the installed
 binary, controller assets, Guacamole manifest, and Guacamole files against the
 SHA-256 provenance recorded during workstation installation.
@@ -230,6 +238,9 @@ the exact rendered identity and profile, then uniquely rediscovers and
 marker-first pins that lane. It binds the daemon session to the runtime-profile
 id, exposes no page-interaction or prompt action,
 and does not require a repository checkout.
+Add <code>--rotate-stale-requirement-sha256 CURRENT_SHA256</code> only when the
+native status command has proved the prior daemon is dead and the current
+requirement digest has been reviewed.
 
 ## Stealth CDP Chromium
 

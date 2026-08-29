@@ -23,6 +23,7 @@ const options = {
   runtimeProfile: '',
   retainedRequirement: process.env.AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT
     || resolve(homedir(), '.agent-browser', 'publications', 'local-dashboard-retained-browser.json'),
+  rotateStaleRequirementSha256: '',
   serviceName: 'AuraCall',
   taskName: 'prepare-retained-browser-lane',
   url: '',
@@ -40,6 +41,9 @@ for (let index = 0; index < process.argv.slice(2).length; index += 1) {
   else if (arg === '--json') options.json = true;
   else if (arg === '--runtime-profile') options.runtimeProfile = requiredValue(args, ++index, arg);
   else if (arg === '--retained-requirement') options.retainedRequirement = requiredValue(args, ++index, arg);
+  else if (arg === '--rotate-stale-requirement-sha256') {
+    options.rotateStaleRequirementSha256 = requiredValue(args, ++index, arg);
+  }
   else if (arg === '--service-name') options.serviceName = requiredValue(args, ++index, arg);
   else if (arg === '--task-name') options.taskName = requiredValue(args, ++index, arg);
   else if (arg === '--url') options.url = requiredValue(args, ++index, arg);
@@ -66,6 +70,10 @@ try {
       request.runtimeProfile,
       '--requirement-path',
       resolve(options.retainedRequirement),
+      ...(options.rotateStaleRequirementSha256 ? [
+        '--rotate-stale-requirement-sha256',
+        options.rotateStaleRequirementSha256,
+      ] : []),
     ]).data
     : await discoverVerifyAndPinRetainedBrowser({
       agentBrowserBin: options.agentBrowserBin,
@@ -73,6 +81,7 @@ try {
       profileId: request.runtimeProfile,
       requirementPath: resolve(options.retainedRequirement),
       expectedOpenedIdentity: opened,
+      rotateExpectedSha256: options.rotateStaleRequirementSha256 || null,
     });
   if (
     pinPayload?.discovery?.matchedCandidateCount !== 1
@@ -147,6 +156,8 @@ Options:
   --runtime-profile <id>      Required managed runtime profile.
   --retained-requirement <path>
                               Private durable requirement path.
+  --rotate-stale-requirement-sha256 <sha256>
+                              Rotate a proven-dead prior requirement matching this digest.
   --browser-build <build>     stock_chrome or stealthcdp_chromium. Default: stock_chrome.
   --service-name <name>       Service attribution. Default: AuraCall.
   --agent-name <name>         Agent attribution. Default: codex.

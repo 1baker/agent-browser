@@ -10,6 +10,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -24,6 +25,8 @@ export const LOCAL_DASHBOARD_RETAINED_BROWSER_REQUIREMENT_SCHEMA =
   'agent-browser.local-dashboard-retained-browser-requirement.v1';
 export const LOCAL_DASHBOARD_RETAINED_BROWSER_ENFORCEMENT_SCHEMA =
   'agent-browser.local-dashboard-retained-browser-enforcement.v1';
+export const LOCAL_DASHBOARD_RETAINED_BROWSER_ROTATION_SCHEMA =
+  'agent-browser.local-dashboard-retained-browser-rotation.v1';
 
 const MAX_REQUIREMENT_BYTES = 16 * 1024;
 
@@ -253,6 +256,216 @@ export function writeRetainedBrowserRequirement({
   return { ...readRetainedBrowserRequirement(path), written: true };
 }
 
+/**
+ * Explicitly replace one proven-stale durable identity with freshly verified
+ * live evidence. The expected old digest is a compare-and-swap boundary. A
+ * private journal makes retries deterministic while ordinary readers continue
+ * to fail closed during the brief two-file replacement window.
+ */
+export function rotateRetainedBrowserRequirement({
+  path,
+  evidence,
+  expectedSha256,
+  staleEvidence,
+  now = () => new Date().toISOString(),
+  afterPhase = () => {},
+}) {
+  validateSha256(expectedSha256, 'Retained browser rotation expectedSha256');
+  if (
+    staleEvidence?.confirmed !== true
+    || !['retained_daemon_missing', 'retained_browser_missing'].includes(staleEvidence.reason)
+  ) {
+    throw new Error('Retained browser rotation requires bounded proof that old authority is stale');
+  }
+  const pinned = pinRetainedBrowserExpectation(evidence);
+  const expectation = normalizeRetainedBrowserExpectation({
+    sessionName: pinned.sessionName,
+    profileId: pinned.profileId,
+    targetId: pinned.targetId,
+    url: pinned.url,
+  });
+  for (const field of ['profileId', 'targetId', 'url']) {
+    if (!expectation[field]) {
+      throw new Error(`Verified retained browser evidence is missing ${field}`);
+    }
+  }
+  validateHttpUrl(expectation.url);
+
+  const journalPath = retainedBrowserRotationJournalPath(path);
+  let journal = readRetainedBrowserRotationJournal(journalPath);
+  const stableExpectation = {
+    sessionName: expectation.sessionName,
+    profileId: expectation.profileId,
+    targetId: expectation.targetId,
+    url: expectation.url,
+  };
+  const createdAt = journal?.createdAt ?? now();
+  validateCreatedAt(createdAt);
+  const nextRequirement = journal?.nextRequirement ?? {
+    schemaVersion: LOCAL_DASHBOARD_RETAINED_BROWSER_REQUIREMENT_SCHEMA,
+    createdAt,
+    expectation: stableExpectation,
+  };
+  const nextSha256 = sha256Json(nextRequirement);
+  const operationId = `${expectedSha256.slice(0, 12)}-${nextSha256.slice(0, 12)}`;
+
+  if (!journal) {
+    const existing = readRetainedBrowserRequirement(path);
+    if (!existing.exists || !existing.enforcement.exists) {
+      throw new Error('Retained browser rotation requires an enforced existing requirement');
+    }
+    if (existing.sha256 !== expectedSha256) {
+      throw new Error('Retained browser rotation expectedSha256 does not match current requirement');
+    }
+    journal = {
+      schemaVersion: LOCAL_DASHBOARD_RETAINED_BROWSER_ROTATION_SCHEMA,
+      operationId,
+      createdAt,
+      expectedOldSha256: expectedSha256,
+      nextRequirementSha256: nextSha256,
+      staleReason: staleEvidence.reason,
+      phase: 'prepared',
+      oldExpectation: {
+        sessionName: existing.expectation.sessionName,
+        profileId: existing.expectation.profileId,
+        targetId: existing.expectation.targetId,
+        url: existing.expectation.url,
+      },
+      nextRequirement,
+    };
+    atomicWritePrivateJson(journalPath, journal);
+    afterPhase('prepared');
+  } else {
+    validateRetainedBrowserRotationJournal(journal);
+    if (
+      journal.operationId !== operationId
+      || journal.expectedOldSha256 !== expectedSha256
+      || journal.nextRequirementSha256 !== nextSha256
+      || journal.staleReason !== staleEvidence.reason
+      || sha256Json(journal.nextRequirement) !== nextSha256
+      || JSON.stringify(journal.nextRequirement.expectation) !== JSON.stringify(stableExpectation)
+    ) {
+      throw new Error('Active retained browser rotation conflicts with requested replacement');
+    }
+  }
+
+  const requirementSha256 = privateFileSha256(path, 'Retained browser requirement');
+  const enforcement = readRetainedBrowserEnforcement(path);
+  const enforcementSha256 = enforcement.exists ? enforcement.requirementSha256 : null;
+  if (![expectedSha256, nextSha256].includes(requirementSha256)) {
+    throw new Error('Retained browser rotation found an unexpected requirement digest');
+  }
+  if (![expectedSha256, nextSha256].includes(enforcementSha256)) {
+    throw new Error('Retained browser rotation found an unexpected enforcement digest');
+  }
+  if (requirementSha256 === expectedSha256 && enforcementSha256 === nextSha256) {
+    throw new Error('Retained browser rotation found an impossible replacement order');
+  }
+
+  if (requirementSha256 === expectedSha256) {
+    atomicReplacePrivateJson(path, nextRequirement);
+    journal = updateRetainedBrowserRotationJournal(journalPath, journal, 'requirement_replaced');
+    afterPhase('requirement_replaced');
+  }
+  if (enforcementSha256 === expectedSha256) {
+    atomicReplacePrivateJson(retainedBrowserEnforcementPath(path), {
+      schemaVersion: LOCAL_DASHBOARD_RETAINED_BROWSER_ENFORCEMENT_SCHEMA,
+      createdAt: nextRequirement.createdAt,
+      requirementSha256: nextSha256,
+    });
+    journal = updateRetainedBrowserRotationJournal(journalPath, journal, 'enforcement_replaced');
+    afterPhase('enforcement_replaced');
+  }
+
+  const rotated = readRetainedBrowserRequirement(path);
+  if (rotated.sha256 !== nextSha256 || rotated.enforcement.requirementSha256 !== nextSha256) {
+    throw new Error('Retained browser rotation did not commit the requested identity');
+  }
+  updateRetainedBrowserRotationJournal(journalPath, journal, 'committed');
+  afterPhase('committed');
+  rmSync(journalPath);
+  fsyncDirectory(dirname(journalPath));
+  return {
+    ...rotated,
+    written: true,
+    rotated: true,
+    previousSha256: expectedSha256,
+  };
+}
+
+export function retainedBrowserRotationJournalPath(requirementPath) {
+  return `${requirementPath}.rotation.json`;
+}
+
+export function readRetainedBrowserRotationJournalForRequirement(requirementPath) {
+  return readRetainedBrowserRotationJournal(retainedBrowserRotationJournalPath(requirementPath));
+}
+
+function readRetainedBrowserRotationJournal(path) {
+  if (!pathEntryExists(path)) return null;
+  const bytes = readPrivateBoundedFile(path, 'Retained browser rotation journal', MAX_REQUIREMENT_BYTES);
+  let value;
+  try {
+    value = JSON.parse(bytes.toString('utf8'));
+  } catch (error) {
+    throw new Error(
+      `Retained browser rotation journal is invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  validateRetainedBrowserRotationJournal(value);
+  return value;
+}
+
+function validateRetainedBrowserRotationJournal(value) {
+  const fields = [
+    'schemaVersion',
+    'operationId',
+    'createdAt',
+    'expectedOldSha256',
+    'nextRequirementSha256',
+    'staleReason',
+    'phase',
+    'oldExpectation',
+    'nextRequirement',
+  ];
+  if (
+    value?.schemaVersion !== LOCAL_DASHBOARD_RETAINED_BROWSER_ROTATION_SCHEMA
+    || typeof value !== 'object'
+    || Array.isArray(value)
+    || Object.keys(value).some((field) => !fields.includes(field))
+  ) {
+    throw new Error('Retained browser rotation journal is invalid');
+  }
+  validateCreatedAt(value.createdAt);
+  validateSha256(value.expectedOldSha256, 'Retained browser rotation expectedOldSha256');
+  validateSha256(value.nextRequirementSha256, 'Retained browser rotation nextRequirementSha256');
+  if (!/^[a-f0-9]{12}-[a-f0-9]{12}$/.test(value.operationId)) {
+    throw new Error('Retained browser rotation operationId is invalid');
+  }
+  if (!['retained_daemon_missing', 'retained_browser_missing'].includes(value.staleReason)) {
+    throw new Error('Retained browser rotation staleReason is invalid');
+  }
+  if (!['prepared', 'requirement_replaced', 'enforcement_replaced', 'committed'].includes(value.phase)) {
+    throw new Error('Retained browser rotation phase is invalid');
+  }
+  const oldExpectation = normalizeRetainedBrowserExpectation(value.oldExpectation);
+  for (const field of ['profileId', 'targetId', 'url']) {
+    if (!oldExpectation?.[field]) {
+      throw new Error(`Retained browser rotation oldExpectation requires ${field}`);
+    }
+  }
+  validateHttpUrl(oldExpectation.url);
+  if (sha256Json(value.nextRequirement) !== value.nextRequirementSha256) {
+    throw new Error('Retained browser rotation next requirement digest is invalid');
+  }
+}
+
+function updateRetainedBrowserRotationJournal(path, journal, phase) {
+  const updated = { ...journal, phase };
+  atomicReplacePrivateJson(path, updated);
+  return updated;
+}
+
 function ensureRetainedBrowserEnforcement(requirementPath, createdAt, requirementSha256) {
   const existing = readRetainedBrowserEnforcement(requirementPath);
   if (existing.exists) {
@@ -351,6 +564,34 @@ function atomicWritePrivateJson(path, value) {
     rmSync(staged, { force: true });
     throw error;
   }
+}
+
+function atomicReplacePrivateJson(path, value) {
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  chmodSync(directory, 0o700);
+  const staged = `${path}.next-${process.pid}`;
+  let descriptor = null;
+  try {
+    rmSync(staged, { force: true });
+    descriptor = openSync(staged, 'wx', 0o600);
+    writeFileSync(descriptor, serializePrivateJson(value));
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = null;
+    renameSync(staged, path);
+    fsyncDirectory(directory);
+  } catch (error) {
+    if (descriptor !== null) closeSync(descriptor);
+    rmSync(staged, { force: true });
+    throw error;
+  }
+}
+
+function privateFileSha256(path, label) {
+  return createHash('sha256')
+    .update(readPrivateBoundedFile(path, label, MAX_REQUIREMENT_BYTES))
+    .digest('hex');
 }
 
 function serializePrivateJson(value) {

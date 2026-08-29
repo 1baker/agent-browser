@@ -106,7 +106,7 @@ export function verifyRetainedBrowserRemoteViewResult(payload, request) {
     data?.intent?.runtimeProfile !== request.runtimeProfile
     || profile?.id !== request.runtimeProfile
     || profile?.runtimeProfile !== request.runtimeProfile
-    || target?.profileId !== request.runtimeProfile
+    || (target?.profileId != null && target.profileId !== request.runtimeProfile)
     || shared?.profileId !== request.runtimeProfile
   ) {
     throw preparationError(
