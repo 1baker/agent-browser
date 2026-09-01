@@ -293,6 +293,18 @@ read-only. The doctor also reports <code>profileSmoke.available</code>,
 operators can tell whether the Windows <code>chromium-stealthcdp</code>
 profile-write smoke is ready to run.
 
+For operator-owned Windows Electron apps, use
+<code>agent-browser electron relay install</code> to manage a private WSL
+loopback endpoint without a forwarding shell. Installation and removal are
+dry-run by default and require <code>--apply</code> to change the named
+user-scoped config, service, and timer. The lifecycle never launches the app.
+It requires one exact main process, one Windows <code>127.0.0.1</code>
+listener owned by that process, and a WSL listener bound only to
+<code>127.0.0.1</code>. Use <code>agent-browser electron relay doctor --name
+&lt;id&gt; --json</code> for read-only readiness and drift evidence. The service
+exits with the app and the bounded timer discovers a normal reopen without
+keeping a terminal alive.
+
 Run <code>agent-browser doctor remote-view</code> before changing Guacamole or
 RDP setup. It is read-only and reports install state, Guacamole route-pool
 readiness, XRDP policy, existing <code>agent-browser-rdp</code> and

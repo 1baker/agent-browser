@@ -179,6 +179,12 @@ assert.match(
 
 assert.match(
   publisher,
+  /existingDaemonPid = readRuntimePid\(prepared\.sessionName\)[\s\S]*serviceBrowserForSession\([\s\S]*Number\.isInteger\(existingDaemonPid\)[\s\S]*browserProcessIsLive\(existingDaemonPid\)[\s\S]*isRuntimeHandoffBrowserActive/,
+  'retained service-state evidence must not substitute for a live resumed daemon',
+);
+
+assert.match(
+  publisher,
   /function runAgentJson[\s\S]*maxBuffer: 16 \* 1024 \* 1024,[\s\S]*timeout: 30_000/,
   'local publishing must bound compatibility probes while retaining large structured responses',
 );
@@ -193,6 +199,12 @@ assert.match(
   publisher,
   /const daemonClientBin = runtimeDaemonClientBinary\(daemonPid, rollbackBin\)[\s\S]*runAgentJson\(clientBin, sessionName, \['handoff', 'prepare'\]\)[\s\S]*serviceBrowserForSession\(daemonClientBin[\s\S]*runAgentJson\(daemonClientBin, sessionName, \['close'\]\)/,
   'publisher must try authenticated handoff before service-record-based compatibility close',
+);
+
+assert.match(
+  publisher,
+  /runAgentJson\(daemonClientBin, sessionName, \['close'\]\)[\s\S]*!browserProcessIsLive\(daemonPid\)[\s\S]*alreadyExited: true/,
+  'idle-daemon retirement must tolerate the exact executable disappearing after the liveness check',
 );
 
 assert.match(

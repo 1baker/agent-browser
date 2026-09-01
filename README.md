@@ -1940,6 +1940,18 @@ Windows browser PID and profile, and removes it with the browser. Keep the
 doctor and setup script for operator-owned browsers or explicit fixed-port
 diagnostics.
 
+For an operator-owned Windows Electron app, use the managed relay lifecycle
+instead of keeping a forwarding shell open. Preview `agent-browser electron
+relay install --name termius --process-name Termius.exe --local-port 19222
+--remote-port 9222 --dry-run --json`, then rerun with `--apply`. The command
+installs only a user-scoped config, service, and bounded timer. It never
+launches the app. Readiness requires one exact main process, one Windows
+`127.0.0.1` listener owned by that process, and a WSL endpoint bound only to
+`127.0.0.1`. Use `agent-browser electron relay doctor --name termius --json`
+for read-only evidence and dry-run uninstall before explicit removal. Drifted
+artifacts, duplicate processes, wrong listener ownership, and non-loopback
+listeners fail closed.
+
 Run `agent-browser doctor remote-view` before changing Guacamole or RDP setup.
 It is read-only and reports install state, Guacamole route-pool readiness, XRDP
 policy, existing `agent-browser-rdp` and route-specific user inventory,

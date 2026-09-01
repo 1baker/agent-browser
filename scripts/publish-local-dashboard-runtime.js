@@ -523,6 +523,7 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin) {
             browserPid: data.browserPid ?? null,
             cdpUrl: data.cdpUrl ?? null,
             runtimeProfile: data.runtimeProfile ?? null,
+            host: data.host ?? null,
             handoffPath: data.handoffPath ?? null,
             strandedDaemonTermination: null,
           };
@@ -560,6 +561,15 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin) {
       if (!browserAppearsActive) {
         const closed = runAgentJson(daemonClientBin, sessionName, ['close']);
         if (closed.status !== 0 || closed.json?.success !== true) {
+          if (!browserProcessIsLive(daemonPid)) {
+            report.handoffs.retiredIdleSessions.push({
+              sessionName,
+              daemonPid,
+              compatibilityClose: true,
+              alreadyExited: true,
+            });
+            continue;
+          }
           throw new Error(
             `Could not retire idle daemon session '${sessionName}' before executable replacement: ${closed.error}`,
           );
@@ -600,6 +610,10 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin) {
 
 function resumeRuntimeHandoffs(installBin) {
   for (const prepared of report.handoffs.prepared) {
+    // Capture daemon existence before the service-state readback. The readback
+    // command can start an otherwise idle daemon for this session, and that
+    // newly spawned process is not evidence that handoff resume completed.
+    const existingDaemonPid = readRuntimePid(prepared.sessionName);
     const existing = serviceBrowserForSession(
       installBin,
       prepared.sessionName,
@@ -623,11 +637,15 @@ function resumeRuntimeHandoffs(installBin) {
           `'${prepared.sessionName}': ${prepared.cdpUrl} -> ${browser.cdpEndpoint}`,
         );
       }
-      if (isRuntimeHandoffBrowserActive({
-        browser,
-        expectedBrowser: prepared,
-        isProcessLive: browserProcessIsLive,
-      })) {
+      if (
+        Number.isInteger(existingDaemonPid)
+        && browserProcessIsLive(existingDaemonPid)
+        && isRuntimeHandoffBrowserActive({
+          browser,
+          expectedBrowser: prepared,
+          isProcessLive: browserProcessIsLive,
+        })
+      ) {
         const retryRecordRemoved = removeVerifiedRuntimeHandoffRecord(prepared);
         report.handoffs.resumed.push({
           sessionName: prepared.sessionName,
@@ -638,7 +656,7 @@ function resumeRuntimeHandoffs(installBin) {
             ? browser.tabHandles.filter((tab) => tab?.valid === true).length
             : null,
           retryRecordRemoved,
-          daemonPid: readRuntimePid(prepared.sessionName),
+          daemonPid: existingDaemonPid,
           alreadyResumed: true,
         });
         continue;
@@ -657,7 +675,15 @@ function resumeRuntimeHandoffs(installBin) {
       );
     }
     const data = resumed.json.data || {};
-    if (prepared.browserPid !== null && data.browserPid !== prepared.browserPid) {
+    const staleAttachedPidDropped = prepared.host === 'attached_existing'
+      && data.browserPid == null
+      && data.preparedBrowserPid === prepared.browserPid
+      && data.staleBrowserPidDropped === true;
+    if (
+      prepared.browserPid !== null
+      && data.browserPid !== prepared.browserPid
+      && !staleAttachedPidDropped
+    ) {
       throw new Error(
         `Runtime handoff changed browser PID for session '${prepared.sessionName}': ` +
         `${prepared.browserPid} -> ${data.browserPid}`,
@@ -671,7 +697,11 @@ function resumeRuntimeHandoffs(installBin) {
     }
     report.handoffs.resumed.push({
       sessionName: prepared.sessionName,
-      browserPid: data.browserPid ?? null,
+      browserPid: staleAttachedPidDropped
+        ? prepared.browserPid
+        : data.browserPid ?? null,
+      attachedBrowserPid: data.browserPid ?? null,
+      staleBrowserPidDropped: staleAttachedPidDropped,
       cdpUrl: data.cdpUrl ?? null,
       runtimeProfile: data.runtimeProfile ?? null,
       targetsReattached: data.targetsReattached ?? null,
@@ -709,6 +739,7 @@ function discoverPreparedRuntimeHandoffs(candidateSessions) {
       browserPid: descriptor.browserPid ?? descriptor.browser_pid ?? null,
       cdpUrl: descriptor.cdpUrl ?? descriptor.cdp_url ?? null,
       runtimeProfile: descriptor.runtimeProfile ?? descriptor.runtime_profile ?? null,
+      host: descriptor.host ?? null,
       handoffPath: path,
     });
   }

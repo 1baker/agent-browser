@@ -47,6 +47,17 @@ export function isRuntimeHandoffBrowserActive({
   isProcessLive,
 }) {
   if (!browser || ['closed', 'not_started'].includes(browser.health)) return false;
+  if (
+    browser.host === 'attached_existing'
+    && typeof browser.cdpEndpoint === 'string'
+    && browser.cdpEndpoint.length > 0
+    && (
+      !expectedBrowser?.cdpUrl
+      || browser.cdpEndpoint === expectedBrowser.cdpUrl
+    )
+  ) {
+    return true;
+  }
   const effectivePid = browser.pid ?? expectedBrowser?.browserPid ?? null;
   if (Number.isInteger(effectivePid) && effectivePid > 0) {
     return isProcessLive(effectivePid);

@@ -1584,14 +1584,18 @@ fn wsl_mount_path_to_windows_path(_path: &Path) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn windows_powershell_path() -> Option<PathBuf> {
-    [
-        PathBuf::from("powershell.exe"),
-        PathBuf::from("pwsh.exe"),
+    let absolute = [
         PathBuf::from("/mnt/c/Program Files/PowerShell/7/pwsh.exe"),
         PathBuf::from("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file() || path.components().count() == 1)
+    ];
+    if let Some(path) = absolute.into_iter().find(|path| path.is_file()) {
+        return Some(path);
+    }
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .flat_map(|directory| ["powershell.exe", "pwsh.exe"].map(|name| directory.join(name)))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -1609,7 +1613,9 @@ fn run_windows_powershell(script: &str) -> Result<std::process::Output, String> 
     let powershell = windows_powershell_path().ok_or_else(|| {
         "Windows PowerShell is required for the private WSL DevTools relay".to_string()
     })?;
-    Command::new(powershell)
+    let mut command = Command::new(powershell);
+    prepare_wsl_windows_command(&mut command)?;
+    command
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -1620,6 +1626,47 @@ fn run_windows_powershell(script: &str) -> Result<std::process::Output, String> 
         ])
         .output()
         .map_err(|err| format!("Failed to run Windows PowerShell: {err}"))
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_wsl_windows_command(command: &mut Command) -> Result<(), String> {
+    if std::env::var_os("WSL_INTEROP")
+        .map(PathBuf::from)
+        .is_some_and(|path| {
+            use std::os::unix::fs::FileTypeExt;
+            path.metadata()
+                .map(|metadata| metadata.file_type().is_socket())
+                .unwrap_or(false)
+        })
+    {
+        return Ok(());
+    }
+    let mut sockets = fs::read_dir("/run/WSL")
+        .map_err(|err| format!("No live WSL interoperability socket is available: {err}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            if !name.ends_with("_interop") {
+                return None;
+            }
+            use std::os::unix::fs::FileTypeExt;
+            let metadata = entry.metadata().ok()?;
+            if !metadata.file_type().is_socket() {
+                return None;
+            }
+            let modified = metadata.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect::<Vec<_>>();
+    sockets.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+    let path = sockets
+        .into_iter()
+        .map(|(_, path)| path)
+        .next()
+        .ok_or_else(|| "No live WSL interoperability socket is available".to_string())?;
+    command.env("WSL_INTEROP", path);
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1846,7 +1893,9 @@ public static class AgentBrowserWslLoopbackBridge {{
 [AgentBrowserWslLoopbackBridge]::Run({remote_port})
 "#
     );
-    let mut bridge = Command::new(powershell)
+    let mut bridge_command = Command::new(powershell);
+    prepare_wsl_windows_command(&mut bridge_command)?;
+    let mut bridge = bridge_command
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -1898,7 +1947,7 @@ public static class AgentBrowserWslLoopbackBridge {{
 }
 
 #[cfg(target_os = "linux")]
-fn run_wsl_windows_cdp_relay(
+pub(crate) fn run_wsl_windows_cdp_relay(
     local_port: u16,
     remote_port: u16,
     windows_pid: u32,
@@ -1912,7 +1961,9 @@ fn run_wsl_windows_cdp_relay(
     let powershell = windows_powershell_path().ok_or_else(|| {
         "Windows PowerShell is required for the private WSL DevTools relay".to_string()
     })?;
-    let mut monitor = Command::new(powershell)
+    let mut monitor_command = Command::new(powershell);
+    prepare_wsl_windows_command(&mut monitor_command)?;
+    let mut monitor = monitor_command
         .args([
             "-NoProfile",
             "-NonInteractive",

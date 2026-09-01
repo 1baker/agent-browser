@@ -6,6 +6,26 @@ This file is the top-level planning index for durable agent-browser lanes.
 Detailed research notes and validation reports remain under `docs/dev/notes/`;
 bounded implementation and validation plans remain under `docs/dev/plans/`.
 
+## P126 | Managed WSL Electron Relay
+
+State: READY_FOR_DISRUPTIVE_DRILL
+
+P126 turns the verified private WSL-to-Windows Electron DevTools relay into a
+supported dry-run-first install, doctor, run, and drift-guarded uninstall
+lifecycle. It preserves the live Termius authority until isolated validation
+passes, then proves normal close/reopen recovery before separately auditing the
+obsolete Tailscale port mapping and reboot-drill readiness.
+
+The supported lifecycle is installed and healthy, exact Termius targets
+survived managed-service recovery, and the duplicate tailnet TCP 2223 listener
+is removed without changing TCP 22 or web routes. Final closure is gated only
+on an operator-approved Termius application close/reopen and coordinated reboot
+drill because either can interrupt active SSH terminals.
+
+Evidence:
+
+- `docs/dev/plans/0126-2026-08-29-managed-wsl-electron-relay-plan.md`
+
 ## P125 | Runtime Handoff Browser Identity Regression
 
 State: CLOSED

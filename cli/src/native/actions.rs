@@ -10042,17 +10042,26 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
         ));
     }
 
+    let host = current_service_browser_host(&state.session_id);
     let descriptor = RuntimeHandoffDescriptor {
         schema_version: 1,
         session_name: state.session_id.clone(),
         cdp_url: manager.get_cdp_url().to_string(),
-        browser_pid: manager.browser_pid().or(state.attached_browser_pid),
+        // attached_existing is endpoint authority, not process ownership. A
+        // WSL relay or other intermediary PID may disappear while the exact
+        // CDP endpoint remains healthy, so do not persist that PID as a
+        // browser-liveness requirement across executable handoff.
+        browser_pid: if host == ServiceBrowserHost::AttachedExisting {
+            None
+        } else {
+            manager.browser_pid().or(state.attached_browser_pid)
+        },
         runtime_profile: manager
             .runtime_profile_name()
             .map(str::to_string)
             .or_else(|| state.attached_runtime_profile.clone()),
         engine: state.engine.clone(),
-        host: current_service_browser_host(&state.session_id),
+        host,
         close_browser_on_close: state.close_behavior == CloseBehavior::CloseBrowser,
         active_target_id: manager.active_target_id().ok().map(str::to_string),
         prepared_at: OffsetDateTime::now_utc()
@@ -10073,6 +10082,7 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
         "browserPid": descriptor.browser_pid,
         "cdpUrl": descriptor.cdp_url,
         "runtimeProfile": descriptor.runtime_profile,
+        "host": descriptor.host,
         "handoffPath": path,
     }))
 }
@@ -10091,9 +10101,14 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
             state.session_id
         ));
     }
+    let stale_attached_pid_dropped = descriptor
+        .browser_pid
+        .is_some_and(|browser_pid| !pid_is_running(browser_pid))
+        && descriptor.host == ServiceBrowserHost::AttachedExisting;
     if descriptor
         .browser_pid
         .is_some_and(|browser_pid| !pid_is_running(browser_pid))
+        && !stale_attached_pid_dropped
     {
         return Err(format!(
             "Runtime handoff browser PID is no longer running for session '{}'",
@@ -10108,7 +10123,11 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
     .await?;
     state.reset_input_state();
     state.attached_runtime_profile = descriptor.runtime_profile.clone();
-    state.attached_browser_pid = descriptor.browser_pid;
+    state.attached_browser_pid = if stale_attached_pid_dropped {
+        None
+    } else {
+        descriptor.browser_pid
+    };
     state.close_behavior = if descriptor.close_browser_on_close {
         CloseBehavior::CloseBrowser
     } else {
@@ -10127,7 +10146,9 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
     Ok(json!({
         "resumed": true,
         "sessionName": descriptor.session_name,
-        "browserPid": descriptor.browser_pid,
+        "browserPid": state.attached_browser_pid,
+        "preparedBrowserPid": descriptor.browser_pid,
+        "staleBrowserPidDropped": stale_attached_pid_dropped,
         "cdpUrl": descriptor.cdp_url,
         "runtimeProfile": descriptor.runtime_profile,
         "activeTargetId": state

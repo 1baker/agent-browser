@@ -5486,6 +5486,34 @@ Examples:
 "##
         }
 
+        // === Electron ===
+        "electron" => {
+            r##"
+agent-browser electron - Manage WSL access to operator-owned Windows Electron apps
+
+Usage:
+  agent-browser electron relay install --name <id> --process-name <app.exe> --local-port <port> --remote-port <port> [--dry-run|--apply] [--json]
+  agent-browser electron relay doctor --name <id> [--json]
+  agent-browser electron relay run --name <id> [--json]
+  agent-browser electron relay uninstall --name <id> [--dry-run|--apply] [--json]
+
+The managed relay is WSL-only and never launches the Windows app. It requires
+one exact Electron main process, one Windows 127.0.0.1 listener on the remote
+port, and listener ownership by that process. The WSL endpoint also binds only
+127.0.0.1. Missing, duplicate, non-loopback, wrong-owner, and drifted states
+fail closed.
+
+Install and uninstall are dry-run by default. Apply creates or removes only the
+named user-scoped config, service, and timer. The service exits with the app;
+the bounded timer discovers a normally reopened app without keeping a shell
+alive. No firewall, SSH, mirrored-network, app-launch, or terminal changes are
+made.
+
+Example:
+  agent-browser electron relay install --name termius --process-name Termius.exe --local-port 19222 --remote-port 9222 --dry-run --json
+"##
+        }
+
         // === Connect ===
         "connect" => {
             r##"
@@ -6359,6 +6387,7 @@ Setup:
   doctor remote-view         Diagnose Guacamole and RDP remote-view setup
   remote-view open <url>     Open a route-bound remote-headed browser and return view URLs
   setup windows-browser      Print a reviewed PowerShell setup script for Windows browser routing
+  electron relay             Manage a loopback-only WSL relay to an operator-owned Windows Electron app
   install --with-deps        Also install system dependencies (Linux)
   install --with-remote-view-privileges
                              Install the Linux privilege helper for RDP/Guacamole desktop setup

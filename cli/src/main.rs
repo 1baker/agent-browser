@@ -5,6 +5,7 @@ mod chat;
 mod color;
 mod commands;
 mod connection;
+mod electron_relay;
 mod flags;
 mod install;
 mod mcp;
@@ -1587,6 +1588,15 @@ fn main() {
     if clean.is_empty() {
         print_help();
         return;
+    }
+
+    if clean.first().map(String::as_str) == Some("electron") {
+        let code = electron_relay::run_command(&clean, flags.json);
+        std::process::exit(if code == std::process::ExitCode::SUCCESS {
+            0
+        } else {
+            1
+        });
     }
 
     // Handle install separately

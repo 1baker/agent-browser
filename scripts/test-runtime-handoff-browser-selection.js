@@ -66,6 +66,29 @@ assert.equal(
 );
 assert.equal(
   isRuntimeHandoffBrowserActive({
+    browser: { ...exactBrowser, host: 'attached_existing', pid: null },
+    expectedBrowser: { ...expectedBrowser, host: 'attached_existing' },
+    isProcessLive: () => false,
+  }),
+  true,
+  'an attached-existing lane uses its exact live CDP endpoint instead of an intermediary PID',
+);
+assert.equal(
+  isRuntimeHandoffBrowserActive({
+    browser: {
+      ...exactBrowser,
+      host: 'attached_existing',
+      pid: null,
+      cdpEndpoint: 'ws://127.0.0.1:9333/devtools/browser/wrong',
+    },
+    expectedBrowser: { ...expectedBrowser, host: 'attached_existing' },
+    isProcessLive: () => false,
+  }),
+  false,
+  'attached-existing recovery must still match the exact prepared endpoint',
+);
+assert.equal(
+  isRuntimeHandoffBrowserActive({
     browser: { ...exactBrowser, health: 'closed' },
     expectedBrowser,
     isProcessLive: () => true,

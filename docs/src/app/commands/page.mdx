@@ -38,6 +38,8 @@ agent-browser doctor remote-view # Diagnose Guacamole, XRDP, RDP users, privileg
 agent-browser doctor remote-view --compact --json # Bounded readiness, issue, and next-action summary
 agent-browser setup windows-browser --print-powershell # Print reviewed Windows routing setup script
 agent-browser setup windows-browser --print-powershell --doctor # Embed current route diagnostics in the script
+agent-browser electron relay install --name termius --process-name Termius.exe --local-port 19222 --remote-port 9222 --dry-run --json # Preview a private WSL Electron relay
+agent-browser electron relay doctor --name termius --json # Read relay identity, ownership, loopback, and drift evidence
 pnpm test:wsl-windows-chromium-profile-live # Validate WSL Windows Chromium profile writes when doctor says available
 agent-browser stream enable [--port <port>]  # Start runtime WebSocket streaming
 agent-browser stream status           # Show runtime streaming state and bound port

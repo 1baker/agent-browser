@@ -4,6 +4,78 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## Turn 183 | 2026-08-29
+
+Scope: implement, publish, and safely migrate P126 without interrupting active
+Termius SSH terminals.
+
+Actions:
+
+- Added the generic dry-run-first `electron relay` lifecycle, exact Windows
+  process/listener authority checks, loopback-only foreground relay, bounded
+  user timer, drift-guarded uninstall, docs, help, skill guidance, and isolated
+  lifecycle fixture.
+- Repaired attached-existing runtime handoff identity and liveness handling,
+  stale intermediary PID recovery, a disappearing idle-daemon executable race,
+  and persistent DevTools HTTP response validation found during live migration.
+- Published the runtime through guarded browser handoff, migrated Termius to
+  the managed unit, and quarantined rather than deleted the obsolete wrapper
+  and units.
+- Removed only tailnet TCP 2223. Preserved tailnet TCP 22 forwarding to the
+  home SSH listener and every HTTPS/web route.
+
+Validation:
+
+- Electron relay fixture, runtime handoff selection, publisher orchestration,
+  local convergence, Rust formatting, focused Rust tests, production-target
+  strict Clippy, lint, typecheck, dashboard/docs builds, optimized build,
+  direct plan audit, CodeGraph synchronization, and diff hygiene.
+- All-target strict Clippy remains blocked by 12 existing test-only findings in
+  unrelated `mcp.rs`, service, and control-plane test code; those user changes
+  were preserved rather than folded into P126.
+- Installed doctor reported `ready=true`, Windows PID 6672, active managed PID
+  2831626, and loopback-only endpoints. Service stop/start preserved all three
+  exact Termius target IDs.
+- The publication journal reached terminal `ready`; retained browser handoffs
+  and the exact Workshop conversation survived without a prompt submission.
+
+Result:
+
+- P126 is ready for its disruptive drill. A real Termius close/reopen and a
+  coordinated reboot remain operator-gated because they close active SSH
+  terminals; neither was performed during this turn.
+- Bilateral DOCX/PDF submission stopped before Send because the document guard
+  rejected the retained AuraCall session as not live even though read-only CDP
+  and service inventory proved the exact browser and Workshop target healthy.
+  No substitute browser was launched and no document prompt was submitted.
+
+## Turn 182 | 2026-08-29
+
+Scope: begin P126 managed WSL Electron relay productization.
+
+Actions:
+
+- Froze an immutable intake covering a generic loopback-only Windows Electron
+  relay lifecycle, retained Termius preservation, close/reopen recovery, and a
+  separate Tailscale cleanup audit.
+- Reused Plan 0098's exact process, listener-owner, and private-loopback
+  invariants instead of broadening Windows network exposure.
+- Confirmed the bilateral controller can enforce complete per-side packet
+  collection, Codex approval before Pro submission, and one bridge transit.
+- Recorded a no-delegation receipt because this runtime does not authorize
+  sub-agent spawning and the change has one overlapping lifecycle surface.
+
+Validation:
+
+- `codegraph status`
+- `./bin/dual_hemisphere_thought --help`
+- `git status --short --branch`
+
+Result:
+
+- P126 is active. No browser, relay, SSH, firewall, Tailscale, or installed
+  runtime state changed during intake.
+
 ## Turn 181 | 2026-08-27
 
 Scope: replace static runtime-handoff alias coverage with behavioral recovery
