@@ -1,7 +1,9 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(target_os = "linux")]
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -66,6 +68,8 @@ fn create_profile_dir(path: &Path, label: &str) -> Result<(), String> {
 pub struct ChromeProcess {
     child: Child,
     aux_processes: Vec<Child>,
+    #[cfg(target_os = "linux")]
+    windows_browser: Option<WslWindowsBrowserIdentity>,
     pub ws_url: String,
     owns_process: bool,
     temp_user_data_dir: Option<PathBuf>,
@@ -77,6 +81,13 @@ pub struct ChromeProcess {
     /// On Unix, the process group ID used to kill the entire Chrome process tree.
     #[cfg(unix)]
     pgid: Option<i32>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WslWindowsBrowserIdentity {
+    pid: u32,
+    user_data_dir: String,
 }
 
 /// Result of waiting for Chrome to exit, including whether force kill was needed.
@@ -157,6 +168,20 @@ impl ChromeProcess {
             ..ProcessShutdownOutcome::default()
         };
 
+        #[cfg(target_os = "linux")]
+        let windows_browser_kill_ok = match self.windows_browser.as_ref() {
+            Some(identity) => match stop_exact_windows_browser(identity) {
+                Ok(()) => true,
+                Err(err) => {
+                    outcome.errors.push(err);
+                    false
+                }
+            },
+            None => true,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let windows_browser_kill_ok = true;
+
         let child_kill_ok = match self.child.kill() {
             Ok(()) => true,
             Err(err) => {
@@ -208,7 +233,8 @@ impl ChromeProcess {
                 false
             }
         };
-        outcome.force_kill_succeeded = child_kill_ok && process_group_kill_ok && wait_ok;
+        outcome.force_kill_succeeded =
+            windows_browser_kill_ok && child_kill_ok && process_group_kill_ok && wait_ok;
         let aux_ok = kill_aux_processes(&mut self.aux_processes, &mut outcome);
         outcome.force_kill_succeeded = outcome.force_kill_succeeded && aux_ok;
         if std::env::var_os("AGENT_BROWSER_TEST_FORCE_KILL_FAILURE").is_some() {
@@ -878,11 +904,12 @@ pub fn launch_chrome_detached(options: &LaunchOptions) -> Result<ManualChromeLau
     unlock_macos_keychain(options.keychain_password.as_deref())?;
     let linux_keyring_env = unlock_linux_keyring(options.keychain_password.as_deref())?;
     let ChromeArgs {
-        args,
+        mut args,
         user_data_dir,
         runtime_profile,
         ..
     } = build_chrome_args(options, options.attachable)?;
+    translate_wsl_mounted_paths_for_windows_chrome(&chrome_path, &mut args);
 
     cleanup_stale_profile_lock(&user_data_dir);
     ensure_profile_not_in_use(&user_data_dir)?;
@@ -1241,6 +1268,10 @@ fn try_launch_chrome(
         runtime_profile,
     } = build_chrome_args(options, remote_debugging)?;
     translate_wsl_mounted_paths_for_windows_chrome(chrome_path, &mut args);
+    #[cfg(target_os = "linux")]
+    let wsl_windows_launch = is_wsl_mounted_windows_executable(chrome_path);
+    #[cfg(not(target_os = "linux"))]
+    let wsl_windows_launch = false;
 
     // Mitigate stale DevToolsActivePort risk (e.g., previous crash left it behind).
     // Puppeteer does similar cleanup before spawning.
@@ -1339,13 +1370,14 @@ fn try_launch_chrome(
 
     // Prefer DevToolsActivePort, but also watch the drained stderr buffer for
     // platforms that only emit "DevTools listening on ...".
-    let ws_url = if remote_debugging {
+    let mut ws_url = if remote_debugging {
         match wait_for_devtools_endpoint(
             &mut child,
             &user_data_dir,
             &stderr_logs,
             stderr_log_path.as_deref(),
             deadline,
+            wsl_windows_launch,
         ) {
             Ok(url) => url,
             Err(err) => {
@@ -1360,6 +1392,66 @@ fn try_launch_chrome(
     } else {
         String::new()
     };
+
+    #[cfg(target_os = "linux")]
+    let mut windows_browser = None;
+    #[cfg(target_os = "linux")]
+    if wsl_windows_launch && remote_debugging {
+        let remote_port = ws_debug_port(&ws_url).ok_or_else(|| {
+            format!("Windows Chromium returned an invalid DevTools URL: {ws_url}")
+        })?;
+        let windows_user_data_dir =
+            wsl_mount_path_to_windows_path(&user_data_dir).ok_or_else(|| {
+                format!(
+                    "Windows Chromium profile is not on a Windows-mounted path: {}",
+                    user_data_dir.display()
+                )
+            })?;
+        let identity = match wait_for_exact_windows_browser_identity(
+            &windows_user_data_dir,
+            std::time::Instant::now() + Duration::from_secs(10),
+        ) {
+            Ok(identity) => identity,
+            Err(err) => {
+                if let Ok(matches) = query_exact_windows_browser_identities(&windows_user_data_dir)
+                {
+                    if matches.len() == 1 {
+                        let _ = stop_exact_windows_browser(&matches[0]);
+                    }
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                let mut outcome = ProcessShutdownOutcome::default();
+                kill_aux_processes(&mut aux_processes, &mut outcome);
+                cleanup_temp_dir(&temp_user_data_dir);
+                return Err(err);
+            }
+        };
+        let (relay, local_port) = match start_wsl_windows_cdp_relay(remote_port, identity.pid) {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = stop_exact_windows_browser(&identity);
+                let _ = child.kill();
+                let _ = child.wait();
+                let mut outcome = ProcessShutdownOutcome::default();
+                kill_aux_processes(&mut aux_processes, &mut outcome);
+                cleanup_temp_dir(&temp_user_data_dir);
+                return Err(err);
+            }
+        };
+        let mut parsed = url::Url::parse(&ws_url)
+            .map_err(|err| format!("Windows Chromium returned an invalid DevTools URL: {err}"))?;
+        parsed
+            .set_port(Some(local_port))
+            .map_err(|_| "Failed to assign the WSL DevTools relay port".to_string())?;
+        parsed
+            .set_host(Some("127.0.0.1"))
+            .map_err(|err| format!("Failed to assign the WSL DevTools relay host: {err}"))?;
+        ws_url = parsed.to_string();
+        aux_processes.push(child);
+        child = relay;
+        windows_browser = Some(identity);
+    }
 
     #[cfg(unix)]
     let pgid = {
@@ -1408,6 +1500,8 @@ fn try_launch_chrome(
         stderr_log_path,
         stderr_drainer: Some(stderr_drainer),
         aux_processes,
+        #[cfg(target_os = "linux")]
+        windows_browser,
         #[cfg(unix)]
         pgid,
     })
@@ -1485,6 +1579,473 @@ fn wsl_mount_path_to_windows_path(path: &Path) -> Option<String> {
 
 #[cfg(not(target_os = "linux"))]
 fn wsl_mount_path_to_windows_path(_path: &Path) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn windows_powershell_path() -> Option<PathBuf> {
+    let absolute = [
+        PathBuf::from("/mnt/c/Program Files/PowerShell/7/pwsh.exe"),
+        PathBuf::from("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+    ];
+    if let Some(path) = absolute.into_iter().find(|path| path.is_file()) {
+        return Some(path);
+    }
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .flat_map(|directory| ["powershell.exe", "pwsh.exe"].map(|name| directory.join(name)))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn powershell_encoded_command(script: &str) -> String {
+    use base64::Engine as _;
+    let bytes = script
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn run_windows_powershell(script: &str) -> Result<std::process::Output, String> {
+    let powershell = windows_powershell_path().ok_or_else(|| {
+        "Windows PowerShell is required for the private WSL DevTools relay".to_string()
+    })?;
+    let mut command = Command::new(powershell);
+    prepare_wsl_windows_command(&mut command)?;
+    command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            &powershell_encoded_command(script),
+        ])
+        .output()
+        .map_err(|err| format!("Failed to run Windows PowerShell: {err}"))
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_wsl_windows_command(command: &mut Command) -> Result<(), String> {
+    if std::env::var_os("WSL_INTEROP")
+        .map(PathBuf::from)
+        .is_some_and(|path| {
+            use std::os::unix::fs::FileTypeExt;
+            path.metadata()
+                .map(|metadata| metadata.file_type().is_socket())
+                .unwrap_or(false)
+        })
+    {
+        return Ok(());
+    }
+    let mut sockets = fs::read_dir("/run/WSL")
+        .map_err(|err| format!("No live WSL interoperability socket is available: {err}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            if !name.ends_with("_interop") {
+                return None;
+            }
+            use std::os::unix::fs::FileTypeExt;
+            let metadata = entry.metadata().ok()?;
+            if !metadata.file_type().is_socket() {
+                return None;
+            }
+            let modified = metadata.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect::<Vec<_>>();
+    sockets.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+    let path = sockets
+        .into_iter()
+        .map(|(_, path)| path)
+        .next()
+        .ok_or_else(|| "No live WSL interoperability socket is available".to_string())?;
+    command.env("WSL_INTEROP", path);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn windows_profile_arg_matches(command_line: &str, user_data_dir: &str) -> bool {
+    let command = command_line.replace('/', "\\").to_ascii_lowercase();
+    let profile = user_data_dir.replace('/', "\\").to_ascii_lowercase();
+    let prefixes = [
+        format!("--user-data-dir={profile}"),
+        format!("--user-data-dir=\"{profile}\""),
+    ];
+    prefixes.iter().any(|prefix| {
+        command.match_indices(prefix).any(|(index, _)| {
+            let suffix = &command[index + prefix.len()..];
+            suffix.is_empty() || suffix.chars().next().is_some_and(char::is_whitespace)
+        })
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn query_exact_windows_browser_identities(
+    user_data_dir: &str,
+) -> Result<Vec<WslWindowsBrowserIdentity>, String> {
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+$items = @(Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
+  Where-Object { $_.CommandLine -and $_.CommandLine -notmatch '(?i)(^|\s)--type=' } |
+  Select-Object ProcessId,CommandLine)
+ConvertTo-Json -InputObject $items -Compress
+"#;
+    let output = run_windows_powershell(script)?;
+    if !output.status.success() {
+        return Err(format!(
+            "Windows browser identity query failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(stdout.trim_start_matches('\u{feff}').trim())
+        .map_err(|err| format!("Windows browser identity query returned invalid JSON: {err}"))?;
+    let rows = value
+        .as_array()
+        .ok_or_else(|| "Windows browser identity query did not return an array".to_string())?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            let pid = row
+                .get("ProcessId")
+                .or_else(|| row.get("processId"))?
+                .as_u64()? as u32;
+            let command_line = row
+                .get("CommandLine")
+                .or_else(|| row.get("commandLine"))?
+                .as_str()?;
+            windows_profile_arg_matches(command_line, user_data_dir).then(|| {
+                WslWindowsBrowserIdentity {
+                    pid,
+                    user_data_dir: user_data_dir.to_string(),
+                }
+            })
+        })
+        .collect())
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_exact_windows_browser_identity(
+    user_data_dir: &str,
+    deadline: std::time::Instant,
+) -> Result<WslWindowsBrowserIdentity, String> {
+    let mut last_error = None;
+    while std::time::Instant::now() <= deadline {
+        match query_exact_windows_browser_identities(user_data_dir) {
+            Ok(matches) if matches.len() == 1 => return Ok(matches[0].clone()),
+            Ok(matches) if matches.len() > 1 => {
+                return Err(format!(
+                    "Refusing WSL DevTools relay: {} Windows browser main processes match profile {}",
+                    matches.len(),
+                    user_data_dir
+                ));
+            }
+            Ok(_) => {}
+            Err(err) => last_error = Some(err),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(last_error.unwrap_or_else(|| {
+        format!(
+            "Refusing WSL DevTools relay: no exact Windows browser main process matches profile {user_data_dir}"
+        )
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn stop_exact_windows_browser(identity: &WslWindowsBrowserIdentity) -> Result<(), String> {
+    let matches = query_exact_windows_browser_identities(&identity.user_data_dir)?;
+    if matches.is_empty() {
+        return Ok(());
+    }
+    if matches.len() != 1 || matches[0].pid != identity.pid {
+        return Err(format!(
+            "Refusing to stop Windows browser PID {} because exact profile ownership changed",
+            identity.pid
+        ));
+    }
+    let output = run_windows_powershell(&format!(
+        "$ErrorActionPreference = 'Stop'; Stop-Process -Id {} -Force",
+        identity.pid
+    ))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Failed to stop exact Windows browser PID {}: {}",
+            identity.pid,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn start_wsl_windows_cdp_relay(remote_port: u16, windows_pid: u32) -> Result<(Child, u16), String> {
+    let reservation = TcpListener::bind("127.0.0.1:0")
+        .map_err(|err| format!("Failed to reserve a WSL DevTools relay port: {err}"))?;
+    let local_port = reservation
+        .local_addr()
+        .map_err(|err| format!("Failed to inspect the WSL DevTools relay port: {err}"))?
+        .port();
+    drop(reservation);
+
+    let ready_path = std::env::temp_dir().join(format!(
+        "agent-browser-wsl-cdp-relay-{}.ready",
+        uuid::Uuid::new_v4()
+    ));
+    let executable = std::env::current_exe()
+        .map_err(|err| format!("Failed to resolve the agent-browser executable: {err}"))?;
+    let mut command = Command::new(executable);
+    command
+        .env("AGENT_BROWSER_WSL_WINDOWS_CDP_RELAY", "1")
+        .env(
+            "AGENT_BROWSER_WSL_WINDOWS_CDP_LOCAL_PORT",
+            local_port.to_string(),
+        )
+        .env(
+            "AGENT_BROWSER_WSL_WINDOWS_CDP_REMOTE_PORT",
+            remote_port.to_string(),
+        )
+        .env(
+            "AGENT_BROWSER_WSL_WINDOWS_BROWSER_PID",
+            windows_pid.to_string(),
+        )
+        .env("AGENT_BROWSER_WSL_WINDOWS_CDP_READY_FILE", &ready_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        command.pre_exec(|| {
+            libc::setpgid(0, 0);
+            Ok(())
+        });
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Failed to start the WSL DevTools relay: {err}"))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() <= deadline {
+        if let Ok(message) = fs::read_to_string(&ready_path) {
+            let _ = fs::remove_file(&ready_path);
+            if message.trim() == "ready" && is_port_reachable(local_port) {
+                return Ok((child, local_port));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("WSL DevTools relay failed: {}", message.trim()));
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            let _ = fs::remove_file(&ready_path);
+            return Err(format!(
+                "WSL DevTools relay exited before readiness with status {status}"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = fs::remove_file(&ready_path);
+    Err("Timeout waiting for the WSL DevTools relay".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_windows_tcp_bridge(stream: TcpStream, remote_port: u16) -> Result<(), String> {
+    let powershell = windows_powershell_path().ok_or_else(|| {
+        "Windows PowerShell is required for the private WSL DevTools relay".to_string()
+    })?;
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @"
+using System;
+using System.Net.Sockets;
+using System.Threading;
+
+public static class AgentBrowserWslLoopbackBridge {{
+  public static void Run(int port) {{
+    using (var client = new TcpClient("127.0.0.1", port))
+    using (var network = client.GetStream()) {{
+      var input = Console.OpenStandardInput();
+      var output = Console.OpenStandardOutput();
+      var upload = new Thread(() => {{
+        try {{ input.CopyTo(network); network.Flush(); }} catch {{}}
+      }});
+      var download = new Thread(() => {{
+        try {{ network.CopyTo(output); output.Flush(); }} catch {{}}
+      }});
+      upload.IsBackground = true;
+      download.IsBackground = true;
+      upload.Start();
+      download.Start();
+      while (upload.IsAlive && download.IsAlive) Thread.Sleep(10);
+      try {{ client.Client.Shutdown(SocketShutdown.Both); }} catch {{}}
+    }}
+  }}
+}}
+"@
+[AgentBrowserWslLoopbackBridge]::Run({remote_port})
+"#
+    );
+    let mut bridge_command = Command::new(powershell);
+    prepare_wsl_windows_command(&mut bridge_command)?;
+    let mut bridge = bridge_command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            &powershell_encoded_command(&script),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("Failed to start Windows loopback bridge: {err}"))?;
+    let mut bridge_stdin = bridge
+        .stdin
+        .take()
+        .ok_or_else(|| "Windows loopback bridge stdin was unavailable".to_string())?;
+    let mut bridge_stdout = bridge
+        .stdout
+        .take()
+        .ok_or_else(|| "Windows loopback bridge stdout was unavailable".to_string())?;
+    let mut upload_stream = stream
+        .try_clone()
+        .map_err(|err| format!("Failed to clone WSL relay stream: {err}"))?;
+    let mut download_stream = stream;
+    let upload = std::thread::spawn(move || {
+        let mut buffer = [0_u8; 16 * 1024];
+        while let Ok(size) = upload_stream.read(&mut buffer) {
+            if size == 0
+                || bridge_stdin.write_all(&buffer[..size]).is_err()
+                || bridge_stdin.flush().is_err()
+            {
+                break;
+            }
+        }
+    });
+    let mut buffer = [0_u8; 16 * 1024];
+    while let Ok(size) = bridge_stdout.read(&mut buffer) {
+        if size == 0
+            || download_stream.write_all(&buffer[..size]).is_err()
+            || download_stream.flush().is_err()
+        {
+            break;
+        }
+    }
+    let _ = upload.join();
+    let _ = bridge.wait();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn run_wsl_windows_cdp_relay(
+    local_port: u16,
+    remote_port: u16,
+    windows_pid: u32,
+    ready_path: Option<&Path>,
+) -> Result<(), String> {
+    let listener = TcpListener::bind(("127.0.0.1", local_port))
+        .map_err(|err| format!("Failed to bind WSL loopback port {local_port}: {err}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|err| format!("Failed to configure WSL loopback relay: {err}"))?;
+    let powershell = windows_powershell_path().ok_or_else(|| {
+        "Windows PowerShell is required for the private WSL DevTools relay".to_string()
+    })?;
+    let mut monitor_command = Command::new(powershell);
+    prepare_wsl_windows_command(&mut monitor_command)?;
+    let mut monitor = monitor_command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &format!("Wait-Process -Id {windows_pid} -ErrorAction Stop"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("Failed to start Windows browser watchdog: {err}"))?;
+    std::thread::sleep(Duration::from_millis(50));
+    if let Some(status) = monitor
+        .try_wait()
+        .map_err(|err| format!("Failed to poll Windows browser watchdog: {err}"))?
+    {
+        return Err(format!(
+            "Windows browser watchdog exited before relay readiness with status {status}"
+        ));
+    }
+    if let Some(path) = ready_path {
+        fs::write(path, "ready")
+            .map_err(|err| format!("Failed to write WSL relay readiness: {err}"))?;
+    }
+
+    loop {
+        if monitor
+            .try_wait()
+            .map_err(|err| format!("Failed to poll Windows browser watchdog: {err}"))?
+            .is_some()
+        {
+            return Ok(());
+        }
+        match listener.accept() {
+            Ok((stream, _)) => {
+                std::thread::spawn(move || {
+                    let _ = spawn_windows_tcp_bridge(stream, remote_port);
+                });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => return Err(format!("WSL DevTools relay accept failed: {err}")),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn run_wsl_windows_cdp_relay_from_env() -> Option<i32> {
+    std::env::var_os("AGENT_BROWSER_WSL_WINDOWS_CDP_RELAY")?;
+    let ready_path =
+        std::env::var_os("AGENT_BROWSER_WSL_WINDOWS_CDP_READY_FILE").map(PathBuf::from);
+    let parse = |name: &str| {
+        std::env::var(name)
+            .map_err(|_| format!("Missing {name}"))?
+            .parse::<u16>()
+            .map_err(|_| format!("Invalid {name}"))
+    };
+    let result = (|| {
+        let local_port = parse("AGENT_BROWSER_WSL_WINDOWS_CDP_LOCAL_PORT")?;
+        let remote_port = parse("AGENT_BROWSER_WSL_WINDOWS_CDP_REMOTE_PORT")?;
+        let windows_pid = std::env::var("AGENT_BROWSER_WSL_WINDOWS_BROWSER_PID")
+            .map_err(|_| "Missing AGENT_BROWSER_WSL_WINDOWS_BROWSER_PID".to_string())?
+            .parse::<u32>()
+            .map_err(|_| "Invalid AGENT_BROWSER_WSL_WINDOWS_BROWSER_PID".to_string())?;
+        run_wsl_windows_cdp_relay(local_port, remote_port, windows_pid, ready_path.as_deref())
+    })();
+    match result {
+        Ok(()) => Some(0),
+        Err(err) => {
+            if let Some(path) = ready_path.as_ref() {
+                let _ = fs::write(path, &err);
+            }
+            Some(1)
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn run_wsl_windows_cdp_relay_from_env() -> Option<i32> {
     None
 }
 
@@ -1633,6 +2194,7 @@ fn wait_for_devtools_active_port(
         &ChromeStderrLogBuffer::default(),
         None,
         deadline,
+        false,
     )
 }
 
@@ -1642,10 +2204,22 @@ fn wait_for_devtools_endpoint(
     stderr_logs: &ChromeStderrLogBuffer,
     stderr_log_path: Option<&Path>,
     deadline: std::time::Instant,
+    allow_detached_windows_endpoint: bool,
 ) -> Result<String, String> {
     let poll_interval = Duration::from_millis(50);
 
     while std::time::Instant::now() <= deadline {
+        if let Some((port, ws_path)) = read_devtools_active_port(user_data_dir) {
+            if allow_detached_windows_endpoint || is_port_reachable(port) {
+                let ws_url = format!("ws://127.0.0.1:{}{}", port, ws_path);
+                return Ok(ws_url);
+            }
+        }
+
+        if let Some(ws_url) = stderr_logs.devtools_ws_url() {
+            return Ok(ws_url);
+        }
+
         if let Ok(Some(status)) = child.try_wait() {
             std::thread::sleep(Duration::from_millis(25));
             // Chrome exited before writing DevToolsActivePort -- report the
@@ -1662,21 +2236,6 @@ fn wait_for_devtools_endpoint(
                 &stderr_logs.snapshot_stderr(),
                 stderr_log_path,
             ));
-        }
-
-        if let Some((port, ws_path)) = read_devtools_active_port(user_data_dir) {
-            // Chrome can briefly expose a DevToolsActivePort value before the
-            // socket is actually accepting connections, and on relaunch the
-            // value can change once startup settles. Only return after the
-            // advertised port is reachable.
-            if is_port_reachable(port) {
-                let ws_url = format!("ws://127.0.0.1:{}{}", port, ws_path);
-                return Ok(ws_url);
-            }
-        }
-
-        if let Some(ws_url) = stderr_logs.devtools_ws_url() {
-            return Ok(ws_url);
         }
 
         std::thread::sleep(poll_interval);
@@ -2921,6 +3480,7 @@ mod tests {
 
     #[test]
     fn test_build_args_headless_includes_headless_flag() {
+        let _guard = EnvGuard::new(&["HOME", "USERPROFILE"]);
         let opts = LaunchOptions {
             headless: true,
             ..Default::default()
@@ -2947,6 +3507,7 @@ mod tests {
 
     #[test]
     fn test_build_args_headed_no_headless_flag() {
+        let _guard = EnvGuard::new(&["HOME", "USERPROFILE"]);
         let opts = LaunchOptions {
             headless: false,
             ..Default::default()
@@ -3121,6 +3682,28 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn test_windows_profile_arg_match_requires_exact_profile_boundary() {
+        let profile = r"C:\Users\Baker\AppData\Local\Temp\agent-browser-profile";
+        assert!(windows_profile_arg_matches(
+            &format!(r#"chrome.exe --user-data-dir="{profile}" --no-sandbox"#),
+            profile
+        ));
+        assert!(windows_profile_arg_matches(
+            &format!(r"chrome.exe --user-data-dir={profile} --no-sandbox"),
+            profile
+        ));
+        assert!(!windows_profile_arg_matches(
+            &format!(r"chrome.exe --user-data-dir={profile}-stale --no-sandbox"),
+            profile
+        ));
+        assert!(!windows_profile_arg_matches(
+            r"chrome.exe --user-data-dir=C:\Users\Baker\Other",
+            profile
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn test_wsl_mounted_windows_profile_skips_unix_private_permissions() {
         assert!(should_skip_private_dir_permissions(Path::new(
             "/mnt/c/Users/ecoch/AppData/Local/Temp/profile"
@@ -3208,7 +3791,7 @@ mod tests {
     }
 
     #[test]
-    fn test_headed_display_fallback_not_used_when_display_set() {
+    fn test_headed_display_uses_ambient_display_when_set() {
         let guard = EnvGuard::new(&["DISPLAY"]);
         guard.set("DISPLAY", ":9");
 
@@ -3217,7 +3800,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(headed_display_value(&opts), None);
+        assert_eq!(headed_display_value(&opts), Some(":9".to_string()));
     }
 
     #[test]
@@ -3571,6 +4154,8 @@ mod tests {
             let _process = ChromeProcess {
                 child,
                 aux_processes: Vec::new(),
+                #[cfg(target_os = "linux")]
+                windows_browser: None,
                 ws_url: String::new(),
                 owns_process: true,
                 temp_user_data_dir: Some(dir.clone()),
@@ -3601,6 +4186,8 @@ mod tests {
         let mut process = ChromeProcess {
             child,
             aux_processes: Vec::new(),
+            #[cfg(target_os = "linux")]
+            windows_browser: None,
             ws_url: "ws://127.0.0.1:9222/devtools/browser/handoff".to_string(),
             owns_process: true,
             temp_user_data_dir: Some(dir.clone()),

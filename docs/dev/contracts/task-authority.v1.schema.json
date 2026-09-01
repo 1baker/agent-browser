@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-browser.local/contracts/task-authority.v1.schema.json",
+  "title": "agent-browser broker task authority",
+  "description": "First-class issue, status, reconcile, confirmation-decision, cleanup, and revoke contract for exact-target bounded browser task authority. New issuances preserve broker-assigned ordered step IDs, exact URL bindings, a plan hash, a durable cursor, per-command admission receipts, completed, failed, or indeterminate outcome evidence, and lineage-bound replacement after confirmed reconciliation. Cleanup previews bind candidate receipt hashes and verified checkpoint-ledger evidence into the exact apply digest.",
+  "$defs": {
+    "issuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["operator", "service"] },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action"],
+      "properties": {
+        "action": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "format": "uri", "description": "Exact requested URL. Required for navigation steps; read steps without it bind to the broker-derived current URL." },
+        "evidenceBytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "issueRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskName", "expectedTargetId", "expectedUrl", "approvalReference", "expiresInSeconds", "steps"],
+      "properties": {
+        "sessionName": { "type": "string", "minLength": 1 },
+        "taskName": { "type": "string", "minLength": 1 },
+        "serviceName": { "type": "string", "minLength": 1 },
+        "agentName": { "type": "string", "minLength": 1 },
+        "expectedTargetId": { "type": "string", "minLength": 1 },
+        "expectedUrl": { "type": "string", "format": "uri" },
+        "issuer": { "$ref": "#/$defs/issuer" },
+        "approvalReference": { "type": "string", "minLength": 1 },
+        "expiresInSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "steps": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/$defs/step" } }
+      }
+    },
+    "revokeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "sessionName": { "type": "string", "minLength": 1 },
+        "revokedBy": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "reconcileRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reconciliationId", "unresolvedStepId", "taskName", "expectedTargetId", "expectedUrl", "approvalReference", "expiresInSeconds", "steps"],
+      "properties": {
+        "sessionName": { "type": "string", "minLength": 1 },
+        "reconciliationId": { "type": "string", "minLength": 1 },
+        "unresolvedStepId": { "type": "string", "minLength": 1 },
+        "taskName": { "type": "string", "minLength": 1 },
+        "serviceName": { "type": "string", "minLength": 1 },
+        "agentName": { "type": "string", "minLength": 1 },
+        "expectedTargetId": { "type": "string", "minLength": 1 },
+        "expectedUrl": { "type": "string", "format": "uri" },
+        "issuer": { "$ref": "#/$defs/issuer" },
+        "approvalReference": { "type": "string", "minLength": 1 },
+        "expiresInSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "steps": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/$defs/step" } }
+      }
+    },
+    "confirmationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["confirmationId", "expectedAction", "decision"],
+      "properties": {
+        "sessionName": { "type": "string", "minLength": 1 },
+        "confirmationId": { "type": "string", "minLength": 1 },
+        "expectedAction": { "type": "string", "enum": ["task_authority_issue", "task_authority_reconcile", "task_authority_revoke"] },
+        "decision": { "type": "string", "enum": ["confirm", "deny"] },
+        "decidedBy": { "$ref": "#/$defs/issuer" }
+      }
+    },
+    "confirmationCleanupRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionName": { "type": "string", "minLength": 1 },
+        "retainCount": { "type": "integer", "minimum": 0 },
+        "minAgeSeconds": { "type": "integer", "minimum": 0 },
+        "apply": { "type": "boolean" },
+        "reviewSha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/issueRequest" },
+    { "$ref": "#/$defs/reconcileRequest" },
+    { "$ref": "#/$defs/confirmationRequest" },
+    { "$ref": "#/$defs/confirmationCleanupRequest" },
+    { "$ref": "#/$defs/revokeRequest" }
+  ]
+}

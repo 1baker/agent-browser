@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 use super::actions::{
-    execute_command, service_profile_lease_gate, DaemonState, ServiceProfileLeaseGate,
+    execute_command, recover_owned_browser_after_timeout, service_profile_lease_gate, DaemonState,
+    ServiceProfileLeaseGate,
 };
 use super::browser_session_authority::browser_session_authority_snapshot;
 use super::cancellation::CancellationToken as RunningJobCancel;
@@ -1576,12 +1577,20 @@ async fn run_worker(
                         if !timed_out && !cancelled {
                             persist_service_job_finished(&request, &response);
                         }
-                        send_response_before_follow_up(
-                            request.response_tx,
-                            response,
-                            refresh_browser_health(&mut state, &status),
-                        )
-                        .await;
+                        let follow_up = async {
+                            if timed_out {
+                                run_post_timeout_health_circuit(
+                                    &mut state,
+                                    &status,
+                                    &request.command,
+                                )
+                                .await;
+                            } else {
+                                refresh_browser_health(&mut state, &status).await;
+                            }
+                        };
+                        send_response_before_follow_up(request.response_tx, response, follow_up)
+                            .await;
                         status.set_state(WorkerState::Ready);
                     }
                     WorkerMessage::Shutdown(done_tx) => {
@@ -1669,6 +1678,84 @@ async fn refresh_browser_health(state: &mut DaemonState, status: &ControlPlaneSt
     }
 
     if mgr.is_connection_alive().await {
+        status.set_browser_health(BrowserHealth::Ready);
+    } else {
+        status.set_browser_health(BrowserHealth::CdpDisconnected);
+        if tokio::time::timeout(
+            Duration::from_millis(POST_TIMEOUT_BROWSER_RECOVERY_MS),
+            recover_owned_browser_after_timeout(state),
+        )
+        .await
+        .is_ok_and(|result| result == Ok(true))
+        {
+            status.set_browser_health(BrowserHealth::Ready);
+        }
+    }
+}
+
+const POST_TIMEOUT_TARGET_REPLACEMENT_MS: u64 = 5_000;
+const POST_TIMEOUT_BROWSER_RECOVERY_MS: u64 = 12_000;
+
+fn command_requires_post_timeout_renderer_circuit(command: &Value) -> bool {
+    if command.get("serviceTabHandle").is_some() {
+        return false;
+    }
+    matches!(
+        command.get("action").and_then(Value::as_str).unwrap_or(""),
+        "navigate" | "evaluate" | "snapshot" | "screenshot" | "content" | "title" | "url" | "wait"
+    )
+}
+
+/// Run only after the caller has received its timeout result. The circuit uses
+/// browser-level CDP first, never replays the timed-out action, and refuses to
+/// mutate externally attached or service-handle-owned targets.
+async fn run_post_timeout_health_circuit(
+    state: &mut DaemonState,
+    status: &ControlPlaneStatus,
+    command: &Value,
+) {
+    if !command_requires_post_timeout_renderer_circuit(command) {
+        refresh_browser_health(state, status).await;
+        return;
+    }
+
+    let Some(manager) = state.browser.as_mut() else {
+        status.set_browser_health(BrowserHealth::NotStarted);
+        return;
+    };
+    if manager.has_process_exited() {
+        status.set_browser_health(BrowserHealth::ProcessExited);
+        cleanup_exited_browser(state).await;
+        return;
+    }
+
+    if !manager.is_connection_alive().await {
+        status.set_browser_health(BrowserHealth::CdpDisconnected);
+        if tokio::time::timeout(
+            Duration::from_millis(POST_TIMEOUT_BROWSER_RECOVERY_MS),
+            recover_owned_browser_after_timeout(state),
+        )
+        .await
+        .is_ok_and(|result| result == Ok(true))
+        {
+            status.set_browser_health(BrowserHealth::Ready);
+        }
+        return;
+    }
+
+    if manager.is_cdp_connection() {
+        status.set_browser_health(BrowserHealth::Ready);
+        return;
+    }
+    let replacement = tokio::time::timeout(
+        Duration::from_millis(POST_TIMEOUT_TARGET_REPLACEMENT_MS),
+        manager.replace_active_page_after_timeout(),
+    )
+    .await;
+    if replacement.is_ok_and(|result| result.is_ok()) {
+        state.ref_map.clear();
+        state.reset_input_state();
+        state.update_stream_client().await;
         status.set_browser_health(BrowserHealth::Ready);
     } else {
         status.set_browser_health(BrowserHealth::CdpDisconnected);
@@ -2998,6 +3085,26 @@ mod tests {
 
         handle.shutdown().await;
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn post_timeout_renderer_circuit_is_narrow_and_preserves_service_handles() {
+        assert!(command_requires_post_timeout_renderer_circuit(&json!({
+            "action": "evaluate"
+        })));
+        assert!(command_requires_post_timeout_renderer_circuit(&json!({
+            "action": "navigate"
+        })));
+        assert!(!command_requires_post_timeout_renderer_circuit(&json!({
+            "action": "evaluate",
+            "serviceTabHandle": { "targetId": "retained-target" }
+        })));
+        assert!(!command_requires_post_timeout_renderer_circuit(&json!({
+            "action": "state_list"
+        })));
+        assert!(!command_requires_post_timeout_renderer_circuit(&json!({
+            "action": "__test_sleep"
+        })));
     }
 
     #[tokio::test]

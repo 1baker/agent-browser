@@ -117,6 +117,7 @@ export const SERVICE_REQUEST_STRING_FIELDS = [
   "serviceName",
   "agentName",
   "taskName",
+  "taskStepId",
   "targetServiceId",
   "targetService",
   "siteId",
@@ -151,6 +152,7 @@ export const SERVICE_REQUEST_INTEGER_FIELDS = [
   "maxConsoleEntries",
   "maxErrorEntries",
   "maxRequestEntries",
+  "taskEvidenceBytes",
   "cdpPort"
 ];
 
@@ -174,7 +176,8 @@ export const SERVICE_REQUEST_OBJECT_FIELDS = [
   "probe",
   "uiAction",
   "networkCapture",
-  "fileTransfer"
+  "fileTransfer",
+  "taskAuthority"
 ];
 
 export const SERVICE_REQUEST_MCP_TOOL_NAME = "service_request";

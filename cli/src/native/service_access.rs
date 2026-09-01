@@ -1285,8 +1285,9 @@ fn profile_reuse_decision(
     let display_isolation = launch_posture
         .get("displayIsolation")
         .and_then(Value::as_str);
-    let reusable_browser_host = if profile.profile_origin == ProfileOrigin::ExternalByop
-        && request.browser_host.is_none()
+    let reusable_browser_host = if launch_posture.get("source").and_then(Value::as_str)
+        == Some("service_default")
+        || (profile.profile_origin == ProfileOrigin::ExternalByop && request.browser_host.is_none())
     {
         None
     } else {
@@ -4395,6 +4396,74 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("external_byop_browser_host_unconstrained")));
+    }
+
+    #[test]
+    fn service_access_plan_routes_to_managed_attached_browser_when_host_is_only_a_default() {
+        let state = ServiceState {
+            profiles: BTreeMap::from([(
+                "chatgpt-pro".to_string(),
+                BrowserProfile {
+                    id: "chatgpt-pro".to_string(),
+                    name: "ChatGPT Pro".to_string(),
+                    target_service_ids: vec!["chatgpt".to_string()],
+                    authenticated_service_ids: vec!["chatgpt".to_string()],
+                    shared_service_ids: vec!["AuraCall".to_string()],
+                    ..BrowserProfile::default()
+                },
+            )]),
+            browsers: BTreeMap::from([(
+                "session:auracall-chatgpt-broker-v7".to_string(),
+                BrowserProcess {
+                    id: "session:auracall-chatgpt-broker-v7".to_string(),
+                    profile_id: Some("chatgpt-pro".to_string()),
+                    host: BrowserHost::AttachedExisting,
+                    health: BrowserHealth::Ready,
+                    view_streams: vec![ViewStream {
+                        provider: ViewStreamProvider::CdpScreencast,
+                        control_input: Some(ControlInputProvider::CdpInput),
+                        ..ViewStream::default()
+                    }],
+                    active_session_ids: vec!["auracall-chatgpt-broker-v7".to_string()],
+                    ..BrowserProcess::default()
+                },
+            )]),
+            sessions: BTreeMap::from([(
+                "auracall-chatgpt-broker-v7".to_string(),
+                BrowserSession {
+                    id: "auracall-chatgpt-broker-v7".to_string(),
+                    profile_id: Some("chatgpt-pro".to_string()),
+                    browser_ids: vec!["session:auracall-chatgpt-broker-v7".to_string()],
+                    lease: LeaseState::Exclusive,
+                    ..BrowserSession::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+
+        let plan = service_access_plan_for_state(
+            &state,
+            ServiceAccessPlanRequest {
+                service_name: Some("AuraCall".to_string()),
+                target_service_ids: vec!["chatgpt".to_string()],
+                runtime_profile: Some("chatgpt-pro".to_string()),
+                ..ServiceAccessPlanRequest::default()
+            },
+        );
+
+        assert_eq!(
+            plan["decision"]["profileReuse"]["recommendedAction"],
+            "reuse_existing_browser"
+        );
+        assert_eq!(plan["decision"]["profileReuse"]["activeLeaseCount"], 0);
+        assert_eq!(
+            plan["decision"]["serviceRequest"]["request"]["browserId"],
+            "session:auracall-chatgpt-broker-v7"
+        );
+        assert_eq!(
+            plan["decision"]["serviceRequest"]["request"]["sessionName"],
+            "auracall-chatgpt-broker-v7"
+        );
     }
 
     #[test]

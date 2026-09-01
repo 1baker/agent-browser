@@ -35,8 +35,11 @@ agent-browser handoff resume          # Reattach a replacement daemon to the bro
 agent-browser doctor windows-browser  # Diagnose WSL to Windows browser CDP routing
 agent-browser doctor windows-browser --scan-ports --firewall # Scan bounded ports and query firewall state
 agent-browser doctor remote-view # Diagnose Guacamole, XRDP, RDP users, privileges, displays, and issue codes
+agent-browser doctor remote-view --compact --json # Bounded readiness, issue, and next-action summary
 agent-browser setup windows-browser --print-powershell # Print reviewed Windows routing setup script
 agent-browser setup windows-browser --print-powershell --doctor # Embed current route diagnostics in the script
+agent-browser electron relay install --name termius --process-name Termius.exe --local-port 19222 --remote-port 9222 --dry-run --json # Preview a private WSL Electron relay
+agent-browser electron relay doctor --name termius --json # Read relay identity, ownership, loopback, and drift evidence
 pnpm test:wsl-windows-chromium-profile-live # Validate WSL Windows Chromium profile writes when doctor says available
 agent-browser stream enable [--port <port>]  # Start runtime WebSocket streaming
 agent-browser stream status           # Show runtime streaming state and bound port
@@ -173,10 +176,19 @@ agent-browser get attr <sel> <attr>   # Get attribute
 agent-browser get title               # Get page title
 agent-browser get url                 # Get current URL
 agent-browser get cdp-url             # Get CDP WebSocket URL
+agent-browser get page --url https://example.com --max-bytes 64000 --timeout 15000
 agent-browser get count <sel>         # Count matching elements
 agent-browser get box <sel>           # Get bounding box
 agent-browser get styles <sel>        # Get computed styles
 ```
+
+`get page` is a bounded secondary fetch through Chromium's network stack in an
+ephemeral background target that is closed before return. It does not use
+`Runtime.evaluate`, navigate the active target, or replay navigation; it obeys
+the domain allowlist and sends no browser credentials unless
+`--include-credentials` is specified. `--max-bytes` defaults to 64,000 (hard
+maximum 1,000,000) and `--timeout` defaults to 15,000 ms (hard maximum 60,000
+ms).
 
 ## Check state
 
@@ -762,7 +774,7 @@ Service browser-health reconciliation runs in the daemon background every 60000 
 
 Due active service monitors are enqueued through the same service worker every 60000 ms by default. Set <code>service.monitorIntervalMs</code>, pass <code>--service-monitor-interval &lt;ms&gt;</code>, or set <code>AGENT_BROWSER_SERVICE_MONITOR_INTERVAL_MS</code> to change the scheduler interval. Use <code>0</code> to disable monitor scheduling. Use <code>service monitors run-due</code>, HTTP <code>POST /api/service/monitors/run-due</code>, MCP <code>service_monitors_run_due</code>, or <code>runDueServiceMonitors()</code> to check due active monitors immediately. Use monitor pause/resume commands, HTTP <code>POST /api/service/monitors/&lt;id&gt;/pause</code> and <code>POST /api/service/monitors/&lt;id&gt;/resume</code> routes, MCP tools, or client helpers to change only the retained monitor state while preserving health evidence. Use monitor triage commands, HTTP <code>POST /api/service/monitors/&lt;id&gt;/triage</code>, MCP <code>service_monitor_triage</code>, or <code>triageServiceMonitor()</code> to acknowledge the related monitor incident and clear reviewed failures in one queued operation. Use monitor reset commands, HTTP <code>POST /api/service/monitors/&lt;id&gt;/reset-failures</code>, MCP <code>service_monitor_reset_failures</code>, or <code>resetServiceMonitorFailures()</code> to clear only reviewed failures while keeping the last failure evidence. The runner updates <code>lastCheckedAt</code>, <code>lastSucceededAt</code>, <code>lastFailedAt</code>, <code>lastResult</code>, and <code>consecutiveFailures</code>; failed probes set the monitor <code>state</code> to <code>faulted</code> and append a service incident event.
 
-Service control jobs do not time out at the worker boundary by default. Set <code>service.jobTimeoutMs</code>, pass <code>--service-job-timeout &lt;ms&gt;</code>, or set <code>AGENT_BROWSER_SERVICE_JOB_TIMEOUT_MS</code> to mark long-running dispatched jobs as <code>timed_out</code>. Use <code>0</code> to disable it. Jobs include advisory <code>namingWarnings</code> when a request is missing <code>serviceName</code>, <code>agentName</code>, or <code>taskName</code>; anonymous compatibility requests are still accepted.
+Service control jobs do not time out at the worker boundary by default. Set <code>service.jobTimeoutMs</code>, pass <code>--service-job-timeout &lt;ms&gt;</code>, or set <code>AGENT_BROWSER_SERVICE_JOB_TIMEOUT_MS</code> to mark long-running dispatched jobs as <code>timed_out</code>. Use <code>0</code> to disable it. A renderer-facing timeout is never replayed. After returning it, the daemon probes browser-level CDP, replaces only an affected ordinary owned tab with a blank target, or performs one bounded recovery of a locally owned browser when CDP is lost. Service-tab handles and external attachments are preserved for explicit reconciliation. Jobs include advisory <code>namingWarnings</code> when a request is missing <code>serviceName</code>, <code>agentName</code>, or <code>taskName</code>; anonymous compatibility requests are still accepted.
 
 Browser recovery defaults to 3 relaunch attempts, 1000 ms base backoff, and 30000 ms max backoff before marking a browser <code>faulted</code>. Set <code>service.recoveryRetryBudget</code>, <code>service.recoveryBaseBackoffMs</code>, and <code>service.recoveryMaxBackoffMs</code>, pass the matching service recovery CLI flags, or use the <code>AGENT_BROWSER_SERVICE_RECOVERY_*</code> environment variables to tune this for a service host. Recovery-started trace events include <code>details.policySource.retryBudget</code>, <code>details.policySource.baseBackoffMs</code>, and <code>details.policySource.maxBackoffMs</code> so clients can audit whether each active value came from defaults, config, environment, or CLI flags.
 
@@ -815,20 +827,118 @@ agent-browser auth list
 
 ## Confirmation
 
-When `--confirm-actions` is set, certain action categories return a `confirmation_required` response instead of executing immediately. Use `confirm` or `deny` to approve or reject the action.
+When `--confirm-actions` is set, matching exact actions or consequence categories return a `confirmation_required` response instead of executing immediately. Categories are `read_only`, `navigation`, `page_mutation`, `external_mutation`, `file_transfer`, `credentials`, `script_execution`, `browser_lifecycle`, and `control_plane`; `mutation` selects all mutation-sensitive categories. The response includes the exact action, consequence class, confirmation ID, active target ID and URL, and 60-second expiry. Use `confirm` or `deny` to approve or reject the action.
 
 ```bash
 agent-browser confirm <confirmation-id>  # Approve a pending action
 agent-browser deny <confirmation-id>     # Deny a pending action
 ```
 
-Pending confirmations auto-deny after 60 seconds.
+Pending confirmations expire after 60 seconds. Confirm and deny require the exact ID. Confirmation fails closed if the active target ID or URL changed, and an unexpired pending action cannot be overwritten by another approval request.
 
 ```bash
-agent-browser --confirm-actions eval,download eval "document.title"
+agent-browser --confirm-actions script_execution,file_transfer eval "document.title"
 # Returns confirmation_required with ID
 agent-browser confirm c_8f3a1234
 ```
+
+## Task authority envelopes
+
+Long-running agentic clients can send a broker-issued immutable `taskAuthority`
+with each HTTP, MCP, or service request. The daemon binds that authority to the exact
+caller task, retained target, initial URL, allowed origins, action/evidence
+budgets, consequence ceiling, and RFC 3339 expiry. It atomically reserves the
+budget before dispatch, so daemon restart does not reset the allowance.
+
+```json
+{
+  "serviceName": "ResearchConcierge",
+  "taskName": "reviewEvidence",
+  "action": "title",
+  "params": {},
+  "taskStepId": "authority-2026-08-14-001:step-0",
+  "taskEvidenceBytes": 4096,
+  "taskAuthority": {
+    "id": "authority-2026-08-14-001",
+    "taskName": "reviewEvidence",
+    "serviceName": "ResearchConcierge",
+    "allowedOrigins": ["https://example.com"],
+    "allowedActions": ["title"],
+    "planSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "targetBinding": {
+      "targetId": "A1B2C3D4",
+      "initialUrl": "https://example.com/"
+    },
+    "evidenceBudget": {
+      "maxActions": 10,
+      "maxEvidenceBytes": 65536
+    },
+    "consequenceCeiling": "read_only",
+    "expiresAt": "2026-08-14T22:00:00Z"
+  }
+}
+```
+
+Create the envelope from an approved bounded plan instead of choosing its
+scope client-side:
+
+```http
+POST /api/service/task-authorities/issue
+Content-Type: application/json
+
+{
+  "sessionName": "research-retained",
+  "taskName": "reviewEvidence",
+  "serviceName": "ResearchConcierge",
+  "expectedTargetId": "A1B2C3D4",
+  "expectedUrl": "https://example.com/",
+  "issuer": { "kind": "operator", "id": "user" },
+  "approvalReference": "review-plan-42",
+  "expiresInSeconds": 300,
+  "steps": [{ "action": "title", "evidenceBytes": 4096 }]
+}
+```
+
+The first response is `confirmation_required`. A matching confirmation mints
+the record with broker-derived ordered step IDs, exact URL bindings,
+per-step evidence, `planSha256`, `allowedActions`, `allowedOrigins`, and
+aggregate budgets. Copy the exact next step ID from
+`approvedPlan.steps[usage.nextStepIndex].stepId` into `taskStepId`. Read one record with
+`GET /api/service/task-authorities/<id>?sessionName=research-retained`, list
+records at the collection route, and revoke with
+`POST /api/service/task-authorities/<id>/revoke`. When exactly one receipt is
+indeterminate, submit its exact step ID, a stable reconciliation ID, fresh
+target ID and URL, and an explicit replacement plan to
+`POST /api/service/task-authorities/<id>/reconcile`. The confirmed transaction
+revokes the predecessor first and returns one lineage-bound replacement. MCP
+exposes equivalent `service_task_authority_issue`,
+`service_task_authority_status`, `service_task_authority_reconcile`,
+`service_task_authority_confirmation`, and `service_task_authority_revoke`
+tools. Resolve the staged exact-target control through
+`POST /api/service/task-authorities/confirmation` with the same
+`sessionName`, returned `confirmationId`, exact `expectedAction`, and a
+`decision` of `confirm` or `deny`.
+
+Every v2 command must match the current broker cursor's `taskStepId`, action,
+expected current URL, optional requested URL, and fixed evidence reservation.
+The daemon durably records that step and command ID before dispatch, so a crash
+or retry cannot consume it twice. Before publishing the response, the daemon
+adds a durable `completed` or `failed` outcome with the exact response SHA-256,
+byte count, post-action target/URL evidence, and finalization time. Status
+projects any admitted receipt without that terminal record as `indeterminate`;
+it remains consumed and must not be replayed. Every command must also keep the same
+envelope and plan hashes, target ID, caller labels, and allowed HTTP(S) origin.
+An action above `consequenceCeiling` returns `confirmation_required`
+and can proceed only through the fresh exact-target confirmation flow. Set
+`AGENT_BROWSER_REQUIRE_TASK_AUTHORITY=1` for a retained service/API daemon;
+ordinary direct CLI commands cannot construct this envelope. In required mode,
+only `confirm`, `deny`, and broker authority lifecycle operations bypass
+pre-existing admission. Browser cleanup still needs an authorized request or a
+daemon stop outside the browser command path.
+
+Plans are immutable. Replan by revoking the old authority and issuing a new
+one through fresh exact-target confirmation. Do the same for an indeterminate
+step after reviewing its receipt; never infer success or retry it automatically.
 
 ## State management
 

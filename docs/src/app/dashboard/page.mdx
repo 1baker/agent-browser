@@ -22,10 +22,30 @@ first start it creates `~/.agent-browser/dashboard-auth.json` with hashed
 superuser credentials and writes bootstrap credentials to the mode-0600 file
 `~/.agent-browser/dashboard-auth.env`.
 
-The default `admin` account is a superuser. A `codex` superuser is also created
+The default `admin` account is a superuser. A `codex` observer is also created
 for agent observation through trusted ingress. The dashboard records
 `AGENT_BROWSER_DASHBOARD_AUTH_FILE` in `~/.agent-browser/.env` so foreground
 runs and the user-scoped service use the same auth store.
+
+For passwordless phone access over a private tailnet, keep the dashboard bound
+to localhost and expose it only through Tailscale Serve. Set
+<code>AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH=1</code> and put the exact operator
+login in <code>AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS</code>. The
+allowlist accepts comma-separated logins. Tailscale identity is accepted only
+for HTTPS requests whose forwarded host ends in <code>.ts.net</code> and whose
+<code>Tailscale-User-Login</code> header matches the allowlist. Do not enable
+this mode when Funnel, Cloudflare, or another reverse proxy can reach the same
+listener.
+
+That authenticated dashboard origin also proxies <code>/guacamole/*</code> to
+the loopback-only Guacamole service. The proxy removes caller identity headers
+and dashboard cookies, then supplies the configured
+<code>AGENT_BROWSER_GUACAMOLE_HEADER_USER</code> only after dashboard
+authentication. Configure
+<code>AGENT_BROWSER_REMOTE_VIEW_EXTERNAL_URL</code> as the private
+<code>https://&lt;node&gt;.&lt;tailnet&gt;.ts.net/guacamole/</code> base so
+durable <code>/remote-view/&lt;handoff-id&gt;</code> links and provider routes
+share one authenticated phone-accessible origin. Keep port 8092 on loopback.
 
 ### Custom stream port
 
@@ -69,14 +89,70 @@ user service is restarted. For operator-visible QA on
 pnpm publish:local-dashboard -- --expect-marker "Stream port"
 ```
 
+When one retained browser must survive publication, add
+<code>--expect-retained-session</code>,
+<code>--expect-retained-profile</code>,
+<code>--expect-retained-target</code>, and
+<code>--expect-retained-url</code>. The publisher reads that exact daemon and
+CDP target before backup or quiescence, pins its PID and DevTools endpoint, and
+requires the same identity after handoff and at final readiness. Missing,
+ambiguous, or changed evidence stops the operation. The pinned identity is
+also journaled so recovery cannot publish readiness around a lost target.
+Use <code>pnpm check:local-dashboard-retained-browser --</code> with the same
+identity flags for a read-only preflight that does not lock, build, or launch a
+replacement daemon or browser.
+
+After the operator selects the intended page in a retained browser, the pin
+operation can instead take only
+<code>--discover-retained-url-prefix https://chatgpt.com/g/WORKSHOP_PROJECT_ID/</code>.
+It reads current daemon and CDP inventories without navigation or launch and
+requires exactly one ready page target beneath the reviewed origin and path.
+Zero or multiple matches, degraded browser health, incomplete identity, an
+unreadable live lane, and origin or path-prefix drift fail before either private
+authority file is written. The durable requirement records the discovered
+target's exact URL and stable identity, never the broader prefix.
+
+To remove the manual navigation handoff, run
+<code>agent-browser install workstation prepare-retained-browser --url EXACT_URL --url-prefix REVIEWED_PROJECT_PREFIX --runtime-profile PROFILE --json</code>.
+The command uses only route-bound <code>remote-view open</code>, verifies exact
+rendered URL, profile, target, browser, session, and operator-visible route
+agreement, then requires one exact-URL and exact-profile discovery match before
+pinning. Its daemon session is the runtime-profile id, so an ambient default
+lane cannot satisfy preparation. It has no page interaction or prompt-submission action.
+The preparation controller is included in the versioned source-free workstation
+support payload and does not require the repository checkout.
+
+For a dead prior lane, add
+<code>--rotate-stale-requirement-sha256 CURRENT_SHA256</code> to that same
+preparation command. This is an explicit compare-and-swap operation: it refuses
+healthy or uncertain old authority, rechecks the replacement, journals the two
+private authority-file updates, and keeps dashboard publication fail closed
+until the new pair is fully committed.
+
 The command builds <code>packages/dashboard/out</code>, rebuilds the local CLI,
 backs up and replaces <code>~/.local/bin/agent-browser</code>, restarts
-<code>agent-browser-dashboard.service</code>, and smokes the live dashboard URL.
-The smoke reads <code>/api/runtime/manifest</code> from the running service and
-records the served package version, service UI contract, embedded dashboard
-SHA-256, supported UI features, current executable path, and current executable
-SHA-256. The publish command fails when that live manifest does not match the
-installed binary it just wrote. Use <code>pnpm smoke:local-dashboard-runtime
+<code>agent-browser-dashboard.service</code>, and verifies the live dashboard
+URL. Without a user systemd bus, the publisher validates the standalone
+dashboard PID, owner, command, and dashboard-mode evidence before signaling
+that exact listener. Identity mismatch fails closed. Required readiness checks
+read the served HTML, requested bundle markers,
+and <code>/api/runtime/manifest</code>, then verify the package version, service
+UI contract, embedded dashboard SHA-256, supported UI features, current
+executable path, and current executable SHA-256. The publish command fails when
+those checks do not match the installed binary it just wrote.
+
+Rendered-page QA then uses a disposable browser. A known failure to launch that
+browser before renderer acquisition is returned separately as
+<code>browser_launch_unavailable</code> and does not invalidate proven HTTP
+readiness. Authentication, DOM, workspace, and other post-launch failures stay
+fatal. Add <code>--require-browser-smoke</code> when disposable-browser launch
+must be a required gate, or <code>--skip-browser</code> for an HTTP-only publish.
+The smoke reads the installed launch capability and uses patched Chromium only
+when its manifest, executable, artifact smoke, and WSL profile-smoke evidence
+agree. It creates a disposable profile under the matching Windows temp root and
+does not add a general <code>--no-sandbox</code> argument. Intentional overrides
+can use <code>--browser-build</code> or <code>--browser-profile</code>.
+Use <code>pnpm smoke:local-dashboard-runtime
 -- --expect-marker "Stream port"</code> to verify the already installed service
 without replacing the binary. If the dashboard detects a stale or missing
 manifest, it renders a <code>Runtime contract drift</code> warning above the
@@ -84,6 +160,43 @@ control surface. <code>agent-browser install doctor --json</code> and
 <code>agent-browser doctor remote-view --json</code> include the same
 <code>dashboardRuntime</code> manifest, so CLI and dashboard readbacks describe
 the same installed binary and embedded UI bundle.
+
+Run <code>pnpm test:local-dashboard-publisher-lifecycle</code> after changing
+standalone listener ownership, quiescence, restart, or rollback behavior. The
+fixture uses isolated temporary processes and does not replace the installed
+runtime or stop the live dashboard. Run <code>pnpm
+test:local-dashboard-publisher-orchestration</code> after changing top-level
+build, backup, replacement, handoff, readiness, or rollback ordering. That
+fixture uses isolated real files and injected adapters without building,
+installing, restarting, or attaching to a browser. Publication reports bind the
+built, installed source, backup, replacement, and restored binaries to SHA-256
+evidence. Backup mismatch fails before quiescence. Restore failure remains
+secondary to the initiating publication error, and restart occurs only when the
+current binary still matches a verified backup or verified replacement. Before
+quiescence, a secured atomic transaction is written under
+<code>~/.agent-browser/publications/</code>. The next invocation recovers an
+incomplete verified replacement to readiness or a verified source to rolled
+back before any new build. Exact handoff descriptors and already-resumed PID/CDP
+evidence prevent duplicate resume; unknown installed bytes fail closed.
+Run <code>pnpm status:local-dashboard-publication</code> for strictly read-only
+journal, lock, phase, and artifact inspection. Run <code>pnpm
+recover:local-dashboard-publication</code> only to reconcile an incomplete
+transaction; it never falls through to a new build.
+The installed Service dashboard reads the same evidence from authenticated
+<code>GET /api/service/publications/local-dashboard</code> and shows a
+Publication status light plus a review alert when a publisher is active,
+verified recovery is available, or installed bytes are unknown. The surface is
+read-only and has no recovery button or POST route. A recoverable transaction
+shows <code>pnpm recover:local-dashboard-publication</code> as an explicit
+operator command only after its phase and artifact evidence are visible.
+The transaction status also states whether an exact retained-browser guard was
+required and whether its final check passed, without exposing the session,
+target, or URL in the public status projection.
+
+Run <code>pnpm test:rust-isolated</code> for a local full Rust suite. It uses a
+temporary home, agent state root, socket directory, and runtime directory and
+forces serial execution so tests cannot share the operator's live browser
+state. A focused Rust filter may be passed after <code>--</code>.
 
 An available profile tile provides <strong>Open browser</strong>, which opens
 the guided launcher with that exact profile selected and runs its no-launch
@@ -110,7 +223,7 @@ controls without lifecycle ownership.
     </tr>
     <tr>
       <td><strong>Service view</strong></td>
-      <td>Worker health, browser health, compact retained-record status with hover details and cleanup alerts only when retained state needs attention, a remembered operator identity for incident audit metadata, optional operator notes for incident acknowledgement and resolution, prominent service-sourced incident severity, escalation, recommended action displays, and remedy summary groups, a service-owned incident history timeline with local fallback, a trace explorer backed by <code>/api/service/trace</code> for service, agent, task, browser, profile, session, and time-window debugging, including ownership summary cards, target identity chips from <code>summary.contexts[].targetServiceIds</code>, naming warnings, and profile lease wait cards from the shared trace payload, a browser-health transition timeline for crash/recovery visibility, a backend-owned profile allocation view from <code>profileAllocations</code> with detail inspection refreshed from <code>GET /api/service/profiles/&lt;id&gt;/allocation</code>, target readiness rows including <code>needs_manual_seeding</code> for Google first-login profiles, and guarded by <code>pnpm test:dashboard-profile-allocation</code>, a grouped incident browser panel with handling-state filters plus acknowledge and resolve actions, incident filtering for crash/disconnect/recovery and timed-out or cancelled jobs, reconciliation status, active-versus-retained summaries for sessions, tabs, and jobs, recent service jobs with naming warnings, detail inspection, and queued/running job cancellation, a managed browser table that defaults to actionable live or degraded records while keeping inert retained placeholders behind retained/all filters, grouped and locally remembered browser table lifecycle, density, column visibility, and column width controls with a full table-view reset, selected-record inspection for browsers, profiles, incidents, sessions, tabs, and jobs with a hero summary, primary action row, semantic runtime/control/ownership/activity sections, related-record jumps, and an Evidence disclosure for raw JSON, long IDs, and endpoints, embedded remote-view inspection for browser view streams and service tabs through dashboard-owned chrome with fullscreen and Guacamole interaction settings controls, filterable service events including tab lifecycle changes, and a reconcile action backed by the service HTTP API</td>
+      <td>Worker health, browser health, compact retained-record status with hover details and cleanup alerts only when retained state needs attention, a remembered operator identity for incident audit metadata, optional operator notes for incident acknowledgement and resolution, prominent service-sourced incident severity, escalation, recommended action displays, and remedy summary groups, a service-owned incident history timeline with local fallback, a trace explorer backed by <code>/api/service/trace</code> for service, agent, task, browser, profile, session, and time-window debugging, including ownership summary cards, target identity chips from <code>summary.contexts[].targetServiceIds</code>, naming warnings, and profile lease wait cards from the shared trace payload, a browser-health transition timeline for crash/recovery visibility, a backend-owned profile allocation view from <code>profileAllocations</code> with detail inspection refreshed from <code>GET /api/service/profiles/&lt;id&gt;/allocation</code>, target readiness rows including <code>needs_manual_seeding</code> for Google first-login profiles, and guarded by <code>pnpm test:dashboard-profile-allocation</code>, a task-authority workspace that shows ordered plans, outcome receipts, pending/completed reconciliation, predecessor/replacement lineage, durable pending and terminal confirmation receipts including restart, expiry, and indeterminate execution state, preview-only receipt cleanup with exact candidate hashes, authenticated requester, review digest, verified checkpoint-ledger proof, and an explicit exact-digest apply dialog, and a separate reviewed exact-target confirm-or-deny recovery flow that never copies a consumed step, a grouped incident browser panel with handling-state filters plus acknowledge and resolve actions, incident filtering for crash/disconnect/recovery and timed-out or cancelled jobs, reconciliation status, active-versus-retained summaries for sessions, tabs, and jobs, recent service jobs with naming warnings, detail inspection, and queued/running job cancellation, a managed browser table that defaults to actionable live or degraded records while keeping inert retained placeholders behind retained/all filters, grouped and locally remembered browser table lifecycle, density, column visibility, and column width controls with a full table-view reset, selected-record inspection for browsers, profiles, incidents, sessions, tabs, and jobs with a hero summary, primary action row, semantic runtime/control/ownership/activity sections, related-record jumps, and an Evidence disclosure for raw JSON, long IDs, and endpoints, embedded remote-view inspection for browser view streams and service tabs through dashboard-owned chrome with fullscreen and Guacamole interaction settings controls, filterable service events including tab lifecycle changes, and a reconcile action backed by the service HTTP API</td>
     </tr>
     <tr>
       <td><strong>Activity feed</strong></td>

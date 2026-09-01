@@ -19,10 +19,21 @@ These features are designed to mitigate the following threats when an LLM-based 
 - **WebSocket/EventSource blocking is best-effort.** It works by overriding browser constructors via an init script. If the `eval` action category is allowed, page scripts could theoretically restore the original constructors. Deny `eval` via `--action-policy` for maximum protection.
 - **Domain filter timing on remote connections.** When connecting to a pre-existing browser via CDP or a cloud provider, pages may have already loaded content before the domain filter is installed. agent-browser navigates disallowed pages to `about:blank` after the filter is active, but resources loaded before that point are not retroactively blocked.
 - **Content boundaries are defense-in-depth.** They rely on the LLM and orchestrator respecting the structural markers. A sufficiently capable adversarial page could attempt to mimic the boundary format, though the per-process CSPRNG nonce makes this impractical to predict.
-- **Confirmation timeout.** Pending confirmations auto-deny after 60 seconds. Orchestrators must respond within that window.
+- **Confirmation timeout.** Pending confirmations expire after 60 seconds. Orchestrators must respond within that window.
 - **Non-TTY auto-deny.** When `--confirm-interactive` is set but stdin is not a terminal (e.g., piped input), actions are automatically denied to prevent accidental approval in non-interactive contexts.
 
 ## Authentication Vault
+
+For private phone control, keep the dashboard and Guacamole listeners on
+loopback and expose only the dashboard through Tailscale Serve. With
+<code>AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH=1</code> and an exact
+<code>AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS</code> allowlist, the
+dashboard accepts the authenticated Tailscale identity only on HTTPS
+<code>.ts.net</code> requests. Its authenticated <code>/guacamole/*</code>
+proxy removes caller identity headers and dashboard cookies before injecting
+the configured local Guacamole user. Do not combine this trust mode with
+Funnel or another proxy reaching the same listener, and do not expose the
+loopback Guacamole port directly.
 
 Store credentials locally and reference them by name. The LLM never sees passwords.
 
@@ -177,11 +188,11 @@ Auth vault operations (`auth save`, `auth login`, `auth list`, `auth show`, `aut
 
 ## Action Confirmation
 
-For actions that require explicit approval, use `--confirm-actions` to specify categories that require confirmation:
+For actions that require explicit approval, use `--confirm-actions` with exact actions or stable consequence categories. Categories are `read_only`, `navigation`, `page_mutation`, `external_mutation`, `file_transfer`, `credentials`, `script_execution`, `browser_lifecycle`, and `control_plane`; `mutation` selects the combined mutation-sensitive group.
 
 ```bash
 # Orchestrator mode: returns confirmation_required response
-agent-browser --confirm-actions eval,download eval "document.title"
+agent-browser --confirm-actions script_execution,file_transfer eval "document.title"
 
 # Then approve or deny:
 agent-browser confirm c_8f3a1234
@@ -191,13 +202,100 @@ agent-browser deny c_8f3a1234
 For interactive (human-in-the-loop) confirmation:
 
 ```bash
-agent-browser --confirm-actions eval,download --confirm-interactive eval "document.title"
+agent-browser --confirm-actions script_execution,file_transfer --confirm-interactive eval "document.title"
 # Prompts: Allow? [y/N]
 ```
 
-Pending confirmations auto-deny after 60 seconds.
+Pending confirmations expire after 60 seconds and require the exact confirmation ID. Each request records the active target ID and URL; approval fails closed if either changed. A second approval request cannot replace an unexpired pending action.
 
 > **Non-TTY behavior:** When `--confirm-interactive` is set but stdin is not a TTY (e.g., piped input or running inside an automated pipeline), actions are automatically denied. This prevents accidental approval in non-interactive contexts.
+
+## Durable Task Authority
+
+Action confirmation protects one consequence at a time. A `taskAuthority`
+envelope adds a durable boundary around the whole agentic task. It names the
+exact caller task and retained target, limits navigation to explicit HTTP(S)
+origins, caps admitted actions and reserved evidence bytes, sets the highest
+consequence allowed without fresh confirmation, and expires at an RFC 3339
+timestamp.
+
+The daemon hashes the complete envelope and, for v2 broker issuance, binds it
+to the complete ordered plan hash. Each approved occurrence has a unique step
+ID, exact expected pre-action URL, optional requested URL, and fixed evidence
+reservation. A command must name the exact next `taskStepId`; the daemon writes
+a command-bound step receipt and advances the cursor atomically before
+dispatch. Reusing an authority after restart therefore continues the same
+position and rejects replay. Target, task, origin, URL, action, order, expiry,
+and evidence checks all occur before execution.
+
+After dispatch, every ordered step crosses one terminal finalizer before its
+response is published. The receipt gains `completed` or `failed`, a digest and
+byte count for the exact response, post-action target and URL evidence, and the
+finalization time. If the process dies after admission but before that write,
+status reports the step as `indeterminate`; the cursor remains advanced and the
+step cannot be replayed. A finalization write failure fails closed instead of
+publishing an unreceipted success.
+
+Issue authority through `POST /api/service/task-authorities/issue` or MCP
+`service_task_authority_issue`. The broker accepts explicit bounded plan steps,
+derives the ordered step IDs, exact URLs and evidence reservations, unique
+action/origin sets, aggregate compatibility budgets, and plan hash; it pins the
+live target and caller labels and requires fresh target-bound confirmation
+before persisting the record. Read issuer, approval, ordered plan, next step,
+admitted receipts, completed, failed, and indeterminate outcomes, expiry,
+revocation, usage, and remaining allowance through the no-launch HTTP status endpoints or
+`service_task_authority_status`; revoke with the confirmation-gated HTTP route
+or `service_task_authority_revoke`.
+
+An issued plan is never edited in place. For exactly one indeterminate receipt,
+use `POST /api/service/task-authorities/<id>/reconcile` or
+`service_task_authority_reconcile` with the exact unresolved step, a stable
+reconciliation ID, fresh target ID and URL, and an explicit replacement plan.
+The broker durably revokes the predecessor first, resumes identical retries to
+the same deterministic replacement, binds predecessor lineage into the new
+envelope, and rejects changed evidence. Other replans still require explicit
+revocation and newly confirmed issuance.
+
+The Service dashboard Authorities workspace shows status, durable outcomes,
+reconciliation state, and lineage for the selected daemon session. Its recovery
+preview derives only unconsumed planned steps and remains disabled unless one
+indeterminate receipt and one exact live target are present. Staging does not
+approve the transaction. Confirm or deny its exact target evidence through
+`POST /api/service/task-authorities/confirmation` or
+`service_task_authority_confirmation`. The required `expectedAction` must match
+the pending issue, reconcile, or revoke action, preventing this surface from
+approving another pending control. HTTP binds requester and decider evidence to
+the authenticated dashboard superuser; MCP binds it to the OS-owned stdio
+transport principal. A conflicting structured identity claim fails closed.
+Pending issue, reconcile, and revoke controls
+are privately persisted with their exact session, action, target, URL,
+requester, request digest, and expiry. The broker archives a single-use
+decision before dispatch. A restart preserves pending evidence; a crash after
+decision commit is shown as indeterminate and never auto-confirms, replays, or
+restages the control. Closing the staged dashboard flow sends denial so an
+undisclosed pending action is not left behind.
+
+Use `POST /api/service/task-authorities/confirmations/cleanup` or
+`service_task_authority_confirmation_cleanup` to preview terminal receipt
+retention. Apply requires the exact preview `reviewSha256`. Cleanup writes a
+bounded active retired-ID manifest before removing bulky receipts and moves
+older exact IDs into fixed-capacity immutable hash-chained segments. Preview
+returns candidate receipt hashes, the authenticated requester, exact review
+digest, and verified segment capacity, count, head, and active digest. Missing,
+modified, reordered, duplicate, count-mismatched, or head-mismatched evidence
+fails closed. Cleanup never removes pending or confirmed/dispatched
+indeterminate evidence and never makes a confirmation ID reusable. The
+dashboard Authorities workspace displays this proof and requires an explicit
+exact-digest alert-dialog decision before apply.
+
+Enable fail-closed admission with `AGENT_BROWSER_REQUIRE_TASK_AUTHORITY=1` and
+optionally relocate the ledger with `AGENT_BROWSER_TASK_AUTHORITY_DIR`. This
+mode is intended for retained daemons driven through HTTP, MCP, or service
+requests that can carry the structured envelope. It does not turn the envelope
+into a credential or authorization signature; protect the daemon transport and
+ledger directory separately. Only `confirm`, `deny`, and the broker's
+issue/reconcile/revoke/status control operations bypass pre-existing authority
+admission.
 
 ## Output Length Limits
 

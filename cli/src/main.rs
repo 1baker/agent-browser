@@ -5,6 +5,7 @@ mod chat;
 mod color;
 mod commands;
 mod connection;
+mod electron_relay;
 mod flags;
 mod install;
 mod mcp;
@@ -242,6 +243,21 @@ fn set_launch_cmd_string_if_absent(
 fn apply_remote_headed_launch_env_hints(launch_cmd: &mut serde_json::Value) {
     if !launch_cmd_requests_remote_headed(launch_cmd) {
         return;
+    }
+
+    // A remote-headed browser must run on the host that owns the selected X11
+    // display. Allow a Linux workstation to override an automatically selected
+    // WSL-mounted Windows executable without changing the default browser used
+    // by ordinary local or broker-owned sessions. Explicit non-manifest
+    // executable selections remain authoritative.
+    if let Some(executable_path) = non_empty_env_var("AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH")
+    {
+        let current_path = launch_cmd_string(launch_cmd, "executablePath");
+        let current_source = launch_cmd_string(launch_cmd, "executablePathSource");
+        if current_path.is_none() || current_source.as_deref() == Some("manifest") {
+            launch_cmd["executablePath"] = json!(executable_path);
+            launch_cmd["executablePathSource"] = json!("remote_headed_env");
+        }
     }
 
     set_launch_cmd_string_if_absent(
@@ -620,11 +636,13 @@ fn live_runtime_status_for_flags(flags: &Flags) -> Option<RuntimeStatus> {
 fn daemon_profile_for_launch<'a>(
     profile: Option<&'a str>,
     live_runtime_status: Option<&RuntimeStatus>,
+    external_cdp: bool,
 ) -> Option<&'a str> {
-    // A live managed runtime profile is reached by CDP. Forwarding its
-    // user-data-dir as AGENT_BROWSER_PROFILE makes the daemon validate an
-    // impossible "CDP attach plus local profile launch" combination.
-    if live_runtime_status.is_some() {
+    // A live managed runtime profile or an explicitly supplied CDP endpoint is
+    // reached by CDP. Forwarding a user-data-dir as AGENT_BROWSER_PROFILE makes
+    // the daemon validate an impossible "CDP attach plus local profile launch"
+    // combination.
+    if live_runtime_status.is_some() || external_cdp {
         None
     } else {
         profile
@@ -1495,6 +1513,12 @@ fn main() {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
+    // Internal WSL-only helper. It owns a private loopback relay for one exact
+    // Windows Chromium DevTools endpoint and never enters ordinary CLI parsing.
+    if let Some(code) = native::cdp::chrome::run_wsl_windows_cdp_relay_from_env() {
+        std::process::exit(code);
+    }
+
     // Prevent MSYS/Git Bash path translation from mangling arguments
     #[cfg(windows)]
     {
@@ -1566,10 +1590,19 @@ fn main() {
         return;
     }
 
+    if clean.first().map(String::as_str) == Some("electron") {
+        let code = electron_relay::run_command(&clean, flags.json);
+        std::process::exit(if code == std::process::ExitCode::SUCCESS {
+            0
+        } else {
+            1
+        });
+    }
+
     // Handle install separately
     if clean.first().map(|s| s.as_str()) == Some("install") {
         if clean.get(1).map(|s| s.as_str()) == Some("doctor") {
-            run_install_doctor(&flags);
+            run_install_doctor(&flags, &clean);
             return;
         }
         if clean.get(1).map(|s| s.as_str()) == Some("workstation") {
@@ -1756,6 +1789,11 @@ fn main() {
             exit(1);
         }
     };
+
+    // Remote-view commands construct their route-bound browser launch inside
+    // the daemon, so carry workstation-specific launch hints on the command
+    // itself as well as on the ordinary client-side prestart launch below.
+    apply_remote_headed_launch_env_hints(&mut cmd);
 
     // Handle --password-stdin for auth save
     if cmd.get("action").and_then(|v| v.as_str()) == Some("auth_save") {
@@ -1992,10 +2030,15 @@ fn main() {
         .as_ref()
         .and_then(|status| status.devtools_port)
         .map(|port| port.to_string());
-    let daemon_runtime_profile = live_runtime_status
-        .as_ref()
-        .map(|status| status.runtime_profile.as_str())
-        .or(selected_runtime_profile.as_deref());
+    let external_cdp = flags.cdp.is_some();
+    let daemon_runtime_profile = if external_cdp {
+        None
+    } else {
+        live_runtime_status
+            .as_ref()
+            .map(|status| status.runtime_profile.as_str())
+            .or(selected_runtime_profile.as_deref())
+    };
     let daemon_opts = DaemonOptions {
         headed: flags.headed,
         debug: flags.debug,
@@ -2012,7 +2055,11 @@ fn main() {
         proxy_password: proxy_password.as_deref(),
         ignore_https_errors: flags.ignore_https_errors,
         allow_file_access: flags.allow_file_access,
-        profile: daemon_profile_for_launch(flags.profile.as_deref(), live_runtime_status.as_ref()),
+        profile: daemon_profile_for_launch(
+            flags.profile.as_deref(),
+            live_runtime_status.as_ref(),
+            external_cdp,
+        ),
         state: flags.state.as_deref(),
         provider: flags.provider.as_deref(),
         device: flags.device.as_deref(),
@@ -3118,6 +3165,7 @@ mod tests {
     #[test]
     fn test_apply_remote_headed_launch_env_hints_carries_view_contract() {
         let guard = EnvGuard::new(&[
+            "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH",
             "AGENT_BROWSER_REMOTE_HEADED_DISPLAY",
             "AGENT_BROWSER_REMOTE_VIEW_URL",
             "AGENT_BROWSER_REMOTE_VIEW_FRAME_URL",
@@ -3128,6 +3176,10 @@ mod tests {
             "AGENT_BROWSER_REMOTE_VIEW_PROVIDER",
             "AGENT_BROWSER_REMOTE_CONTROL_INPUT_PROVIDER",
         ]);
+        guard.set(
+            "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH",
+            "/opt/agent-browser/chrome",
+        );
         guard.set("AGENT_BROWSER_REMOTE_HEADED_DISPLAY", ":10");
         guard.set("AGENT_BROWSER_REMOTE_VIEW_URL", "/guacamole/#/client/test");
         guard.set(
@@ -3148,12 +3200,16 @@ mod tests {
         );
         let mut cmd = json!({
             "action": "launch",
-            "browserHost": "remote_headed"
+            "browserHost": "remote_headed",
+            "executablePath": "/mnt/c/Chromium/chrome.exe",
+            "executablePathSource": "manifest"
         });
 
         apply_remote_headed_launch_env_hints(&mut cmd);
 
         assert_eq!(cmd["remoteHeadedDisplay"], ":10");
+        assert_eq!(cmd["executablePath"], "/opt/agent-browser/chrome");
+        assert_eq!(cmd["executablePathSource"], "remote_headed_env");
         assert_eq!(cmd["remoteViewUrl"], "/guacamole/#/client/test");
         assert_eq!(cmd["frameUrl"], "/guacamole/#/client/test-frame");
         assert_eq!(cmd["externalUrl"], "/guacamole/#/client/test-external");
@@ -3167,6 +3223,7 @@ mod tests {
     #[test]
     fn test_apply_remote_headed_launch_env_hints_preserves_explicit_values() {
         let guard = EnvGuard::new(&[
+            "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH",
             "AGENT_BROWSER_REMOTE_HEADED_DISPLAY",
             "AGENT_BROWSER_REMOTE_VIEW_URL",
             "AGENT_BROWSER_REMOTE_VIEW_FRAME_URL",
@@ -3177,6 +3234,10 @@ mod tests {
             "AGENT_BROWSER_REMOTE_VIEW_PROVIDER",
             "AGENT_BROWSER_REMOTE_CONTROL_INPUT_PROVIDER",
         ]);
+        guard.set(
+            "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH",
+            "/opt/agent-browser/env-chrome",
+        );
         guard.set("AGENT_BROWSER_REMOTE_HEADED_DISPLAY", ":10");
         guard.set("AGENT_BROWSER_REMOTE_VIEW_URL", "/guacamole/#/client/env");
         guard.set("AGENT_BROWSER_REMOTE_VIEW_PROVIDER", "rdp_gateway");
@@ -3187,6 +3248,8 @@ mod tests {
         let mut cmd = json!({
             "action": "launch",
             "browserHost": "remote_headed",
+            "executablePath": "/opt/agent-browser/explicit-chrome",
+            "executablePathSource": "config",
             "remoteHeadedDisplay": ":95",
             "remoteViewUrl": "/guacamole/#/client/explicit",
             "viewStreamProvider": "external_url",
@@ -3196,6 +3259,8 @@ mod tests {
         apply_remote_headed_launch_env_hints(&mut cmd);
 
         assert_eq!(cmd["remoteHeadedDisplay"], ":95");
+        assert_eq!(cmd["executablePath"], "/opt/agent-browser/explicit-chrome");
+        assert_eq!(cmd["executablePathSource"], "config");
         assert_eq!(cmd["remoteViewUrl"], "/guacamole/#/client/explicit");
         assert_eq!(cmd["viewStreamProvider"], "external_url");
         assert_eq!(cmd["controlInputProvider"], "cdp_input");
@@ -3219,11 +3284,15 @@ mod tests {
         };
 
         assert_eq!(
-            daemon_profile_for_launch(Some("/tmp/profile"), None),
+            daemon_profile_for_launch(Some("/tmp/profile"), None, false),
             Some("/tmp/profile")
         );
         assert_eq!(
-            daemon_profile_for_launch(Some("/tmp/profile"), Some(&status)),
+            daemon_profile_for_launch(Some("/tmp/profile"), Some(&status), false),
+            None
+        );
+        assert_eq!(
+            daemon_profile_for_launch(Some("/tmp/profile"), None, true),
             None
         );
     }

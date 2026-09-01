@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-browser.local/contracts/local-dashboard-publication-status.v1.schema.json",
+  "title": "Local Dashboard Publication Status",
+  "description": "Bounded read-only evidence for one durable local dashboard publication transaction. Reading this contract never acquires the publisher lock or authorizes recovery.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "journalPath",
+    "exists",
+    "lock",
+    "transaction",
+    "installedArtifact",
+    "recoverable",
+    "recommendedAction"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "agent-browser.local-dashboard-publication.v1"
+    },
+    "journalPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exists": {
+      "type": "boolean"
+    },
+    "lock": {
+      "$ref": "#/$defs/lock"
+    },
+    "transaction": {
+      "oneOf": [
+        { "$ref": "#/$defs/transaction" },
+        { "type": "null" }
+      ]
+    },
+    "installedArtifact": {
+      "oneOf": [
+        { "$ref": "#/$defs/artifact" },
+        { "type": "null" }
+      ]
+    },
+    "recoverable": {
+      "type": "boolean"
+    },
+    "recommendedAction": {
+      "enum": [
+        "none",
+        "wait_for_active_publisher",
+        "recover_only",
+        "investigate_installed_artifact",
+        "investigate_retained_browser"
+      ]
+    }
+  },
+  "$defs": {
+    "lock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "present", "ownerPid", "live", "stale"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "present": { "type": "boolean" },
+        "ownerPid": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "null" }
+          ]
+        },
+        "live": { "type": "boolean" },
+        "stale": { "type": "boolean" }
+      }
+    },
+    "transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transactionId",
+        "revision",
+        "phase",
+        "terminal",
+        "createdAt",
+        "updatedAt",
+        "installBin",
+        "builtBin",
+        "backupPath",
+        "candidateSessionCount",
+        "preparedHandoffCount",
+        "resumedHandoffCount",
+        "retainedBrowserExpectationRequired",
+        "retainedBrowserExpectationVerified",
+        "retainedBrowserExpectationStage",
+        "failure",
+        "recoveryError"
+      ],
+      "properties": {
+        "transactionId": { "type": "string", "minLength": 1 },
+        "revision": { "type": "integer", "minimum": 1 },
+        "phase": { "type": "string", "minLength": 1 },
+        "terminal": { "type": "boolean" },
+        "createdAt": { "type": ["string", "null"] },
+        "updatedAt": { "type": ["string", "null"] },
+        "installBin": { "type": ["string", "null"] },
+        "builtBin": { "type": ["string", "null"] },
+        "backupPath": { "type": ["string", "null"] },
+        "candidateSessionCount": { "type": "integer", "minimum": 0 },
+        "preparedHandoffCount": { "type": "integer", "minimum": 0 },
+        "resumedHandoffCount": { "type": "integer", "minimum": 0 },
+        "retainedBrowserExpectationRequired": { "type": "boolean" },
+        "retainedBrowserExpectationVerified": { "type": ["boolean", "null"] },
+        "retainedBrowserExpectationStage": { "type": ["string", "null"] },
+        "failure": {},
+        "recoveryError": {}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "exists", "sha256", "classification", "verified"],
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "exists": { "type": "boolean" },
+        "sha256": {
+          "oneOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            { "type": "null" }
+          ]
+        },
+        "classification": {
+          "enum": ["replacement", "backup", "built_replacement", "missing", "unknown"]
+        },
+        "verified": { "type": "boolean" }
+      }
+    }
+  }
+}

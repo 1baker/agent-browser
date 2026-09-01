@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -395,6 +396,46 @@ const LIGHTPANDA_CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const LIGHTPANDA_CDP_CONNECT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const LIGHTPANDA_TARGET_INIT_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_HANDOFF_TARGET_INIT_TIMEOUT: Duration = Duration::from_secs(2);
+const PAGE_RESOURCE_READ_CHUNK_BYTES: usize = 64 * 1024;
+const PAGE_RESOURCE_STREAM_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+const PAGE_RESOURCE_TARGET_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageResourceRead {
+    pub body: String,
+    pub http_status_code: Option<u64>,
+    pub mime_type: Option<String>,
+    pub bytes_read: usize,
+    pub bytes_returned: usize,
+    pub truncated: bool,
+}
+
+fn page_resource_content_type(resource: &Value) -> Option<String> {
+    let headers = resource.get("headers")?;
+    if let Some(value) = headers.as_object().and_then(|headers| {
+        headers.iter().find_map(|(name, value)| {
+            name.eq_ignore_ascii_case("content-type")
+                .then(|| value.as_str().map(str::to_string))
+                .flatten()
+        })
+    }) {
+        return Some(value);
+    }
+
+    headers.as_array().and_then(|headers| {
+        headers.iter().find_map(|header| {
+            let name = header.get("name").and_then(Value::as_str)?;
+            name.eq_ignore_ascii_case("content-type")
+                .then(|| {
+                    header
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .flatten()
+        })
+    })
+}
 
 impl BrowserManager {
     pub async fn launch(options: LaunchOptions, engine: Option<&str>) -> Result<Self, String> {
@@ -1064,6 +1105,220 @@ impl BrowserManager {
         Ok(result.as_str().unwrap_or("").to_string())
     }
 
+    /// Fetch a page through Chromium's network stack without invoking Runtime.evaluate.
+    ///
+    /// This is a bounded secondary fetch in a temporary background target. It does not navigate
+    /// the active target, replay a renderer action, or include credentials unless requested.
+    pub async fn read_page_resource(
+        &self,
+        url: &str,
+        max_bytes: usize,
+        timeout_ms: u64,
+        include_credentials: bool,
+    ) -> Result<PageResourceRead, String> {
+        if max_bytes == 0 {
+            return Err("Page resource max bytes must be greater than zero".to_string());
+        }
+        if timeout_ms == 0 {
+            return Err("Page resource timeout must be greater than zero".to_string());
+        }
+
+        self.active_target_id()?;
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let create_timeout = deadline.saturating_duration_since(Instant::now());
+        let created = self
+            .client
+            .send_command_with_timeout(
+                "Target.createTarget",
+                Some(json!({ "url": "about:blank", "background": true })),
+                None,
+                create_timeout,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let target_id = created
+            .get("targetId")
+            .and_then(Value::as_str)
+            .ok_or("Target.createTarget returned no target id")?
+            .to_string();
+        let operation = async {
+            let attach_timeout = deadline.saturating_duration_since(Instant::now());
+            let attached = self
+                .client
+                .send_command_with_timeout(
+                    "Target.attachToTarget",
+                    Some(json!({ "targetId": target_id, "flatten": true })),
+                    None,
+                    attach_timeout,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let session_id = attached
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or("Target.attachToTarget returned no session id")?;
+            let frame_timeout = deadline.saturating_duration_since(Instant::now());
+            let frame_tree = self
+                .client
+                .send_command_with_timeout(
+                    "Page.getFrameTree",
+                    None,
+                    Some(session_id),
+                    frame_timeout,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let frame_id = frame_tree
+                .pointer("/frameTree/frame/id")
+                .and_then(Value::as_str)
+                .ok_or("Page.getFrameTree returned no main frame id")?;
+            let load_timeout = deadline.saturating_duration_since(Instant::now());
+            let result = self
+                .client
+                .send_command_with_timeout(
+                    "Network.loadNetworkResource",
+                    Some(json!({
+                        "frameId": frame_id,
+                        "url": url,
+                        "options": {
+                            "disableCache": false,
+                            "includeCredentials": include_credentials,
+                        }
+                    })),
+                    Some(session_id),
+                    load_timeout,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let resource = result
+                .get("resource")
+                .ok_or("Network.loadNetworkResource returned no resource")?;
+            if !resource
+                .get("success")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                let detail = resource
+                    .get("netErrorName")
+                    .or_else(|| resource.get("netError"))
+                    .map(Value::to_string)
+                    .unwrap_or_else(|| "unknown network error".to_string());
+                return Err(format!("Network.loadNetworkResource failed: {detail}"));
+            }
+
+            let http_status_code = resource.get("httpStatusCode").and_then(Value::as_u64);
+            let mime_type = page_resource_content_type(resource);
+            let Some(handle) = resource.get("stream").and_then(Value::as_str) else {
+                return Ok(PageResourceRead {
+                    body: String::new(),
+                    http_status_code,
+                    mime_type,
+                    bytes_read: 0,
+                    bytes_returned: 0,
+                    truncated: false,
+                });
+            };
+
+            let mut bytes = Vec::with_capacity(max_bytes.min(PAGE_RESOURCE_READ_CHUNK_BYTES));
+            let mut bytes_read = 0usize;
+            let read_result = async {
+                loop {
+                    let remaining = max_bytes.saturating_sub(bytes.len());
+                    let requested = remaining
+                        .saturating_add(1)
+                        .min(PAGE_RESOURCE_READ_CHUNK_BYTES);
+                    let command_timeout = deadline.saturating_duration_since(Instant::now());
+                    if command_timeout.is_zero() {
+                        return Err("Page resource read timed out".to_string());
+                    }
+                    let chunk = self
+                        .client
+                        .send_command_with_timeout(
+                            "IO.read",
+                            Some(json!({ "handle": handle, "size": requested })),
+                            Some(session_id),
+                            command_timeout,
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let data = chunk.get("data").and_then(Value::as_str).unwrap_or("");
+                    let decoded = if chunk
+                        .get("base64Encoded")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        BASE64_STANDARD.decode(data).map_err(|error| {
+                            format!("Invalid base64 page resource chunk: {error}")
+                        })?
+                    } else {
+                        data.as_bytes().to_vec()
+                    };
+                    bytes_read = bytes_read.saturating_add(decoded.len());
+                    let take = decoded.len().min(max_bytes.saturating_sub(bytes.len()));
+                    bytes.extend_from_slice(&decoded[..take]);
+                    if take < decoded.len() {
+                        return Ok(true);
+                    }
+                    if chunk.get("eof").and_then(Value::as_bool).unwrap_or(true) {
+                        return Ok(false);
+                    }
+                }
+            }
+            .await;
+
+            let stream_close = self
+                .client
+                .send_command_with_timeout(
+                    "IO.close",
+                    Some(json!({ "handle": handle })),
+                    Some(session_id),
+                    PAGE_RESOURCE_STREAM_CLOSE_TIMEOUT,
+                )
+                .await;
+            let truncated = match (read_result, stream_close) {
+                (Ok(truncated), Ok(_)) => truncated,
+                (Ok(_), Err(error)) => {
+                    return Err(format!("Failed to close page resource stream: {error}"))
+                }
+                (Err(error), Ok(_)) => return Err(error),
+                (Err(error), Err(close_error)) => {
+                    return Err(format!(
+                        "{error}; failed to close page resource stream: {close_error}"
+                    ))
+                }
+            };
+            let bytes_returned = bytes.len();
+
+            Ok(PageResourceRead {
+                body: String::from_utf8_lossy(&bytes).into_owned(),
+                http_status_code,
+                mime_type,
+                bytes_read,
+                bytes_returned,
+                truncated,
+            })
+        }
+        .await;
+
+        let target_close = self
+            .client
+            .send_command_with_timeout(
+                "Target.closeTarget",
+                Some(json!({ "targetId": target_id })),
+                None,
+                PAGE_RESOURCE_TARGET_CLOSE_TIMEOUT,
+            )
+            .await;
+        match (operation, target_close) {
+            (Ok(value), Ok(_)) => Ok(value),
+            (Ok(_), Err(error)) => Err(format!("Failed to close page reader target: {error}")),
+            (Err(error), Ok(_)) => Err(error),
+            (Err(error), Err(close_error)) => Err(format!(
+                "{error}; failed to close page reader target: {close_error}"
+            )),
+        }
+    }
+
     pub async fn evaluate(&self, script: &str, _args: Option<Value>) -> Result<Value, String> {
         self.evaluate_with_timeout(script, self.default_timeout_ms)
             .await
@@ -1181,6 +1436,26 @@ impl BrowserManager {
 
     pub async fn close(&mut self) -> Result<(), String> {
         self.close_with_outcome().await.map(|_| ())
+    }
+
+    /// Terminate a locally owned browser without first sending `Browser.close`.
+    /// This is reserved for recovery after browser-level CDP has already failed,
+    /// where a polite close would consume the recovery deadline on the dead
+    /// command channel. Externally attached browsers are never eligible.
+    pub async fn force_close_owned_after_cdp_timeout(&mut self) -> Result<(), String> {
+        let Some(process) = self.browser_process.take() else {
+            return Err("Cannot force-close an externally attached browser".to_string());
+        };
+        let outcome = tokio::task::spawn_blocking(move || {
+            let mut process = process;
+            process.wait_or_kill(std::time::Duration::from_millis(500))
+        })
+        .await
+        .map_err(|err| format!("Failed to join timed-out browser cleanup: {err}"))?;
+        if outcome.force_kill_failed {
+            return Err(outcome.errors.join("; "));
+        }
+        Ok(())
     }
 
     /// Disconnect from a launched persistent runtime-profile browser without
@@ -1367,6 +1642,74 @@ impl BrowserManager {
         self.enable_domains(&attach_result.session_id).await?;
 
         Ok(())
+    }
+
+    /// Quarantine the active renderer after an outer service-job timeout.
+    ///
+    /// The timed-out action is never replayed. A blank target is prepared and
+    /// activated before the affected target is closed, which preserves the
+    /// browser process and every unrelated tab in the session.
+    pub async fn replace_active_page_after_timeout(&mut self) -> Result<(String, String), String> {
+        let timed_out_target_id = self.active_target_id()?.to_string();
+        let result: CreateTargetResult = self
+            .client
+            .send_command_typed(
+                "Target.createTarget",
+                &CreateTargetParams {
+                    url: "about:blank".to_string(),
+                },
+                None,
+            )
+            .await?;
+        let replacement_target_id = result.target_id.clone();
+        let attach: AttachToTargetResult = self
+            .client
+            .send_command_typed(
+                "Target.attachToTarget",
+                &AttachToTargetParams {
+                    target_id: replacement_target_id.clone(),
+                    flatten: true,
+                },
+                None,
+            )
+            .await?;
+
+        self.enable_domains(&attach.session_id).await?;
+        self.activate_target(&replacement_target_id).await?;
+
+        self.pages.push(PageInfo {
+            target_id: replacement_target_id.clone(),
+            session_id: attach.session_id,
+            url: "about:blank".to_string(),
+            title: String::new(),
+            target_type: "page".to_string(),
+        });
+        self.active_page_index = self.pages.len() - 1;
+
+        let close_result: Value = self
+            .client
+            .send_command_typed(
+                "Target.closeTarget",
+                &CloseTargetParams {
+                    target_id: timed_out_target_id.clone(),
+                },
+                None,
+            )
+            .await?;
+        if close_result.get("success").and_then(Value::as_bool) == Some(false) {
+            return Err(format!(
+                "CDP refused to close timed-out target {timed_out_target_id}"
+            ));
+        }
+        self.pages
+            .retain(|page| page.target_id != timed_out_target_id);
+        self.active_page_index = self
+            .pages
+            .iter()
+            .position(|page| page.target_id == replacement_target_id)
+            .ok_or_else(|| "Replacement target disappeared from the tab list".to_string())?;
+
+        Ok((timed_out_target_id, replacement_target_id))
     }
 
     // -----------------------------------------------------------------------
@@ -2784,6 +3127,378 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("CDP error (Runtime.evaluate): Internal error"));
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn page_resource_reader_is_bounded_non_runtime_and_closes_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let server_observed = Arc::clone(&observed);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(command) = websocket.next().await {
+                let command: Value =
+                    serde_json::from_str(command.unwrap().to_text().unwrap()).unwrap();
+                server_observed.lock().unwrap().push(command.clone());
+                let result = match command["method"].as_str().unwrap() {
+                    "Target.createTarget" => json!({"targetId": "reader-target"}),
+                    "Target.attachToTarget" => json!({"sessionId": "reader-session"}),
+                    "Page.getFrameTree" => {
+                        json!({"frameTree": {"frame": {"id": "reader-frame"}}})
+                    }
+                    "Network.loadNetworkResource" => json!({
+                        "resource": {
+                            "success": true,
+                            "httpStatusCode": 200,
+                            "headers": {"Content-Type": "text/html; charset=utf-8"},
+                            "stream": "page-stream"
+                        }
+                    }),
+                    "IO.read" => json!({
+                        "data": BASE64_STANDARD.encode("abcdefg"),
+                        "base64Encoded": true,
+                        "eof": true
+                    }),
+                    "IO.close" => json!({}),
+                    "Target.closeTarget" => json!({"success": true}),
+                    method => panic!("unexpected CDP method: {method}"),
+                };
+                websocket
+                    .send(Message::Text(
+                        json!({ "id": command["id"], "result": result }).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                if command["method"] == "Target.closeTarget" {
+                    break;
+                }
+            }
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let manager = BrowserManager {
+            client: Arc::new(client),
+            browser_process: None,
+            ws_url: format!("ws://{address}"),
+            pages: vec![PageInfo {
+                target_id: "target-1".to_string(),
+                session_id: "session-1".to_string(),
+                url: "about:blank".to_string(),
+                title: String::new(),
+                target_type: "page".to_string(),
+            }],
+            active_page_index: 0,
+            default_timeout_ms: 25_000,
+            download_path: None,
+            ignore_https_errors: false,
+            visited_origins: HashSet::new(),
+        };
+
+        let result = manager
+            .read_page_resource("https://example.com/large", 5, 2_000, false)
+            .await
+            .unwrap();
+        assert_eq!(result.body, "abcde");
+        assert_eq!(result.bytes_read, 7);
+        assert_eq!(result.bytes_returned, 5);
+        assert!(result.truncated);
+        assert_eq!(result.http_status_code, Some(200));
+        assert_eq!(
+            result.mime_type.as_deref(),
+            Some("text/html; charset=utf-8")
+        );
+        server.await.unwrap();
+
+        let commands = observed.lock().unwrap();
+        assert_eq!(commands[0]["method"], "Target.createTarget");
+        assert_eq!(commands[0]["params"]["background"], true);
+        assert_eq!(commands[1]["method"], "Target.attachToTarget");
+        assert_eq!(commands[2]["method"], "Page.getFrameTree");
+        assert_eq!(commands[3]["method"], "Network.loadNetworkResource");
+        assert_eq!(
+            commands[3]["params"]["options"]["includeCredentials"],
+            false
+        );
+        assert_eq!(commands[3]["params"]["frameId"], "reader-frame");
+        assert_eq!(commands[3]["sessionId"], "reader-session");
+        assert!(commands
+            .iter()
+            .all(|command| !command["method"].as_str().unwrap().starts_with("Runtime.")));
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| command["method"] == "IO.close")
+                .count(),
+            1
+        );
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| command["method"] == "Target.closeTarget")
+                .count(),
+            1
+        );
+        assert_eq!(manager.active_target_id().unwrap(), "target-1");
+    }
+
+    #[tokio::test]
+    async fn page_resource_reader_closes_stream_after_read_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let server_observed = Arc::clone(&observed);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(command) = websocket.next().await {
+                let command: Value =
+                    serde_json::from_str(command.unwrap().to_text().unwrap()).unwrap();
+                let method = command["method"].as_str().unwrap().to_string();
+                server_observed.lock().unwrap().push(method.clone());
+                let response = if method == "Target.createTarget" {
+                    json!({ "id": command["id"], "result": {"targetId": "reader-target"} })
+                } else if method == "Target.attachToTarget" {
+                    json!({ "id": command["id"], "result": {"sessionId": "reader-session"} })
+                } else if method == "Page.getFrameTree" {
+                    json!({ "id": command["id"], "result": {
+                        "frameTree": {"frame": {"id": "reader-frame"}}
+                    }})
+                } else if method == "Network.loadNetworkResource" {
+                    json!({ "id": command["id"], "result": { "resource": {
+                        "success": true, "stream": "page-stream"
+                    }}})
+                } else if method == "IO.read" {
+                    json!({ "id": command["id"], "error": {
+                        "code": -32000, "message": "read failed"
+                    }})
+                } else {
+                    json!({ "id": command["id"], "result": {} })
+                };
+                websocket
+                    .send(Message::Text(response.to_string()))
+                    .await
+                    .unwrap();
+                if method == "Target.closeTarget" {
+                    break;
+                }
+            }
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let manager = BrowserManager {
+            client: Arc::new(client),
+            browser_process: None,
+            ws_url: format!("ws://{address}"),
+            pages: vec![PageInfo {
+                target_id: "target-1".to_string(),
+                session_id: "session-1".to_string(),
+                url: "about:blank".to_string(),
+                title: String::new(),
+                target_type: "page".to_string(),
+            }],
+            active_page_index: 0,
+            default_timeout_ms: 25_000,
+            download_path: None,
+            ignore_https_errors: false,
+            visited_origins: HashSet::new(),
+        };
+
+        let error = manager
+            .read_page_resource("https://example.com/error", 100, 2_000, false)
+            .await
+            .unwrap_err();
+        assert!(error.contains("read failed"));
+        server.await.unwrap();
+        assert_eq!(
+            observed.lock().unwrap().as_slice(),
+            [
+                "Target.createTarget",
+                "Target.attachToTarget",
+                "Page.getFrameTree",
+                "Network.loadNetworkResource",
+                "IO.read",
+                "IO.close",
+                "Target.closeTarget"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn page_resource_reader_closes_stream_and_target_after_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let server_observed = Arc::clone(&observed);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(command) = websocket.next().await {
+                let command: Value =
+                    serde_json::from_str(command.unwrap().to_text().unwrap()).unwrap();
+                let method = command["method"].as_str().unwrap().to_string();
+                server_observed.lock().unwrap().push(method.clone());
+                let result = match method.as_str() {
+                    "Target.createTarget" => json!({"targetId": "reader-target"}),
+                    "Target.attachToTarget" => json!({"sessionId": "reader-session"}),
+                    "Page.getFrameTree" => {
+                        json!({"frameTree": {"frame": {"id": "reader-frame"}}})
+                    }
+                    "Network.loadNetworkResource" => json!({
+                        "resource": {"success": true, "stream": "page-stream"}
+                    }),
+                    "IO.read" => {
+                        sleep(Duration::from_millis(100)).await;
+                        json!({"data": "late", "eof": true})
+                    }
+                    "IO.close" | "Target.closeTarget" => json!({}),
+                    method => panic!("unexpected CDP method: {method}"),
+                };
+                websocket
+                    .send(Message::Text(
+                        json!({"id": command["id"], "result": result}).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                if method == "Target.closeTarget" {
+                    break;
+                }
+            }
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let manager = BrowserManager {
+            client: Arc::new(client),
+            browser_process: None,
+            ws_url: format!("ws://{address}"),
+            pages: vec![PageInfo {
+                target_id: "target-1".to_string(),
+                session_id: "session-1".to_string(),
+                url: "about:blank".to_string(),
+                title: String::new(),
+                target_type: "page".to_string(),
+            }],
+            active_page_index: 0,
+            default_timeout_ms: 25_000,
+            download_path: None,
+            ignore_https_errors: false,
+            visited_origins: HashSet::new(),
+        };
+
+        let error = manager
+            .read_page_resource("https://example.com/slow", 100, 50, false)
+            .await
+            .unwrap_err();
+        assert!(error.contains("timed out"));
+        server.await.unwrap();
+        let commands = observed.lock().unwrap();
+        assert!(commands.iter().any(|method| method == "IO.close"));
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|method| method.as_str() == "Target.closeTarget")
+                .count(),
+            1
+        );
+        assert_eq!(manager.active_target_id().unwrap(), "target-1");
+    }
+
+    #[tokio::test]
+    async fn post_timeout_replacement_prepares_blank_target_then_closes_only_timed_out_target() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let server_observed = Arc::clone(&observed);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(command) = websocket.next().await {
+                let command: Value =
+                    serde_json::from_str(command.unwrap().to_text().unwrap()).unwrap();
+                server_observed.lock().unwrap().push(command.clone());
+                let method = command["method"].as_str().unwrap();
+                let result = match method {
+                    "Target.createTarget" => json!({ "targetId": "replacement-target" }),
+                    "Target.attachToTarget" => json!({ "sessionId": "replacement-session" }),
+                    "Target.closeTarget" => json!({ "success": true }),
+                    _ => json!({}),
+                };
+                websocket
+                    .send(Message::Text(
+                        json!({ "id": command["id"], "result": result }).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                if method == "Target.closeTarget" {
+                    break;
+                }
+            }
+        });
+
+        let client = CdpClient::connect(&format!("ws://{address}"))
+            .await
+            .unwrap();
+        let mut manager = BrowserManager {
+            client: Arc::new(client),
+            browser_process: None,
+            ws_url: format!("ws://{address}"),
+            pages: vec![PageInfo {
+                target_id: "timed-out-target".to_string(),
+                session_id: "timed-out-session".to_string(),
+                url: "https://html.spec.whatwg.org/".to_string(),
+                title: "HTML Standard".to_string(),
+                target_type: "page".to_string(),
+            }],
+            active_page_index: 0,
+            default_timeout_ms: 25_000,
+            download_path: None,
+            ignore_https_errors: false,
+            visited_origins: HashSet::new(),
+        };
+
+        let replaced = manager.replace_active_page_after_timeout().await.unwrap();
+        assert_eq!(
+            replaced,
+            ("timed-out-target".into(), "replacement-target".into())
+        );
+        assert_eq!(manager.page_count(), 1);
+        assert_eq!(manager.active_target_id().unwrap(), "replacement-target");
+        assert_eq!(manager.active_page_url(), Some("about:blank"));
+        assert_eq!(
+            manager.force_close_owned_after_cdp_timeout().await,
+            Err("Cannot force-close an externally attached browser".to_string())
+        );
+        assert_eq!(manager.active_target_id().unwrap(), "replacement-target");
+        server.await.unwrap();
+
+        let commands = observed.lock().unwrap();
+        let create_index = commands
+            .iter()
+            .position(|command| command["method"] == "Target.createTarget")
+            .unwrap();
+        let close_index = commands
+            .iter()
+            .position(|command| command["method"] == "Target.closeTarget")
+            .unwrap();
+        assert!(create_index < close_index);
+        assert_eq!(
+            commands[close_index]["params"]["targetId"],
+            "timed-out-target"
+        );
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| command["method"] == "Target.closeTarget")
+                .count(),
+            1
+        );
     }
 
     #[test]

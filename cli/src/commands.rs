@@ -4741,6 +4741,7 @@ fn parse_get(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         "styles",
         "cdp-url",
         "browser-pid",
+        "page",
     ];
 
     match rest.first().copied() {
@@ -4779,6 +4780,76 @@ fn parse_get(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         Some("url") => Ok(json!({ "id": id, "action": "url" })),
         Some("cdp-url") => Ok(json!({ "id": id, "action": "cdp_url" })),
         Some("browser-pid") => Ok(json!({ "id": id, "action": "browser_pid" })),
+        Some("page") => {
+            const USAGE: &str = "get page --url <url> [--max-bytes <n>] [--timeout <ms>] [--include-credentials]";
+            let mut url = None;
+            let mut max_bytes = 64_000u64;
+            let mut timeout_ms = 15_000u64;
+            let mut include_credentials = false;
+            let mut index = 1;
+            while index < rest.len() {
+                match rest[index] {
+                    "--url" => {
+                        index += 1;
+                        url = rest.get(index).copied();
+                        if url.is_none() {
+                            return Err(ParseError::MissingArguments {
+                                context: "get page --url".to_string(),
+                                usage: USAGE,
+                            });
+                        }
+                    }
+                    "--max-bytes" => {
+                        index += 1;
+                        let value = rest.get(index).ok_or_else(|| ParseError::MissingArguments {
+                            context: "get page --max-bytes".to_string(),
+                            usage: USAGE,
+                        })?;
+                        max_bytes = value.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                            message: format!("Invalid --max-bytes value: {value}"),
+                            usage: USAGE,
+                        })?;
+                    }
+                    "--timeout" => {
+                        index += 1;
+                        let value = rest.get(index).ok_or_else(|| ParseError::MissingArguments {
+                            context: "get page --timeout".to_string(),
+                            usage: USAGE,
+                        })?;
+                        timeout_ms = value.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                            message: format!("Invalid --timeout value: {value}"),
+                            usage: USAGE,
+                        })?;
+                    }
+                    "--include-credentials" => include_credentials = true,
+                    value => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unknown get page option: {value}"),
+                            usage: USAGE,
+                        })
+                    }
+                }
+                index += 1;
+            }
+            let url = url.ok_or_else(|| ParseError::MissingArguments {
+                context: "get page".to_string(),
+                usage: USAGE,
+            })?;
+            if max_bytes == 0 || timeout_ms == 0 {
+                return Err(ParseError::InvalidValue {
+                    message: "--max-bytes and --timeout must be greater than zero".to_string(),
+                    usage: USAGE,
+                });
+            }
+            Ok(json!({
+                "id": id,
+                "action": "read_page",
+                "url": url,
+                "maxBytes": max_bytes,
+                "timeoutMs": timeout_ms,
+                "includeCredentials": include_credentials,
+            }))
+        }
         Some("title") => Ok(json!({ "id": id, "action": "title" })),
         Some("count") => {
             let sel = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
@@ -4807,7 +4878,7 @@ fn parse_get(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         }),
         None => Err(ParseError::MissingArguments {
             context: "get".to_string(),
-            usage: "get <text|html|value|attr|url|title|count|box|styles|cdp-url|browser-pid> [args...]",
+            usage: "get <text|html|value|attr|url|title|count|box|styles|cdp-url|browser-pid|page> [args...]",
         }),
     }
 }
@@ -6630,6 +6701,47 @@ mod tests {
     fn test_get_browser_pid() {
         let cmd = parse_command(&args("get browser-pid"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "browser_pid");
+    }
+
+    #[test]
+    fn test_get_page_uses_bounded_defaults_without_credentials() {
+        let cmd = parse_command(
+            &args("get page --url https://example.com/large"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "read_page");
+        assert_eq!(cmd["url"], "https://example.com/large");
+        assert_eq!(cmd["maxBytes"], 64_000);
+        assert_eq!(cmd["timeoutMs"], 15_000);
+        assert_eq!(cmd["includeCredentials"], false);
+    }
+
+    #[test]
+    fn test_get_page_accepts_explicit_bounds_and_credentials() {
+        let cmd = parse_command(
+            &args("get page --url https://example.com --max-bytes 4096 --timeout 7000 --include-credentials"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["maxBytes"], 4096);
+        assert_eq!(cmd["timeoutMs"], 7000);
+        assert_eq!(cmd["includeCredentials"], true);
+    }
+
+    #[test]
+    fn test_get_page_rejects_missing_url_and_zero_bounds() {
+        assert!(parse_command(&args("get page"), &default_flags()).is_err());
+        assert!(parse_command(
+            &args("get page --url https://example.com --max-bytes 0"),
+            &default_flags()
+        )
+        .is_err());
+        assert!(parse_command(
+            &args("get page --url https://example.com --timeout 0"),
+            &default_flags()
+        )
+        .is_err());
     }
 
     // === Protocol alignment tests ===
