@@ -521,6 +521,13 @@ fn persist_process_exited_browser_health_in_repository(
             profile_id: previous
                 .as_ref()
                 .and_then(|browser| browser.profile_id.clone()),
+            browser_build: previous.as_ref().and_then(|browser| browser.browser_build),
+            executable_path: previous
+                .as_ref()
+                .and_then(|browser| browser.executable_path.clone()),
+            browser_build_proof: previous
+                .as_ref()
+                .and_then(|browser| browser.browser_build_proof.clone()),
             host,
             health: ServiceBrowserHealth::ProcessExited,
             display_isolation: previous
@@ -2193,13 +2200,10 @@ mod tests {
             response.get("id").and_then(|v| v.as_str()),
             Some("test-service-status")
         );
-        assert_eq!(
-            response
-                .pointer("/data/control_plane/worker_state")
-                .and_then(|v| v.as_str())
-                .is_some(),
-            true
-        );
+        assert!(response
+            .pointer("/data/control_plane/worker_state")
+            .and_then(|v| v.as_str())
+            .is_some());
         assert_eq!(
             response
                 .pointer("/data/closedTabProjection/mode")

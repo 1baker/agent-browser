@@ -445,10 +445,15 @@ fn verify_persisted_browser(
         .get("pid")
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| failure("retained_browser_pid_missing"))?;
-    if !pid_is_running(pid) {
-        return Err(failure("retained_browser_process_exited"));
+        .filter(|value| *value > 0);
+    match pid {
+        Some(pid) if !pid_is_running(pid) => {
+            return Err(failure("retained_browser_process_exited"));
+        }
+        None if browser.get("host").and_then(Value::as_str) != Some("attached_existing") => {
+            return Err(failure("retained_browser_pid_missing"));
+        }
+        _ => {}
     }
 
     let active_session_matches = browser
@@ -832,6 +837,45 @@ mod tests {
         assert!(status.checked_without_launch);
         assert!(status.enforcement_configured);
         server.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn attached_existing_browser_without_local_pid_uses_live_cdp_identity() {
+        let root = fixture_root("attached-existing-without-local-pid");
+        let (cdp_endpoint, server) = start_cdp(json!([{
+            "id": "target-exact",
+            "type": "page",
+            "url": "https://chatgpt.test/c/exact"
+        }]));
+        seed_fixture(&root, &cdp_endpoint, "https://chatgpt.test/c/exact");
+        let state_path = root.join(".agent-browser/service/state.json");
+        let mut state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        state["browsers"]["session:workshop-retained"]["host"] = json!("attached_existing");
+        state["browsers"]["session:workshop-retained"]["pid"] = Value::Null;
+        write_private_json(&state_path, &state);
+
+        let status = verify_fixture(&root).unwrap();
+        assert!(status.verified);
+        server.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn locally_owned_browser_without_pid_still_fails_closed() {
+        let root = fixture_root("local-browser-without-pid");
+        seed_fixture(
+            &root,
+            "ws://127.0.0.1:9/devtools/browser/not-contacted",
+            "https://chatgpt.test/c/exact",
+        );
+        let state_path = root.join(".agent-browser/service/state.json");
+        let mut state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        state["browsers"]["session:workshop-retained"]["pid"] = Value::Null;
+        write_private_json(&state_path, &state);
+
+        let error = verify_fixture(&root).unwrap_err();
+        assert!(error.contains("retained_browser_pid_missing"));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -5093,8 +5093,11 @@ Repository publication tooling can pin a private retained-lane requirement;
 both the source-checkout user-service interlock and the installed binary-owned
 workstation reconciler verify any configured requirement before convergence
 mutation. Native verification requires the exact ready browser, active session,
-valid service-tab handle, profile, target, canonical URL, live PID, and loopback
-DevTools inventory. It never launches a daemon or browser.
+valid service-tab handle, profile, target, canonical URL, and loopback DevTools
+inventory. Locally launched browsers also require a live browser PID; an
+explicit attached-existing browser may omit that local PID only while its live
+daemon and exact loopback DevTools identity still verify. It never launches a
+daemon or browser.
 Use workstation retained-browser-status for the same source-free, no-lock,
 no-launch check before apply or reconcile. It honors
 AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT from the normal agent-browser env
@@ -5107,7 +5110,8 @@ Repository operators can pin a uniquely selected live page with
 pnpm pin:local-dashboard-retained-browser --
 --discover-retained-url-prefix <reviewed-origin-and-path-prefix>. Discovery
 does not launch or navigate and writes only after exactly one ready session,
-profile, target, canonical URL, live PID, and loopback DevTools lane matches.
+profile, target, canonical URL, local PID when locally launched, and loopback
+DevTools lane matches.
 The source-free workstation preparation command removes the manual navigation
 handoff. It invokes only route-bound remote-view open for the exact URL, proves
 the requested profile and rendered identity, then uniquely rediscovers and
@@ -5774,7 +5778,7 @@ Notes:
   - Service-scoped launches reject active exclusive profile conflicts by default before browser start; set profileLeasePolicy=wait and profileLeaseWaitTimeoutMs to keep the job queued while polling for release, leaving the worker available for other commands. Same-session retained browser reuse remains allowed.
   - service status includes launchConfig, a no-launch diagnostic for service.defaultBrowserBuild and the resolved executablePath from config, AGENT_BROWSER_EXECUTABLE_PATH, or service.browserBuildManifests.<build>.manifestPath. launchConfig.profileSmoke tells API, MCP, and CLI clients whether the WSL Windows chromium-stealthcdp profile-write smoke is applicable. If stealthcdp_chromium is selected but no executable path or ready manifest exists, status reports a warning. Ordinary launch and queued tab paths consume service.defaultBrowserBuild through the service access-plan resolver unless the caller explicitly supplies a profile, browser host, headless mode, executable, or browser build. When no explicit default is configured and a ready stealthcdp_chromium manifest is available, fresh installs prefer that build automatically.
   - Ordinary service status retains every live or referenced tab and at most 50 unreferenced closed-tab rows. closedTabProjection reports retained, omitted, cap, and ordering metadata. Use --full-tab-history for the complete response-only diagnostic projection; persisted service state is never compacted by a status read.
-  - Service profiles can set browserBuild to stock_chrome, stealthcdp_chromium, or cdp_free_headed. Exact authenticated target, account, and target-site matches win first; browserBuild then breaks ties and can select a generic default profile for new identities.
+  - Service profiles can set browserBuild to stock_chrome, stealthcdp_chromium, or cdp_free_headed. Exact authenticated target, account, and target-site matches win first; browserBuild then breaks ties and can select a generic default profile for new identities. Retained browser rows persist browserBuild, executablePath, and browserBuildProof. When a build is resolved, access-plan reuse and daemon command dispatch require an exact proven build; missing legacy proof or a mismatch fails closed while preserving the retained process and duplicate-profile guard.
   - service.browserCapabilityRegistry carries draft browser host, executable, capability, profile compatibility, preference binding, and validation evidence arrays into service_state.browserCapabilityRegistry for no-launch status consumers. Access-plan recommendations can use preference bindings for browserBuild selection, and populated target, account, service, and task filters are conjunctive. Guarded launches record browserCapabilityLaunch diagnostics explaining whether a local executable binding was applied or skipped. A matching failed, stale, incompatible, or operator-override row blocks launch routing even if another matching row passed.
   - service browser-capability preflight is the operator no-launch gate check for that same guarded launch path. It accepts the requested build, site/login/account hints, caller labels, profile hint, headed or headless posture, and CDP-free posture, evaluates effective configured service state, and returns browserCapabilityLaunch plus selected evidence IDs when the route passes. Manifest-derived default executables do not count as explicit operator overrides.
   - Commands should include serviceName, agentName, and taskName when available for traceability.

@@ -5937,8 +5937,8 @@ mod tests {
         use std::collections::BTreeMap;
 
         use crate::native::service_model::{
-            BrowserHealth, BrowserHost, BrowserProcess, ControlInputProvider, ViewStream,
-            ViewStreamProvider,
+            BrowserBuild, BrowserHealth, BrowserHost, BrowserProcess, ControlInputProvider,
+            ViewStream, ViewStreamProvider,
         };
 
         let state = ServiceState {
@@ -5956,6 +5956,7 @@ mod tests {
                 BrowserProcess {
                     id: "browser-social".to_string(),
                     profile_id: Some("shared-social".to_string()),
+                    browser_build: Some(BrowserBuild::StockChrome),
                     host: BrowserHost::RemoteHeaded,
                     health: BrowserHealth::Ready,
                     display_isolation: Some("private_virtual_display".to_string()),
@@ -5970,7 +5971,7 @@ mod tests {
             )]),
             ..ServiceState::default()
         };
-        let body = r##"{"action":"tab_new","runtimeProfile":"shared-social","siteId":"x","browserHost":"remote_headed","viewStreamProvider":"rdp_gateway","controlInputProvider":"manual_attached_desktop","displayIsolation":"private_virtual_display"}"##;
+        let body = r##"{"action":"tab_new","runtimeProfile":"shared-social","siteId":"x","browserBuild":"stock_chrome","browserHost":"remote_headed","viewStreamProvider":"rdp_gateway","controlInputProvider":"manual_attached_desktop","displayIsolation":"private_virtual_display"}"##;
 
         let command = service_request_command_with_state(body, Some(&state)).unwrap();
 

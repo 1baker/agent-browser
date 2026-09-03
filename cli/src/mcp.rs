@@ -14064,8 +14064,8 @@ mod tests {
         use std::collections::BTreeMap;
 
         use crate::native::service_model::{
-            BrowserHealth, BrowserHost, BrowserProcess, BrowserProfile, ControlInputProvider,
-            ViewStream, ViewStreamProvider,
+            BrowserBuild, BrowserHealth, BrowserHost, BrowserProcess, BrowserProfile,
+            ControlInputProvider, ViewStream, ViewStreamProvider,
         };
 
         let state = ServiceState {
@@ -14083,6 +14083,7 @@ mod tests {
                 BrowserProcess {
                     id: "browser-social".to_string(),
                     profile_id: Some("shared-social".to_string()),
+                    browser_build: Some(BrowserBuild::StockChrome),
                     host: BrowserHost::RemoteHeaded,
                     health: BrowserHealth::Ready,
                     display_isolation: Some("private_virtual_display".to_string()),
@@ -14103,6 +14104,7 @@ mod tests {
                 "action": "tab_new",
                 "runtimeProfile": "shared-social",
                 "siteId": "x",
+                "browserBuild": "stock_chrome",
                 "browserHost": "remote_headed",
                 "viewStreamProvider": "rdp_gateway",
                 "controlInputProvider": "manual_attached_desktop",
@@ -15604,7 +15606,7 @@ mod tests {
         let responses = lines.lines().collect::<Vec<_>>();
 
         assert_eq!(responses.len(), 2);
-        assert!(responses[0].contains(r#""method""#) == false);
+        assert!(!responses[0].contains(r#""method""#));
         assert!(responses[1].contains("agent-browser://incidents"));
         assert!(responses[1].contains("agent-browser://profiles"));
         assert!(responses[1].contains("agent-browser://sessions"));
@@ -16556,7 +16558,6 @@ mod tests {
                 previous_health: Some(BrowserHealth::Ready),
                 current_health: Some(BrowserHealth::ProcessExited),
                 details: Some(json!({"reasonKind": "process_exited"})),
-                ..ServiceEvent::default()
             }],
             ..ServiceState::default()
         };

@@ -148,6 +148,11 @@ async function runLockedLocalDashboardPublisherOrchestration({ options, report, 
       candidateSessions: adapters.runtimeSessionNames(),
       handoffs: [],
       retainedBrowserExpectation: cloneJson(report.retainedBrowserExpectation),
+      smokePolicy: {
+        skipSmoke: options.skipSmoke,
+        smokeBrowser: options.smokeBrowser,
+        requireBrowserSmoke: options.requireBrowserSmoke,
+      },
       dashboardQuiesced: false,
       failure: null,
     });
@@ -425,6 +430,11 @@ async function recoverIncompletePublication({
   report.builtBin = journalRecord.builtBin ?? null;
   report.backupPath = journalRecord.backupPath ?? null;
   const retainedBrowserExpectation = journalRecord.retainedBrowserExpectation ?? null;
+  const smokePolicy = journalRecord.smokePolicy ?? {
+    skipSmoke: options.skipSmoke,
+    smokeBrowser: options.smokeBrowser,
+    requireBrowserSmoke: options.requireBrowserSmoke,
+  };
   let pinnedRetainedBrowserExpectation = null;
   if (retainedBrowserExpectation?.required === true) {
     pinnedRetainedBrowserExpectation = retainedBrowserExpectation.pinned
@@ -523,14 +533,14 @@ async function recoverIncompletePublication({
       commit('recovery_dashboard_restart_admitted');
       await adapters.restartOrStartDashboard(installBin, { restoring: false });
       commit('recovery_dashboard_restarted');
-      if (!options.skipSmoke) {
+      if (!smokePolicy.skipSmoke) {
         commit('recovery_readiness_admitted');
         report.smoke = await adapters.runHttpReadinessSmoke(installBin);
         report.runtimeManifest = await adapters.verifyRuntimeManifestReadback(
           installBin,
           report.smoke.runtimeManifest,
         );
-        if (options.smokeBrowser) {
+        if (smokePolicy.smokeBrowser) {
           report.browserSmoke = await adapters.runBrowserSmokeDiagnostic(installBin);
         }
       }

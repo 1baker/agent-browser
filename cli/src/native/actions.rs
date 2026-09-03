@@ -106,9 +106,10 @@ use super::service_lifecycle::{
     ProfileSelectionRequest, ServiceLaunchMetadata,
 };
 use super::service_model::{
-    retained_display_allocation_candidates, retained_display_allocation_summary,
-    service_profile_allocations, service_profile_seeding_handoff, service_profile_sources,
-    BrowserBuild, BrowserCapabilityRegistry, BrowserHealth as ServiceBrowserHealth,
+    browser_matches_required_build, retained_display_allocation_candidates,
+    retained_display_allocation_summary, service_profile_allocations,
+    service_profile_seeding_handoff, service_profile_sources, BrowserBuild,
+    BrowserCapabilityRegistry, BrowserHealth as ServiceBrowserHealth,
     BrowserHost as ServiceBrowserHost, BrowserProcess, BrowserProfile, BrowserSession, BrowserTab,
     ControlInputProvider, DisplayAllocation, JobState as ServiceJobState, LeaseState, MonitorState,
     ProfileAllocationPolicy, ProfileClass, ProfileKeyringPolicy, ProfileLeaseDisposition,
@@ -1061,6 +1062,19 @@ fn apply_service_browser_capability_selection(
     };
     options.executable_path = Some(selection.executable_path.clone());
     BrowserCapabilityLaunchResolution::applied(browser_build, profile_id, selection)
+}
+
+fn required_stealth_launch_proof_error(
+    resolution: &BrowserCapabilityLaunchResolution,
+) -> Option<String> {
+    if resolution.browser_build != Some(BrowserBuild::StealthcdpChromium) || resolution.applied {
+        return None;
+    }
+
+    Some(format!(
+        "Stealth browser launch proof unavailable: request requires 'stealthcdp_chromium', but the validated executable binding was not applied ({reason}). Refusing to launch or silently fall back to another Chromium build; run the browser-capability preflight and repair its binding, compatibility, or validation evidence first.",
+        reason = resolution.reason,
+    ))
 }
 
 fn browser_capability_service_state(cmd: &Value) -> Result<ServiceState, String> {
@@ -2639,6 +2653,32 @@ fn active_browser_profile_mismatch(command: &Value, state: &DaemonState) -> Opti
     )
 }
 
+fn active_browser_build_mismatch(command: &Value, state: &DaemonState) -> Option<String> {
+    let options = launch_options_from_env();
+    let effective_command = launch_command_with_effective_service_defaults(command, &options);
+    let required_build = browser_build_from_command(&effective_command)?;
+    let browser_id = service_browser_id(&state.session_id);
+    let retained_build = LockedServiceStateRepository::default_json()
+        .and_then(|repository| repository.load_snapshot())
+        .ok()
+        .and_then(|service_state| {
+            service_state
+                .browsers
+                .get(&browser_id)
+                .and_then(|browser| browser.browser_build)
+        });
+    if retained_build == Some(required_build) {
+        return None;
+    }
+
+    Some(format!(
+        "Retained browser build mismatch: request requires '{}' but browser '{}' proves '{}'. Refusing command dispatch; preserve this browser and acquire an exact-build retained route instead.",
+        browser_build_label(required_build),
+        browser_id,
+        retained_build.map(browser_build_label).unwrap_or("unknown"),
+    ))
+}
+
 fn active_browser_profile_mismatch_message(
     requested_runtime_profile: Option<&str>,
     requested_profile: Option<&str>,
@@ -3953,12 +3993,18 @@ fn shared_profile_attach_target_for_auto_launch(
     let service_state = repository.load_snapshot().ok()?;
     let requested_host = browser_host_from_command(command);
     let requested_display_isolation = remote_headed_display_isolation_from_command(command);
+    let required_browser_build = metadata
+        .browser_capability_launch
+        .as_ref()
+        .and_then(|proof| proof.get("browserBuild"))
+        .and_then(|value| serde_json::from_value::<BrowserBuild>(value.clone()).ok());
     let current_browser_id = service_browser_id(session_id);
     let mut candidates = service_state
         .browsers
         .values()
         .filter(|browser| browser.profile_id.as_deref() == Some(profile_id))
         .filter(|browser| service_browser_health_counts_as_live(browser.health))
+        .filter(|browser| browser_matches_required_build(browser, required_browser_build))
         .filter(|browser| {
             requested_host.is_none_or(|host| {
                 host == browser.host || host == ServiceBrowserHost::AttachedExisting
@@ -4005,6 +4051,7 @@ fn shared_profile_attach_target_for_auto_launch(
 fn retained_session_attach_target_for_auto_launch(
     command: &Value,
     session_id: &str,
+    required_browser_build: Option<BrowserBuild>,
 ) -> Option<SharedProfileAttachTarget> {
     let action = command.get("action").and_then(Value::as_str)?;
     if matches!(
@@ -4027,6 +4074,7 @@ fn retained_session_attach_target_for_auto_launch(
         .browsers
         .values()
         .filter(|browser| service_browser_health_counts_as_live(browser.health))
+        .filter(|browser| browser_matches_required_build(browser, required_browser_build))
         .filter(|browser| {
             browser.id == current_browser_id
                 || browser
@@ -5068,6 +5116,14 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                 error_response(&id, &mismatch),
             );
         }
+        if let Some(mismatch) = active_browser_build_mismatch(cmd, state) {
+            return finalize_ordered_task_response(
+                cmd,
+                state,
+                ordered_step_admitted,
+                error_response(&id, &mismatch),
+            );
+        }
     }
 
     // WebDriver backend: reject unsupported CDP-only actions
@@ -5549,11 +5605,6 @@ async fn auto_launch(state: &mut DaemonState, command: &Value) -> Result<(), Str
         options.viewport_size = Some(server.viewport().await);
     }
     let engine = env::var("AGENT_BROWSER_ENGINE").ok();
-    if let Some(target) = retained_session_attach_target_for_auto_launch(command, &state.session_id)
-    {
-        attach_retained_service_session_browser_for_auto_launch(state, &target).await?;
-        return Ok(());
-    }
     let retained_remote_headed = retained_remote_headed_launch_hint(&state.session_id, command);
     let (service_host, selection_reason, browser_capability_launch, effective_command) =
         apply_auto_launch_command_hints(&mut options, command, retained_remote_headed.as_ref());
@@ -5564,6 +5615,15 @@ async fn auto_launch(state: &mut DaemonState, command: &Value) -> Result<(), Str
     );
     apply_retained_remote_headed_metadata(&mut metadata, retained_remote_headed.as_ref());
     metadata.browser_capability_launch = Some(browser_capability_launch.to_value());
+    let required_browser_build = browser_capability_launch.browser_build;
+    if let Some(target) = retained_session_attach_target_for_auto_launch(
+        &effective_command,
+        &state.session_id,
+        required_browser_build,
+    ) {
+        attach_retained_service_session_browser_for_auto_launch(state, &target).await?;
+        return Ok(());
+    }
     if let Some(target) = shared_profile_attach_target_for_auto_launch(
         &metadata,
         &effective_command,
@@ -5578,6 +5638,9 @@ async fn auto_launch(state: &mut DaemonState, command: &Value) -> Result<(), Str
         )
         .await?;
         return Ok(());
+    }
+    if let Some(error) = required_stealth_launch_proof_error(&browser_capability_launch) {
+        return Err(error);
     }
     ensure_service_profile_lease_available(&metadata, &state.session_id, &effective_command)
         .await?;
@@ -5934,6 +5997,11 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     );
     apply_retained_remote_headed_metadata(&mut metadata, retained_remote_headed.as_ref());
     metadata.browser_capability_launch = Some(browser_capability_launch.to_value());
+    if !has_cdp && !auto_connect {
+        if let Some(error) = required_stealth_launch_proof_error(&browser_capability_launch) {
+            return Err(error);
+        }
+    }
     ensure_service_profile_lease_available(&metadata, &state.session_id, &effective_cmd).await?;
 
     let new_hash = launch_hash(&launch_options);
@@ -11838,11 +11906,12 @@ async fn handle_tab_new(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
         let target_id = object.get("targetId").cloned().unwrap_or(Value::Null);
         let current_url = object.get("url").cloned().unwrap_or(Value::Null);
         let title = object.get("title").cloned().unwrap_or(Value::Null);
-        if let Some(runtime_profile) = mgr.runtime_profile_name() {
+        let manager_runtime_profile = mgr.runtime_profile_name();
+        let profile_id = service_tab_profile_id(cmd, manager_runtime_profile);
+        if let Some(runtime_profile) = profile_id.as_str() {
             object.insert("runtimeProfile".to_string(), json!(runtime_profile));
             object.insert("profileId".to_string(), json!(runtime_profile));
         }
-        let profile_id = object.get("profileId").cloned().unwrap_or(Value::Null);
         object.insert(
             "sharedAcquisition".to_string(),
             tab_new_shared_acquisition_evidence(cmd, &state.session_id, profile_id.clone()),
@@ -12035,11 +12104,12 @@ async fn remote_view_open_acquire_tab(
                 "tabSwitch": switched,
             });
             if let Some(object) = result.as_object_mut() {
-                if let Some(runtime_profile) = mgr.runtime_profile_name() {
+                let manager_runtime_profile = mgr.runtime_profile_name();
+                let profile_id = service_tab_profile_id(cmd, manager_runtime_profile);
+                if let Some(runtime_profile) = profile_id.as_str() {
                     object.insert("runtimeProfile".to_string(), json!(runtime_profile));
                     object.insert("profileId".to_string(), json!(runtime_profile));
                 }
-                let profile_id = object.get("profileId").cloned().unwrap_or(Value::Null);
                 object.insert(
                     "sharedAcquisition".to_string(),
                     tab_new_shared_acquisition_evidence(cmd, &state.session_id, profile_id.clone()),
@@ -12167,7 +12237,10 @@ async fn remote_view_open_acquire_tab(
                 let requested_url = requested_url.unwrap_or("about:blank");
                 let title = mgr.get_title().await.unwrap_or_default();
                 mgr.set_page_metadata_for_target(&target_id, Some(requested_url), Some(&title));
-                let profile_id = mgr.runtime_profile_name().unwrap_or_default().to_string();
+                let profile_id = service_tab_profile_id(cmd, mgr.runtime_profile_name())
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
                 let service_tab_handle = json!({
                     "browserId": browser_id,
                     "sessionName": session_id,
@@ -12253,6 +12326,13 @@ async fn remote_view_open_acquire_tab(
     }
     opened["tabAcquisitionDecision"] = json!("opened_new_target");
     Ok(opened)
+}
+
+fn service_tab_profile_id(cmd: &Value, manager_runtime_profile: Option<&str>) -> Value {
+    runtime_profile_from_sources(cmd, false)
+        .or_else(|| manager_runtime_profile.map(str::to_string))
+        .map(Value::String)
+        .unwrap_or(Value::Null)
 }
 
 async fn remote_view_open_wait_for_target_url(
@@ -26923,6 +27003,7 @@ mod tests {
             Some(executable.to_str().expect("path should be utf-8"))
         );
         assert!(browser_capability_launch.applied);
+        assert!(required_stealth_launch_proof_error(&browser_capability_launch).is_none());
         assert_eq!(
             browser_capability_launch.to_value()["bindingId"],
             "canary-stealth-default"
@@ -26942,6 +27023,53 @@ mod tests {
             Some("http://agent-browser.localhost/guacamole/")
         );
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_required_stealth_launch_fails_closed_without_validated_binding() {
+        let stealth = BrowserCapabilityLaunchResolution::skipped(
+            "no_matching_preference_binding",
+            Some(BrowserBuild::StealthcdpChromium),
+            Some("chatgpt-pro".to_string()),
+        );
+        let error = required_stealth_launch_proof_error(&stealth)
+            .expect("unproven stealth launch should fail closed");
+        assert!(error.contains("Refusing to launch or silently fall back"));
+        assert!(error.contains("no_matching_preference_binding"));
+
+        let stock = BrowserCapabilityLaunchResolution::skipped(
+            "no_matching_preference_binding",
+            Some(BrowserBuild::StockChrome),
+            None,
+        );
+        assert!(required_stealth_launch_proof_error(&stock).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_explicit_launch_fails_before_browser_start_without_stealth_proof() {
+        let guard = EnvGuard::new(&[
+            "AGENT_BROWSER_EXECUTABLE_PATH",
+            "AGENT_BROWSER_EXECUTABLE_PATH_SOURCE",
+        ]);
+        guard.remove("AGENT_BROWSER_EXECUTABLE_PATH");
+        guard.remove("AGENT_BROWSER_EXECUTABLE_PATH_SOURCE");
+        let command = json!({
+            "action": "launch",
+            "browserBuild": "stealthcdp_chromium",
+            "profile": "/tmp/agent-browser-unproven-stealth",
+            "serviceState": {
+                "browserCapabilityRegistry": {}
+            }
+        });
+        let mut state = DaemonState::new();
+
+        let error = handle_launch(&command, &mut state)
+            .await
+            .expect_err("unproven explicit stealth launch must fail before browser start");
+
+        assert!(error.contains("Stealth browser launch proof unavailable"));
+        assert!(error.contains("no_matching_preference_binding"));
+        assert!(state.browser.is_none());
     }
 
     #[test]
@@ -28510,6 +28638,7 @@ mod tests {
                     BrowserProcess {
                         id: "browser-existing".to_string(),
                         profile_id: Some("last30days-facebook".to_string()),
+                        browser_build: Some(BrowserBuild::StealthcdpChromium),
                         host: ServiceBrowserHost::RemoteHeaded,
                         health: ServiceBrowserHealth::Ready,
                         display_isolation: Some("private_virtual_display".to_string()),
@@ -28524,6 +28653,9 @@ mod tests {
             .expect("service state should be persisted");
         let metadata = ServiceLaunchMetadata {
             profile_id: Some("last30days-facebook".to_string()),
+            browser_capability_launch: Some(json!({
+                "browserBuild": "stealthcdp_chromium"
+            })),
             ..ServiceLaunchMetadata::default()
         };
 
@@ -28547,6 +28679,56 @@ mod tests {
         assert_eq!(
             target.owner_session_ids,
             vec!["facebook-operator".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_shared_profile_attach_rejects_wrong_build_without_duplicate_lane() {
+        let guard = EnvGuard::new(&["HOME"]);
+        let home = unique_socket_dir("shared-profile-build-mismatch-home");
+        fs::create_dir_all(&home).expect("test home should be created");
+        guard.set("HOME", home.to_str().expect("test home should be utf-8"));
+
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        store
+            .save(&ServiceState {
+                browsers: BTreeMap::from([(
+                    "browser-existing".to_string(),
+                    BrowserProcess {
+                        id: "browser-existing".to_string(),
+                        profile_id: Some("work".to_string()),
+                        browser_build: Some(BrowserBuild::StockChrome),
+                        health: ServiceBrowserHealth::Ready,
+                        cdp_endpoint: Some("http://127.0.0.1:9222".to_string()),
+                        active_session_ids: vec!["owner".to_string()],
+                        ..BrowserProcess::default()
+                    },
+                )]),
+                ..ServiceState::default()
+            })
+            .expect("service state should be persisted");
+        let metadata = ServiceLaunchMetadata {
+            profile_id: Some("work".to_string()),
+            browser_capability_launch: Some(json!({
+                "browserBuild": "stealthcdp_chromium"
+            })),
+            ..ServiceLaunchMetadata::default()
+        };
+        let command = json!({
+            "action": "tab_new",
+            "runtimeProfile": "work",
+            "browserBuild": "stealthcdp_chromium"
+        });
+
+        assert!(
+            shared_profile_attach_target_for_auto_launch(&metadata, &command, "new-session")
+                .is_none()
+        );
+        assert_eq!(
+            service_profile_live_reusable_browser_ids("new-session", "work"),
+            vec!["browser-existing".to_string()]
         );
 
         let _ = fs::remove_dir_all(&home);
@@ -28600,6 +28782,7 @@ mod tests {
         let target = retained_session_attach_target_for_auto_launch(
             &json!({"action": "tab_list"}),
             "last30days-facebook",
+            None,
         )
         .expect("registered session should reconnect to its retained browser");
 
@@ -28652,8 +28835,102 @@ mod tests {
                 "sessionName": "last30days-facebook"
             }),
             "unrelated-client",
+            None,
         )
         .is_none());
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_retained_attach_rejects_wrong_or_unproven_browser_build() {
+        let guard = EnvGuard::new(&["HOME"]);
+        let home = unique_socket_dir("retained-session-build-mismatch-home");
+        fs::create_dir_all(&home).expect("test home should be created");
+        guard.set("HOME", home.to_str().expect("test home should be utf-8"));
+
+        for retained_build in [None, Some(BrowserBuild::StockChrome)] {
+            let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+            store
+                .save(&ServiceState {
+                    browsers: BTreeMap::from([(
+                        "session:work".to_string(),
+                        BrowserProcess {
+                            id: "session:work".to_string(),
+                            profile_id: Some("work".to_string()),
+                            browser_build: retained_build,
+                            health: ServiceBrowserHealth::Ready,
+                            cdp_endpoint: Some("http://127.0.0.1:9222".to_string()),
+                            active_session_ids: vec!["work".to_string()],
+                            ..BrowserProcess::default()
+                        },
+                    )]),
+                    ..ServiceState::default()
+                })
+                .expect("service state should be persisted");
+
+            assert!(retained_session_attach_target_for_auto_launch(
+                &json!({"action": "tab_list"}),
+                "work",
+                Some(BrowserBuild::StealthcdpChromium),
+            )
+            .is_none());
+        }
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_active_browser_dispatch_requires_exact_retained_build_proof() {
+        let guard = EnvGuard::new(&["HOME"]);
+        let home = unique_socket_dir("active-browser-build-mismatch-home");
+        fs::create_dir_all(&home).expect("test home should be created");
+        guard.set("HOME", home.to_str().expect("test home should be utf-8"));
+
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        let mut state = DaemonState::new();
+        state.session_id = "work".to_string();
+        let command = json!({
+            "action": "url",
+            "browserBuild": "stealthcdp_chromium"
+        });
+
+        for retained_build in [None, Some(BrowserBuild::StockChrome)] {
+            store
+                .save(&ServiceState {
+                    browsers: BTreeMap::from([(
+                        "session:work".to_string(),
+                        BrowserProcess {
+                            id: "session:work".to_string(),
+                            browser_build: retained_build,
+                            health: ServiceBrowserHealth::Ready,
+                            ..BrowserProcess::default()
+                        },
+                    )]),
+                    ..ServiceState::default()
+                })
+                .expect("service state should be persisted");
+            let error = active_browser_build_mismatch(&command, &state)
+                .expect("unknown and wrong build proof should fail closed");
+            assert!(error.contains("request requires 'stealthcdp_chromium'"));
+            assert!(error.contains("Refusing command dispatch"));
+        }
+
+        store
+            .save(&ServiceState {
+                browsers: BTreeMap::from([(
+                    "session:work".to_string(),
+                    BrowserProcess {
+                        id: "session:work".to_string(),
+                        browser_build: Some(BrowserBuild::StealthcdpChromium),
+                        health: ServiceBrowserHealth::Ready,
+                        ..BrowserProcess::default()
+                    },
+                )]),
+                ..ServiceState::default()
+            })
+            .expect("service state should be persisted");
+        assert!(active_browser_build_mismatch(&command, &state).is_none());
 
         let _ = fs::remove_dir_all(&home);
     }
@@ -29824,7 +30101,9 @@ mod tests {
         assert_eq!(result["success"], false);
         let error_msg = result["error"].as_str().unwrap();
         assert!(
-            error_msg.contains("Not yet implemented") || error_msg.contains("Auto-launch failed"),
+            error_msg.contains("Not yet implemented")
+                || error_msg.contains("Auto-launch failed")
+                || error_msg.contains("Retained browser build mismatch"),
             "Unexpected error: {}",
             error_msg
         );
@@ -34277,11 +34556,10 @@ mod tests {
         assert_eq!(rollback["state"], "rolled_back");
         let restored = repository.load_snapshot().unwrap();
         assert_eq!(restored.route_pool["pool-a"].state, "available");
-        assert!(restored
+        assert!(!restored
             .display_allocations
-            .get("remote-view-display:41")
-            .is_none());
-        assert!(restored.remote_view_routes.get("route-a").is_none());
+            .contains_key("remote-view-display:41"));
+        assert!(!restored.remote_view_routes.contains_key("route-a"));
         assert_eq!(
             restored.remote_view_acquisition_leases[&lease.id].state,
             "failed"
@@ -34502,15 +34780,13 @@ mod tests {
         assert_eq!(result["repaired"], true);
         assert_eq!(result["candidateCounts"]["stalePendingAcquisitions"], 1);
         assert_eq!(result["repairedCounts"]["stalePendingAcquisitions"], 1);
-        assert!(service_state.route_pool.get("pool-pending").is_none());
-        assert!(service_state
+        assert!(!service_state.route_pool.contains_key("pool-pending"));
+        assert!(!service_state
             .remote_view_routes
-            .get("route-pending")
-            .is_none());
-        assert!(service_state
+            .contains_key("route-pending"));
+        assert!(!service_state
             .display_allocations
-            .get("display-pending")
-            .is_none());
+            .contains_key("display-pending"));
         let lease = &service_state.remote_view_acquisition_leases["lease-pending"];
         assert_eq!(lease.state, "failed");
         assert_eq!(lease.phase, "rollback_complete");
@@ -37524,7 +37800,6 @@ mod tests {
                 view_streams: Vec::new(),
                 display_isolation: Some("shared_display".to_string()),
                 display_name: Some(":93".to_string()),
-                ..ServiceLaunchMetadata::default()
             }),
         )
         .unwrap();
@@ -38574,7 +38849,6 @@ mod tests {
             force_kill_succeeded: false,
             force_kill_failed: true,
             errors: vec!["permission denied".to_string()],
-            ..BrowserShutdownOutcome::default()
         };
 
         let (health, last_error) = close_health_from_outcome(Some(&outcome));
@@ -38869,6 +39143,33 @@ mod tests {
 
         guard.remove("AGENT_BROWSER_PROFILE");
         assert_eq!(launch_profile_from_sources(&json!({}), true), None);
+    }
+
+    #[test]
+    fn test_service_tab_profile_id_prefers_access_plan_profile_for_attached_existing_browser() {
+        assert_eq!(
+            service_tab_profile_id(&json!({ "runtimeProfile": "chatgpt-pro" }), None,),
+            json!("chatgpt-pro")
+        );
+        assert_eq!(
+            service_tab_profile_id(
+                &json!({ "profileId": "chatgpt-pro" }),
+                Some("wrong-manager-profile"),
+            ),
+            json!("chatgpt-pro")
+        );
+    }
+
+    #[test]
+    fn test_service_tab_profile_id_falls_back_to_manager_and_never_environment() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_RUNTIME_PROFILE"]);
+        guard.set("AGENT_BROWSER_RUNTIME_PROFILE", "ambient-profile");
+
+        assert_eq!(
+            service_tab_profile_id(&json!({}), Some("manager-profile")),
+            json!("manager-profile")
+        );
+        assert_eq!(service_tab_profile_id(&json!({}), None), Value::Null);
     }
 
     #[test]

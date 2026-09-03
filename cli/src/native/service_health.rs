@@ -667,9 +667,39 @@ pub fn persist_service_browser_record_in_repository(
                     .and_then(|browser| browser.display_name.clone()),
             ),
         };
+        let new_browser_build_proof = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.browser_capability_launch.clone());
+        let (browser_build, executable_path, browser_build_proof) =
+            if let Some(proof) = new_browser_build_proof {
+                let proven = proof.get("applied").and_then(|value| value.as_bool()) == Some(true);
+                let browser_build = proven
+                    .then(|| proof.get("browserBuild"))
+                    .flatten()
+                    .and_then(|value| serde_json::from_value(value.clone()).ok());
+                let executable_path = proven
+                    .then(|| proof.get("executablePath"))
+                    .flatten()
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+                (browser_build, executable_path, Some(proof))
+            } else {
+                (
+                    previous.as_ref().and_then(|browser| browser.browser_build),
+                    previous
+                        .as_ref()
+                        .and_then(|browser| browser.executable_path.clone()),
+                    previous
+                        .as_ref()
+                        .and_then(|browser| browser.browser_build_proof.clone()),
+                )
+            };
         let mut browser = BrowserProcess {
             id: id.clone(),
             profile_id: profile_id.clone(),
+            browser_build,
+            executable_path,
+            browser_build_proof,
             host,
             health,
             display_isolation,
@@ -1064,6 +1094,9 @@ pub(crate) fn stale_browser_process_record(
     let mut browser = BrowserProcess {
         id: id.to_string(),
         profile_id: previous.and_then(|browser| browser.profile_id.clone()),
+        browser_build: previous.and_then(|browser| browser.browser_build),
+        executable_path: previous.and_then(|browser| browser.executable_path.clone()),
+        browser_build_proof: previous.and_then(|browser| browser.browser_build_proof.clone()),
         host: previous
             .map(|browser| browser.host)
             .unwrap_or(BrowserHost::AttachedExisting),
@@ -2886,8 +2919,9 @@ fn pid_is_running(pid: u32) -> bool {
 mod tests {
     use super::*;
     use crate::native::service_model::{
-        ControlInputProvider, DisplayAllocation, JobState, RemoteViewRoute, RoutePoolEntry,
-        ServiceJob, ServiceProvider, SitePolicy, ViewStream, ViewStreamProvider, ViewerLease,
+        BrowserBuild, ControlInputProvider, DisplayAllocation, JobState, RemoteViewRoute,
+        RoutePoolEntry, ServiceJob, ServiceProvider, SitePolicy, ViewStream, ViewStreamProvider,
+        ViewerLease,
     };
     use crate::native::service_store::{
         mutate_default_service_state, JsonServiceStateStore, ServiceStateStore,
@@ -3828,7 +3862,9 @@ mod tests {
             Some(ServiceLaunchMetadata {
                 profile_id: Some("work".to_string()),
                 browser_capability_launch: Some(serde_json::json!({
-                    "browserBuild": "stealthcdp_chromium"
+                    "applied": true,
+                    "browserBuild": "stealthcdp_chromium",
+                    "executablePath": "/opt/stealth/chrome"
                 })),
                 view_streams: vec![ViewStream {
                     id: "remote-headed-view".to_string(),
@@ -3847,6 +3883,18 @@ mod tests {
 
         let state = store.load().unwrap();
         let browser = &state.browsers["session:persist-session"];
+        assert_eq!(
+            browser.browser_build,
+            Some(BrowserBuild::StealthcdpChromium)
+        );
+        assert_eq!(
+            browser.executable_path.as_deref(),
+            Some("/opt/stealth/chrome")
+        );
+        assert_eq!(
+            browser.browser_build_proof.as_ref().unwrap()["browserBuild"],
+            "stealthcdp_chromium"
+        );
         let allocation_id = browser.display_allocation_id.as_ref().unwrap();
         assert_eq!(
             allocation_id,
@@ -3878,6 +3926,60 @@ mod tests {
         assert_eq!(
             allocation.pid_hints.as_ref().unwrap()["browserPid"],
             serde_json::json!(1234)
+        );
+
+        persist_service_browser_record_in_repository(
+            &repository,
+            "persist-session",
+            BrowserHost::RemoteHeaded,
+            BrowserHealth::Degraded,
+            Some(1234),
+            Some("http://127.0.0.1:9222".to_string()),
+            Some("temporary health failure".to_string()),
+            None,
+        )
+        .unwrap();
+        let refreshed = store.load().unwrap();
+        let browser = &refreshed.browsers["session:persist-session"];
+        assert_eq!(
+            browser.browser_build,
+            Some(BrowserBuild::StealthcdpChromium)
+        );
+        assert_eq!(
+            browser.executable_path.as_deref(),
+            Some("/opt/stealth/chrome")
+        );
+        assert_eq!(
+            browser.browser_build_proof.as_ref().unwrap()["browserBuild"],
+            "stealthcdp_chromium"
+        );
+
+        persist_service_browser_record_in_repository(
+            &repository,
+            "persist-session",
+            BrowserHost::RemoteHeaded,
+            BrowserHealth::Ready,
+            Some(5678),
+            Some("http://127.0.0.1:9333".to_string()),
+            None,
+            Some(ServiceLaunchMetadata {
+                profile_id: Some("work".to_string()),
+                browser_capability_launch: Some(serde_json::json!({
+                    "applied": false,
+                    "reason": "validation_evidence_missing_or_not_passed",
+                    "browserBuild": "stealthcdp_chromium"
+                })),
+                ..ServiceLaunchMetadata::default()
+            }),
+        )
+        .unwrap();
+        let unproven = store.load().unwrap();
+        let browser = &unproven.browsers["session:persist-session"];
+        assert_eq!(browser.browser_build, None);
+        assert_eq!(browser.executable_path, None);
+        assert_eq!(
+            browser.browser_build_proof.as_ref().unwrap()["applied"],
+            false
         );
 
         let _ = fs::remove_dir_all(&home);

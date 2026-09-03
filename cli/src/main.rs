@@ -240,6 +240,17 @@ fn set_launch_cmd_string_if_absent(
     cmd[field] = json!(value);
 }
 
+fn apply_browser_build_to_prestart_launch(
+    launch_cmd: &mut serde_json::Value,
+    browser_build: Option<&str>,
+) {
+    set_launch_cmd_string_if_absent(
+        launch_cmd,
+        "browserBuild",
+        browser_build.map(str::to_string),
+    );
+}
+
 fn apply_remote_headed_launch_env_hints(launch_cmd: &mut serde_json::Value) {
     if !launch_cmd_requests_remote_headed(launch_cmd) {
         return;
@@ -2473,6 +2484,7 @@ fn main() {
         if flags.cli_headed {
             launch_cmd["headlessExplicit"] = json!(true);
         }
+        apply_browser_build_to_prestart_launch(&mut launch_cmd, flags.browser_build.as_deref());
 
         let cmd_obj = launch_cmd
             .as_object_mut()
@@ -3160,6 +3172,18 @@ mod tests {
         assert!(!command_skips_browser_launch_for_prestart(&json!({
             "action": "navigate"
         })));
+    }
+
+    #[test]
+    fn test_prestart_launch_preserves_explicit_browser_build() {
+        let mut launch = json!({
+            "action": "launch",
+            "profile": "/tmp/profile"
+        });
+
+        apply_browser_build_to_prestart_launch(&mut launch, Some("stealthcdp_chromium"));
+
+        assert_eq!(launch["browserBuild"], "stealthcdp_chromium");
     }
 
     #[test]

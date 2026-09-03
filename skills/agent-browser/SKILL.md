@@ -57,9 +57,12 @@ pass.
 When a private durable retained-browser requirement is configured, the
 source-free installed workstation reconciler verifies it natively before its
 first mutation. It requires the exact ready browser, active session, valid
-service-tab handle, profile, live PID, loopback DevTools target, and canonical
-URL. It does not invoke a service command and cannot auto-launch a daemon or
-browser. An absent requirement is a no-op; an invalid or changed configured
+service-tab handle, profile, loopback DevTools target, and canonical URL.
+Locally launched browsers also require a live browser PID; an explicit
+`attached_existing` browser may omit the local PID only while the live daemon
+and exact loopback DevTools identity still verify. It does not invoke a service
+command and cannot auto-launch a daemon or browser. An absent requirement is a
+no-op; an invalid or changed configured
 lane fails closed before user services are quiesced. Reconcile JSON projects
 only bounded verification state, never the retained identity.
 
@@ -280,7 +283,7 @@ extraction, or when an operator explicitly asks for a local browser. Use
 `cdp_free_headed` only when an access plan or site policy says CDP attachment
 is not acceptable.
 
-For shared authenticated profiles, prefer one retained browser process group with separate service-owned tabs or viewer leases. A profile can be shared by several clients only through the retained browser lane. Do not start a second independent Chrome process on the same profile directory unless the request explicitly allows duplicate profile lanes for reviewed throwaway isolation. Access-plan `decision.profileReuse` reports `profileProcessPolicy`, `clientSharingPolicy`, `defaultAcquisition`, and `sharedAcquisition`; follow those fields before launching. When `sharedAcquisition.mode` is `tab_new`, use the retained `browserId` and `sessionName` route hints to open an attributed service-owned tab through the existing browser queue. Dashboard workspace rows expose the same distinction as profile actionability: compatible live service-owned owners recommend opening a tab in the retained profile owner and use `service_request` `tab_new` for the enabled Add tab action, live route or profile diagnostics remain visible under Attention instead of disappearing from the left rail, and profile-only conflicts recommend waiting for or inspecting the holder instead of launching a duplicate profile process.
+For shared authenticated profiles, prefer one retained browser process group with separate service-owned tabs or viewer leases. A profile can be shared by several clients only through the retained browser lane. Do not start a second independent Chrome process on the same profile directory unless the request explicitly allows duplicate profile lanes for reviewed throwaway isolation. Access-plan `decision.profileReuse` reports `profileProcessPolicy`, `clientSharingPolicy`, `defaultAcquisition`, and `sharedAcquisition`; follow those fields before launching. When a build is resolved, reuse requires the retained browser row's `browserBuild` to prove the exact build. Treat missing legacy proof or a mismatch as incompatible, preserve that process, and do not dispatch through it or launch a duplicate profile lane. A fresh `stealthcdp_chromium` launch must also stop before browser start unless `browserCapabilityLaunch.applied` is true; repair the no-launch preflight evidence instead of accepting fallback Chromium. Inspect `executablePath`, `browserBuildProof`, and the `retained_browser_build_mismatch_or_missing_proof` reason when diagnosing this gate. When `sharedAcquisition.mode` is `tab_new`, use the retained `browserId` and `sessionName` route hints to open an attributed service-owned tab through the existing browser queue. Dashboard workspace rows expose the same distinction as profile actionability: compatible live service-owned owners recommend opening a tab in the retained profile owner and use `service_request` `tab_new` for the enabled Add tab action, live route or profile diagnostics remain visible under Attention instead of disappearing from the left rail, and profile-only conflicts recommend waiting for or inspecting the holder instead of launching a duplicate profile process.
 
 For agentic retained-target work, configure `--confirm-actions` with exact
 actions or consequence categories. Stable categories are `read_only`,

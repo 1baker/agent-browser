@@ -2174,3 +2174,21 @@ Current doctor readback shows the repo helper is fixed and the installed helper
 is detected as `remote_view_route_desktop_helper_stale`; refreshing it requires
 an interactive sudo boundary because `sudo -n` is unavailable in this session.
 Doctor also reports readiness-impacting stale resource candidates.
+# P127 | Build-Bound Retained Browser Reuse
+
+State: IMPLEMENTED; REVIEW FAILED CLOSED
+
+Persist authoritative browser-build and executable launch proof on every
+service-owned retained browser. Require exact build compatibility in both the
+no-launch access plan and daemon auto-attach path so a stealth-required request
+cannot silently reuse stock or unknown Chromium. Preserve mismatched retained
+lanes and fail closed before duplicate launch or command dispatch. See
+`docs/dev/plans/0127-2026-09-02-build-bound-retained-browser-reuse-plan.md`.
+
+The code, installed runtime, and deterministic validation are complete. Exact
+stealth capability resolution, attached-existing lifecycle verification,
+publisher recovery policy, and access-plan-owned broker handle identity now
+pass focused and widened checks. The already-issued nonce-bound AuraCall review
+failed closed after its API restarted: recovery could not reattach the submitted
+WebSocket and refused prompt replay. No duplicate review submission is
+permitted.

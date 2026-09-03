@@ -45,6 +45,7 @@ try {
   await runRolledBackRecoveryScenario();
   await runDiscoveredHandoffRecoveryScenario();
   await runAlreadyResumedRecoveryScenario();
+  await runRecoveryPreservesOriginalSkipBrowserPolicyScenario();
   await runRetainedGuardRecoveryFailureScenario();
   await runUnverifiedRecoveryScenario();
   await runRecoverOnlyNoopScenario();
@@ -446,6 +447,27 @@ async function runAlreadyResumedRecoveryScenario() {
   assert.equal(fixture.actions.filter((action) => action === 'restart:normal').length, 1);
 }
 
+async function runRecoveryPreservesOriginalSkipBrowserPolicyScenario() {
+  const fixture = createFixture();
+  fixture.input.options.recoverOnly = true;
+  seedIncompleteJournal(fixture, {
+    phase: 'publication_failed_replacement_retained',
+    installed: 'replacement',
+    smokePolicy: {
+      skipSmoke: false,
+      smokeBrowser: false,
+      requireBrowserSmoke: false,
+    },
+  });
+  fixture.actions.length = 0;
+
+  await runLocalDashboardPublisherOrchestration(fixture.input);
+
+  assert.equal(fixture.report.recovery.result, 'recovered_ready');
+  assert.equal(fixture.actions.includes('http-readiness'), true);
+  assert.equal(fixture.actions.includes('browser-smoke'), false);
+}
+
 async function runRetainedGuardRecoveryFailureScenario() {
   const handoff = fixtureHandoff();
   const fixture = createFixture({ retainedGuardFaultAt: 'recovery_post_handoff' });
@@ -705,6 +727,7 @@ function seedIncompleteJournal(fixture, {
   replacementEvidence = true,
   resumedHandoffs = [],
   retainedBrowserExpectation = null,
+  smokePolicy = null,
 }) {
   copyFileSync(fixture.installBin, fixture.backupPath);
   chmodSync(fixture.backupPath, 0o751);
@@ -746,6 +769,7 @@ function seedIncompleteJournal(fixture, {
       handoffs,
       resumedHandoffs,
       retainedBrowserExpectation,
+      smokePolicy,
       dashboardQuiesceAdmitted: phase !== 'prepared',
       dashboardQuiesced: phase !== 'prepared',
       failure: null,

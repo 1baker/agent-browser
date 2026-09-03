@@ -1456,6 +1456,7 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         });
     }
     let mut result = parse_command_inner(args, flags)?;
+    apply_explicit_global_launch_routing_flags(&mut result, flags);
 
     // Inject AGENT_BROWSER_DEFAULT_TIMEOUT into any wait-family command that
     // doesn't already carry an explicit timeout. Centralised here so that new
@@ -5832,6 +5833,21 @@ mod tests {
         assert_eq!(cmd["viewStreamProvider"], "rdp_gateway");
         assert_eq!(cmd["controlInputProvider"], "manual_attached_desktop");
         assert_eq!(cmd["displayIsolation"], "private_virtual_display");
+    }
+
+    #[test]
+    fn test_non_navigation_browser_command_preserves_explicit_global_launch_routing_flags() {
+        let mut flags = default_flags();
+        flags.profile = Some("/tmp/agent-browser-stealth-proof".to_string());
+        flags.cli_profile = true;
+        flags.browser_build = Some("stealthcdp_chromium".to_string());
+        flags.cli_browser_build = true;
+
+        let cmd = parse_command(&args("get url"), &flags).unwrap();
+
+        assert_eq!(cmd["action"], "url");
+        assert_eq!(cmd["profile"], "/tmp/agent-browser-stealth-proof");
+        assert_eq!(cmd["browserBuild"], "stealthcdp_chromium");
     }
 
     #[test]

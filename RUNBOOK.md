@@ -7803,3 +7803,71 @@ Result:
   browser, released one physical target, preserved the browser/session route,
   and successfully evaluated the surviving tab handle.
 - Remaining P69 work starts at Slice C route-bound handoff deepening.
+# Turn 127 | 2026-09-02
+
+Scope: bind retained-browser reuse to durable browser-build and executable
+proof.
+
+Current evidence:
+
+- The installed service default and ready manifest select
+  `stealthcdp_chromium`.
+- The healthy retained `session:default` process is bundled Linux Chromium and
+  its browser record has no build or launch proof.
+- Access-plan reuse and daemon auto-attach currently accept that browser by
+  profile and host alone.
+
+Safety boundary:
+
+- Do not navigate or close the retained FigureLabs target.
+- Do not launch a duplicate profile lane.
+- Treat missing or mismatched retained build proof as incompatible whenever the
+  resolved request requires a browser build.
+- When `stealthcdp_chromium` is required for a fresh launch, require
+  `browserCapabilityLaunch.applied=true`; otherwise stop before browser start
+  and repair the preflight binding, compatibility, or validation evidence.
+- Keep ordinary non-service direct attachment behavior when no governed build
+  is selected.
+
+Plan: `docs/dev/plans/0127-2026-09-02-build-bound-retained-browser-reuse-plan.md`.
+
+# Turn 128 | 2026-09-02
+
+Scope: close the live Plan 0127 build-bound reuse blockers and clean the
+worktree without replacing the authenticated browser.
+
+Completed:
+
+- Validated the exact `stealthcdp-win-150` executable binding and retired stale
+  daemon listeners while preserving the retained browser.
+- Allowed explicit `attached_existing` retained browsers without a local PID
+  only after exact live daemon, CDP, browser, session, profile, target, URL, and
+  handle verification; locally owned browsers remain PID-bound.
+- Persisted publisher browser-smoke policy through recover-only handoff.
+- Derived service-tab profile identity from the access-plan command before the
+  manager fallback, with no ambient-environment fallback.
+- Installed SHA-256
+  `2dff309146ce62e2383ceaf6c2fe9169d92093049b5b29b9e3cb6260a5e2c9fe`;
+  the publish journal reached `recovered_ready` and workstation doctor reported
+  converged state with no issues.
+- Proved a no-prompt broker acquisition returned the retained
+  `session:default`, profile `chatgpt-pro`, exact target URL, and target-bound
+  handle, then released the test tab without closing the browser.
+
+Validation:
+
+- Rust: 1,906 passed and 57 ignored; strict Clippy and formatting passed.
+- Focused attached-existing, service-tab profile, retained-browser requirement,
+  and publisher-recovery tests passed.
+- ESLint, service-client checks, HTTP/MCP parity, route-confusion gates, docs and
+  dashboard builds, native release build, plan audit, CodeGraph sync, and diff
+  hygiene passed.
+
+Remaining review boundary:
+
+- AuraCall response `resp_f08eb21d87c84f1db2756f646beb7ec8` was created once,
+  but its API restarted while waiting and the durable lease expired. Recovery
+  then failed with `runner_execution_failed` because its submitted WebSocket was
+  closed, explicitly refusing prompt replay. Read-only retained-page inspection
+  found no matching nonce-bound user message. Preserve the response identity and
+  do not resubmit or launch a substitute browser.
