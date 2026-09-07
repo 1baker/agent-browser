@@ -121,3 +121,28 @@ Full autonomy, durable task continuation, authentication/MFA handoff, CAPTCHA
 outcomes, and newly installed live-browser verification remain unproven. Restore
 the exact required retained session, or obtain explicit approval to retire its
 obsolete requirement, before publication. Do not treat a clean commit as deployment.
+
+## CLI compaction follow-through | 2026-09-07
+
+The previous goal turn was progress: commit `6ed97936` contains the fresh-launch
+proof and dashboard completion repairs. Current source inspection found that CLI
+interactive history compaction still ran before its turn deadline. A stalled
+summary therefore bypassed the published five-minute guarantee.
+
+Compaction now runs at the start of `run_chat_turn`, under the same absolute
+deadline used by gateway and tool work. Timeout returns failure before model/tool
+dispatch and retains the unmodified message history; success preserves the
+original system message and recent turns. Two local socket regressions cover
+stalled compaction and successful history replacement. No live model request or
+browser action is part of these fixtures. Durable recovery remains separate.
+
+Delegation: `/root/dashboard_completion` receives only a read-only closed-world
+review of this bounded CLI diff; implementation and validation stay primary-owned
+to avoid concurrent builds replacing the test executable. Installation remains
+subject to the unresolved retained-session guard; no bypass is authorized.
+
+Validation for this follow-through: five CLI Rust tests, three actual-CLI fixture
+scenarios, and isolated full suite with 1920 passes, zero failures, 57 ignored.
+Build, strict Clippy, formatting, targeted ESLint, dashboard TypeScript,
+CodeGraph synchronization, and diff checks passed. The independent scoped review
+returned no blocking findings. Plan audit remains clean but not applicable.

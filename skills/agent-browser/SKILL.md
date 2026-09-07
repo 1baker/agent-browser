@@ -1019,7 +1019,7 @@ credentials unless `--include-credentials` is explicit. The hard limits are
 
 ## Typing Strategy
 
-CLI and dashboard Chat turns enforce a five-minute deadline across gateway and tool work and a
+CLI and dashboard Chat turns enforce a five-minute deadline across history compaction, gateway and tool work and a
 50-step limit. Limit exhaustion and incomplete gateway streams report failure;
 partial streamed tool calls are not dispatched. Earlier browser actions may have
 completed, so inspect the retained page before planning continuation.

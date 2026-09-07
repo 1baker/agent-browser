@@ -7929,3 +7929,31 @@ Next: restore the exact required retained lane, or explicitly approve retiring
 its obsolete requirement, before guarded installation and fresh-launch live QA.
 Durable task recovery and full autonomous/authenticated task coverage remain
 separate unverified Plan 0128 work.
+
+# Turn 131 | 2026-09-07
+
+Scope: Plan 0128 CLI interactive compaction deadline closure.
+
+- Started clean at `6ed97936`; classified the prior goal turn as verified
+  implementation progress. Inspected current source and confirmed interactive
+  CLI compaction ran outside the turn deadline.
+- Moved compaction into `run_chat_turn`, using its existing absolute deadline.
+  A timeout preserves history and returns before gateway tool work; success
+  preserves system instructions and recent messages. No automatic retry occurs.
+- Five CLI Rust tests pass, including two new socket regressions for stalled
+  summary/history preservation and successful compaction. The actual built CLI
+  completion fixture passes its three scenarios without external model calls.
+- Full isolated Rust suite: 1920 passed, zero failed, 57 ignored. Native build,
+  strict Clippy, formatting, targeted ESLint, dashboard TypeScript, and diff
+  checks passed. Plan audit reports no problems but is not applicable to this
+  repository's adopted planning contracts.
+- `/root/dashboard_completion` performed a read-only closed-world review and
+  returned no blocking findings; primary owns implementation and validation.
+- Updated README, CLI help, skill, docs page, and Plan 0128 in the same slice.
+  CodeGraph was synchronized; direct source reads covered exact control flow.
+- Repeated read-only installation preflight still fails
+  `retained_daemon_missing` for `nyse-developer`. No installation, pin changes,
+  service restarts, account access, ChatGPT submission, or GitHub writes occurred.
+
+This closes another bounded-wait gap, not the full autonomous-browser objective.
+Durable task recovery and representative live task verification remain open.

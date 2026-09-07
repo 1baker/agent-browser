@@ -6198,6 +6198,7 @@ Requires AI_GATEWAY_API_KEY to be set.
 In interactive mode, type "quit", "exit", or "q" to leave the REPL.
 
 CLI and dashboard Chat turns stop after five minutes or 50 steps and report failure if unfinished.
+History compaction shares that deadline; timeout preserves the existing history.
 Incomplete gateway streams never dispatch partial tool calls. Earlier browser
 actions may have completed; inspect the retained page before continuing.
 

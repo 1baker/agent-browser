@@ -124,14 +124,6 @@ async fn run_interactive(session: &str, model: &str, verbosity: Verbosity, json_
     let mut openai_messages: Vec<Value> =
         vec![json!({"role": "system", "content": chat::get_system_prompt()})];
 
-    let gateway_url = std::env::var("AI_GATEWAY_URL")
-        .unwrap_or_else(|_| chat::DEFAULT_AI_GATEWAY_URL.to_string())
-        .trim_end_matches('/')
-        .to_string();
-    let api_key = std::env::var("AI_GATEWAY_API_KEY").unwrap_or_default();
-    let url = format!("{}/v1/chat/completions", gateway_url);
-    let client = chat::http_client();
-
     loop {
         if !json_mode {
             eprint!("{} ", color::cyan(">"));
@@ -156,26 +148,6 @@ async fn run_interactive(session: &str, model: &str, verbosity: Verbosity, json_
 
         openai_messages.push(json!({"role": "user", "content": input}));
 
-        // Compaction check
-        let total_chars = chat::estimate_chars(&openai_messages);
-        if total_chars > chat::COMPACT_THRESHOLD_CHARS
-            && openai_messages.len() > chat::KEEP_RECENT_MESSAGES + 2
-        {
-            let split = chat::find_safe_split(&openai_messages, chat::KEEP_RECENT_MESSAGES);
-            let to_summarize = &openai_messages[1..split];
-            if let Some(summary) =
-                chat::summarize_for_compaction(client, &url, &api_key, model, to_summarize).await
-            {
-                let summary_msg = json!({
-                    "role": "system",
-                    "content": format!("[Conversation summary]\n{}", summary)
-                });
-                let recent = openai_messages[split..].to_vec();
-                openai_messages = vec![openai_messages[0].clone(), summary_msg];
-                openai_messages.extend(recent);
-            }
-        }
-
         let success =
             run_chat_turn(session, model, &mut openai_messages, verbosity, json_mode).await;
 
@@ -187,6 +159,42 @@ async fn run_interactive(session: &str, model: &str, verbosity: Verbosity, json_
             eprintln!();
         }
     }
+}
+
+/// Compact only within this turn's budget. Failure never replaces stored history.
+async fn compact_chat_history(
+    messages: &mut Vec<Value>,
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    model: &str,
+    deadline: tokio::time::Instant,
+) -> Result<(), String> {
+    if chat::estimate_chars(messages) <= chat::COMPACT_THRESHOLD_CHARS
+        || messages.len() <= chat::KEEP_RECENT_MESSAGES + 2
+    {
+        return Ok(());
+    }
+    let split = chat::find_safe_split(messages, chat::KEEP_RECENT_MESSAGES);
+    let summary = tokio::time::timeout_at(
+        deadline,
+        chat::summarize_for_compaction(client, url, api_key, model, &messages[1..split]),
+    )
+    .await
+    .map_err(|_| "Chat session timed out during history compaction; history preserved and no new browser actions dispatched.".to_string())?;
+    if let Some(summary) = summary {
+        let recent = messages[split..].to_vec();
+        let system = messages[0].clone();
+        *messages = vec![
+            system,
+            json!({
+                "role": "system",
+                "content": format!("[Conversation summary]\n{}", summary)
+            }),
+        ];
+        messages.extend(recent);
+    }
+    Ok(())
 }
 
 /// Runs one chat turn: sends messages to the gateway, streams text/tool calls,
@@ -224,6 +232,19 @@ async fn run_chat_turn(
 
     let total_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
     let tool_timeout = std::time::Duration::from_secs(60);
+
+    if let Err(error) = compact_chat_history(
+        openai_messages,
+        client,
+        &url,
+        &api_key,
+        model,
+        total_deadline,
+    )
+    .await
+    {
+        return report_chat_failure(json_mode, &error);
+    }
 
     let mut all_text = String::new();
     let mut all_tool_calls: Vec<Value> = Vec::new();
@@ -545,6 +566,99 @@ fn collect_tool_calls(
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn compaction_fixture(stall: bool) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 8192];
+                let count = socket.read(&mut chunk).await.unwrap();
+                if count == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..count]);
+                if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                    let length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .unwrap()
+                        .parse::<usize>()
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            if stall {
+                std::future::pending::<()>().await;
+            }
+            let body = r#"{"choices":[{"message":{"content":"Verified summary"}}]}"#;
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        (url, task)
+    }
+
+    fn long_history() -> Vec<Value> {
+        let mut messages = vec![json!({"role":"system","content":"Keep original rules"})];
+        messages.extend(
+            (0..12).map(|i| json!({"role":"user","content":format!("{i}:{}", "x".repeat(20_000))})),
+        );
+        messages
+    }
+
+    #[tokio::test]
+    async fn compaction_deadline_preserves_history() {
+        let (url, task) = compaction_fixture(true).await;
+        let mut messages = long_history();
+        let original = messages.clone();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            compact_chat_history(
+                &mut messages,
+                &reqwest::Client::new(),
+                &url,
+                "fixture",
+                "fixture",
+                tokio::time::Instant::now() + std::time::Duration::from_millis(100),
+            ),
+        )
+        .await
+        .expect("compaction must respect the shared turn deadline");
+        task.abort();
+        assert!(result
+            .unwrap_err()
+            .contains("no new browser actions dispatched"));
+        assert_eq!(messages, original);
+    }
+
+    #[tokio::test]
+    async fn compaction_success_preserves_system_and_recent_messages() {
+        let (url, task) = compaction_fixture(false).await;
+        let mut messages = long_history();
+        let original = messages.clone();
+        let split = chat::find_safe_split(&original, chat::KEEP_RECENT_MESSAGES);
+        compact_chat_history(
+            &mut messages,
+            &reqwest::Client::new(),
+            &url,
+            "fixture",
+            "fixture",
+            tokio::time::Instant::now() + std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        task.await.unwrap();
+        assert_eq!(messages[0], original[0]);
+        assert_eq!(
+            messages[1]["content"],
+            "[Conversation summary]\nVerified summary"
+        );
+        assert_eq!(messages[2..], original[split..]);
+    }
 
     async fn mock_gateway(body: &'static str, stall: bool) -> reqwest::Response {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
