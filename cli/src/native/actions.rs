@@ -1077,6 +1077,39 @@ fn required_stealth_launch_proof_error(
     ))
 }
 
+/// Record native installer provenance only after a fresh owned launch succeeds.
+/// Registry validation failures and unknown/custom binaries remain unproven.
+fn apply_fresh_installed_chrome_proof(
+    metadata: &mut ServiceLaunchMetadata,
+    launched_path: Option<&std::path::Path>,
+    installed_path: Option<&std::path::Path>,
+) {
+    let Some(proof) = metadata.browser_capability_launch.as_mut() else {
+        return;
+    };
+    if proof["applied"] != false
+        || proof["browserBuild"] != "stock_chrome"
+        || !matches!(
+            proof["reason"].as_str(),
+            Some("no_matching_preference_binding" | "explicit_executable_path")
+        )
+    {
+        return;
+    }
+    let Some(launched) = launched_path.and_then(|path| path.canonicalize().ok()) else {
+        return;
+    };
+    let Some(installed) = installed_path.and_then(|path| path.canonicalize().ok()) else {
+        return;
+    };
+    if launched != installed || !launched.is_file() {
+        return;
+    }
+    proof["applied"] = json!(true);
+    proof["reason"] = json!("fresh_installed_chrome_launch");
+    proof["executablePath"] = json!(launched.to_string_lossy());
+}
+
 fn browser_capability_service_state(cmd: &Value) -> Result<ServiceState, String> {
     if let Some(service_state) = cmd.get("serviceState") {
         return serde_json::from_value::<ServiceState>(service_state.clone())
@@ -5773,6 +5806,11 @@ async fn auto_launch(state: &mut DaemonState, command: &Value) -> Result<(), Str
     }
     let remote_focus_options = options.clone();
     let mgr = launch_browser_with_transient_retry(options, engine.as_deref()).await?;
+    apply_fresh_installed_chrome_proof(
+        &mut metadata,
+        mgr.launched_chrome_executable(),
+        crate::install::find_installed_chrome().as_deref(),
+    );
     let _ = focus_remote_headed_launch_for_view(&mgr, &remote_focus_options).await;
     state.reset_input_state();
     state.attached_runtime_profile = None;
@@ -6261,6 +6299,11 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     state.attached_browser_pid = None;
     let launched_browser =
         launch_browser_with_transient_retry(launch_options, engine.as_deref()).await?;
+    apply_fresh_installed_chrome_proof(
+        &mut metadata,
+        launched_browser.launched_chrome_executable(),
+        crate::install::find_installed_chrome().as_deref(),
+    );
     let remote_view_focus =
         focus_remote_headed_launch_for_view(&launched_browser, &remote_focus_options).await;
     state.browser = Some(launched_browser);
@@ -27043,6 +27086,95 @@ mod tests {
             None,
         );
         assert!(required_stealth_launch_proof_error(&stock).is_none());
+    }
+
+    #[test]
+    fn test_fresh_installed_chrome_proof_requires_exact_owned_launch() {
+        let root = env::temp_dir().join(format!("fresh-chrome-proof-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let installed = root.join("chrome");
+        let custom = root.join("custom-chrome");
+        fs::write(&installed, "fixture").unwrap();
+        fs::write(&custom, "fixture").unwrap();
+        for reason in ["no_matching_preference_binding", "explicit_executable_path"] {
+            let mut metadata =
+                ServiceLaunchMetadata::from_launch_options(&LaunchOptions::default(), None, None);
+            metadata.profile_id = Some("qa".into());
+            metadata.browser_capability_launch = Some(
+                BrowserCapabilityLaunchResolution::skipped(
+                    reason,
+                    Some(BrowserBuild::StockChrome),
+                    Some("qa".into()),
+                )
+                .to_value(),
+            );
+            let original = metadata.browser_capability_launch.clone();
+            for actual in [None, Some(custom.as_path())] {
+                apply_fresh_installed_chrome_proof(&mut metadata, actual, Some(&installed));
+                assert_eq!(metadata.browser_capability_launch, original);
+            }
+            apply_fresh_installed_chrome_proof(&mut metadata, Some(&installed), None);
+            assert_eq!(metadata.browser_capability_launch, original);
+            apply_fresh_installed_chrome_proof(&mut metadata, Some(&installed), Some(&installed));
+            let proof = metadata.browser_capability_launch.as_ref().unwrap();
+            assert_eq!(proof["applied"], true);
+            assert_eq!(proof["browserBuild"], "stock_chrome");
+            assert_eq!(proof["profileId"], "qa");
+            assert_eq!(proof["reason"], "fresh_installed_chrome_launch");
+            assert_eq!(
+                proof["executablePath"],
+                installed.canonicalize().unwrap().to_string_lossy().as_ref()
+            );
+            let repository = LockedServiceStateRepository::new(
+                super::super::service_store::JsonServiceStateStore::new(root.join("state.json")),
+            );
+            super::super::service_health::persist_service_browser_record_in_repository(
+                &repository,
+                "fresh-proof",
+                ServiceBrowserHost::LocalHeadless,
+                ServiceBrowserHealth::Ready,
+                Some(1234),
+                Some("http://127.0.0.1:9222".into()),
+                None,
+                Some(metadata),
+            )
+            .unwrap();
+            let restored = repository.load_snapshot().unwrap();
+            let browser = &restored.browsers["session:fresh-proof"];
+            assert_eq!(browser.browser_build, Some(BrowserBuild::StockChrome));
+            assert_eq!(browser.profile_id.as_deref(), Some("qa"));
+            assert_eq!(
+                browser.executable_path.as_deref(),
+                installed.canonicalize().unwrap().to_str()
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn test_fresh_installed_chrome_proof_does_not_override_registry_or_stealth() {
+        let root = env::temp_dir().join(format!("fresh-chrome-proof-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let installed = root.join("chrome");
+        fs::write(&installed, "fixture").unwrap();
+        for (build, reason) in [
+            (
+                BrowserBuild::StealthcdpChromium,
+                "no_matching_preference_binding",
+            ),
+            (BrowserBuild::StockChrome, "profile_incompatible"),
+            (BrowserBuild::StockChrome, "service_state_unavailable"),
+        ] {
+            let mut metadata =
+                ServiceLaunchMetadata::from_launch_options(&LaunchOptions::default(), None, None);
+            metadata.browser_capability_launch = Some(
+                BrowserCapabilityLaunchResolution::skipped(reason, Some(build), None).to_value(),
+            );
+            let original = metadata.browser_capability_launch.clone();
+            apply_fresh_installed_chrome_proof(&mut metadata, Some(&installed), Some(&installed));
+            assert_eq!(metadata.browser_capability_launch, original);
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

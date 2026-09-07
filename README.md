@@ -1676,11 +1676,16 @@ agent-browser --model openai/gpt-4o chat "take a screenshot" # Override model
 
 The `chat` command translates natural language instructions into agent-browser commands, executes them, and streams the AI response. In interactive mode, type `quit` to exit. Use `--json` for structured output suitable for agent consumption.
 
-CLI turns have a five-minute deadline covering gateway requests, streamed responses,
+CLI and dashboard Chat turns have a five-minute deadline covering gateway requests, streamed responses,
 and tool execution, plus a 50-step limit. Exhausted or interrupted turns return
 failure instead of reporting completion. Incomplete gateway streams never dispatch
 their partial tool calls. A failure does not undo earlier browser actions; inspect
 the retained page before deciding how to continue.
+
+Fresh stock Chrome launches record the exact installer-managed executable after
+successful launch, even without a capability preference binding. This does not
+relabel attached browsers, custom executables, or stealth builds, and does not
+override failed registry validation. Retained reuse still requires build proof.
 
 **Dashboard usage:**
 

@@ -2,7 +2,7 @@
 
 State: ACTIVE
 Date: 2026-09-07
-Plan version: 1
+Plan version: 2
 
 ## Original objective
 
@@ -62,15 +62,62 @@ change and tested local build, not an installed-runtime or full-autonomy claim.
 
 ## Next work
 
-1. Repair fresh headless launch-proof persistence without weakening exact build
-   matching or relabeling unknown retained browsers as proven.
-2. Re-run the existing attributed bwkuehl public probe through its exact service
-   session; inspect rendered results and close the disposable lane when finished.
-3. Apply equivalent completion and deadline guarantees to dashboard chat, then
-   add durable task continuation and task-level verification coverage.
+1. Resolve the required retained-session deployment blocker without bypassing
+   browser identity or preservation checks, then install the tested changes.
+2. Prove the new fresh-launch evidence through an isolated rendered-page test;
+   the earlier scoped registry workaround is not acceptance for the source fix.
+3. Add durable task continuation and task-level verification coverage after the
+   bounded CLI/dashboard completion repair.
 4. Inspect configured model and credential providers, and execute representative
    headless tasks through the same authority and recovery paths.
 
 Neither the prior Pro review nor this checkpoint constitutes a passing
 independent review of the full objective. No further ChatGPT turn is authorized
 by recovery of the failed prior review.
+
+## Blocker repair checkpoint | 2026-09-07
+
+The user requested blocker fixes and a clean worktree. The starting worktree at
+`8f4acea3` was already clean; no user changes were discarded.
+
+- Fresh owned Chrome processes now carry the executable actually selected by
+  the launcher. After successful fresh launch, both explicit and automatic
+  command paths persist stock-build evidence when that executable is exactly
+  the installer-managed Chrome. Missing binding and explicit installed-path
+  launches are supported; attached browsers, custom executables, stealth builds,
+  and failed registry validation are not relabeled. Unit regressions include
+  serialization through the service repository and negative identity cases.
+- Dashboard Chat now shares the bounded-completion behavior: one five-minute
+  budget includes compaction, gateway IO, stream delivery, and tools; each tool
+  has a 60-second cap. Missing stream completion, 50-round exhaustion, client
+  disconnect, and unknown tool outcomes terminate without another dispatch.
+  Error endings do not emit a successful finish event.
+- Earlier public-headless inspection reached bwkuehl.com using an explicit
+  scoped registry binding and read Cloudflare Tunnel error 1033. That was an
+  operational route workaround, not proof of this new source fix. Current
+  read-only host inspection finds `codex-research-cloudflared.service` disabled
+  and inactive with the loopback origin listening on 8787. No tunnel was enabled
+  and no public exposure settings were changed.
+- Deployment is blocked before mutation by the retained-browser guard:
+  `retained_daemon_missing` for required session `nyse-developer`.
+  Publication status is terminal `recovered_ready`, not an incomplete transaction
+  requiring recovery. The installed binary remains SHA-256
+  `2dff309146ce62e2383ceaf6c2fe9169d92093049b5b29b9e3cb6260a5e2c9fe`.
+  Do not remove the required pin or create a substitute browser to install.
+
+Delegation receipt: `spawned`, `/root/dashboard_completion`; bounded dashboard
+implementation and socket tests in one disjoint Rust file. Primary reviewed its
+diff and owns integration and final validation. No ChatGPT submission occurred.
+
+Validation: two focused launch-proof tests, seven dashboard socket regressions,
+three actual-CLI fixture scenarios, and the isolated full Rust rerun (1918 passed,
+zero failed, 57 ignored). Native build, strict Clippy, Rust formatting, targeted
+ESLint, dashboard TypeScript check, CodeGraph sync, and diff check passed. The
+planning audit is clean but not applicable to this repo's adopted contract set.
+The initial broad run's child-executable spawn failure did not recur when Rust
+validation ran without competing builds. No fresh installed live QA is claimed.
+
+Full autonomy, durable task continuation, authentication/MFA handoff, CAPTCHA
+outcomes, and newly installed live-browser verification remain unproven. Restore
+the exact required retained session, or obtain explicit approval to retire its
+obsolete requirement, before publication. Do not treat a clean commit as deployment.

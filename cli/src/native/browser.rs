@@ -2337,6 +2337,14 @@ impl BrowserManager {
         self.browser_process.as_ref().and_then(|p| p.pid())
     }
 
+    /// Fresh owned Chrome launch provenance; attached and other engines have none.
+    pub fn launched_chrome_executable(&self) -> Option<&Path> {
+        match self.browser_process.as_ref()? {
+            BrowserProcess::Chrome(process) => Some(&process.launched_executable_path),
+            BrowserProcess::Lightpanda(_) => None,
+        }
+    }
+
     pub fn runtime_profile_name(&self) -> Option<&str> {
         self.browser_process
             .as_ref()

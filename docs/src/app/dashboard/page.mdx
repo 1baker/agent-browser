@@ -308,11 +308,15 @@ The dashboard includes an optional AI chat panel powered by the [Vercel AI Gatew
 
 ### Setup
 
-The CLI <code>chat</code> command enforces a five-minute deadline across gateway
+CLI and dashboard Chat enforce a five-minute deadline across gateway
 requests, streamed responses, and tool work, with a 50-step limit. An unfinished
 turn reports failure, and incomplete streams never dispatch partial tool calls.
 Earlier actions can still have completed; inspect the retained page before
-continuing. These CLI limits do not establish dashboard completion evidence.
+continuing. A timed-out action has an unknown outcome and is not replayed.
+
+Fresh stock Chrome launches persist exact installer executable evidence even
+without a preference binding. Attached and custom browsers are not relabeled;
+registry validation failures and retained-build checks remain enforced.
 
 The Chat tab is always visible. Set the API key to enable responses:
 

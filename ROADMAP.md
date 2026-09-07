@@ -2199,6 +2199,8 @@ State: ACTIVE
 
 Implement and verify the full headless task objective in
 `docs/dev/plans/0128-2026-09-07-autonomous-headless-execution-plan.md`.
-CLI completion and streaming failure checks are implemented. Live public-site
-probing exposed a fresh stock-Chromium launch-proof persistence regression that
-must be fixed before evaluating bwkuehl.com or Cloudflare behavior.
+CLI and dashboard completion checks and fresh installer-Chrome launch-proof
+persistence are implemented. Deployment is blocked by the missing required
+`nyse-developer` retained daemon; do not bypass its pin. Earlier headless public
+inspection reached bwkuehl.com and read a Cloudflare Tunnel error, not a CAPTCHA.
+Full autonomous task recovery and authenticated task outcomes remain unproven.

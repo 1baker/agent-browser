@@ -7891,3 +7891,41 @@ Scope: Plan 0128 autonomous headless execution, first checkpoint.
   launch or an external model request.
 - The full headless objective remains active. Dashboard parity, fresh-launch
   proof, task recovery, authentication, and live task outcomes are unverified.
+
+# Turn 130 | 2026-09-07
+
+Scope: Plan 0128 bounded blocker repair and clean-worktree checkpoint.
+
+- Started clean at `8f4acea3`. Added exact fresh-owned installer Chrome
+  provenance in `native/cdp/chrome.rs`, exposed it through `native/browser.rs`,
+  and persisted it in both successful fresh-launch paths in `native/actions.rs`.
+  Two focused regressions pass, including repository roundtrip and exclusion of
+  custom, attached/no-process, stealth, missing-installer, and invalid-registry
+  proof. No existing browser is relabeled.
+- Dashboard Chat now errors on incomplete streams, 50-round exhaustion, tool
+  timeout, and client disconnect. The whole turn, including compaction, has one
+  deadline. Seven isolated socket regressions pass; the existing actual-CLI
+  local gateway fixture passes all three scenarios.
+- Delegated only the disjoint dashboard Rust file to
+  `/root/dashboard_completion`, which completed its seven tests and returned no
+  blocking findings on a closed-world review of the launch patch. Primary
+  inspected the dashboard diff and owns combined validation.
+- Native build, strict Clippy, formatting, targeted ESLint, dashboard TypeScript
+  check, and diff check passed. CodeGraph synchronized with no pending changes;
+  direct source reads filled unsupported graph queries. Planning audit reports
+  `ok: true`, `applicable: false`, not independent plan acceptance.
+- A first full isolated Rust run had 1916 passes, 57 ignored, and one child
+  executable spawn failure in the large-output doctor fixture during concurrent
+  Rust validation. The noncompeting full rerun passed: 1918 passed, zero failed,
+  57 ignored. A final focused rerun covers the platform-canonical path assertion.
+- Read-only deployment preflight fails `retained_daemon_missing` for the required
+  `nyse-developer` lane. No pin removal, replacement browser, runtime installation,
+  service restart, ChatGPT submission, or GitHub write was performed. Publication
+  journal is already terminal `recovered_ready`; recovery is not the remedy.
+- Local public tunnel unit is disabled/inactive; its loopback origin still
+  listens on 8787. No public ingress change was authorized or attempted.
+
+Next: restore the exact required retained lane, or explicitly approve retiring
+its obsolete requirement, before guarded installation and fresh-launch live QA.
+Durable task recovery and full autonomous/authenticated task coverage remain
+separate unverified Plan 0128 work.

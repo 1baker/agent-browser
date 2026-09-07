@@ -71,6 +71,8 @@ pub struct ChromeProcess {
     #[cfg(target_os = "linux")]
     windows_browser: Option<WslWindowsBrowserIdentity>,
     pub ws_url: String,
+    /// Exact executable selected for this newly owned process, never an attach hint.
+    pub launched_executable_path: Box<Path>,
     owns_process: bool,
     temp_user_data_dir: Option<PathBuf>,
     user_data_dir: PathBuf,
@@ -1489,6 +1491,7 @@ fn try_launch_chrome(
     Ok(ChromeProcess {
         child,
         ws_url,
+        launched_executable_path: chrome_path.into(),
         owns_process: true,
         temp_user_data_dir,
         user_data_dir,
@@ -4157,6 +4160,7 @@ mod tests {
                 #[cfg(target_os = "linux")]
                 windows_browser: None,
                 ws_url: String::new(),
+                launched_executable_path: PathBuf::new().into_boxed_path(),
                 owns_process: true,
                 temp_user_data_dir: Some(dir.clone()),
                 user_data_dir: dir.clone(),
@@ -4189,6 +4193,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             windows_browser: None,
             ws_url: "ws://127.0.0.1:9222/devtools/browser/handoff".to_string(),
+            launched_executable_path: PathBuf::new().into_boxed_path(),
             owns_process: true,
             temp_user_data_dir: Some(dir.clone()),
             user_data_dir: dir.clone(),
