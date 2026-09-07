@@ -2192,3 +2192,13 @@ pass focused and widened checks. The already-issued nonce-bound AuraCall review
 failed closed after its API restarted: recovery could not reattach the submitted
 WebSocket and refused prompt replay. No duplicate review submission is
 permitted.
+
+# P128 | Autonomous Headless Execution
+
+State: ACTIVE
+
+Implement and verify the full headless task objective in
+`docs/dev/plans/0128-2026-09-07-autonomous-headless-execution-plan.md`.
+CLI completion and streaming failure checks are implemented. Live public-site
+probing exposed a fresh stock-Chromium launch-proof persistence regression that
+must be fixed before evaluating bwkuehl.com or Cloudflare behavior.

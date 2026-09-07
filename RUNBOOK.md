@@ -7871,3 +7871,23 @@ Remaining review boundary:
   closed, explicitly refusing prompt replay. Read-only retained-page inspection
   found no matching nonce-bound user message. Preserve the response identity and
   do not resubmit or launch a substitute browser.
+
+# Turn 129 | 2026-09-07
+
+Scope: Plan 0128 autonomous headless execution, first checkpoint.
+
+- Verified the initial clean worktree at `8e1ca4bb` and queried current broker
+  access planning for bwkuehl.com.
+- The disposable session `bwkuehl-headless-qa-20260907`, profile
+  `bwkuehl-public-qa-20260907`, launched Linux Chromium headlessly but failed
+  before navigation: capability metadata omitted the proven stock build when
+  no preference binding matched. Preserve this exact probe for the routing fix.
+- CLI chat now bounds gateway and tool work by the remaining turn deadline,
+  reports exhausted steps as unfinished, rejects incomplete streamed tool calls,
+  and stops on unknown tool outcomes.
+- Three Rust local-HTTP stream tests and the real CLI fixture
+  `node scripts/test-cli-chat-completion.js` passed. The fixture verifies 50-round
+  exhaustion, truncated stream rejection, and normal completion without browser
+  launch or an external model request.
+- The full headless objective remains active. Dashboard parity, fresh-launch
+  proof, task recovery, authentication, and live task outcomes are unverified.

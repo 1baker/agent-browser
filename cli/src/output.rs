@@ -6197,6 +6197,10 @@ Requires AI_GATEWAY_API_KEY to be set.
 
 In interactive mode, type "quit", "exit", or "q" to leave the REPL.
 
+CLI turns stop after five minutes or 50 steps and report failure if unfinished.
+Incomplete gateway streams never dispatch partial tool calls. Earlier browser
+actions may have completed; inspect the retained page before continuing.
+
 Chat Options:
   --model <name>         AI model (or AI_GATEWAY_MODEL env, default: anthropic/claude-sonnet-4.6)
   -v, --verbose          Show tool commands and their raw output

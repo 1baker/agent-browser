@@ -228,6 +228,7 @@ async fn run_chat_turn(
     let mut all_text = String::new();
     let mut all_tool_calls: Vec<Value> = Vec::new();
     let mut had_text = false;
+    let mut completed = false;
 
     for _step in 0..50 {
         if tokio::time::Instant::now() >= total_deadline {
@@ -256,6 +257,7 @@ async fn run_chat_turn(
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
+            .timeout(total_deadline.saturating_duration_since(tokio::time::Instant::now()))
             .body(gateway_body.to_string())
             .send()
             .await
@@ -288,8 +290,18 @@ async fn run_chat_turn(
             return false;
         }
 
-        let (text_chunks, tool_calls) =
-            parse_gateway_stream(gw_response, verbosity, json_mode).await;
+        let (text_chunks, tool_calls) = match tokio::time::timeout_at(
+            total_deadline,
+            parse_gateway_stream(gw_response, verbosity, json_mode),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => return report_chat_failure(json_mode, &error),
+            Err(_) => {
+                return report_chat_failure(json_mode, "Chat session timed out (5 minute limit).")
+            }
+        };
 
         if !text_chunks.is_empty() {
             let text = text_chunks.join("");
@@ -316,6 +328,7 @@ async fn run_chat_turn(
         }
 
         if tool_calls.is_empty() {
+            completed = true;
             break;
         }
 
@@ -342,6 +355,9 @@ async fn run_chat_turn(
         }
 
         for (tc_id, _tc_name, tc_args) in &tool_calls {
+            if tokio::time::Instant::now() >= total_deadline {
+                return report_chat_failure(json_mode, "Chat session timed out (5 minute limit).");
+            }
             let input: Value = serde_json::from_str(tc_args).unwrap_or(json!({}));
             let command = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
 
@@ -349,13 +365,21 @@ async fn run_chat_turn(
                 eprintln!("{}", color::dim(&format!("> {}", command)));
             }
 
-            let result =
-                match tokio::time::timeout(tool_timeout, chat::execute_chat_tool(session, command))
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(_) => "Tool execution timed out after 60 seconds.".to_string(),
-                };
+            let result = match tokio::time::timeout(
+                tool_timeout
+                    .min(total_deadline.saturating_duration_since(tokio::time::Instant::now())),
+                chat::execute_chat_tool(session, command),
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    return report_chat_failure(
+                        json_mode,
+                        "Tool execution timed out; outcome unknown. Inspect the retained page before continuing.",
+                    );
+                }
+            };
 
             if !json_mode && verbosity == Verbosity::Verbose {
                 for line in result.lines() {
@@ -376,6 +400,13 @@ async fn run_chat_turn(
         }
     }
 
+    if !completed {
+        return report_chat_failure(
+            json_mode,
+            "Chat step limit reached (50 steps); task completion is unverified.",
+        );
+    }
+
     if json_mode {
         println!(
             "{}",
@@ -393,13 +424,22 @@ async fn run_chat_turn(
     true
 }
 
+fn report_chat_failure(json_mode: bool, error: &str) -> bool {
+    if json_mode {
+        println!("{}", json!({"success": false, "error": error}));
+    } else {
+        eprintln!("\n{} {}", color::error_indicator(), error);
+    }
+    false
+}
+
 /// Parses the SSE stream from the AI gateway, printing text deltas to stdout in
 /// real-time. Returns (collected_text_chunks, tool_calls).
 async fn parse_gateway_stream(
     gw_response: reqwest::Response,
     verbosity: Verbosity,
     json_mode: bool,
-) -> (Vec<String>, Vec<(String, String, String)>) {
+) -> Result<(Vec<String>, Vec<(String, String, String)>), String> {
     use futures_util::StreamExt as _;
 
     let mut text_chunks: Vec<String> = Vec::new();
@@ -411,7 +451,7 @@ async fn parse_gateway_stream(
     while let Some(chunk_result) = byte_stream.next().await {
         let chunk = match chunk_result {
             Ok(c) => c,
-            Err(_) => break,
+            Err(error) => return Err(format!("Gateway stream failed: {error}")),
         };
 
         buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -432,7 +472,7 @@ async fn parse_gateway_stream(
                     // End the streamed text line
                     let _ = std::io::stdout().flush();
                 }
-                return (text_chunks, tool_calls);
+                return Ok((text_chunks, tool_calls));
             }
             let Ok(sse_json) = serde_json::from_str::<Value>(data) else {
                 continue;
@@ -487,8 +527,7 @@ async fn parse_gateway_stream(
     if !json_mode && !text_chunks.is_empty() {
         let _ = std::io::stdout().flush();
     }
-    let tool_calls = collect_tool_calls(&mut tool_call_args);
-    (text_chunks, tool_calls)
+    Err("Gateway stream ended before [DONE]; partial tool calls were not executed.".to_string())
 }
 
 fn collect_tool_calls(
@@ -500,4 +539,74 @@ fn collect_tool_calls(
         .into_iter()
         .filter_map(|idx| map.remove(&idx))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn mock_gateway(body: &'static str, stall: bool) -> reqwest::Response {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").await.unwrap();
+            socket.write_all(body.as_bytes()).await.unwrap();
+            if stall {
+                // Keep the socket alive until the client deadline cancels its read.
+                let _ = socket.read(&mut request).await;
+            }
+        });
+        reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .timeout(std::time::Duration::from_millis(250))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn gateway_stream_requires_completion_before_dispatching_tools() {
+        let response = mock_gateway(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"agent_browser\",\"arguments\":\"{\\\"command\\\":\\\"click @e1\\\"}\"}}]}}]}\n\n",
+            false,
+        ).await;
+        let result = parse_gateway_stream(response, Verbosity::Quiet, true).await;
+        assert!(result
+            .unwrap_err()
+            .contains("partial tool calls were not executed"));
+    }
+
+    #[tokio::test]
+    async fn gateway_stream_accepts_completed_response() {
+        let response = mock_gateway(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Done\"}}]}\n\ndata: [DONE]\n\n",
+            false,
+        )
+        .await;
+        let (text, tools) = parse_gateway_stream(response, Verbosity::Quiet, true)
+            .await
+            .unwrap();
+        assert_eq!(text, vec!["Done"]);
+        assert!(tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gateway_stream_stall_respects_request_deadline() {
+        let response = mock_gateway(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Partial\"}}]}\n\n",
+            true,
+        )
+        .await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            parse_gateway_stream(response, Verbosity::Quiet, true),
+        )
+        .await
+        .expect("request deadline must bound a stalled body");
+        assert!(result.unwrap_err().contains("Gateway stream failed"));
+    }
 }
