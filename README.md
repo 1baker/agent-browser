@@ -1687,6 +1687,10 @@ successful launch, even without a capability preference binding. This does not
 relabel attached browsers, custom executables, or stealth builds, and does not
 override failed registry validation. Retained reuse still requires build proof.
 
+Workstation reconciliation pins its Guacamole viewer commands to the installed
+stock Chrome build, including follow-up navigation, without changing the global
+browser-build preference.
+
 **Dashboard usage:**
 
 The Chat tab is always visible in the dashboard. When `AI_GATEWAY_API_KEY` is set, the Rust server proxies requests to the gateway and streams responses back using the Vercel AI SDK's UI Message Stream protocol. Without the key, sending a message shows an error inline.

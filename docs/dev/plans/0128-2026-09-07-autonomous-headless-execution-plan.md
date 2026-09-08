@@ -159,3 +159,19 @@ the installer-selected Linux executable inherits an incompatible stealth build
 requirement. Displays 10 and 11 remain absent. Dashboard and backup scheduling
 were restored; runtime interlock remains paused. See RUNBOOK Turn 132 for exact
 publication evidence and next repair. Live headless/autonomous QA is still pending.
+
+## Workstation viewer build repair | 2026-09-07
+
+The installer now binds `AGENT_BROWSER_RDP_ROUTE_VIEWER_BROWSER_BUILD` to
+`stock_chrome` with its selected installed executable. The route helper carries
+that scoped identity on launch, header setup, and navigation; unrelated global
+browser preferences remain unchanged and invalid build names fail before command
+execution. The real command builders are exercised through an isolated VM test.
+The installer unit test covers paired selection and repeated updates.
+
+Validation: route-viewer JavaScript regression, 21 isolated installer Rust tests,
+source-free installer fixture, build, strict Clippy, formatting, targeted ESLint,
+dashboard TypeScript, and diff checks pass. CodeGraph was synced; planning audit
+is clean but not applicable. `/root/dashboard_completion` independently reviewed
+the bounded diff read-only and returned no blocking findings. Live reconciliation
+must pass before declaring the remote-desktop blocker resolved.

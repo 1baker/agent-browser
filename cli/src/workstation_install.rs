@@ -1192,6 +1192,12 @@ fn upsert_route_viewer_executable(
     command_env: &mut Vec<(String, String)>,
     installed_chrome: &Path,
 ) {
+    let build_key = "AGENT_BROWSER_RDP_ROUTE_VIEWER_BROWSER_BUILD";
+    if let Some((_, value)) = command_env.iter_mut().find(|(key, _)| key == build_key) {
+        *value = "stock_chrome".to_string();
+    } else {
+        command_env.push((build_key.to_string(), "stock_chrome".to_string()));
+    }
     let executable = installed_chrome.display().to_string();
     if let Some((_, value)) = command_env
         .iter_mut()
@@ -2801,6 +2807,12 @@ mod tests {
             values,
             vec!["/home/test/.agent-browser/browsers/chrome-153/chrome"]
         );
+        let builds = command_env
+            .iter()
+            .filter(|(key, _)| key == "AGENT_BROWSER_RDP_ROUTE_VIEWER_BROWSER_BUILD")
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(builds, vec!["stock_chrome"]);
     }
 
     #[test]
