@@ -10807,15 +10807,12 @@ fn send_queued_tool_command(
         copy_target_profile_hints(&trace, &mut command);
     }
     let relay_session = queued_tool_command_session(tool_name, session, &command);
-    let response = send_command(command, &relay_session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": relay_session,
-            "tool": tool_name,
-            "trace": trace.clone(),
-        })),
+    let retained_route = tool_name == "service_request"
+        && [command.get("sessionName"), command.get("browserId")]
+            .into_iter()
+            .any(|value| service_request_session_candidate(value).is_some());
+    let response = send_command(command, &relay_session).map_err(|err| {
+        queued_tool_transport_error(tool_name, &relay_session, &trace, retained_route, &err)
     })?;
     Ok(tool_response_from_daemon(
         tool_name,
@@ -10823,6 +10820,48 @@ fn send_queued_tool_command(
         trace,
         response,
     ))
+}
+
+/// Explain unavailable retained routes without starting a daemon or replaying the request.
+/// Only missing/refused connection errors qualify; read, busy, and auth errors retain
+/// their original diagnostic because they do not establish an unavailable endpoint.
+fn queued_tool_transport_error(
+    tool_name: &str,
+    session: &str,
+    trace: &Value,
+    retained_route: bool,
+    error: &str,
+) -> JsonRpcError {
+    let mut data = json!({
+        "message": error,
+        "session": session,
+        "tool": tool_name,
+        "trace": trace,
+    });
+    if retained_route
+        && error.starts_with("Failed to connect:")
+        && [
+            "(os error 2)",
+            "(os error 61)",
+            "(os error 111)",
+            "(os error 10061)",
+        ]
+        .iter()
+        .any(|code| error.contains(code))
+    {
+        data["diagnosticCode"] = json!("retained_daemon_unavailable");
+        data["recommendedAction"] =
+            json!("refresh_access_plan_and_review_retained_session_recovery");
+        data["autoLaunchAttempted"] = json!(false);
+        data["guidance"] = json!(
+            "sessionName and browserId select an existing daemon lane; they do not create one. Refresh service_access_plan and inspect the retained session before approved recovery. Do not launch a duplicate profile lane or blindly replay the request; an earlier transport attempt may have been accepted."
+        );
+    }
+    JsonRpcError {
+        code: -32603,
+        message: "Internal error",
+        data: Some(data),
+    }
 }
 
 fn queued_tool_command_session(tool_name: &str, default_session: &str, command: &Value) -> String {
@@ -14138,6 +14177,64 @@ mod tests {
             queued_tool_command_session("browser_navigate", "AgentBrowserDashboard", &command),
             "AgentBrowserDashboard"
         );
+    }
+
+    #[test]
+    fn retained_service_request_connect_error_has_recovery_guidance() {
+        let trace = json!({"taskName": "cold-route-regression"});
+        for message in [
+            "Failed to connect: No such file or directory (os error 2)",
+            "Failed to connect: Connection refused (os error 61)",
+            "Failed to connect: Connection refused (os error 111) (after 5 retries - daemon may be busy or unresponsive)",
+            "Failed to connect: No connection could be made (os error 10061)",
+        ] {
+            let error = queued_tool_transport_error(
+                "service_request", "retained-lane", &trace, true, message,
+            );
+            assert_eq!(error.code, -32603);
+            let data = error.data.unwrap();
+            assert_eq!(data["diagnosticCode"], "retained_daemon_unavailable");
+            assert_eq!(data["recommendedAction"], "refresh_access_plan_and_review_retained_session_recovery");
+            assert_eq!(data["autoLaunchAttempted"], false);
+            assert_eq!(data["message"], message);
+            assert_eq!(data["session"], "retained-lane");
+            assert_eq!(data["trace"], trace);
+        }
+    }
+
+    #[test]
+    fn retained_service_request_other_transport_errors_are_not_absent_daemons() {
+        for message in [
+            "Failed to read: Resource temporarily unavailable (os error 11)",
+            "Failed to connect: Resource temporarily unavailable (os error 11)",
+            "Failed to connect: Permission denied (os error 13)",
+            "Failed to send: Broken pipe (os error 32)",
+            "Daemon authentication token is missing",
+            "Failed to connect: Unknown error (os error 211)",
+        ] {
+            let error = queued_tool_transport_error(
+                "service_request",
+                "retained-lane",
+                &json!({}),
+                true,
+                message,
+            );
+            let data = error.data.unwrap();
+            assert!(data.get("diagnosticCode").is_none());
+            assert_eq!(data["message"], message);
+        }
+    }
+
+    #[test]
+    fn unhinted_service_request_connect_error_preserves_generic_diagnostic() {
+        let error = queued_tool_transport_error(
+            "service_request",
+            "default",
+            &json!({}),
+            false,
+            "Failed to connect: No such file or directory (os error 2)",
+        );
+        assert!(error.data.unwrap().get("diagnosticCode").is_none());
     }
 
     #[test]

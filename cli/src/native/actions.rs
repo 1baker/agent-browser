@@ -692,9 +692,17 @@ fn launch_command_with_effective_service_defaults(
     command: &Value,
     options: &LaunchOptions,
 ) -> Value {
-    let Ok(service_state) = browser_capability_service_state(command) else {
+    let Some(plan) = service_access_plan_from_command(command) else {
         return command.clone();
     };
+    let Some(planned_request) = plan.pointer("/decision/serviceRequest/request") else {
+        return command.clone();
+    };
+    apply_planned_launch_defaults(command, &plan, planned_request, options)
+}
+
+fn service_access_plan_from_command(command: &Value) -> Option<Value> {
+    let service_state = browser_capability_service_state(command).ok()?;
     let request = ServiceAccessPlanRequest {
         service_name: optional_command_string(command, "serviceName"),
         agent_name: optional_command_string(command, "agentName"),
@@ -732,11 +740,7 @@ fn launch_command_with_effective_service_defaults(
             .and_then(|value| parse_control_input_provider(&value)),
         display_isolation: remote_headed_display_isolation_from_command(command),
     };
-    let plan = service_access_plan_for_state(&service_state, request);
-    let Some(planned_request) = plan.pointer("/decision/serviceRequest/request") else {
-        return command.clone();
-    };
-    apply_planned_launch_defaults(command, &plan, planned_request, options)
+    Some(service_access_plan_for_state(&service_state, request))
 }
 
 fn apply_planned_launch_defaults(
@@ -2687,9 +2691,6 @@ fn active_browser_profile_mismatch(command: &Value, state: &DaemonState) -> Opti
 }
 
 fn active_browser_build_mismatch(command: &Value, state: &DaemonState) -> Option<String> {
-    let options = launch_options_from_env();
-    let effective_command = launch_command_with_effective_service_defaults(command, &options);
-    let required_build = browser_build_from_command(&effective_command)?;
     let browser_id = service_browser_id(&state.session_id);
     let retained_build = LockedServiceStateRepository::default_json()
         .and_then(|repository| repository.load_snapshot())
@@ -2700,6 +2701,8 @@ fn active_browser_build_mismatch(command: &Value, state: &DaemonState) -> Option
                 .get(&browser_id)
                 .and_then(|browser| browser.browser_build)
         });
+    let plan = service_access_plan_from_command(command);
+    let required_build = retained_dispatch_required_build(command, plan.as_ref(), retained_build)?;
     if retained_build == Some(required_build) {
         return None;
     }
@@ -2710,6 +2713,29 @@ fn active_browser_build_mismatch(command: &Value, state: &DaemonState) -> Option
         browser_id,
         retained_build.map(browser_build_label).unwrap_or("unknown"),
     ))
+}
+
+/// Launch defaults do not replace a proven active lane on continuation. Explicit
+/// requests, site policy, profile policy and registry bindings still constrain it.
+/// Missing retained proof continues to fail against the planned default build.
+fn retained_dispatch_required_build(
+    command: &Value,
+    plan: Option<&Value>,
+    retained_build: Option<BrowserBuild>,
+) -> Option<BrowserBuild> {
+    if let Some(explicit) = browser_build_from_command(command) {
+        return Some(explicit);
+    }
+    let plan = plan?;
+    let planned = plan
+        .pointer("/decision/serviceRequest/request")
+        .and_then(browser_build_from_command);
+    if plan.pointer("/decision/launchPosture/browserBuildSource") == Some(&json!("service_default"))
+    {
+        retained_build.or(planned)
+    } else {
+        planned
+    }
 }
 
 fn active_browser_profile_mismatch_message(
@@ -29065,6 +29091,100 @@ mod tests {
         assert!(active_browser_build_mismatch(&command, &state).is_none());
 
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_retained_dispatch_build_continuation_only_overrides_service_default() {
+        for source in [
+            "service_default",
+            "request",
+            "site_policy",
+            "profile_default",
+            "browser_preference_binding",
+            "requires_cdp_free",
+            "unknown",
+        ] {
+            let plan = json!({"decision": {
+                "launchPosture": {"browserBuildSource": source},
+                "serviceRequest": {"request": {"browserBuild": "stealthcdp_chromium"}}
+            }});
+            assert_eq!(
+                retained_dispatch_required_build(
+                    &json!({"action": "url"}),
+                    Some(&plan),
+                    Some(BrowserBuild::StockChrome),
+                ),
+                Some(if source == "service_default" {
+                    BrowserBuild::StockChrome
+                } else {
+                    BrowserBuild::StealthcdpChromium
+                }),
+                "source={source}",
+            );
+            // Legacy rows without proof cannot use continuation to escape a gate.
+            assert_eq!(
+                retained_dispatch_required_build(&json!({"action": "url"}), Some(&plan), None),
+                Some(BrowserBuild::StealthcdpChromium),
+            );
+            // Explicit top-level and nested build requests always remain binding.
+            for command in [
+                json!({"action": "url", "browserBuild": "stealthcdp_chromium"}),
+                json!({"action": "url", "params": {"browserBuild": "stealthcdp_chromium"}}),
+            ] {
+                assert_eq!(
+                    retained_dispatch_required_build(
+                        &command,
+                        Some(&plan),
+                        Some(BrowserBuild::StockChrome),
+                    ),
+                    Some(BrowserBuild::StealthcdpChromium),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_active_browser_dispatch_keeps_proven_build_with_different_launch_default() {
+        let guard = EnvGuard::new(&["HOME"]);
+        let home = unique_socket_dir("active-browser-build-continuation-home");
+        fs::create_dir_all(&home).unwrap();
+        guard.set("HOME", home.to_str().unwrap());
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        let mut state = DaemonState::new();
+        state.session_id = "work".to_string();
+        let command = json!({
+            "action": "url",
+            "serviceState": {"defaultBrowserBuild": "stealthcdp_chromium"}
+        });
+        let plan = service_access_plan_from_command(&command).unwrap();
+        assert_eq!(
+            plan["decision"]["launchPosture"]["browserBuildSource"],
+            "service_default"
+        );
+        for retained_build in [Some(BrowserBuild::StockChrome), None] {
+            store
+                .save(&ServiceState {
+                    browsers: BTreeMap::from([(
+                        "session:work".to_string(),
+                        BrowserProcess {
+                            id: "session:work".to_string(),
+                            browser_build: retained_build,
+                            health: ServiceBrowserHealth::Ready,
+                            ..BrowserProcess::default()
+                        },
+                    )]),
+                    ..ServiceState::default()
+                })
+                .unwrap();
+            assert_eq!(
+                active_browser_build_mismatch(&command, &state).is_none(),
+                retained_build.is_some()
+            );
+            let mut explicit = command.clone();
+            explicit["browserBuild"] = json!("stealthcdp_chromium");
+            assert!(active_browser_build_mismatch(&explicit, &state).is_some());
+        }
+        let _ = fs::remove_dir_all(home);
     }
 
     #[test]

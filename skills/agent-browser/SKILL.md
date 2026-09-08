@@ -1789,6 +1789,14 @@ When a dialog is pending, all command responses include a `warning` field indica
 
 ## Session Management and Cleanup
 
+An active session keeps its proven browser build for follow-up commands when
+only the global launch default differs. Explicit build requests, site/profile
+policy, and registry bindings remain binding; missing build proof fails closed.
+MCP `service_request.sessionName` and `browserId` are existing-daemon route hints,
+not startup requests. On `retained_daemon_unavailable`, refresh the access plan
+and inspect retained-session recovery. Do not create a duplicate profile lane
+or blindly replay a request whose earlier transport outcome may be unknown.
+
 When running multiple agents or automations concurrently, always use named sessions to avoid command namespace conflicts. Do not add a new runtime profile merely to avoid another active job. For service-mode work, include `serviceName`, `agentName`, `taskName`, and a target identity so agent-browser can queue work against the right managed browser:
 
 ```bash

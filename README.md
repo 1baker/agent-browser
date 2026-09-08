@@ -667,6 +667,14 @@ For full details on login flows, OAuth, 2FA, cookie-based auth, and the auth vau
 
 ## Sessions
 
+Follow-up commands in an active session retain its proven browser build when
+only the global launch default differs. Explicit build requests, site/profile
+policy, and registry bindings still apply; missing build proof fails closed.
+MCP `service_request.sessionName` and `browserId` select an existing daemon,
+not a new one. Missing/refused retained connections report
+`retained_daemon_unavailable`: refresh the access plan and inspect recovery
+before retrying. Do not bootstrap a duplicate profile or replay an uncertain action.
+
 Run multiple isolated browser instances:
 
 ```bash

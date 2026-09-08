@@ -955,6 +955,15 @@ agent-browser state clean --older-than <days>  # Delete old states
 
 ## Sessions
 
+An active session retains its proven browser build when only the global launch
+default differs. Explicit build requests, site/profile policies, and registry
+bindings still apply; missing build proof fails closed.
+MCP <code>service_request.sessionName</code> and <code>browserId</code> select
+existing daemons, not new ones. A missing/refused retained connection reports
+<code>retained_daemon_unavailable</code>. Refresh the access plan and inspect
+recovery before retrying; never create a duplicate profile lane or blindly
+replay an action with an uncertain outcome.
+
 ```bash
 agent-browser session                 # Show current session name
 agent-browser session list            # List active sessions

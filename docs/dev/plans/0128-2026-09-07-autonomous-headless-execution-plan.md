@@ -192,3 +192,34 @@ The ready receipt is `~/.agent-browser/convergence/workstation-latest.json`.
 Publisher preserved both viewer browser processes through the final deployment.
 See RUNBOOK Turn 133; the prior deployment/workstation blocker is resolved.
 The full autonomous headless task objective remains active and unproven.
+
+## Session continuation follow-through | 2026-09-07
+
+After publication through `da609250`, public headless QA reached Example Domain,
+clicked its documentation link, verified the rendered IANA destination, and
+released only its exact service tab. No account or ChatGPT action was sent.
+
+This bounded slice repairs follow-up command admission: a proven active browser
+build survives a different global launch default. Explicit requests and
+site/profile/registry requirements remain binding; missing proof still fails
+against the resolved planned build. Fresh launch selection is unchanged.
+Missing/refused MCP retained-daemon connections now carry actionable recovery
+guidance without launching, falling back, or adding replay. `sessionName` is an
+existing-route hint, not new-session authority. Automatic cold-session creation
+is intentionally not introduced.
+
+Primary validation: two active-dispatch regressions, the full isolated Rust suite
+(1928 passed, zero failed, 57 ignored), format check, strict Clippy, native debug
+build, API/MCP parity, generated-client contract and TypeScript checks, docs build,
+targeted ESLint, and diff check. The actual MCP stdio fixture
+`scripts/test-mcp-retained-route-unavailable.js` verifies both session and browser
+route hints return the diagnostic with no socket, PID, browser, session, or job
+creation. Planning audit reports clean but not applicable. CodeGraph reports
+current but omits the oversized actions symbols; targeted source reads were used.
+
+Delegation: `/root/cold_session_review` implemented only MCP diagnostics and
+reviewed the continuation diff read-only. Its terminal review reported no blocking
+findings; the primary inspected its diff and independently ran all validation.
+Concurrent installer-recovery edits appeared during this slice and are preserved.
+Live installation is deferred to avoid deploying those unrelated in-progress
+changes. No GitHub write or live browser mutation occurred in this slice.

@@ -5041,6 +5041,13 @@ Usage: agent-browser session [operation]
 Manage isolated browser sessions. Each session has its own browser
 instance with separate cookies, storage, and state.
 
+Active sessions retain their proven browser build across follow-up commands
+when only the global launch default differs. Explicit builds and site/profile
+or registry policies still apply; missing proof fails closed.
+MCP service_request sessionName/browserId select existing daemons, not new ones.
+On retained_daemon_unavailable, refresh the access plan and inspect recovery;
+do not launch a duplicate profile or blindly replay an uncertain action.
+
 Operations:
   (none)               Show current session name
   list                 List all active sessions

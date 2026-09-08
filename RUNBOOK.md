@@ -8022,3 +8022,19 @@ Scope: fix the workstation viewer blocker and finish live reconciliation.
 - No GitHub writes, public tunnel changes, ChatGPT prompts, or user-profile
   deletion. This resolves the workstation blocker, not the entire autonomous
   browser objective; representative headless task verification remains next.
+
+### Session continuation checkpoint | 2026-09-07
+
+- Plan 0128 follow-through preserves the proven active build when only the global
+  launch default differs. Explicit/site/profile/registry constraints still bind;
+  this is not a new launch fallback or an exemption for missing build proof.
+- MCP missing/refused retained routes return `retained_daemon_unavailable` and
+  recovery guidance. No daemon startup or additional replay is added.
+- Validation: 1928 isolated Rust tests passed, 57 ignored; format, strict Clippy,
+  debug build, API/MCP parity, client contract/types, docs build, targeted ESLint,
+  actual no-launch MCP fixture, and diff check passed. Planning audit is clean but
+  not applicable. Independent scoped review returned no blocking findings.
+- Reproduce the no-launch fixture with
+  `AGENT_BROWSER_SMOKE_AGENT_BROWSER_CMD=/absolute/path/to/built/agent-browser node scripts/test-mcp-retained-route-unavailable.js`.
+- Concurrent installer-recovery work is preserved. This slice is source-verified,
+  not installed or published; reconcile that work before the next runtime update.
