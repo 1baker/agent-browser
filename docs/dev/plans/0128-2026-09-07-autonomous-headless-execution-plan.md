@@ -184,3 +184,11 @@ dashboard manifest immediately after activation, while both standalone doctors
 passed. Final verification now allows two retries for only that startup condition;
 other issues and mismatched hashes remain fatal. The 22 installer tests and an
 independent closed-world review pass for this follow-up.
+
+Resolved live: installed runtime
+`09288ffad7a132b888eea6e79d47d49d6302599bb39310b6204eea058d64afda`
+completed workstation apply with exit zero, `complete: true`, and `state: ready`.
+The ready receipt is `~/.agent-browser/convergence/workstation-latest.json`.
+Publisher preserved both viewer browser processes through the final deployment.
+See RUNBOOK Turn 133; the prior deployment/workstation blocker is resolved.
+The full autonomous headless task objective remains active and unproven.

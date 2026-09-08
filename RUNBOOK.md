@@ -7990,3 +7990,35 @@ and guarded local installation of commits through `2164f6d8`.
 Next: bind the installed Guacamole viewer's executable and browser-build identity
 together, add regression coverage, rerun workstation reconciliation, and then
 perform the pending headless rendered-page verification.
+
+# Turn 133 | 2026-09-07
+
+Scope: fix the workstation viewer blocker and finish live reconciliation.
+
+- `21d8ec18` binds the installer-selected stock Chrome executable and build
+  identity on viewer launch, header setup, and navigation. The global browser
+  preference and private authentication data are unchanged. The real command
+  builders pass `scripts/test-route-viewer-build.js`; invalid build names reject
+  before execution. Installer selection and update behavior have Rust coverage.
+- Closed the failed Route A service attachment, then verified and gracefully
+  terminated its remaining legacy installer-owned Chrome PID by UID, executable,
+  and exact profile path. Profile data was preserved. Both route desktops then
+  reached ready. The initial identity check deliberately stopped when the
+  executable differed; inspection identified managed Chrome 149, not 152.
+- `285538b5` fixes the subsequent final-doctor startup failure: at most three
+  attempts for a sole unreadable dashboard manifest, with no service restart or
+  relaxation of hash/other failure checks. The 22 installer tests, packaged
+  source-free fixture, strict Clippy, formatting, targeted ESLint, TypeScript,
+  build, and diff checks passed. CodeGraph was synchronized. Planning audit is
+  clean but not applicable. Independent bounded reviews returned no blockers.
+- Installed runtime SHA-256:
+  `09288ffad7a132b888eea6e79d47d49d6302599bb39310b6204eea058d64afda`.
+  Publisher transaction `local-dashboard-d2df51c6-1c1a-457f-9a6e-6f429ed924f2`
+  finished ready and preserved both new viewer browser PIDs/CDP endpoints.
+- Final `agent-browser install workstation --apply --json` exited zero with
+  `success: true`, `complete: true`, `state: ready`, and `ready: true`.
+  Durable local receipt: `~/.agent-browser/convergence/workstation-latest.json`.
+  This supersedes Turn 132's incomplete reconciliation and paused watchdog.
+- No GitHub writes, public tunnel changes, ChatGPT prompts, or user-profile
+  deletion. This resolves the workstation blocker, not the entire autonomous
+  browser objective; representative headless task verification remains next.
