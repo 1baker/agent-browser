@@ -7957,3 +7957,36 @@ Scope: Plan 0128 CLI interactive compaction deadline closure.
 
 This closes another bounded-wait gap, not the full autonomous-browser objective.
 Durable task recovery and representative live task verification remain open.
+
+# Turn 132 | 2026-09-07
+
+Scope: user-authorized retirement of the obsolete NYSE installation requirement
+and guarded local installation of commits through `2164f6d8`.
+
+- Verified the exact NYSE requirement digest, then moved only its requirement
+  and enforcement files into the private recoverable directory
+  `~/.agent-browser/publications/retired-nyse-requirement-20260907/`.
+  Profile/login data and the separate Workshop requirement were not changed.
+- Publisher completed transaction
+  `local-dashboard-d5a0771c-0bd8-4b8d-a0e2-9118711be673` as terminal `ready`.
+  Installed and live dashboard executable SHA-256:
+  `d2183f7679e4261f45305e5d1a3e9541f911a643b064169b3d4e1603d9b8fe09`.
+  Previous executable is recoverable from the publisher's verified backup.
+  Dashboard HTTP/bundle/manifest checks and three installed-CLI fixture scenarios
+  passed. Browser smoke was deliberately skipped; no live autonomy claim.
+- Workstation apply refreshed payload provenance, then failed opening the
+  canonical Guacamole displays. The route viewer inherited a stealth build
+  requirement without a matching binding. Source shows the installer pins a
+  Linux viewer executable but the helper does not pin the matching browser build.
+  The report-only helper still attempts route opening; it failed before launch.
+- Install doctor subsequently returned exit zero with no issues and payload
+  ready. Remote-view doctor still lists missing X11 displays 10 and 11 despite
+  returning exit zero: full workstation reconciliation is not complete.
+- Restored the previously serving dashboard after installer quiescence; repeated
+  HTTP/manifest smoke passed. Restored the PostgreSQL backup timer. Runtime
+  interlock remains paused pending route-launcher repair to avoid retry churn.
+  No public tunnel changes, account login, ChatGPT prompt, or GitHub writes.
+
+Next: bind the installed Guacamole viewer's executable and browser-build identity
+together, add regression coverage, rerun workstation reconciliation, and then
+perform the pending headless rendered-page verification.

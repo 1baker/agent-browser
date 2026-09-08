@@ -146,3 +146,16 @@ scenarios, and isolated full suite with 1920 passes, zero failures, 57 ignored.
 Build, strict Clippy, formatting, targeted ESLint, dashboard TypeScript,
 CodeGraph synchronization, and diff checks passed. The independent scoped review
 returned no blocking findings. Plan audit remains clean but not applicable.
+
+## Authorized installation checkpoint | 2026-09-07
+
+The user approved retiring the obsolete NYSE requirement. Its two private files
+were archived recoverably without altering the profile or login data. The runtime
+through `2164f6d8` is now installed; live manifest hash is
+`d2183f7679e4261f45305e5d1a3e9541f911a643b064169b3d4e1603d9b8fe09`.
+Installed CLI fixture and dashboard HTTP checks pass. Install doctor is clean
+after payload refresh, but full workstation apply fails at the Guacamole viewer:
+the installer-selected Linux executable inherits an incompatible stealth build
+requirement. Displays 10 and 11 remain absent. Dashboard and backup scheduling
+were restored; runtime interlock remains paused. See RUNBOOK Turn 132 for exact
+publication evidence and next repair. Live headless/autonomous QA is still pending.
