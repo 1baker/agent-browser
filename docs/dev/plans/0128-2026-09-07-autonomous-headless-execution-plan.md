@@ -175,3 +175,12 @@ dashboard TypeScript, and diff checks pass. CodeGraph was synced; planning audit
 is clean but not applicable. `/root/dashboard_completion` independently reviewed
 the bounded diff read-only and returned no blocking findings. Live reconciliation
 must pass before declaring the remote-desktop blocker resolved.
+
+Live follow-through: both route desktops reached ready after the installer-owned
+legacy Route A viewer was gracefully terminated by exact PID/executable/profile
+identity. Its old handed-off connection had detached without closing the process.
+No profile data was deleted. Reconciliation then exposed a sole unreadable
+dashboard manifest immediately after activation, while both standalone doctors
+passed. Final verification now allows two retries for only that startup condition;
+other issues and mismatched hashes remain fatal. The 22 installer tests and an
+independent closed-world review pass for this follow-up.

@@ -1690,6 +1690,8 @@ override failed registry validation. Retained reuse still requires build proof.
 Workstation reconciliation pins its Guacamole viewer commands to the installed
 stock Chrome build, including follow-up navigation, without changing the global
 browser-build preference.
+Final workstation verification retries an unreadable startup dashboard manifest
+at most twice; mismatched hashes and other doctor failures still stop reconciliation.
 
 **Dashboard usage:**
 

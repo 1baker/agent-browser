@@ -1908,23 +1908,45 @@ fn verify_final_doctors(
             "/data/remoteControl/ready",
         ),
     ] {
-        let output = run_status(
-            paths
-                .binary
-                .to_str()
-                .ok_or_else(|| "invalid installed agent-browser path".to_string())?,
-            &args,
-            support_root,
-            command_env,
-            false,
-        )?;
-        let payload: Value = serde_json::from_slice(&output.stdout)
-            .map_err(|error| format!("{label} JSON parse failed: {error}"))?;
-        if payload.pointer(readiness_pointer).and_then(Value::as_bool) != Some(true) {
+        for attempt in 0..3 {
+            let output = run_observed(
+                paths
+                    .binary
+                    .to_str()
+                    .ok_or_else(|| "invalid installed agent-browser path".to_string())?,
+                &args,
+                support_root,
+                command_env,
+            )?;
+            let payload: Value = serde_json::from_slice(&output.stdout)
+                .map_err(|error| format!("{label} JSON parse failed: {error}"))?;
+            if output.status.success()
+                && payload.pointer(readiness_pointer).and_then(Value::as_bool) == Some(true)
+            {
+                break;
+            }
+            // A just-started dashboard can accept a socket before its manifest is
+            // readable. Retry only that narrow startup condition, never stale hashes
+            // or unrelated readiness failures, and never restart the service here.
+            if label == "install doctor" && attempt < 2 && dashboard_manifest_starting(&payload) {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            }
             return Err(format!("{label} did not report ready"));
         }
     }
     Ok(())
+}
+
+fn dashboard_manifest_starting(payload: &Value) -> bool {
+    payload
+        .pointer("/data/issues")
+        .and_then(Value::as_array)
+        .is_some_and(|issues| {
+            issues.len() == 1
+                && issues[0]["code"] == "dashboard_runtime_stale_or_unreadable"
+                && issues[0]["state"] == "unreadable_manifest"
+        })
 }
 
 fn write_private_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -2813,6 +2835,24 @@ mod tests {
             .map(|(_, value)| value.as_str())
             .collect::<Vec<_>>();
         assert_eq!(builds, vec!["stock_chrome"]);
+    }
+
+    #[test]
+    fn dashboard_manifest_startup_retry_is_narrow() {
+        use serde_json::json;
+        let issue =
+            json!({"code":"dashboard_runtime_stale_or_unreadable", "state":"unreadable_manifest"});
+        assert!(dashboard_manifest_starting(
+            &json!({"data":{"issues":[issue.clone()]}})
+        ));
+        assert!(!dashboard_manifest_starting(
+            &json!({"data":{"issues":[issue, {"code":"other_failure"}]}})
+        ));
+        assert!(!dashboard_manifest_starting(
+            &json!({"data":{"issues":[{"code":"dashboard_runtime_stale_or_unreadable","state":"hash_mismatch"}]}})
+        ));
+        assert!(!dashboard_manifest_starting(&json!({"data":{"issues":[]}})));
+        assert!(!dashboard_manifest_starting(&json!({})));
     }
 
     #[test]

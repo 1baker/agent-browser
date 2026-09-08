@@ -6206,6 +6206,7 @@ Fresh stock Chrome launches preserve exact installer executable proof; attached
 or custom browsers are not relabeled, and retained reuse still requires proof.
 Workstation Guacamole viewers use the installed stock Chrome build independently
 of the global browser-build preference.
+Final workstation checks retry only an unreadable startup dashboard manifest twice.
 
 Chat Options:
   --model <name>         AI model (or AI_GATEWAY_MODEL env, default: anthropic/claude-sonnet-4.6)

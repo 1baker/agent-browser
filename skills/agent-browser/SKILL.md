@@ -1029,6 +1029,8 @@ without a preference binding. This never relabels retained or custom browsers,
 does not override registry validation failures, and does not prove stealth.
 Workstation reconciliation binds Guacamole viewer commands to the installed
 stock Chrome build; it does not change the global browser preference.
+Final workstation checks retry only an unreadable startup dashboard manifest twice;
+hash mismatch or other readiness failures remain fatal.
 
 Rule of thumb:
 
