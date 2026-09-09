@@ -2,13 +2,15 @@
 
 agent-browser includes security features to protect against credential exposure, prompt injection via untrusted page content, and unauthorized browser actions.
 
-All security features are opt-in. By default, agent-browser imposes no restrictions on navigation, actions, or output. Enable these features as needed for your deployment -- existing workflows are unaffected until you explicitly activate a feature.
+Navigation, action-policy and output-boundary controls below are opt-in. The
+Linux/macOS cooperative CDP privacy gate also validates its runtime filesystem
+and records pending command receipts automatically; unsafe paths fail closed.
 
 ## Threat Model
 
 These features are designed to mitigate the following threats when an LLM-based agent drives a browser:
 
-- **Credential exposure** -- Passwords stored in the auth vault are never included in LLM context. The CLI handles vault operations locally; credentials do not pass through the daemon's IPC channel.
+- **Credential exposure**: vault encryption protects stored credentials, but ordinary ingestion and browser capture paths are not an end-to-end private credential transaction. Do not treat password-stdin, fill or evaluate as trace-private secret transport.
 - **Prompt injection via page content** -- Malicious pages can embed text that looks like tool output or system instructions. Content boundary markers (`--content-boundaries`) let the orchestrator distinguish trusted tool output from untrusted page content.
 - **Unauthorized navigation / data exfiltration** -- A compromised or manipulated agent could navigate to attacker-controlled domains to exfiltrate data. The domain allowlist (`--allowed-domains`) blocks navigations, sub-resource requests, WebSocket connections, EventSource streams, and `sendBeacon` calls to non-allowed domains.
 - **Unauthorized destructive actions** -- Action policy (`--action-policy`) and confirmation gating (`--confirm-actions`) prevent the agent from performing dangerous operations (eval, downloads, uploads) without explicit approval.
@@ -24,6 +26,41 @@ These features are designed to mitigate the following threats when an LLM-based 
 
 ## Authentication Vault
 
+### Private broker implementation checkpoint
+
+Cooperative Linux/macOS clients sharing one normalized CDP endpoint and runtime
+home share durable receipts under <code>private-gates</code>. Pending commands
+are recorded before dispatch; cancellation and process death leave receipts.
+Private admission excludes in-flight public leases. Once admitted, the lock
+survives permit drop and restart, suppresses raw/event observation, and refuses
+ordinary commands and viewer replay/input. Inspect replacement waits for tracked
+proxy connections to terminate. A matching command response does not prove that
+deferred page scripts or navigation have finished.
+
+There is no public private-login command or unlock API yet. Do not delete receipt
+files to force recovery. Endpoint aliases, tunnels, external CDP clients and
+RDP/OS capture are not unified by this cooperative gate. Fresh exact-target
+validation at execution and private input/output integration are still required
+before live secrets. Internal permit-bound reconnect and page cleanup do not
+unlock observation. Old connection generations stay revoked after cleanup,
+recovery sockets remain permanently private, and private dispatch requires the
+persisted target scope plus a matching CDP session. Broker alias mapping and the
+live cleanup coordinator are not yet integrated. Owned mode-0755 runtime homes are allowed,
+but symlinked or other-user-writable paths and userinfo WebSocket URLs reject;
+private gate directories require mode 0700. Other platforms keep ordinary CDP
+support without private admission.
+
+The source-checkout helper <code>python3 scripts/setup-private-slack.py</code>
+bootstraps the explicitly approved SAM Slack connection through hidden terminal
+input on Linux/WSL. It checks only Slack authentication identity and granted
+scopes, not channel messages. It binds the Cochran Group workspace containing
+the approved private channel, requires <code>groups:history</code>, and permits
+only the additionally approved canvas read/write scopes. Its create-new
+<code>~/.config/agent-browser/private-slack/</code> connection file is owner-only
+plaintext, not encrypted operation storage. It cannot protect against the account
+owner or root. Never publish or print that file. <code>--status</code> is a local
+metadata-only check, not live channel authorization or SAM login proof.
+
 For private phone control, keep the dashboard and Guacamole listeners on
 loopback and expose only the dashboard through Tailscale Serve. With
 <code>AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH=1</code> and an exact
@@ -35,7 +72,9 @@ the configured local Guacamole user. Do not combine this trust mode with
 Funnel or another proxy reaching the same listener, and do not expose the
 loopback Guacamole port directly.
 
-Store credentials locally and reference them by name. The LLM never sees passwords.
+Store credentials locally and reference them by name. Keep credential values out
+of prompts and inspect the actual ingestion/capture boundary before using live
+secrets; naming an encrypted vault entry alone does not establish that boundary.
 
 ```bash
 # Save credentials (encrypted if AGENT_BROWSER_ENCRYPTION_KEY is set)

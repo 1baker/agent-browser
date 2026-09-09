@@ -3023,6 +3023,20 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
+    #[cfg(test)]
+    pub(crate) fn set_private_journey_test_profile(&mut self, profile: &str) {
+        self.attached_runtime_profile = Some(profile.to_owned());
+    }
+
+    /// Provenance from the owned manager or governed managed-profile attach,
+    /// never from the current command's claimed runtimeProfile.
+    pub(crate) fn private_runtime_profile(&self) -> Option<&str> {
+        self.browser
+            .as_ref()?
+            .runtime_profile_name()
+            .or(self.attached_runtime_profile.as_deref())
+    }
+
     pub fn new() -> Self {
         Self {
             browser: None,
@@ -3368,8 +3382,21 @@ impl DaemonState {
     }
 
     pub async fn drain_cdp_events_background(&mut self) {
+        let Ok(_privacy_lease) = self.public_browser_lease() else {
+            return;
+        };
         let drained = self.drain_cdp_events();
         self.apply_drained_events(drained).await;
+    }
+
+    pub(crate) fn public_browser_lease(
+        &self,
+    ) -> Result<Option<super::privacy_gate::PublicLease>, &'static str> {
+        self.browser
+            .as_ref()
+            .map(|mgr| mgr.client.public_lease())
+            .transpose()
+            .map(Option::flatten)
     }
 
     async fn apply_drained_events(&mut self, drained: DrainedEvents) {
@@ -4995,6 +5022,13 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         .to_string();
 
     let cmd_start = std::time::Instant::now();
+
+    // Hold the cooperative browser barrier through dispatch and publication.
+    // Refuse before tracing, authority staging, event draining or auto-recovery.
+    let _privacy_lease = match state.public_browser_lease() {
+        Ok(lease) => lease,
+        Err(error) => return error_response(&id, error),
+    };
 
     #[cfg(test)]
     if action == "__test_sleep" {
@@ -7369,9 +7403,10 @@ async fn handle_inspect(state: &mut DaemonState) -> Result<Value, String> {
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
 
     // Shut down any existing inspect server so we always target the current page
-    if let Some(server) = state.inspect_server.take() {
-        server.shutdown();
+    if let Some(server) = state.inspect_server.as_mut() {
+        server.shutdown_and_wait().await?;
     }
+    state.inspect_server = None;
 
     let target_id = mgr.active_target_id()?.to_string();
     let chrome_hp = mgr.chrome_host_port().to_string();
@@ -10412,9 +10447,10 @@ async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
     state.safari_driver = None;
     state.backend_type = BackendType::Cdp;
 
-    if let Some(server) = state.inspect_server.take() {
-        server.shutdown();
+    if let Some(server) = state.inspect_server.as_mut() {
+        server.shutdown_and_wait().await?;
     }
+    state.inspect_server = None;
 
     state.ref_map.clear();
     Ok(json!({ "closed": true }))

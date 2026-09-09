@@ -38,6 +38,10 @@ use super::service_store::{LockedServiceStateRepository, ServiceStateRepository}
 const DEFAULT_QUEUE_CAPACITY: usize = 256;
 const MAX_SERVICE_EVENTS: usize = 100;
 
+#[cfg(all(test, unix))]
+#[path = "control_plane_private_tests.rs"]
+mod private_tests;
+
 #[derive(Clone)]
 pub struct ControlPlaneHandle {
     tx: mpsc::Sender<WorkerMessage>,
@@ -113,7 +117,18 @@ pub struct ControlRequest {
 
 enum WorkerMessage {
     Request(Box<ControlRequest>),
+    #[cfg(unix)]
+    Private(PrivateWorkerRequest),
     Shutdown(oneshot::Sender<()>),
+}
+
+/// Separate from serializable public commands and persisted service jobs.
+#[cfg(unix)]
+struct PrivateWorkerRequest {
+    staged: super::private_handoff::PrivateStagedHandoff,
+    response_tx: oneshot::Sender<
+        Result<super::private_journey::PrivateJourneyPendingReconciliation, &'static str>,
+    >,
 }
 
 pub struct ControlPlaneWorker;
@@ -183,6 +198,36 @@ impl ControlPlaneWorker {
 }
 
 impl ControlPlaneHandle {
+    /// Internal only: ingress has already authenticated and encrypted the
+    /// payload. No private value or receipt enters the ordinary job journal.
+    /// A timeout never retries or reopens the durable privacy interval.
+    #[cfg(unix)]
+    pub(crate) async fn submit_private(
+        &self,
+        staged: super::private_handoff::PrivateStagedHandoff,
+    ) -> Result<super::private_journey::PrivateJourneyPendingReconciliation, &'static str> {
+        if !staged.is_current() {
+            return Err("private_handoff_expired");
+        }
+        let (response_tx, response_rx) = oneshot::channel();
+        self.status.queue_depth.fetch_add(1, Ordering::Relaxed);
+        if self
+            .tx
+            .try_send(WorkerMessage::Private(PrivateWorkerRequest {
+                staged,
+                response_tx,
+            }))
+            .is_err()
+        {
+            self.status.queue_depth.fetch_sub(1, Ordering::Relaxed);
+            return Err("private_worker_unavailable");
+        }
+        tokio::time::timeout(Duration::from_secs(120), response_rx)
+            .await
+            .map_err(|_| "private_worker_timeout")?
+            .map_err(|_| "private_worker_unavailable")?
+    }
+
     pub fn status_response(&self, id: &str) -> Value {
         json!({
             "id": id,
@@ -343,8 +388,7 @@ impl ControlPlaneHandle {
                     },
                 });
             }
-            Err(mpsc::error::TrySendError::Full(WorkerMessage::Shutdown(_)))
-            | Err(mpsc::error::TrySendError::Closed(WorkerMessage::Shutdown(_))) => {
+            Err(_) => {
                 self.status.queue_depth.fetch_sub(1, Ordering::Relaxed);
                 return json!({
                     "id": id,
@@ -1041,8 +1085,7 @@ fn enqueue_due_monitor_run(
             status.queue_depth.fetch_sub(1, Ordering::Relaxed);
             persist_service_job_failed_to_enqueue(&request, "Control plane worker is stopped");
         }
-        Err(mpsc::error::TrySendError::Full(WorkerMessage::Shutdown(_)))
-        | Err(mpsc::error::TrySendError::Closed(WorkerMessage::Shutdown(_))) => {
+        Err(_) => {
             status.queue_depth.fetch_sub(1, Ordering::Relaxed);
         }
     }
@@ -1400,6 +1443,38 @@ async fn run_worker(
                 };
 
                 match message {
+                    #[cfg(unix)]
+                    WorkerMessage::Private(mut request) => {
+                        status.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                        if request.response_tx.is_closed() {
+                            continue;
+                        }
+                        if !request.staged.is_current() {
+                            let _ = request.response_tx.send(Err("private_handoff_expired"));
+                            continue;
+                        }
+                        let (store, references, expires_at) = request.staged.into_parts();
+                        let remaining = expires_at.duration_since(std::time::SystemTime::now())
+                            .unwrap_or_default().min(Duration::from_secs(120));
+                        status.set_state(WorkerState::Busy);
+                        let execution = async {
+                            let pending = super::private_journey::execute_private_journey(
+                                &state, &store, &references,
+                            ).await?;
+                            pending.sanitize_and_close(&mut state, &store).await
+                        };
+                        let result = tokio::select! {
+                            biased;
+                            _ = request.response_tx.closed() => Err("private_worker_cancelled"),
+                            result = tokio::time::timeout(remaining, execution) => {
+                                result.unwrap_or(Err("private_worker_timeout"))
+                            }
+                        };
+                        // No ordinary health circuit, retry, publication or
+                        // privacy unlock. Reconciliation remains mandatory.
+                        status.set_state(WorkerState::Faulted);
+                        let _ = request.response_tx.send(result.map_err(|_| "private_worker_failed_closed"));
+                    }
                     WorkerMessage::Request(request) => {
                         let mut request = *request;
                         let queue_wait_ms = u64::try_from(
@@ -1609,6 +1684,7 @@ async fn run_worker(
                 }
             }
             _ = drain_interval.tick() => {
+                let Ok(_privacy_lease) = state.public_browser_lease() else { continue; };
                 if state.browser.is_some() {
                     status.set_state(WorkerState::Draining);
                     let browser_exited = state
@@ -1648,12 +1724,18 @@ async fn run_worker(
 }
 
 async fn close_browser(state: &mut DaemonState) {
+    let Ok(_privacy_lease) = state.public_browser_lease() else {
+        return;
+    };
     if let Some(ref mut mgr) = state.browser {
         let _ = mgr.close().await;
     }
 }
 
 async fn cleanup_exited_browser(state: &mut DaemonState) {
+    let Ok(_privacy_lease) = state.public_browser_lease() else {
+        return;
+    };
     if state.browser.is_some() {
         persist_process_exited_browser_health(state);
     }
@@ -1670,6 +1752,9 @@ fn browser_health_requires_cleanup_after_interruption(health: BrowserHealth) -> 
 }
 
 async fn refresh_browser_health(state: &mut DaemonState, status: &ControlPlaneStatus) {
+    let Ok(_privacy_lease) = state.public_browser_lease() else {
+        return;
+    };
     let Some(ref mut mgr) = state.browser else {
         status.set_browser_health(BrowserHealth::NotStarted);
         return;
@@ -1721,6 +1806,9 @@ async fn run_post_timeout_health_circuit(
     status: &ControlPlaneStatus,
     command: &Value,
 ) {
+    let Ok(_privacy_lease) = state.public_browser_lease() else {
+        return;
+    };
     if !command_requires_post_timeout_renderer_circuit(command) {
         refresh_browser_health(state, status).await;
         return;

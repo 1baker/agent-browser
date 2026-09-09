@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use futures_util::{SinkExt, StreamExt};
@@ -11,8 +11,38 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::types::{CdpCommand, CdpEvent, CdpMessage};
+use crate::native::privacy_gate::{PrivacyGate, PrivacyObserver, PrivatePermit, PublicLease};
+use crate::native::private_identity::{ValidatedPrivateJourney, ValidatedPrivateTarget};
 
 type PendingMap = Arc<StdMutex<HashMap<u64, oneshot::Sender<CdpMessage>>>>;
+
+/// Private transport output must never enter ordinary command serialization.
+/// Only a trusted in-process coordinator may consume the underlying value.
+pub(crate) struct PrivateCdpResponse(Value);
+
+/// Proof of one client transport's termination, not page cleanup or broker
+/// detach. Never serializable or sufficient to reopen public observation.
+pub(crate) struct PrivateTransportClosed {
+    transport: WsTx,
+    gate: Arc<PrivacyGate>,
+    epoch: String,
+    identity_digest: String,
+}
+
+impl PrivateTransportClosed {
+    pub(crate) fn matches(&self, client: &CdpClient, permit: &PrivatePermit) -> bool {
+        Arc::ptr_eq(&self.transport, &client.ws_tx)
+            && permit.authorizes(&self.gate)
+            && permit.epoch_id() == self.epoch
+            && permit.identity_digest() == Some(self.identity_digest.as_str())
+    }
+}
+
+impl PrivateCdpResponse {
+    pub(crate) fn into_value(self) -> Value {
+        self.0
+    }
+}
 
 fn lock_pending(
     pending: &PendingMap,
@@ -57,6 +87,9 @@ const DEFAULT_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// compatibility string returned by `send_command`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CdpCommandError {
+    Privacy {
+        reason: &'static str,
+    },
     Serialization {
         method: String,
         message: String,
@@ -81,6 +114,7 @@ pub enum CdpCommandError {
 impl std::fmt::Display for CdpCommandError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Privacy { reason } => formatter.write_str(reason),
             Self::Serialization { message, .. } => {
                 write!(formatter, "Failed to serialize CDP command: {message}")
             }
@@ -115,22 +149,22 @@ pub struct RawCdpMessage {
 }
 
 pub struct CdpClient {
-    ws_tx: Arc<
-        Mutex<
-            futures_util::stream::SplitSink<
-                tokio_tungstenite::WebSocketStream<
-                    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-                >,
-                Message,
-            >,
-        >,
-    >,
+    privacy_gate: Option<Arc<PrivacyGate>>,
+    privacy_observer: Option<PrivacyObserver>,
+    ws_tx: WsTx,
+    transport_sealed: Arc<AtomicBool>,
     next_id: AtomicU64,
     pending: PendingMap,
     event_tx: broadcast::Sender<CdpEvent>,
     raw_tx: broadcast::Sender<RawCdpMessage>,
-    _reader_handle: tokio::task::JoinHandle<()>,
-    _keepalive_handle: tokio::task::JoinHandle<()>,
+    shutdown: Mutex<TransportShutdown>,
+}
+
+struct TransportShutdown {
+    reader: Option<tokio::task::JoinHandle<()>>,
+    keepalive: Option<tokio::task::JoinHandle<()>>,
+    binding: Option<(String, String)>,
+    failed: bool,
 }
 
 impl CdpClient {
@@ -142,6 +176,64 @@ impl CdpClient {
         url: &str,
         headers: Option<Vec<(String, String)>>,
     ) -> Result<Self, String> {
+        Self::connect_inner(url, headers, None).await
+    }
+
+    /// Internal recovery bootstrap; ordinary callers cannot manufacture a
+    /// bound permit. Observers remain gated before the reader starts.
+    pub(crate) async fn connect_private_recovery(
+        url: &str,
+        permit: &PrivatePermit,
+    ) -> Result<Self, String> {
+        Self::connect_inner(url, None, Some(permit)).await
+    }
+
+    async fn connect_inner(
+        url: &str,
+        headers: Option<Vec<(String, String)>>,
+        recovery: Option<&PrivatePermit>,
+    ) -> Result<Self, String> {
+        // Unsupported platforms keep ordinary CDP support, but cannot admit a
+        // private interval. On supported platforms all same-endpoint clients
+        // share the persistent gate before any reader or observer starts.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let privacy_gate = Some(
+            match recovery {
+                Some(permit) => permit.recovery_gate(url),
+                None => PrivacyGate::for_endpoint(url),
+            }
+            .map_err(str::to_string)?,
+        );
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let privacy_gate: Option<Arc<PrivacyGate>> = None;
+        let _connection_lease = if let Some(permit) = recovery {
+            if !privacy_gate
+                .as_ref()
+                .is_some_and(|gate| permit.authorizes(gate))
+            {
+                return Err("private_permit_mismatch".into());
+            }
+            None
+        } else {
+            privacy_gate
+                .as_ref()
+                .map(|gate| gate.public_lease())
+                .transpose()
+                .map_err(str::to_string)?
+        };
+        // Capture before opening the socket while the connection lease excludes
+        // private admission. Recovery sockets never become public observers.
+        let privacy_observer = privacy_gate
+            .as_ref()
+            .map(|gate| {
+                if recovery.is_some() {
+                    Ok(gate.private_observer())
+                } else {
+                    gate.public_observer()
+                }
+            })
+            .transpose()
+            .map_err(str::to_string)?;
         let mut request = url
             .into_client_request()
             .map_err(|e| format!("Invalid WebSocket URL: {}", e))?;
@@ -172,7 +264,8 @@ impl CdpClient {
         enable_tcp_keepalive(ws_stream.get_ref());
 
         let (ws_tx, mut ws_rx) = ws_stream.split();
-        let ws_tx = Arc::new(Mutex::new(ws_tx));
+        let ws_tx = Arc::new(Mutex::new(Some(ws_tx)));
+        let transport_sealed = Arc::new(AtomicBool::new(false));
 
         let pending: PendingMap = Arc::new(StdMutex::new(HashMap::new()));
         let (event_tx, _) = broadcast::channel(4096);
@@ -181,6 +274,7 @@ impl CdpClient {
         let pending_clone = pending.clone();
         let event_tx_clone = event_tx.clone();
         let raw_tx_clone = raw_tx.clone();
+        let reader_privacy_observer = privacy_observer.clone();
 
         // Notify used to stop the keepalive task when the reader loop exits.
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
@@ -196,7 +290,11 @@ impl CdpClient {
                         Err(_) => continue,
                     },
                     Ok(Message::Close(frame)) => {
-                        if std::env::var("AGENT_BROWSER_DEBUG").is_ok() {
+                        let debug_lease = reader_privacy_observer
+                            .as_ref()
+                            .map(|gate| gate.public_lease())
+                            .transpose();
+                        if std::env::var("AGENT_BROWSER_DEBUG").is_ok() && debug_lease.is_ok() {
                             let reason = frame
                                 .as_ref()
                                 .map(|f| format!("code={}, reason={}", f.code, f.reason))
@@ -209,7 +307,11 @@ impl CdpClient {
                     Ok(Message::Pong(_)) => continue,
                     Ok(_) => continue,
                     Err(e) => {
-                        if std::env::var("AGENT_BROWSER_DEBUG").is_ok() {
+                        let debug_lease = reader_privacy_observer
+                            .as_ref()
+                            .map(|gate| gate.public_lease())
+                            .transpose();
+                        if std::env::var("AGENT_BROWSER_DEBUG").is_ok() && debug_lease.is_ok() {
                             let _ = writeln!(std::io::stderr(), "[cdp] WebSocket Error: {}", e);
                         }
                         break;
@@ -218,7 +320,12 @@ impl CdpClient {
 
                 // Broadcast raw message for inspect proxy subscribers before typed parse,
                 // so messages with negative IDs (used by the inspect proxy) are still delivered.
-                if raw_tx_clone.receiver_count() > 0 {
+                let observation_lease = reader_privacy_observer
+                    .as_ref()
+                    .map(|gate| gate.public_lease())
+                    .transpose();
+                let observable = observation_lease.is_ok();
+                if observable && raw_tx_clone.receiver_count() > 0 {
                     let session_id = serde_json::from_str::<serde_json::Value>(&msg)
                         .ok()
                         .and_then(|v| v.get("sessionId")?.as_str().map(String::from));
@@ -242,6 +349,9 @@ impl CdpClient {
                         let _ = tx.send(parsed);
                     }
                 } else if let Some(ref method) = parsed.method {
+                    if !observable {
+                        continue;
+                    }
                     // Event
                     let event = CdpEvent {
                         method: method.clone(),
@@ -266,6 +376,7 @@ impl CdpClient {
         // cloud load balancers) from closing idle WebSocket connections. If the
         // send fails, the connection is dead and we stop pinging.
         let keepalive_tx = ws_tx.clone();
+        let keepalive_sealed = Arc::clone(&transport_sealed);
         let keepalive_handle = tokio::spawn(async move {
             let interval = std::time::Duration::from_secs(WS_KEEPALIVE_INTERVAL_SECS);
             loop {
@@ -274,6 +385,12 @@ impl CdpClient {
                     _ = cancel_rx.changed() => break,
                 }
                 let mut tx = keepalive_tx.lock().await;
+                if keepalive_sealed.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Some(tx) = tx.as_mut() else {
+                    break;
+                };
                 if tx.send(Message::Ping(Vec::new())).await.is_err() {
                     break;
                 }
@@ -281,13 +398,20 @@ impl CdpClient {
         });
 
         Ok(Self {
+            privacy_gate,
+            privacy_observer,
             ws_tx,
+            transport_sealed,
             next_id: AtomicU64::new(1),
             pending,
             event_tx,
             raw_tx,
-            _reader_handle: reader_handle,
-            _keepalive_handle: keepalive_handle,
+            shutdown: Mutex::new(TransportShutdown {
+                reader: Some(reader_handle),
+                keepalive: Some(keepalive_handle),
+                binding: None,
+                failed: false,
+            }),
         })
     }
 
@@ -313,6 +437,174 @@ impl CdpClient {
         session_id: Option<&str>,
         timeout: std::time::Duration,
     ) -> Result<Value, CdpCommandError> {
+        let _privacy_lease = self
+            .public_lease()
+            .map_err(|reason| CdpCommandError::Privacy { reason })?;
+        // Write before dispatch, not in Drop: process death must not forget a
+        // command that Chrome may still execute. Cancellation leaves it pending.
+        let mut command_lease = self
+            .privacy_gate
+            .as_ref()
+            .map(|gate| gate.command_lease())
+            .transpose()
+            .map_err(|reason| CdpCommandError::Privacy { reason })?;
+        let result = self
+            .send_command_inner(method, params, session_id, timeout)
+            .await;
+        if matches!(&result, Ok(_) | Err(CdpCommandError::Protocol { .. })) {
+            if let Some(lease) = &mut command_lease {
+                lease
+                    .complete()
+                    .map_err(|reason| CdpCommandError::Privacy { reason })?;
+            }
+        }
+        result
+    }
+
+    /// Internal private transport only. No browser command, MCP request or
+    /// ordinary evaluate surface can supply a permit. The coordinator must
+    /// validate live target identity and durable operation admission separately.
+    pub(crate) fn private_permit_matches(&self, permit: &PrivatePermit) -> bool {
+        self.privacy_gate
+            .as_ref()
+            .is_some_and(|gate| permit.authorizes(gate))
+            && permit.target_id().is_some()
+            && permit.identity_digest().is_some()
+            && !self.transport_sealed.load(Ordering::SeqCst)
+    }
+
+    pub(crate) async fn send_private_command(
+        &self,
+        permit: &PrivatePermit,
+        method: &str,
+        params: Option<Value>,
+        session_id: Option<&str>,
+        timeout: std::time::Duration,
+    ) -> Result<PrivateCdpResponse, &'static str> {
+        let gate = self
+            .privacy_gate
+            .as_ref()
+            .ok_or("private_gate_unavailable")?;
+        if !permit.authorizes(gate) {
+            return Err("private_permit_mismatch");
+        }
+        let target_id = permit.target_id().ok_or("private_scope_missing")?;
+        if permit.identity_digest().is_none() {
+            return Err("private_scope_missing");
+        }
+        if !matches!(
+            method,
+            "Target.getTargetInfo"
+                | "Target.attachToTarget"
+                | "Target.detachFromTarget"
+                | "Page.getFrameTree"
+                | "Page.createIsolatedWorld"
+                | "Page.navigate"
+                | "Page.stopLoading"
+                | "Runtime.evaluate"
+        ) || timeout.is_zero()
+            || timeout > std::time::Duration::from_secs(30)
+        {
+            return Err("private_cdp_operation_invalid");
+        }
+        // A scoped permit cannot authorize a sibling target at this endpoint.
+        // CDP's session target echo is checked before every mutating command;
+        // getTargetInfo must omit targetId here so it cannot mask a wrong session.
+        let scoped = async {
+            let probe_session = match method {
+                "Target.attachToTarget" => {
+                    if session_id.is_some()
+                        || params
+                            .as_ref()
+                            .and_then(|v| v.get("targetId"))
+                            .and_then(Value::as_str)
+                            != Some(target_id)
+                        || params
+                            .as_ref()
+                            .and_then(|v| v.get("flatten"))
+                            .and_then(Value::as_bool)
+                            != Some(true)
+                    {
+                        return Err("private_scope_mismatch");
+                    }
+                    None
+                }
+                "Target.getTargetInfo" => {
+                    if params
+                        .as_ref()
+                        .and_then(|v| v.get("targetId"))
+                        .is_some_and(|v| v.as_str() != Some(target_id))
+                        || (session_id.is_none()
+                            && params
+                                .as_ref()
+                                .and_then(|v| v.get("targetId"))
+                                .and_then(Value::as_str)
+                                != Some(target_id))
+                    {
+                        return Err("private_scope_mismatch");
+                    }
+                    None
+                }
+                "Target.detachFromTarget" => {
+                    if session_id.is_some()
+                        || params.as_ref().and_then(|v| v.get("targetId")).is_some()
+                    {
+                        return Err("private_scope_mismatch");
+                    }
+                    Some(
+                        params
+                            .as_ref()
+                            .and_then(|v| v.get("sessionId"))
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.is_empty())
+                            .ok_or("private_scope_mismatch")?,
+                    )
+                }
+                _ => Some(
+                    session_id
+                        .filter(|s| !s.is_empty())
+                        .ok_or("private_scope_mismatch")?,
+                ),
+            };
+            if let Some(session) = probe_session {
+                let info = self
+                    .send_command_inner("Target.getTargetInfo", None, Some(session), timeout)
+                    .await
+                    .map_err(|_| "private_cdp_operation_failed")?;
+                if info.pointer("/targetInfo/targetId").and_then(Value::as_str) != Some(target_id)
+                    || info.pointer("/targetInfo/type").and_then(Value::as_str) != Some("page")
+                {
+                    return Err("private_scope_mismatch");
+                }
+            }
+            let result = self
+                .send_command_inner(method, params, session_id, timeout)
+                .await
+                .map_err(|_| "private_cdp_operation_failed")?;
+            if method == "Target.getTargetInfo"
+                && (result
+                    .pointer("/targetInfo/targetId")
+                    .and_then(Value::as_str)
+                    != Some(target_id)
+                    || result.pointer("/targetInfo/type").and_then(Value::as_str) != Some("page"))
+            {
+                return Err("private_scope_mismatch");
+            }
+            Ok(PrivateCdpResponse(result))
+        };
+        tokio::time::timeout(timeout, scoped)
+            .await
+            .map_err(|_| "private_cdp_operation_failed")?
+    }
+
+    // Caller owns either a public command lease or a bound private permit.
+    async fn send_command_inner(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        session_id: Option<&str>,
+        timeout: std::time::Duration,
+    ) -> Result<Value, CdpCommandError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let method_name = method.to_string();
 
@@ -330,17 +622,27 @@ impl CdpClient {
 
         let (tx, rx) = oneshot::channel();
 
-        let mut registration = PendingCommandRegistration::insert(id, tx, self.pending.clone());
-
-        {
+        let mut registration = {
             let mut ws_tx = self.ws_tx.lock().await;
+            if self.transport_sealed.load(Ordering::SeqCst) {
+                return Err(CdpCommandError::Privacy {
+                    reason: "cdp_transport_closed",
+                });
+            }
+            let ws_tx = ws_tx.as_mut().ok_or(CdpCommandError::Privacy {
+                reason: "cdp_transport_closed",
+            })?;
+            // Sealing and registration share this lock. No pending entry can
+            // appear after shutdown has removed the sink and cleared the map.
+            let registration = PendingCommandRegistration::insert(id, tx, self.pending.clone());
             if let Err(error) = ws_tx.send(Message::Text(json)).await {
                 return Err(CdpCommandError::Transport {
                     method: method_name,
                     message: error.to_string(),
                 });
             }
-        }
+            registration
+        };
 
         let response = match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(resp)) => {
@@ -374,6 +676,227 @@ impl CdpClient {
         self.event_tx.subscribe()
     }
 
+    /// Held through observer output or a full ordinary command. Admission cannot
+    /// race a caller holding this lease, including callers in another process.
+    pub fn public_lease(&self) -> Result<Option<PublicLease>, &'static str> {
+        self.privacy_observer
+            .as_ref()
+            .map(|gate| gate.public_lease())
+            .transpose()
+    }
+
+    /// Internal fail-closed admission primitive, not a public browser command.
+    /// There is deliberately no unlock or secret-submit API until verified page
+    /// sanitization, exact identity and private result transport are integrated.
+    pub(crate) fn begin_private_interval(
+        &self,
+        target: &ValidatedPrivateTarget,
+    ) -> Result<PrivatePermit, &'static str> {
+        self.privacy_gate
+            .as_ref()
+            .ok_or("private_gate_unavailable")?
+            .begin_private_scoped(target.target_id(), target.scope_digest())
+    }
+
+    pub(crate) fn begin_private_journey(
+        &self,
+        journey: &ValidatedPrivateJourney,
+    ) -> Result<PrivatePermit, &'static str> {
+        self.privacy_gate
+            .as_ref()
+            .ok_or("private_gate_unavailable")?
+            .begin_private_journey(journey)
+    }
+
+    /// Permanently close this transport under its private permit. The sink is
+    /// removed from shared state, including retained inspect handles, before
+    /// tasks are aborted and joined. Cancellation retains join handles in self;
+    /// repeating this cleanup can finish joins but can never reopen the socket.
+    /// This neither detaches broker authority nor releases the privacy epoch.
+    pub(crate) async fn quiesce_private_transport(
+        &self,
+        permit: &PrivatePermit,
+    ) -> Result<PrivateTransportClosed, &'static str> {
+        let gate = self
+            .privacy_gate
+            .as_ref()
+            .ok_or("private_gate_unavailable")?;
+        if !permit.authorizes(gate) || permit.target_id().is_none() {
+            return Err("private_permit_mismatch");
+        }
+        let digest = permit.identity_digest().ok_or("private_scope_missing")?;
+        let binding = (permit.epoch_id().to_owned(), digest.to_owned());
+        let close = async {
+            let mut shutdown = self.shutdown.lock().await;
+            if shutdown.binding.as_ref().is_some_and(|old| old != &binding) {
+                return Err("private_shutdown_scope_mismatch");
+            }
+            if shutdown.failed {
+                return Err("private_transport_join_failed");
+            }
+            shutdown.binding = Some(binding.clone());
+            self.transport_sealed.store(true, Ordering::SeqCst);
+            // Lock contention is bounded by the outer timeout. Until this
+            // succeeds no closure evidence is returned and privacy stays closed.
+            self.ws_tx.lock().await.take();
+            if let Some(handle) = &shutdown.reader {
+                handle.abort();
+            }
+            if let Some(handle) = &shutdown.keepalive {
+                handle.abort();
+            }
+            let TransportShutdown {
+                reader,
+                keepalive,
+                failed,
+                ..
+            } = &mut *shutdown;
+            for slot in [reader, keepalive] {
+                if let Some(handle) = slot.as_mut() {
+                    let joined = handle.await;
+                    // Keep ownership until join resolves; an interrupted await
+                    // must not detach the worker and masquerade as completion.
+                    *slot = None;
+                    if joined.is_err_and(|error| !error.is_cancelled()) {
+                        *failed = true;
+                        return Err("private_transport_join_failed");
+                    }
+                }
+            }
+            lock_pending(&self.pending).clear();
+            Ok(())
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(3), close)
+            .await
+            .map_err(|_| "private_transport_shutdown_timeout")??;
+        Ok(PrivateTransportClosed {
+            transport: Arc::clone(&self.ws_tx),
+            gate: Arc::clone(gate),
+            epoch: binding.0,
+            identity_digest: binding.1,
+        })
+    }
+
+    /// Verify a new empty top-level document without releasing observation.
+    /// This is only page cleanup, not transport-queue or mutation-scope proof.
+    /// A future coordinator must reconcile both before finishing the epoch.
+    pub(crate) async fn sanitize_private_page(
+        &self,
+        permit: &mut PrivatePermit,
+        target_id: &str,
+        session_id: &str,
+    ) -> Result<(), &'static str> {
+        if target_id.is_empty() || session_id.is_empty() || permit.target_id() != Some(target_id) {
+            return Err("private_cleanup_identity_mismatch");
+        }
+        let verify = |value: &Value, blank: bool| {
+            value
+                .pointer("/targetInfo/targetId")
+                .and_then(Value::as_str)
+                == Some(target_id)
+                && value.pointer("/targetInfo/type").and_then(Value::as_str) == Some("page")
+                && (!blank
+                    || value.pointer("/targetInfo/url").and_then(Value::as_str)
+                        == Some("about:blank"))
+        };
+        let short = std::time::Duration::from_secs(1);
+        let cleanup = async {
+            // Omitting targetId binds this query to the supplied CDP session.
+            // Never trust a caller's session string without this browser echo.
+            let info = self
+                .send_private_command(
+                    permit,
+                    "Target.getTargetInfo",
+                    None,
+                    Some(session_id),
+                    short,
+                )
+                .await?
+                .into_value();
+            if !verify(&info, false) {
+                return Err("private_cleanup_identity_mismatch");
+            }
+            self.send_private_command(permit, "Page.stopLoading", None, Some(session_id), short)
+                .await?;
+            let navigated = self
+                .send_private_command(
+                    permit,
+                    "Page.navigate",
+                    Some(serde_json::json!({"url":"about:blank"})),
+                    Some(session_id),
+                    short,
+                )
+                .await?
+                .into_value();
+            if navigated.get("errorText").is_some() {
+                return Err("private_cleanup_failed");
+            }
+            for _ in 0..12 {
+                let tree = self
+                    .send_private_command(
+                        permit,
+                        "Page.getFrameTree",
+                        None,
+                        Some(session_id),
+                        short,
+                    )
+                    .await?
+                    .into_value();
+                let frame = tree
+                    .pointer("/frameTree/frame")
+                    .ok_or("private_cleanup_failed")?;
+                if frame.get("url").and_then(Value::as_str) != Some("about:blank") {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    continue;
+                }
+                if frame.get("parentId").is_some()
+                    || tree
+                        .pointer("/frameTree/childFrames")
+                        .is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty()))
+                {
+                    return Err("private_cleanup_failed");
+                }
+                let frame_id = frame
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or("private_cleanup_failed")?;
+                let world = self.send_private_command(permit, "Page.createIsolatedWorld", Some(serde_json::json!({"frameId":frame_id,"worldName":"agent-browser-private-cleanup"})), Some(session_id), short).await?.into_value();
+                let context = world
+                    .get("executionContextId")
+                    .and_then(Value::as_i64)
+                    .ok_or("private_cleanup_failed")?;
+                let proof = self.send_private_command(permit, "Runtime.evaluate", Some(serde_json::json!({
+                    "contextId":context,"returnByValue":true,
+                    "expression":"globalThis === globalThis.top && location.href === 'about:blank' && document.readyState === 'complete' && document.body !== null && document.body.childElementCount === 0 && document.body.textContent === ''"
+                })), Some(session_id), short).await?.into_value();
+                if proof.get("exceptionDetails").is_some()
+                    || proof.pointer("/result/value").and_then(Value::as_bool) != Some(true)
+                {
+                    return Err("private_cleanup_failed");
+                }
+                let info = self
+                    .send_private_command(
+                        permit,
+                        "Target.getTargetInfo",
+                        None,
+                        Some(session_id),
+                        short,
+                    )
+                    .await?
+                    .into_value();
+                if !verify(&info, true) {
+                    return Err("private_cleanup_identity_mismatch");
+                }
+                return Ok(());
+            }
+            Err("private_cleanup_failed")
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(15), cleanup)
+            .await
+            .map_err(|_| "private_cleanup_failed")??;
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn pending_command_count(&self) -> usize {
         lock_pending(&self.pending).len()
@@ -390,7 +913,10 @@ impl CdpClient {
     pub fn inspect_handle(&self) -> InspectProxyHandle {
         InspectProxyHandle {
             ws_tx: self.ws_tx.clone(),
+            transport_sealed: Arc::clone(&self.transport_sealed),
             raw_tx: self.raw_tx.clone(),
+            privacy_gate: self.privacy_gate.clone(),
+            privacy_observer: self.privacy_observer.clone(),
         }
     }
 
@@ -420,7 +946,16 @@ impl CdpClient {
     /// Send raw JSON through the WebSocket without tracking a response.
     /// Used by the inspect proxy to forward DevTools frontend messages.
     pub async fn send_raw(&self, json: String) -> Result<(), String> {
+        let _privacy_lease = self.public_lease().map_err(str::to_string)?;
+        if let Some(gate) = &self.privacy_gate {
+            // Raw protocol traffic has no bounded completion receipt.
+            gate.mark_uncertain().map_err(str::to_string)?;
+        }
         let mut ws_tx = self.ws_tx.lock().await;
+        if self.transport_sealed.load(Ordering::SeqCst) {
+            return Err("cdp_transport_closed".into());
+        }
+        let ws_tx = ws_tx.as_mut().ok_or("cdp_transport_closed")?;
         ws_tx
             .send(Message::Text(json))
             .await
@@ -432,18 +967,25 @@ impl Drop for CdpClient {
     fn drop(&mut self) {
         // JoinHandle::drop detaches a task. Abort both background tasks so a
         // short-lived client also releases its WebSocket and keepalive state.
-        self._reader_handle.abort();
-        self._keepalive_handle.abort();
+        let shutdown = self.shutdown.get_mut();
+        if let Some(handle) = &shutdown.reader {
+            handle.abort();
+        }
+        if let Some(handle) = &shutdown.keepalive {
+            handle.abort();
+        }
     }
 }
 
 type WsTx = Arc<
     Mutex<
-        futures_util::stream::SplitSink<
-            tokio_tungstenite::WebSocketStream<
-                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        Option<
+            futures_util::stream::SplitSink<
+                tokio_tungstenite::WebSocketStream<
+                    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+                >,
+                Message,
             >,
-            Message,
         >,
     >,
 >;
@@ -452,12 +994,23 @@ type WsTx = Arc<
 /// the cloneable parts of CdpClient needed for bidirectional message forwarding.
 pub struct InspectProxyHandle {
     ws_tx: WsTx,
+    transport_sealed: Arc<AtomicBool>,
     raw_tx: broadcast::Sender<RawCdpMessage>,
+    privacy_gate: Option<Arc<PrivacyGate>>,
+    privacy_observer: Option<PrivacyObserver>,
 }
 
 impl InspectProxyHandle {
     pub async fn send_raw(&self, json: String) -> Result<(), String> {
+        let _privacy_lease = self.public_lease().map_err(str::to_string)?;
+        if let Some(gate) = &self.privacy_gate {
+            gate.mark_uncertain().map_err(str::to_string)?;
+        }
         let mut ws_tx = self.ws_tx.lock().await;
+        if self.transport_sealed.load(Ordering::SeqCst) {
+            return Err("cdp_transport_closed".into());
+        }
+        let ws_tx = ws_tx.as_mut().ok_or("cdp_transport_closed")?;
         ws_tx
             .send(Message::Text(json))
             .await
@@ -466,6 +1019,13 @@ impl InspectProxyHandle {
 
     pub fn subscribe_raw(&self) -> broadcast::Receiver<RawCdpMessage> {
         self.raw_tx.subscribe()
+    }
+
+    pub fn public_lease(&self) -> Result<Option<PublicLease>, &'static str> {
+        self.privacy_observer
+            .as_ref()
+            .map(|gate| gate.public_lease())
+            .transpose()
     }
 }
 
@@ -498,11 +1058,334 @@ mod tests {
     use std::time::Duration;
 
     use futures_util::{SinkExt, StreamExt};
-    use serde_json::json;
+    use serde_json::{json, Value};
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::Message;
 
     use super::{CdpClient, CdpCommandError};
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    async fn idle_private_peer() -> (CdpClient, tokio::task::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let mut commands = 0;
+            while let Some(Ok(message)) = ws.next().await {
+                if message.is_text() {
+                    commands += 1;
+                }
+            }
+            commands
+        });
+        (CdpClient::connect(&endpoint).await.unwrap(), peer)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn private_quiescence_closes_socket_despite_retained_inspector_and_is_idempotent() {
+        let (client, peer) = idle_private_peer().await;
+        let inspect = client.inspect_handle();
+        let permit = client.begin_private_interval(&approved_target()).unwrap();
+        let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
+        super::lock_pending(&client.pending).insert(42, pending_tx);
+        let proof = client.quiesce_private_transport(&permit).await.unwrap();
+        assert!(proof.matches(&client, &permit));
+        assert!(pending_rx.await.is_err());
+        assert_eq!(client.pending_command_count().await, 0);
+        {
+            let shutdown = client.shutdown.lock().await;
+            assert!(shutdown.reader.is_none() && shutdown.keepalive.is_none());
+        }
+        assert!(inspect.ws_tx.lock().await.is_none());
+        assert!(inspect.send_raw("{}".into()).await.is_err());
+        assert!(client
+            .quiesce_private_transport(&permit)
+            .await
+            .unwrap()
+            .matches(&client, &permit));
+        assert!(
+            client.public_lease().is_err(),
+            "transport closure never unlocks privacy"
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert!(client
+            .send_command_inner("Runtime.evaluate", None, None, Duration::from_millis(10))
+            .await
+            .is_err());
+        assert_eq!(client.pending_command_count().await, 0);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn private_quiescence_cancellation_seals_queued_writer_and_can_finish_cleanup() {
+        let (client, peer) = idle_private_peer().await;
+        let permit = client.begin_private_interval(&approved_target()).unwrap();
+        let mut inspect = client.inspect_handle();
+        // Isolate transport sealing from the independent observer-epoch guard.
+        // This weakening exists only in the synthetic fixture.
+        inspect.privacy_gate = None;
+        inspect.privacy_observer = None;
+        let sink = Arc::clone(&client.ws_tx);
+        let held = sink.lock().await;
+        let queued =
+            tokio::spawn(
+                async move { inspect.send_raw("SYNTHETIC_PRIVATE_SENTINEL".into()).await },
+            );
+        tokio::task::yield_now().await;
+        assert!(tokio::time::timeout(
+            Duration::from_millis(20),
+            client.quiesce_private_transport(&permit)
+        )
+        .await
+        .is_err());
+        assert!(client
+            .transport_sealed
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert!(client.public_lease().is_err());
+        drop(held);
+        assert_eq!(queued.await.unwrap(), Err("cdp_transport_closed".into()));
+        assert!(client
+            .quiesce_private_transport(&permit)
+            .await
+            .unwrap()
+            .matches(&client, &permit));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn private_quiescence_wrong_permit_cannot_seal_another_client() {
+        let (client, peer) = idle_private_peer().await;
+        let (other, other_peer) = idle_private_peer().await;
+        let permit = client.begin_private_interval(&approved_target()).unwrap();
+        assert!(matches!(
+            other.quiesce_private_transport(&permit).await,
+            Err("private_permit_mismatch")
+        ));
+        assert!(!other
+            .transport_sealed
+            .load(std::sync::atomic::Ordering::SeqCst));
+        assert!(other.ws_tx.lock().await.is_some());
+        let proof = client.quiesce_private_transport(&permit).await.unwrap();
+        assert!(!proof.matches(&other, &permit));
+        let other_permit = other.begin_private_interval(&approved_target()).unwrap();
+        other
+            .quiesce_private_transport(&other_permit)
+            .await
+            .unwrap();
+        for peer in [peer, other_peer] {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), peer)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn private_quiescence_old_proof_cannot_authorize_new_epoch() {
+        let (client, peer) = idle_private_peer().await;
+        let mut permit = client.begin_private_interval(&approved_target()).unwrap();
+        let proof = client.quiesce_private_transport(&permit).await.unwrap();
+        // Storage-only test transition, not a production cleanup authorization.
+        client
+            .privacy_gate
+            .as_ref()
+            .unwrap()
+            .finish_private(&mut permit)
+            .unwrap();
+        let next = client.begin_private_interval(&approved_target()).unwrap();
+        assert!(!proof.matches(&client, &next));
+        assert!(matches!(
+            client.quiesce_private_transport(&next).await,
+            Err("private_shutdown_scope_mismatch")
+        ));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn private_quiescence_cancellation_during_join_retains_completion_evidence() {
+        let (client, peer) = idle_private_peer().await;
+        let permit = client.begin_private_interval(&approved_target()).unwrap();
+        let old = client.shutdown.lock().await.keepalive.take().unwrap();
+        old.abort();
+        let _ = old.await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        // A started blocking worker cannot be aborted. This fixture forces an
+        // observable join wait without blocking the async runtime thread.
+        client.shutdown.lock().await.keepalive = Some(tokio::task::spawn_blocking(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+        }));
+        started_rx.await.unwrap();
+        assert!(tokio::time::timeout(
+            Duration::from_millis(20),
+            client.quiesce_private_transport(&permit)
+        )
+        .await
+        .is_err());
+        assert!(client.shutdown.lock().await.keepalive.is_some());
+        assert!(client.ws_tx.lock().await.is_none());
+        assert!(client.public_lease().is_err());
+        release_tx.send(()).unwrap();
+        assert!(client
+            .quiesce_private_transport(&permit)
+            .await
+            .unwrap()
+            .matches(&client, &permit));
+        assert!(client.shutdown.lock().await.keepalive.is_none());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn private_quiescence_worker_panic_never_becomes_success_on_retry() {
+        let (client, peer) = idle_private_peer().await;
+        let permit = client.begin_private_interval(&approved_target()).unwrap();
+        let old = client.shutdown.lock().await.keepalive.take().unwrap();
+        old.abort();
+        let _ = old.await;
+        client.shutdown.lock().await.keepalive = Some(tokio::spawn(async {
+            panic!("synthetic worker failure");
+        }));
+        while !client
+            .shutdown
+            .lock()
+            .await
+            .keepalive
+            .as_ref()
+            .unwrap()
+            .is_finished()
+        {
+            tokio::task::yield_now().await;
+        }
+        for _ in 0..2 {
+            assert!(matches!(
+                client.quiesce_private_transport(&permit).await,
+                Err("private_transport_join_failed")
+            ));
+        }
+        assert!(client.public_lease().is_err());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn private_quiescence_cancels_live_pending_reply_without_publication() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let (late_tx, late_rx) = tokio::sync::oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            let message = ws.next().await.unwrap().unwrap();
+            let command: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+            assert_eq!(command["method"], "Target.getTargetInfo");
+            seen_tx.send(()).unwrap();
+            late_rx.await.unwrap();
+            let _ = ws
+                .send(Message::Text(
+                    json!({"id":command["id"],"result":{
+                "targetInfo":{"targetId":"retained","type":"page"},
+                "sentinel":"SYNTHETIC_PRIVATE_DELAYED"}})
+                    .to_string(),
+                ))
+                .await;
+        });
+        let client = Arc::new(CdpClient::connect(&endpoint).await.unwrap());
+        let permit = Arc::new(client.begin_private_interval(&approved_target()).unwrap());
+        let mut raw = client.subscribe_raw();
+        let waiting = {
+            let client = Arc::clone(&client);
+            let permit = Arc::clone(&permit);
+            tokio::spawn(async move {
+                client
+                    .send_private_command(
+                        &permit,
+                        "Target.getTargetInfo",
+                        Some(json!({"targetId":"retained"})),
+                        None,
+                        Duration::from_secs(3),
+                    )
+                    .await
+            })
+        };
+        seen_rx.await.unwrap();
+        assert_eq!(client.pending_command_count().await, 1);
+        let (first, second) = tokio::join!(
+            client.quiesce_private_transport(&permit),
+            client.quiesce_private_transport(&permit)
+        );
+        assert!(first.unwrap().matches(&client, &permit));
+        assert!(second.unwrap().matches(&client, &permit));
+        assert!(matches!(
+            waiting.await.unwrap(),
+            Err("private_cdp_operation_failed")
+        ));
+        late_tx.send(()).unwrap();
+        peer.await.unwrap();
+        assert!(raw.try_recv().is_err());
+        assert_eq!(client.pending_command_count().await, 0);
+        assert!(client.public_lease().is_err());
+    }
+
+    fn approved_target() -> crate::native::private_identity::ValidatedPrivateTarget {
+        use crate::native::private_identity::{validate_private_target, LivePrivateIdentity};
+        let handle = json!({"profileId":"sam","browserId":"browser","sessionName":"default","targetId":"retained","tabId":"tab","url":"https://secure.login.gov/","leaseId":"default","leaseState":"exclusive","leaseHeartbeatExpected":true,"ownerSessionId":"default","valid":true,"staleReason":null});
+        validate_private_target(
+            &handle,
+            &handle,
+            &LivePrivateIdentity {
+                profile_id: "sam",
+                browser_id: "browser",
+                session_name: "default",
+                target_id: "retained",
+                url: "https://secure.login.gov/",
+                ready: true,
+            },
+            "https://secure.login.gov",
+            "https://secure.login.gov/",
+        )
+        .unwrap()
+    }
 
     #[tokio::test]
     async fn short_deadline_times_out_without_blocking_the_next_command() {
@@ -605,6 +1488,12 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(client.pending_command_count().await, 0);
 
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(
+            client.begin_private_interval(&approved_target()).is_err(),
+            "cancelled Chrome work must block private admission"
+        );
+
         server.abort();
     }
 
@@ -628,5 +1517,420 @@ mod tests {
             closed.is_ok(),
             "dropping a CDP client must stop its reader and keepalive tasks"
         );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn private_scope_rejects_sibling_target_before_mutation() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let wire = ws.next().await.unwrap().unwrap();
+            let probe: Value = serde_json::from_str(wire.to_text().unwrap()).unwrap();
+            assert_eq!(probe["method"], "Target.getTargetInfo");
+            assert_eq!(probe["sessionId"], "foreign-session");
+            assert!(probe.get("params").is_none_or(Value::is_null));
+            ws.send(Message::Text(json!({"id":probe["id"],"result":{"targetInfo":{"targetId":"foreign","type":"page"}}}).to_string())).await.unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), ws.next())
+                    .await
+                    .is_err(),
+                "no mutation or second target attach may reach Chrome"
+            );
+        });
+        let client = CdpClient::connect(&endpoint).await.unwrap();
+        let mut permit = client.begin_private_interval(&approved_target()).unwrap();
+        assert_eq!(
+            client
+                .send_private_command(
+                    &permit,
+                    "Runtime.evaluate",
+                    Some(json!({"expression":"PRIVATE_SENTINEL"})),
+                    Some("foreign-session"),
+                    Duration::from_secs(1)
+                )
+                .await
+                .err(),
+            Some("private_scope_mismatch")
+        );
+        assert_eq!(
+            client
+                .send_private_command(
+                    &permit,
+                    "Target.attachToTarget",
+                    Some(json!({"targetId":"foreign","flatten":true})),
+                    None,
+                    Duration::from_secs(1)
+                )
+                .await
+                .err(),
+            Some("private_scope_mismatch")
+        );
+        assert_eq!(
+            client
+                .sanitize_private_page(&mut permit, "foreign", "foreign-session")
+                .await
+                .err(),
+            Some("private_cleanup_identity_mismatch")
+        );
+        assert!(client.public_lease().is_err());
+        server.await.unwrap();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn timed_out_private_reply_never_becomes_public_after_cleanup() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let (late_tx, late_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let wire = ws.next().await.unwrap().unwrap();
+            let probe: Value = serde_json::from_str(wire.to_text().unwrap()).unwrap();
+            assert_eq!(probe["method"], "Target.getTargetInfo");
+            ws.send(Message::Text(json!({"id":probe["id"],"result":{"targetInfo":{"targetId":"retained","type":"page"}}}).to_string())).await.unwrap();
+            let wire = ws.next().await.unwrap().unwrap();
+            let command: Value = serde_json::from_str(wire.to_text().unwrap()).unwrap();
+            assert_eq!(command["method"], "Runtime.evaluate");
+            late_rx.await.unwrap();
+            ws.send(Message::Text(
+                json!({"id":command["id"],"result":{"value":"LATE_PRIVATE_SENTINEL"}}).to_string(),
+            ))
+            .await
+            .unwrap();
+        });
+        let client = CdpClient::connect(&endpoint).await.unwrap();
+        let mut raw = client.subscribe_raw();
+        let mut permit = client.begin_private_interval(&approved_target()).unwrap();
+        assert_eq!(
+            client
+                .send_private_command(
+                    &permit,
+                    "Runtime.evaluate",
+                    None,
+                    Some("page"),
+                    Duration::from_millis(100)
+                )
+                .await
+                .err(),
+            Some("private_cdp_operation_failed")
+        );
+        assert_eq!(client.pending_command_count().await, 0);
+        // Test the observer defense even if a future coordinator unlocks.
+        client
+            .privacy_gate
+            .as_ref()
+            .unwrap()
+            .finish_private(&mut permit)
+            .unwrap();
+        late_tx.send(()).unwrap();
+        server.await.unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(30), raw.recv())
+            .await
+            .is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn old_and_private_sockets_stay_quarantined_after_epoch_cleanup() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let (emit_tx, emit_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().await.unwrap();
+                sockets.push(tokio_tungstenite::accept_async(stream).await.unwrap());
+            }
+            emit_rx.await.unwrap();
+            // These bytes were never observed during the private interval.
+            // Receipt-time lock checks alone used to make them public now.
+            for ws in &mut sockets {
+                for message in [
+                    json!({"id":1,"result":{"value":"DELAYED_PRIVATE_SENTINEL"}}),
+                    json!({"method":"Runtime.consoleAPICalled","params":{"value":"DELAYED_PRIVATE_SENTINEL"}}),
+                    json!({"method":"Page.screencastFrame","params":{"data":"DELAYED_PRIVATE_SENTINEL"}}),
+                ] {
+                    ws.send(Message::Text(message.to_string())).await.unwrap();
+                }
+            }
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut fresh = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let wire = fresh.next().await.unwrap().unwrap();
+            let cmd: Value = serde_json::from_str(wire.to_text().unwrap()).unwrap();
+            fresh
+                .send(Message::Text(
+                    json!({"id":cmd["id"],"result":{"public":true}}).to_string(),
+                ))
+                .await
+                .unwrap();
+        });
+        let first = CdpClient::connect(&endpoint).await.unwrap();
+        let second = CdpClient::connect(&endpoint).await.unwrap();
+        let inspect = second.inspect_handle();
+        let mut raw = first.subscribe_raw();
+        let mut events = second.subscribe();
+        let mut permit = first.begin_private_interval(&approved_target()).unwrap();
+        let recovery = CdpClient::connect_private_recovery(&endpoint, &permit)
+            .await
+            .unwrap();
+        let mut private_raw = recovery.subscribe_raw();
+        // Storage-only test transition, not production cleanup authorization.
+        first
+            .privacy_gate
+            .as_ref()
+            .unwrap()
+            .finish_private(&mut permit)
+            .unwrap();
+        emit_tx.send(()).unwrap();
+        for old in [&first, &second, &recovery] {
+            assert!(old.public_lease().is_err());
+            assert!(old
+                .send_command_no_params("Runtime.evaluate", None)
+                .await
+                .is_err());
+        }
+        assert!(inspect.send_raw("{}".into()).await.is_err());
+        let fresh = CdpClient::connect(&endpoint).await.unwrap();
+        assert_eq!(
+            fresh
+                .send_command_no_params("Target.getTargets", None)
+                .await
+                .unwrap(),
+            json!({"public":true})
+        );
+        server.await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(raw.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+        assert!(private_raw.try_recv().is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn private_recovery_reconnects_only_to_bound_endpoint_without_public_output() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let first = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut second = tokio_tungstenite::accept_async(stream).await.unwrap();
+            for failed in [false, true] {
+                let probe = second.next().await.unwrap().unwrap();
+                let probe: Value = serde_json::from_str(probe.to_text().unwrap()).unwrap();
+                assert_eq!(probe["method"], "Target.getTargetInfo");
+                assert!(probe.get("params").is_none_or(Value::is_null));
+                second.send(Message::Text(json!({"id":probe["id"],"result":{"targetInfo":{"targetId":"retained","type":"page"}}}).to_string())).await.unwrap();
+                let wire = second.next().await.unwrap().unwrap();
+                let command: Value = serde_json::from_str(wire.to_text().unwrap()).unwrap();
+                assert_eq!(command["method"], "Runtime.evaluate");
+                second.send(Message::Text(json!({"method":"Runtime.consoleAPICalled","params":{"value":"PRIVATE_SENTINEL"}}).to_string())).await.unwrap();
+                let response = if failed {
+                    json!({"id":command["id"],"error":{"code":-1,"message":"PRIVATE_SENTINEL"}})
+                } else {
+                    json!({"id":command["id"],"result":{"value":"PRIVATE_SENTINEL"}})
+                };
+                second
+                    .send(Message::Text(response.to_string()))
+                    .await
+                    .unwrap();
+            }
+            drop(first);
+        });
+        let client = CdpClient::connect(&endpoint).await.unwrap();
+        let permit = client.begin_private_interval(&approved_target()).unwrap();
+        assert!(
+            CdpClient::connect_private_recovery("ws://127.0.0.1:1", &permit)
+                .await
+                .is_err()
+        );
+        let recovered = CdpClient::connect_private_recovery(&endpoint, &permit)
+            .await
+            .unwrap();
+        let mut raw = recovered.subscribe_raw();
+        let mut events = recovered.subscribe();
+        let value = recovered
+            .send_private_command(
+                &permit,
+                "Runtime.evaluate",
+                None,
+                Some("page"),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap()
+            .into_value();
+        assert_eq!(value["value"], "PRIVATE_SENTINEL");
+        let error = recovered
+            .send_private_command(
+                &permit,
+                "Runtime.evaluate",
+                None,
+                Some("page"),
+                Duration::from_secs(1),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error, "private_cdp_operation_failed");
+        server.await.unwrap();
+        assert!(raw.try_recv().is_err());
+        assert!(events.try_recv().is_err());
+        assert!(recovered.public_lease().is_err());
+        drop(permit);
+        assert!(CdpClient::connect(&endpoint).await.is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn private_cleanup_requires_exact_target_and_verified_empty_document() {
+        for failure in ["none", "target", "dom", "final_url"] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let steps = [
+                    (
+                        "Target.getTargetInfo",
+                        json!({"targetInfo":{"targetId":if failure == "target" {"wrong"} else {"retained"},"type":"page","url":"https://secure.login.gov/"}}),
+                    ),
+                    ("Page.stopLoading", json!({})),
+                    ("Page.navigate", json!({"frameId":"main"})),
+                    (
+                        "Page.getFrameTree",
+                        json!({"frameTree":{"frame":{"id":"main","url":"about:blank"}}}),
+                    ),
+                    ("Page.createIsolatedWorld", json!({"executionContextId":71})),
+                    (
+                        "Runtime.evaluate",
+                        json!({"result":{"type":"boolean","value":failure != "dom"}}),
+                    ),
+                    (
+                        "Target.getTargetInfo",
+                        json!({"targetInfo":{"targetId":"retained","type":"page","url":if failure == "final_url" {"https://secure.login.gov/"} else {"about:blank"}}}),
+                    ),
+                ];
+                for (method, result) in steps {
+                    if method != "Target.getTargetInfo" {
+                        let probe = ws.next().await.unwrap().unwrap();
+                        let probe: Value = serde_json::from_str(probe.to_text().unwrap()).unwrap();
+                        assert_eq!(probe["method"], "Target.getTargetInfo");
+                        assert_eq!(probe["sessionId"], "retained-session");
+                        assert!(probe.get("params").is_none_or(Value::is_null));
+                        ws.send(Message::Text(json!({"id":probe["id"],"result":{"targetInfo":{"targetId":"retained","type":"page"}}}).to_string())).await.unwrap();
+                    }
+                    let wire = ws.next().await.unwrap().unwrap();
+                    let cmd: Value = serde_json::from_str(wire.to_text().unwrap()).unwrap();
+                    assert_eq!(cmd["method"], method);
+                    assert_eq!(cmd["sessionId"], "retained-session");
+                    if method == "Page.navigate" {
+                        assert_eq!(cmd["params"]["url"], "about:blank");
+                    }
+                    if method == "Runtime.evaluate" {
+                        assert_eq!(cmd["params"]["contextId"], 71);
+                    }
+                    ws.send(Message::Text(
+                        json!({"id":cmd["id"],"result":result}).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                    if failure == "target" || (failure == "dom" && method == "Runtime.evaluate") {
+                        break;
+                    }
+                }
+            });
+            let client = CdpClient::connect(&endpoint).await.unwrap();
+            let mut permit = client.begin_private_interval(&approved_target()).unwrap();
+            let result = client
+                .sanitize_private_page(&mut permit, "retained", "retained-session")
+                .await;
+            assert_eq!(result.is_ok(), failure == "none", "{failure}");
+            assert!(
+                client.public_lease().is_err(),
+                "page cleanup alone must not unlock: {failure}"
+            );
+            if result.is_ok() {
+                let proof = client.quiesce_private_transport(&permit).await.unwrap();
+                assert!(proof.matches(&client, &permit));
+                assert!(
+                    client.public_lease().is_err(),
+                    "sanitation plus closure is not broker detach"
+                );
+            } else {
+                assert!(!client
+                    .transport_sealed
+                    .load(std::sync::atomic::Ordering::SeqCst));
+            }
+            server.await.unwrap();
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn private_interval_suppresses_raw_events_and_refuses_commands_and_reconnect() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel();
+        let (sent_tx, sent_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            go_rx.await.unwrap();
+            for message in [
+                json!({"method":"Runtime.consoleAPICalled","params":{"sentinel":"SYNTHETIC_PRIVATE_SENTINEL"}}),
+                json!({"method":"Page.screencastFrame","params":{"data":"SYNTHETIC_PRIVATE_SENTINEL"}}),
+                json!({"id":987654,"result":{"sentinel":"SYNTHETIC_PRIVATE_SENTINEL"}}),
+            ] {
+                websocket
+                    .send(Message::Text(message.to_string()))
+                    .await
+                    .unwrap();
+            }
+            sent_tx.send(()).unwrap();
+            // No public command may reach the peer while the private lock exists.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), websocket.next())
+                    .await
+                    .is_err()
+            );
+        });
+        let endpoint = format!("ws://{address}");
+        let client = CdpClient::connect(&endpoint).await.unwrap();
+        let mut raw = client.subscribe_raw();
+        let mut events = client.subscribe();
+        let permit = client.begin_private_interval(&approved_target()).unwrap();
+        go_tx.send(()).unwrap();
+        sent_rx.await.unwrap();
+        assert!(client
+            .send_command_no_params("Runtime.evaluate", None)
+            .await
+            .is_err());
+        assert!(client
+            .send_raw("SYNTHETIC_PRIVATE_SENTINEL".into())
+            .await
+            .is_err());
+        assert!(client
+            .inspect_handle()
+            .send_raw("SYNTHETIC_PRIVATE_SENTINEL".into())
+            .await
+            .is_err());
+        assert!(CdpClient::connect(&endpoint).await.is_err());
+        assert!(tokio::time::timeout(Duration::from_millis(20), raw.recv())
+            .await
+            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), events.recv())
+                .await
+                .is_err()
+        );
+        drop(permit);
+        assert!(client.public_lease().is_err());
+        assert!(CdpClient::connect(&endpoint).await.is_err());
+        server.await.unwrap();
     }
 }

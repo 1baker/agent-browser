@@ -438,6 +438,25 @@ fn page_resource_content_type(resource: &Value) -> Option<String> {
 }
 
 impl BrowserManager {
+    #[cfg(test)]
+    pub(crate) fn private_journey_test_fixture(
+        client: Arc<CdpClient>,
+        endpoint: String,
+        page: PageInfo,
+    ) -> Self {
+        Self {
+            client,
+            browser_process: None,
+            ws_url: endpoint,
+            pages: vec![page],
+            active_page_index: 0,
+            default_timeout_ms: 3_000,
+            download_path: None,
+            ignore_https_errors: false,
+            visited_origins: HashSet::new(),
+        }
+    }
+
     pub async fn launch(options: LaunchOptions, engine: Option<&str>) -> Result<Self, String> {
         let engine = engine.unwrap_or("chrome");
 

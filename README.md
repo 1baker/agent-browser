@@ -4062,6 +4062,45 @@ Optional configuration via environment variables:
 
 When enabled, agent-browser connects to an AgentCore cloud browser session instead of launching a local browser. All commands work identically.
 
+## Private credential boundary (implementation checkpoint)
+
+Linux/macOS CDP connections use cooperative endpoint-scoped privacy receipts
+under the configured agent-browser home's `private-gates` directory. Ordinary
+commands record pending execution before dispatch; only a matching response
+clears that receipt. Cancellation or process death cannot silently clear it.
+An admitted private lock blocks command, raw/event, viewer replay and input
+paths and remains locked after restart. Inspect replacement now waits for its
+proxy connection tasks to stop. This is not a shipped private-login workflow.
+
+Runtime homes must be owned, non-symlinked and not writable by other users;
+the dedicated gate directories require mode 0700. Userinfo WebSocket URLs and
+unsafe filesystem layouts fail closed on this path. Other platforms retain
+ordinary CDP support without private admission. Do not delete receipts to force
+recovery. Internal permit-bound reconnect and page-cleanup primitives are
+source-tested building blocks, not an enabled credential executor. Page cleanup
+deliberately keeps observation locked until the live coordinator is integrated.
+Old connections remain revoked across private epochs, recovery connections never
+become public observers, and private dispatch requires a durably bound target
+with a matching live CDP session. Alias/tunnel authority binding,
+fresh target validation at execution and private secret ingress/egress remain
+required before live credential automation. External RDP/OS viewers are outside
+this cooperative boundary. See `docs/dev/plans/0130-2026-09-08-private-credential-broker.md`.
+
+### Local Slack token bootstrap (source checkout)
+
+Run `python3 scripts/setup-private-slack.py` in your own existing terminal.
+The Linux/WSL helper reads a bot token with hidden terminal input and checks only
+Slack `auth.test`; it never reads messages. It requires the approved Cochran Group
+workspace containing `#saber-general-business`, plus `groups:history`, allowing
+only the additionally approved `canvases:read` and `canvases:write` scopes.
+It creates an owner-only connection file under
+`~/.config/agent-browser/private-slack/` without replacing existing credentials.
+This bootstrap token file is OS-protected plaintext, not the encrypted operation
+store, and is not protection from your account owner or root. Do not copy it into
+reports, chat, source control or ordinary broker requests. Use `--status` for a
+metadata-only local check. Token setup is not proof of channel membership, approved
+message access, private executor installation or SAM.gov authentication.
+
 ## License
 
 Apache-2.0

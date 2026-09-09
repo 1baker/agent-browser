@@ -33,6 +33,25 @@ pub mod network;
 #[allow(dead_code)]
 pub mod policy;
 #[allow(dead_code)]
+pub mod privacy_gate;
+#[allow(dead_code)]
+pub mod private_attachment;
+#[allow(dead_code)]
+pub mod private_broker;
+#[allow(dead_code)]
+pub mod private_execution;
+#[cfg(unix)]
+#[allow(dead_code)]
+pub mod private_handoff;
+#[allow(dead_code)]
+pub mod private_identity;
+#[allow(dead_code)]
+pub mod private_journey;
+#[allow(dead_code)]
+pub mod private_operation;
+#[allow(dead_code)]
+pub mod private_secret_store;
+#[allow(dead_code)]
 pub mod providers;
 #[allow(dead_code)]
 pub mod publication_status;

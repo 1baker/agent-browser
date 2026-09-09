@@ -502,6 +502,10 @@ async fn run_socket_server(
     Ok(())
 }
 
+fn successful_exit_response(exits_daemon: bool, response: &Value) -> bool {
+    exits_daemon && response.get("success").and_then(Value::as_bool) == Some(true)
+}
+
 async fn handle_connection<S>(
     stream: S,
     control_plane: ControlPlaneHandle,
@@ -604,7 +608,7 @@ async fn handle_connection<S>(
                     break;
                 }
 
-                if exits_daemon {
+                if successful_exit_response(exits_daemon, &response) {
                     if let Some(ref path) = stream_file_cleanup {
                         let _ = fs::remove_file(path);
                     }
@@ -686,6 +690,23 @@ fn get_port_for_session(session: &str) -> u16 {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+
+    #[test]
+    fn denied_close_or_handoff_does_not_exit_daemon() {
+        assert!(!successful_exit_response(
+            true,
+            &serde_json::json!({"success": false, "error": "privacy_gate_locked"})
+        ));
+        assert!(!successful_exit_response(true, &serde_json::json!({})));
+        assert!(!successful_exit_response(
+            false,
+            &serde_json::json!({"success": true})
+        ));
+        assert!(successful_exit_response(
+            true,
+            &serde_json::json!({"success": true})
+        ));
+    }
 
     #[tokio::test]
     async fn bounded_shutdown_does_not_wait_forever() {

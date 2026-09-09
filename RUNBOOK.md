@@ -4,6 +4,222 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## 2026-09-09 | Push-protection fixture remediation
+
+GitHub rejected the first private-broker checkpoint because three explicitly
+synthetic test strings nevertheless matched Slack's token format. User approved
+replacing the fixtures and amending the unpublished commit. Replaced them with
+inert non-token placeholders in the three private Python test files; tests mock
+only token acceptance for their offline transport, storage and PTY scenarios.
+Production validation is unchanged. A separate unmocked regression proves the
+placeholder and malformed values are rejected before network access.
+
+Primary reran bootstrap, discovery and cross-repo adapter suites: 13, 17 and 6
+passed. The PTY echo-suppression test still runs against a real synthetic terminal.
+Only tests and this receipt changed since the prior validated source checkpoint;
+no Rust or installed runtime changed. Preserve the prior Rust validation receipt
+rather than implying a fresh Rust run. No secret-scanning exemption, allow URL,
+force push or repository-rule change is authorized or used. Amend only the local
+unpublished checkpoint, then retry the existing personal branch. Other dirty
+RDP/installer work remains excluded. This bounded test-only correction stayed
+local because delegation would duplicate its short validation path.
+
+## 2026-09-09 | Private broker publication checkpoint
+
+User requested personal GitHub publication and a next-step recommendation.
+Selected `1baker/agent-browser`, existing
+`agent/wsl-windows-chromium-paths` branch, through the verified personal helper
+route. Staged only Plan 0130 private broker code, prerequisites, local Slack
+helpers and matching documentation. RDP, installer and retained-URL changes
+remain unstaged and preserved. This is a disabled-runtime source checkpoint,
+not a release, installation or enabled renewal.
+
+Validated an index-only exported snapshot (source tree
+`a52ca22bdf9709c79daa358874a1fc7ce529dd69`, before this documentation receipt
+and next-slice note): 1,211 native tests passed, 63 ignored; all six private
+isolated fixtures explicitly passed separately. The difference from the prior
+1,212 count is the excluded unrelated retained-URL test. Rust format and
+clippy with warnings denied and native build passed. Python bootstrap/discovery/adapter suites
+passed 12, 17 and 6 tests respectively; the cross-repo adapter check uses the
+current local LitScout checkout, not a separately published dependency pin.
+The isolated MCP absent-retained-route smoke also passed without creating a
+daemon, browser or service job. ESLint and service-client typecheck passed in
+the original checkout. Bounded
+credential-pattern scan of 30 staged files found three explicitly synthetic
+Slack token fixtures and no real token literal matching those patterns; this
+is not a claim of exhaustive secret scanning. Audit had no problems but remains
+`applicable: false`. No installed runtime or live browser was touched.
+
+Read-only delegate `/root/next_renewal_slice` returned the missing post-cleanup
+reconciliation seam; primary verified its source references and recorded the
+bounded acceptance checks at the top of Plan 0130. Implementation is a future
+slice. Durable crash recovery and guarded consumer delivery remain required
+before live renewal. No automatic CI babysitting or additional GitHub writes
+are part of this publication request.
+
+## 2026-09-09 | Plan 0130 private socket-to-worker handoff
+
+Added `cli/src/native/private_handoff.rs` and
+`cli/src/native/control_plane_private_tests.rs`; integrated the separate private
+worker message in `cli/src/native/control_plane.rs`, registered modules in
+`cli/src/native/mod.rs`, and expanded `cli/src/native/private_journey.rs`
+validation visibility and synthetic full-sequence tests. Updated Plan 0130 and
+this Runbook. No public command, installed listener or approval producer exists.
+
+Private ingress authenticates one bounded same-user connected Unix frame and
+binds four operations to independently supplied consent, account, retained
+identity and destinations before encrypted staging. The queue carries opaque
+references, not credentials or ordinary service-job JSON. Expiry, queue failure
+and cancellation fail closed without replay. Success returns only the internal
+pending-reconciliation object after sanitation, owned detach and transport
+closure. It does not release privacy or deliver/install the key.
+
+`/root/private_integration_review` implemented the ingress and queue test files
+only. Primary reviewed both and independently ran their tests. Independent
+`/root/private_owned_attachment_review` identified active caller cancellation as
+blocking; primary accepted and fixed it, and closed-world source review found
+that finding resolved without a blocking regression. The initial cancellation
+fixture failed because it expected lowercase `faulted` instead of the existing
+`Faulted` status spelling; corrected and rerun successfully. No secret-bearing
+type gained Debug or public serialization to satisfy a test assertion.
+
+Primary validation: 62 focused private tests passed (three ignored). Explicit
+isolated `native::private_journey::tests::` ignored run: three passed, including
+authenticated socket-to-worker completion and cancellation after login with no
+backup/renew/read dispatch. Explicit isolated
+`native::control_plane::private_tests::` ignored run: three passed, covering full
+and closed queues, expiry while queued and cancellation before dequeue, all
+without ordinary job persistence. All tests use synthetic data and CDP peers.
+
+Broader isolated native suite: 1,212 passed, 63 ignored. The six isolated-only
+private fixtures above were explicitly run separately; other ignored live E2E
+tests were not run. Service-client typecheck, ESLint, Rust format, clippy with
+warnings denied, native build, docs build and whitespace check passed.
+Docs retain the pre-existing multiple-lockfile warning. Planning audit reported
+no problems but `applicable: false`, not full contract coverage. CodeGraph was
+refreshed after source integration.
+
+Source SHA-256: `private_handoff.rs`
+`8a61b3e5d67176fcc21e6e8726a4a5dad5d8581bc0e53d551e14c697c0ab9c1f`;
+`control_plane.rs`
+`453f52ced08b9946a06541b134c79491657ce4d694a1936943192a68c7ea5935`;
+`control_plane_private_tests.rs`
+`8fbce1bc83806cc810602032f93095be59a6cb63b9be86a6c46d8d321ea6602b`;
+`private_journey.rs`
+`5134f3c701a7ad323e7130cc2d211106c3691d5fcf67703257bd93b516f666cd`.
+
+No real credentials, live browser operations, runtime installation, ChatGPT
+submissions or GitHub writes. Dirty work preserved. Next: bounded recovery and
+daemon/broker reconciliation, then independently authorized ingress deployment
+and guarded LitScout key installation with a real consumer probe. Renewal stays
+disabled until those gates are verified; internal tests are not live acceptance.
+
+## 2026-09-09 | Plan 0130 owned attachment integration
+
+Added `native/private_attachment.rs` and routed private execution, transitions
+and sanitation through its dedicated original-target session. Cleanup now
+detaches the owned session before transport closure. It never treats the generic
+borrowed-session `cdp_detach` acknowledgment as private cleanup proof. Existing
+public attach/detach behavior is unchanged.
+
+Changed `native/mod.rs`, `private_execution.rs`, `private_broker.rs`,
+`private_journey.rs` and the internal permit check in `cdp/client.rs`.
+Test-only constructors in `actions.rs` and `browser.rs` support an isolated
+full-sequence fixture without launching Chrome or changing runtime authority.
+The fixture refuses to run outside the repository isolated runner.
+
+`/root/private_integration_review` implemented only the attachment module and
+reported four passing tests. Primary inspected its code and independently ran
+58 focused private tests (one ignored), then explicitly ran the ignored full
+production-path synthetic sequence: one passed. Fresh closed-world evaluator
+`/root/private_owned_attachment_review` found no blocking issue by source review.
+
+Primary final gates: isolated native suite 1,208 passed, 58 ignored; Rust format
+and clippy with warnings denied passed; service-client typecheck, ESLint, native
+build, docs build and whitespace check passed. The ignored full-sequence fixture
+was run explicitly and passed separately. Docs retain the existing multiple-
+lockfile warning. Planning audit reported no problems but `applicable: false`,
+not full contract coverage. CodeGraph was refreshed after the integration.
+
+Source SHA-256: `private_attachment.rs`
+`c9177df70f8aa790b7c86b4da45853836118033bc9e90da171577a371dec2a7e`;
+`private_journey.rs`
+`db3359b6f403e7120b717b06f99dc2181622b394f25ccafc22d9c2e0de8d0bca`.
+
+No live credentials, retained-browser operations, runtime installation or GitHub
+writes. The remaining ingress, daemon-state reconciliation and consumer-delivery
+gates are explicit in Plan 0130; this is not enabled renewal or a Pro verdict.
+
+## 2026-09-09 | Plan 0130 shared transport cleanup
+
+Updated `native/cdp/client.rs`, `native/privacy_gate.rs` and
+`native/private_journey.rs`: shared terminal sink state, cancellation-safe
+worker joins, exact epoch/client closure proof, and an internal sanitation-to-
+transport-closure handoff that still requires broker detach. Seven new synthetic
+transport regressions cover retained handles, queued writes, cancellation,
+concurrent cleanup, delayed replies, worker panic and wrong authority; the
+existing sanitation fixture also exercises transport closure without unlocking.
+
+Independent read-only review `/root/private_integration_review` completed,
+including the `Arc<CdpClient>` revision; no blocking issue found in this slice.
+Primary ran tests. No production ingress, broker detach, privacy release, key
+installation or live renewal is claimed. Plan 0130 records remaining deployment
+gates. No runtime installation, private browser mutation or GitHub writes.
+
+Validation detail: 16 focused CDP-client tests passed, including seven new
+transport cases. Rust format, clippy with warnings denied, service-client
+typecheck, ESLint, native build and docs build passed. Docs retain the existing
+multiple-lockfile warning. Planning audit returned no problems but
+`applicable: false`; CodeGraph was refreshed and whitespace check passed.
+
+The initial non-isolated wider run failed the existing renderer-deadline and
+inspect-server shutdown checks and was terminated. Both checks passed in fresh
+isolated environments. Persistent host/port-scoped privacy-gate contamination
+is a plausible explanation, not a proven root cause. Final wider evidence uses
+the repository's isolated runner: 1,204 passed, 57 ignored, zero failures. The
+failed/stopped run is not accepted as a pass. No live privacy gate was cleared
+to make tests pass.
+
+Source SHA-256: `cdp/client.rs`
+`b165e132819f1f04395982ff53cd884b4f6f85fb087dd29681dcc32a53720d95`;
+`privacy_gate.rs`
+`581e4bd192ab462e97f421b25ddb116166260a7f836ec476a44670f3257f40b6`;
+`private_journey.rs`
+`1904ea1b51a4c7965f620c02e05384049e972d512df92516a4e57121bb3094b1`.
+
+## 2026-09-09 | Plan 0130 internal ordered execution
+
+Added `cli/src/native/private_journey.rs`, registered it in `native/mod.rs`,
+and added whole-consent reservation to `private_secret_store.rs`. All four
+stages validate before admission; one private permit spans exact transitions.
+Whole-run consumption survives fresh staging and subprocess death. Completion
+remains pending cleanup, never public renewal or activation evidence.
+
+Independent read-only review `/root/private_integration_review` completed and
+its whole-consent replay finding was implemented. Closed-world review found no
+blocking issue in this disabled internal slice; primary ran validation. The
+first concurrency test expected only a consumed-receipt error and failed on
+the store's intended nonblocking busy rejection. Corrected the test to require
+exactly one winner, only either safe rejection, and subsequent consumed proof.
+
+Primary final validation: 54 focused private tests passed; 1,197 wider native
+tests passed, 57 ignored. Rust format, clippy with warnings denied, native debug
+build, service-client typecheck, ESLint, docs build and whitespace check passed.
+The initial wider run overlapped a test-binary rebuild and reported subprocess
+executable-not-found failures plus the old concurrency assertion. That run is
+not accepted evidence; the final wider run used the corrected built test binary
+without another test rebuild. Docs build retains the existing multiple-lockfile
+warning. Planning audit returned no problems but `applicable: false`, not full
+planning-contract coverage. CodeGraph is current.
+
+Source SHA-256 bindings: `private_journey.rs`
+`60b4e8489643fcd01e0e7feb5e26401787dcd7607530a9dcab033c0313f07256`;
+`private_secret_store.rs`
+`34f5d2aa0823c5be3e5ec1044afa1c2572bdc1ae64c6cf4d036b0e32cbd80a47`.
+
+No live credentials, browser actions, installation or GitHub writes. Remaining
+deployment gates and evidence limits are in Plan 0130.
+
 ## Turn 183 | 2026-08-29
 
 Scope: implement, publish, and safely migrate P126 without interrupting active
@@ -8038,3 +8254,197 @@ Scope: fix the workstation viewer blocker and finish live reconciliation.
   `AGENT_BROWSER_SMOKE_AGENT_BROWSER_CMD=/absolute/path/to/built/agent-browser node scripts/test-mcp-retained-route-unavailable.js`.
 - Concurrent installer-recovery work is preserved. This slice is source-verified,
   not installed or published; reconcile that work before the next runtime update.
+
+### Private credential broker checkpoint | 2026-09-08
+
+- Plan 0130 implements only internal encrypted staging and durable per-reference
+  admission in `cli/src/native/private_secret_store.rs`, registered by
+  `cli/src/native/mod.rs`. No private browser command or public contract is
+  exposed. The installed runtime and retained SAM/Workshop targets are untouched.
+- Primary validation: nine focused tests; final full isolated Rust run 1937
+  passed, 57 ignored; formatting, strict Clippy, debug build, ESLint, service
+  client typecheck and diff checks passed. Planning audit has no problems but is
+  not applicable. CodeGraph is synchronized. Exact source/build digests and
+  independent delegation/review receipts are in Plan 0130.
+- Independent review caught directory-enumeration errors being treated as EOF;
+  fixed with explicit errno handling and unsupported-platform rejection.
+  Concurrent independent-open and subprocess-exit tests reject reference replay.
+  This is not browser at-most-once proof or cross-reference backup-code dedup.
+- Live execution remains blocked: raw inspect children survive listener shutdown;
+  background stream/replay paths bypass command guards; cancellation and recovery
+  need a persistent shared privacy lock; existing handle validation is not full
+  live identity proof. These are accepted B1-B4 in Plan 0130, not new permission
+  requests. Do not use ordinary fill/evaluate/password-stdin for this SAM test.
+- Next engineering slice: shared identity-bound observer/input barrier with
+  cancellation/restart protection and exact-handle/origin enforcement, then
+  synthetic sentinel tests before enabling private transport and installing.
+  No Slack secrets, backup codes, API-key renewal, ChatGPT prompts, GitHub writes,
+  or runtime installation occurred. Unrelated dirty RDP-route work is preserved.
+
+### Private credential barrier continuation | 2026-09-08
+
+- Plan 0130 now implements a cooperative endpoint-scoped OS privacy barrier,
+  integrated into CDP command/observer paths, viewer replay/input, dispatcher
+  admission and attached-browser recovery. Pending command receipts are durable
+  before dispatch and survive cancellation/process death. Private locks have no
+  automatic reset. Untracked raw traffic blocks private admission as uncertain.
+- Inspect proxy connections are owned, aborted and joined during awaited
+  shutdown. A rejected close/handoff cannot exit the daemon. Pure exact-target
+  checks reject a healthy same-profile handle at a different requested URL.
+- Final isolated suite: 1964 passed, 57 ignored; formatting, strict Clippy,
+  ESLint, client typecheck, native debug and docs builds, and diff checks passed.
+  Planning audit is clean but not applicable; CodeGraph is current. Synthetic
+  viewer/CDP tests prove cached/live frame and event silence, input rejection,
+  reconnect refusal and restart-persistent locks. Plan 0130 records exact source
+  hashes, file ownership and independent review receipts.
+- Not installed or live accepted: aliases/tunnels/external clients are not
+  unified; no sanitized unlock/reconciliation or private secret transport exists;
+  the identity helper still needs fresh execution-time observations. Matching
+  CDP responses do not prove deferred page work stopped. Do not delete receipts
+  to bypass these gates. Runtime-path and userinfo-URL compatibility constraints
+  are documented in help, README, skill and security docs.
+- Next: verified retained-browser authority across alternate routes and safe
+  recovery, then private execution integration. No real Slack credential,
+  backup code, SAM renewal, ChatGPT submission, install or GitHub write. Existing
+  RDP work and retained browser sessions were preserved.
+
+### 2026-09-08: private recovery transport checkpoint, not live acceptance
+
+- Added permit-bound reconnect using the already locked store, authenticated
+  recovery epochs, fixed-label private CDP errors and isolated-world page cleanup.
+  Cleanup keeps observation locked even when the retained page is empty.
+- Independent review identified delayed private messages after unlock and
+  incomplete mutation-target binding. Both block live enablement. Alternate CDP
+  routes also still need trusted broker identity mapping. Do not delete locks,
+  replay submissions or freeze unrelated browser lanes to bypass these gaps.
+- Primary validation: 6 focused CDP tests and 1971 full Rust tests passed,
+  57 ignored; formatting, strict Clippy, ESLint, client typecheck and docs build
+  passed. Planning audit reports no problems but is not applicable. CodeGraph
+  refreshed with 482 files. Plan 0130 retains source hashes and review evidence.
+- No installation, live browser mutation, credential retrieval, SAM renewal,
+  LitScout credential update, ChatGPT prompt or GitHub write. Existing dirty
+  worktrees and retained sessions remain preserved.
+
+### 2026-09-08: private transport R1/R2 remediated, live integration pending
+
+- Old CDP observer generations now remain revoked after private cleanup,
+  including delayed responses/events not read during the private interval.
+  Recovery sockets never gain public observation. Reader, command and inspect
+  paths share the captured observer; new post-clean sockets capture a new epoch.
+- Private admission requires a validated target token and persists its target
+  and authorization digest. Recovery preserves scope. Private dispatch rejects
+  unscoped permits and probes the actual session target before mutation; a
+  sibling target cannot receive the command or authorize cleanup.
+- Independent closed-world review passed R1/R2 by source inspection. Primary
+  ran 9 CDP tests and the full suite: 1982 passed, 57 ignored. Formatting, strict
+  Clippy, ESLint and service-client typecheck passed. See Plan 0130 for receipts.
+- Live alternate-route broker binding and private executor integration remain
+  unfinished. No runtime install, live credential use, SAM renewal, LitScout key
+  change, ChatGPT prompt or GitHub write. Dirty worktrees and browsers preserved.
+
+### 2026-09-08: daemon-owned private authority preflight
+
+- `private_broker.rs` now rebuilds authority from broker records and probes the
+  already-owned CDP page session. It rejects caller-provided authority, mismatched
+  profile/session/browser/endpoint/target/URL, unhealthy or ambiguous targets,
+  and expired or malformed configured leases. Cached embedded handles are ignored.
+- This is preflight, not an enabled private executor. Revalidate under the private
+  barrier before admission; alternate-route binding, private ingress/egress and
+  replay-safe workflow coordination still gate installation and live credentials.
+- No-launch checks retained the original LitScout login.gov tab. Its URL includes
+  a request query; do not substitute the bare origin. The session has no expiry,
+  so expiry does not explain differing lease counters. No browser changes or
+  real credential operations occurred. See Plan 0130 for checkpoint evidence.
+
+### 2026-09-08: locked admission and backup-code replay reservation
+
+- Internal broker admission now composes daemon-owned preflight, scoped privacy
+  lock and private-transport revalidation. Fresh identity must still match the
+  original saved scope. Errors/cancellation keep the durable lock closed.
+- Private storage now reserves a backup code and its exact reviewed source slot
+  across restaging, new consent IDs and restart, using keyed fingerprints rather
+  than raw values or plain code hashes. Canonical account/source provenance is
+  still the future trusted operation parser's responsibility.
+- These are integration components, not an enabled authentication executor.
+  Alternate-route authority, private ingress/egress and cleanup coordination
+  still gate runtime installation and the SAM.gov/LitScout end-to-end test.
+  No real credentials or live browser/runtime state changed in this checkpoint.
+
+### 2026-09-08: typed private single-operation execution
+
+- New internal parser/executor connects encrypted staging to private isolated DOM
+  execution and encrypted results. Login, backup, renewal and key-read operations
+  have strict account/origin binding; durable admission precedes mutation.
+- Effective form action/method/target checks prevent submitter overrides or base
+  targets from leaking credentials into GET URLs or another window. Independent
+  closed-world review accepted this fix by source inspection.
+- Synthetic DOM and mock-CDP coverage is not live acceptance. Public entrypoints
+  remain disabled pending trusted Slack ingress, consent-bound navigation across
+  stages, alternate-route authority, cleanup and guarded LitScout egress.
+- Do not use the old Slack search helper as a credential adapter: its desktop
+  credential extraction and ordinary error/write paths are outside this private
+  transport. No real Slack credential or SAM key was retrieved or changed.
+
+### 2026-09-09: operator-approved local Slack bootstrap
+
+- The approved private SABER channel is in Cochran Group (`polycy.slack.com`),
+  workspace `TEG3AC109`, channel `C07CA08AKUH`, verified from Slack metadata only.
+- Source helper `python3 scripts/setup-private-slack.py` uses hidden operator
+  terminal input, probes only authentication identity/scopes, and creates an
+  owner-only plaintext bootstrap file without replacing existing credentials.
+  `groups:history` is required; the operator additionally approved canvas
+  read/write. No other token scope is approved by this setup.
+- This is not private executor installation or an end-to-end SAM login. Never
+  print the connection file or ask for the token in chat. Use `--status` for local
+  metadata and preserve the existing browser and terminal sessions.
+
+- Follow-up live verification: the saved token passed a fresh constrained
+  `auth.test` and matched the saved bot/workspace/scopes. No messages were read,
+  no credential was printed and no config was rewritten. Twelve offline helper
+  tests passed again. This verifies local Slack authentication only, not channel
+  access, SAM login, renewal or LitScout activation; Plan 0130 retains evidence.
+
+### 2026-09-09: bounded autonomous source discovery, not runtime activation
+
+- The operator approved discovering relevant messages in the existing private
+  SABER channel instead of manually supplying links. LitScout now supports a
+  digest-bound discovery consent alternative with explicit account, browser,
+  workspace/channel, timestamp window and page/message limits.
+- `scripts/private-slack-discovery.py` is an internal, non-CLI library. It uses
+  the approved dedicated bot, verifies fresh identity/scopes and walks bounded
+  history without printing bodies. It returns exact candidate references/counts
+  only after unambiguous explicit account-matched text and complete pagination.
+- Missing completion metadata, changed scopes, ambiguous accounts/candidates,
+  uninspected thread replies, retention limits and exhausted budgets fail closed.
+  It does not fetch files/canvases, retry rate limits, widen scope, or use a model
+  to interpret secret-bearing messages. Free-form text recognition remains limited.
+- This helper is not wired into the installed daemon. Trusted consent-to-adapter
+  integration, private extraction/staging, browser transitions/cleanup, renewal,
+  guarded installation and a fresh consumer probe remain required. Do not run
+  live credential discovery through ad hoc imports to bypass those gates.
+
+### 2026-09-09: consent-to-private-discovery connection
+
+Follow-up: the approved extraction and exact-navigation checkpoint is recorded
+in Plan 0130. It adds an atomic broker-only approval claim, genuine in-process
+extraction continuity and durable ordered destination advancement. Primary
+validation passed 2,010 native tests (57 ignored), 140 LitScout tests, 6 private
+adapter tests, 17 extraction tests and 12 bootstrap tests. These are source and
+synthetic runtime receipts, not live renewal evidence. The installed executor,
+private transport, cleanup and guarded consumer handoff remain unconnected;
+renewal stays disabled and no live credential was used.
+
+- Internal `scripts/private-sam-discovery.py` now connects an embedding service's
+  authoritative LitScout context and approved digest to private Slack discovery.
+  It opens the protected connection only after durable admission; it does not
+  supply an operator-facing command, choose a DB, or approve a plan itself.
+- LitScout's source schema adds `CredentialDiscovery`. Started/failed attempts
+  are not retried; only in-scope refs/counts may be published, and publication
+  atomically checks current approval. No live schema migration occurred.
+- Private exact-source extraction now rejects edits after discovery and returns
+  opaque in-memory material. It cannot serialize credentials into normal results
+  or select/try a backup code. Password punctuation is literal; ambiguous
+  boundary whitespace is rejected. Process-local extraction capabilities are
+  consumed before I/O and cannot be rebuilt from saved public references.
+- No renewal runtime is enabled. Encrypted staging, retained-browser transitions,
+  verified privacy cleanup and the guarded key/consumer handoff remain required.

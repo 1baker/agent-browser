@@ -4306,6 +4306,20 @@ default browser. The proxy routes DevTools traffic through the daemon's
 existing CDP connection, so both DevTools and agent-browser commands work
 simultaneously.
 
+Replacing an inspect proxy waits for its connection tasks to stop. On Linux and
+macOS, cooperative CDP privacy receipts live under the configured runtime home's
+private-gates directory. Private locks deny commands and observation; interrupted
+or raw traffic denies private admission until verified reconciliation. Do not
+delete these receipts to force a retry. Automated private login is not enabled.
+Internal page cleanup does not unlock observation. Old connection generations
+stay revoked; private commands require a persisted target scope and matching
+CDP session. Live broker coordination is not enabled.
+
+Source-checkout Slack token setup: python3 scripts/setup-private-slack.py
+Linux/WSL only; hidden operator input, auth.test only, owner-only plaintext
+bootstrap file; never pass a token in arguments or chat. Use --status for local
+metadata. This helper does not read Slack messages or enable automated login.
+
 Usage: agent-browser inspect
 
 Examples:

@@ -2080,7 +2080,36 @@ export AI_GATEWAY_URL=https://ai-gateway.vercel.sh           # optional default
 
 The Chat tab is always visible in the dashboard. Set `AI_GATEWAY_API_KEY` to enable AI responses.
 
+## Private credential boundary checkpoint
+
+The internal Linux/macOS cooperative CDP gate is not a private login command.
+Pending command receipts and private locks live under the configured runtime
+home's `private-gates` directory. A timeout, raw inspect traffic or restart must
+not be treated as permission to replay a credential submission. Do not remove
+receipts to force a retry, launch an alias route, or switch profiles to bypass a
+lock. Runtime paths must be owned, non-symlinked and not writable by other users.
+Inspect replacement waits for proxy tasks to stop; that alone is not a browser
+quiescence or verified detach receipt. Exact live identity, alias binding,
+sanitized recovery and private input/output integration remain required before
+automated login. Internal permit-bound reconnect and page cleanup keep
+observation locked; a blank page alone is not a safe unlock proof. Connection
+generations cannot regain public observation after a private epoch, and private
+dispatch requires a persisted validated target scope with a matching live CDP
+session. Broker alias mapping and the live coordinator remain unfinished.
+Ordinary fill/evaluate/password-stdin are not trace-private credential ingress.
+
 ## Ready-to-Use Templates
+
+For the explicitly approved local SAM Slack connection, an operator may run
+`python3 scripts/setup-private-slack.py` from the source checkout in an existing
+terminal. Never collect its token through chat, command arguments, environment
+exports, clipboard tools or ordinary browser actions. Hidden terminal input is
+mandatory; failure must not fall back to echoed stdin. The Linux/WSL helper probes
+only `auth.test`, binds the Cochran Group workspace containing the approved private
+channel, and writes a create-new owner-only plaintext bootstrap file under
+`~/.config/agent-browser/private-slack/`. It does not enable private login or read
+messages. `--status` is metadata-only; never print the connection file. Do not
+create helper tmux tabs. Additional scope or existing-file conflicts fail closed.
 
 | Template                                                                 | Description                         |
 | ------------------------------------------------------------------------ | ----------------------------------- |
