@@ -4286,6 +4286,17 @@ This command is used by the local development publisher and runtime interlock.
 The browser process, DevTools port, profile, and open tabs remain live during
 the changeover. A later normal `close` still shuts down an owned browser.
 
+A recorded active target must be present and initialize; resume never falls
+back to another tab. Legacy records without a target retain discovery behavior.
+Prepare without a browser preserves existing retry records and reports pending
+recovery. Inspect and resume the record rather than deleting it.
+Linux owned-source v2 handoffs verify source exit, retained process/profile/CDP,
+an exclusive profile lock and committed receipt. Diagnostics reports current
+controlPlaneAttestation including remote display ownership. Legacy v1 records
+never qualify as complete proof. Pending recovery blocks ordinary work.
+V2 sessions deny direct dashboard CDP input, background handlers, private
+journeys and unsupported commands; use governed queued commands.
+
 Global Options:
   --json               Output as JSON
   --session <name>     Use specific session

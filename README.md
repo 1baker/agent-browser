@@ -357,6 +357,25 @@ installed daemon owns an active browser but does not support handoff, publishing
 fails before replacing the executable. A normal `close` after resume retains
 the original browser shutdown behavior.
 
+When the retry record names an active target, resume requires that exact target;
+it fails if the target is missing or cannot initialize instead of selecting
+another tab. Legacy records without a target retain discovery behavior. Repeating
+prepare without a browser preserves any existing retry record and reports
+pending recovery; inspect that record and use resume rather than deleting it.
+Linux owned-browser handoffs additionally write a version-2 custody record.
+Resume requires the exact source process to have exited, verifies the retained
+process/profile/debugging listener, holds a profile-scoped exclusive lock, and
+durably records claimed and committed transfer phases. Failed transfers preserve
+recovery evidence and block ordinary work, including after daemon restart.
+Legacy version-1 records remain readable but never provide complete custody proof.
+Diagnostics reports `controlPlaneAttestation`; complete proof requires the
+committed receipt to match current service lease/tab state and, for remote-headed
+browsers, the configured route user's kernel-observed display owner.
+Transferred sessions use governed queued commands only: direct dashboard CDP
+input, background handlers, private journeys, and unsupported commands are denied.
+This implementation does not automatically upgrade an already running legacy
+controller or authorize installation into an unverified live runtime.
+
 Service mode is the persistent control plane for long-lived automation. It keeps profile, session, browser, tab, monitor, job, incident, event, site-policy, provider, and challenge state aligned across CLI commands, the HTTP API, MCP resources/tools, and the dashboard. Agents should include `serviceName`, `agentName`, and `taskName` when available so multi-service work remains traceable. The normal service request is identity-first: ask for a tab or browser action, target site or login identity, and the owning service, agent, and task. agent-browser selects or reuses the managed profile and browser, serializes CDP work through the queue, and records the state needed for debugging. Service profile records and profile allocation rows include `targetReadiness`, a no-launch readiness view for target services. Google targets without authenticated evidence report `needs_manual_seeding` and recommend detached `runtime login` before attachable automation. Once a managed profile lists the target in `authenticatedServiceIds`, readiness changes to `seeded_unknown_freshness` and access-plan no longer treats first-login seeding as a required manual action. Access-plan responses also include `monitorFindings` and `decision.monitorAttentionRequired` when an active `profile_readiness` monitor is faulted for the requested target identity. When a matching active `profile_readiness` monitor is due or never checked, access-plan sets `monitorFindings.profileReadinessProbeDue`, fills `decision.monitorRunDue`, and recommends `run_due_profile_readiness_monitor` before the caller trusts the profile. Use an explicit managed runtime profile when you know where the needed login state lives; use `--profile <path>` only when bringing an external profile is part of the contract.
 
 ### Get Info

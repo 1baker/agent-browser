@@ -22,8 +22,12 @@ pub mod daemon;
 pub mod dependent_batch;
 #[allow(dead_code)]
 pub mod diff;
+#[cfg(target_os = "linux")]
+mod display_owner_proof;
 #[allow(dead_code)]
 pub mod element;
+#[cfg(target_os = "linux")]
+mod handoff_custody;
 #[allow(dead_code)]
 pub mod inspect_server;
 #[allow(dead_code)]

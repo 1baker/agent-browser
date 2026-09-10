@@ -582,6 +582,20 @@ reconnects the replacement daemon to the same browser and targets. Do not use
 `close` to repair executable drift because it terminates an owned browser.
 The local publisher performs the handoff automatically and fails before
 replacement if an active older daemon does not support the protocol.
+If a retry record names an active target, resume must use that exact target and
+must not fall back to another page. Legacy records without a target retain
+discovery behavior. Browserless prepare preserves existing recovery records and
+reports pending recovery; inspect and resume instead of deleting the record.
+Linux v2 handoffs from an owned source require verified source exit, exact retained
+process/profile/listener identity, a profile-scoped exclusive lock and a committed
+receipt matching current service state. Check `controlPlaneAttestation.complete`
+and `missingProofs` before effects; remote-headed use also requires verified
+`displayOwner` derived from the configured route user. Legacy v1 handoffs never
+qualify as complete. Pending transfers block ordinary commands across restarts.
+For v2, use governed queued commands; direct dashboard CDP input, background
+handlers, private journeys and commands outside the governed allowlist are denied.
+Do not install this candidate or promote legacy evidence merely because unit
+tests pass. Existing legacy controllers require a separately verified transition.
 Set `runtimeProfiles.<name>.browserFamily` to `chrome`, `chromium`, `brave`,
 `edge`, or `unknown`. Do not attach patched Chromium to a Chrome-owned profile
 or otherwise mix browser families unless the operator explicitly forces it with

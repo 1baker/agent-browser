@@ -210,6 +210,35 @@ struct RuntimeHandoffDescriptor {
     #[serde(default)]
     active_target_id: Option<String>,
     prepared_at: String,
+    #[cfg(target_os = "linux")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    custody: Option<RuntimeHandoffCustodyProof>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeHandoffCustodyProof {
+    source: super::handoff_custody::ProcessIdentity,
+    browser: super::handoff_custody::BrowserIdentity,
+}
+
+#[cfg(target_os = "linux")]
+struct ActiveHandoffCustody {
+    _lease: super::handoff_custody::DestinationLease,
+    receipt: super::handoff_custody::CustodyReceipt,
+    receipt_path: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+fn handoff_receipt_path(receipt: &super::handoff_custody::CustodyReceipt) -> PathBuf {
+    get_socket_dir().join(format!(
+        "custody-{}-{}-{}-{}.json",
+        receipt.descriptor_sha256,
+        receipt.destination.pid,
+        receipt.destination.start_ticks,
+        uuid::Uuid::new_v4()
+    ))
 }
 
 fn debug_session_events_enabled() -> bool {
@@ -2950,6 +2979,13 @@ fn persist_closed_browser_health(state: &DaemonState, outcome: Option<&BrowserSh
 }
 
 pub struct DaemonState {
+    #[cfg(target_os = "linux")]
+    handoff_custody: Option<ActiveHandoffCustody>,
+    #[cfg(target_os = "linux")]
+    handoff_source_lease: Option<super::handoff_custody::DestinationLease>,
+    /// Preparation permanently fences this worker, even before process exit.
+    handoff_retired: bool,
+    handoff_recovery_pending: bool,
     pub browser: Option<BrowserManager>,
     pub appium: Option<AppiumManager>,
     pub safari_driver: Option<safari::SafariDriverProcess>,
@@ -3031,6 +3067,17 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
+    /// Auxiliary direct-CDP paths cannot bypass the transferred session's gate.
+    pub(crate) fn allows_unfenced_cdp(&self) -> bool {
+        if self.handoff_retired || self.handoff_recovery_pending {
+            return false;
+        }
+        #[cfg(target_os = "linux")]
+        if self.handoff_custody.is_some() {
+            return false;
+        }
+        true
+    }
     #[cfg(test)]
     pub(crate) fn set_private_journey_test_profile(&mut self, profile: &str) {
         self.attached_runtime_profile = Some(profile.to_owned());
@@ -3047,6 +3094,14 @@ impl DaemonState {
 
     pub fn new() -> Self {
         Self {
+            #[cfg(target_os = "linux")]
+            handoff_custody: None,
+            #[cfg(target_os = "linux")]
+            handoff_source_lease: None,
+            handoff_retired: false,
+            handoff_recovery_pending: !matches!(fs::symlink_metadata(runtime_handoff_path(
+                &env::var("AGENT_BROWSER_SESSION").unwrap_or_else(|_| "default".into()),
+            )), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
             browser: None,
             appium: None,
             safari_driver: None,
@@ -3152,6 +3207,9 @@ impl DaemonState {
         // Abort any existing handler.
         if let Some(task) = self.fetch_handler_task.take() {
             task.abort();
+        }
+        if !self.allows_unfenced_cdp() {
+            return;
         }
 
         let Some(ref browser) = self.browser else {
@@ -3264,6 +3322,9 @@ impl DaemonState {
         if let Some(task) = self.dialog_handler_task.take() {
             task.abort();
         }
+        if !self.allows_unfenced_cdp() {
+            return;
+        }
 
         if !self.auto_dialog {
             return;
@@ -3318,6 +3379,16 @@ impl DaemonState {
 
     /// Update the stream server's CDP client slot when browser is set or cleared.
     pub async fn update_stream_client(&self) {
+        if !self.allows_unfenced_cdp() {
+            if let Some(slot) = &self.stream_client {
+                *slot.write().await = None;
+            }
+            if let Some(server) = &self.stream_server {
+                server.set_cdp_session_id(None).await;
+                server.notify_client_changed();
+            }
+            return;
+        }
         if let Some(ref slot) = self.stream_client {
             let mut guard = slot.write().await;
             *guard = self.browser.as_ref().map(|m| Arc::clone(&m.client));
@@ -3390,6 +3461,9 @@ impl DaemonState {
     }
 
     pub async fn drain_cdp_events_background(&mut self) {
+        if !self.allows_unfenced_cdp() {
+            return;
+        }
         let Ok(_privacy_lease) = self.public_browser_lease() else {
             return;
         };
@@ -5030,6 +5104,59 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         .to_string();
 
     let cmd_start = std::time::Instant::now();
+
+    if state.handoff_retired {
+        return error_response(&id, "runtime_handoff_source_retired");
+    }
+    if state.handoff_recovery_pending && action != "runtime_handoff_resume" {
+        return error_response(
+            &id,
+            "runtime_handoff_recovery_pending: resume the preserved handoff before ordinary work",
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(custody) = state.handoff_custody.as_ref() {
+        if let Err(error) = verify_active_handoff_custody(state) {
+            if action == "diagnostics" {
+                let mut response = error_response(&id, &error);
+                response["data"] = json!({"action": "diagnostics", "snapshotOnly": true, "controlPlaneAttestation": {"complete": false, "missingProofs": [error], "displayOwner": {"verified": false}}});
+                return response;
+            }
+            return error_response(&id, &error);
+        }
+        if let Some(handle) = cmd.get("serviceTabHandle") {
+            if handle.get("targetId").and_then(Value::as_str)
+                != Some(custody.receipt.target_id.as_str())
+                || handle.get("browserId").and_then(Value::as_str)
+                    != Some(service_browser_id(&state.session_id).as_str())
+            {
+                return error_response(&id, "runtime_handoff_requested_target_mismatch");
+            }
+        }
+        if !matches!(
+            action,
+            "diagnostics"
+                | "snapshot"
+                | "evaluate"
+                | "click"
+                | "fill"
+                | "type"
+                | "press"
+                | "gettext"
+                | "url"
+                | "title"
+                | "screenshot"
+                | "file_transfer"
+                | "ui_action"
+                | "upload"
+                | "download"
+                | "runtime_handoff_prepare"
+                | "close"
+        ) {
+            return error_response(&id, "runtime_handoff_action_not_governed");
+        }
+    }
 
     // Hold the cooperative browser barrier through dispatch and publication.
     // Refuse before tracing, authority staging, event draining or auto-recovery.
@@ -9824,6 +9951,16 @@ fn service_guess_mime_type(path: &Path) -> Value {
 }
 
 async fn handle_service_diagnostics(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(custody) = state.handoff_custody.as_ref() {
+        if cmd
+            .pointer("/serviceTabHandle/targetId")
+            .and_then(Value::as_str)
+            != Some(custody.receipt.target_id.as_str())
+        {
+            return Err("handoff_diagnostics_target_mismatch".into());
+        }
+    }
     let handle = cmd
         .get("serviceTabHandle")
         .and_then(Value::as_object)
@@ -9965,9 +10102,24 @@ async fn handle_service_diagnostics(cmd: &Value, state: &mut DaemonState) -> Res
     );
     let requests = recent_request_summaries(&state.tracked_requests, max_request_entries);
 
+    #[cfg(target_os = "linux")]
+    let custody_attestation = service_state
+        .as_ref()
+        .ok_or_else(|| "handoff_service_snapshot_missing".to_string())
+        .and_then(|snapshot| verify_active_handoff_custody_against(state, snapshot));
+    #[cfg(not(target_os = "linux"))]
+    let custody_attestation: Result<Value, String> =
+        Err("handoff_custody_platform_unsupported".into());
+    let custody_attestation = custody_attestation.unwrap_or_else(|reason| {
+        json!({
+            "complete": false, "missingProofs": [reason], "displayOwner": {"verified": false}
+        })
+    });
+
     Ok(json!({
         "ok": true,
         "action": "diagnostics",
+        "controlPlaneAttestation": custody_attestation,
         "observedAt": observed_at,
         "compact": true,
         "browserId": browser_id,
@@ -10124,6 +10276,27 @@ fn runtime_handoff_path(session_name: &str) -> PathBuf {
     get_socket_dir().join(format!("{}.handoff.json", session_name))
 }
 
+/// A browserless retry must preserve recovery evidence, including malformed
+/// descriptors and dangling symlinks. Only proven absence permits a no-op.
+fn browserless_runtime_handoff_prepare(
+    path: &std::path::Path,
+    session_name: &str,
+) -> Result<Value, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(format!(
+            "runtime_handoff_recovery_pending: session '{session_name}' has an existing recovery descriptor; inspect it and resume the prepared handoff instead of preparing again"
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!({
+            "prepared": false,
+            "browserPresent": false,
+            "sessionName": session_name,
+        })),
+        Err(error) => Err(format!(
+            "runtime_handoff_recovery_inspection_failed: cannot inspect the recovery descriptor for session '{session_name}'; repair descriptor access before retrying: {error}"
+        )),
+    }
+}
+
 fn write_runtime_handoff(descriptor: &RuntimeHandoffDescriptor) -> Result<PathBuf, String> {
     let path = runtime_handoff_path(&descriptor.session_name);
     let parent = path
@@ -10136,48 +10309,49 @@ fn write_runtime_handoff(descriptor: &RuntimeHandoffDescriptor) -> Result<PathBu
             error
         )
     })?;
-    let staged = path.with_extension(format!("handoff.json.next-{}", std::process::id()));
+    let staged = path.with_extension(format!("handoff.json.next-{}", uuid::Uuid::new_v4()));
     let payload = serde_json::to_vec_pretty(descriptor)
         .map_err(|error| format!("Failed to serialize runtime handoff: {}", error))?;
-    fs::write(&staged, payload).map_err(|error| {
-        format!(
-            "Failed to stage runtime handoff {}: {}",
-            staged.display(),
-            error
-        )
-    })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&staged, fs::Permissions::from_mode(0o600)).map_err(|error| {
-            format!(
-                "Failed to secure runtime handoff {}: {}",
-                staged.display(),
-                error
-            )
-        })?;
+    // Publish without replacing an existing recovery record. The directory
+    // link and contents are durable before the source relinquishes control.
+    let result = (|| -> Result<(), std::io::Error> {
+        use std::io::Write;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&staged)?;
+        file.write_all(&payload)?;
+        file.sync_all()?;
+        fs::hard_link(&staged, &path)?;
+        fs::remove_file(&staged)?;
+        #[cfg(unix)]
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(&staged);
+        return Err(format!("Failed to durably publish runtime handoff: {error}; preserve any existing retry record"));
     }
-    if path.exists() {
-        fs::remove_file(&path).map_err(|error| {
-            format!(
-                "Failed to replace runtime handoff {}: {}",
-                path.display(),
-                error
-            )
-        })?;
-    }
-    fs::rename(&staged, &path).map_err(|error| {
-        format!(
-            "Failed to publish runtime handoff {}: {}",
-            path.display(),
-            error
-        )
-    })?;
     Ok(path)
 }
 
 fn read_runtime_handoff(session_name: &str) -> Result<RuntimeHandoffDescriptor, String> {
     let path = runtime_handoff_path(session_name);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if !metadata.is_file()
+            || metadata.mode() & 0o077 != 0
+            || metadata.uid() != unsafe { libc::geteuid() }
+        {
+            return Err("runtime_handoff_private_descriptor_required".into());
+        }
+    }
     let payload = fs::read(&path).map_err(|error| {
         format!(
             "No prepared runtime handoff is available for session '{}': {}",
@@ -10205,15 +10379,170 @@ fn current_service_browser_host(session_name: &str) -> ServiceBrowserHost {
         .unwrap_or(ServiceBrowserHost::AttachedExisting)
 }
 
+#[cfg(target_os = "linux")]
+fn verify_handoff_snapshot(
+    snapshot: &ServiceState,
+    session_id: &str,
+    browser: &super::handoff_custody::BrowserIdentity,
+    target_id: &str,
+) -> Result<(), String> {
+    let session = snapshot
+        .sessions
+        .get(session_id)
+        .ok_or("handoff_session_missing")?;
+    let profile_id = session
+        .profile_id
+        .as_deref()
+        .ok_or("handoff_profile_missing")?;
+    if session.lease != LeaseState::Exclusive
+        || snapshot.sessions.values().any(|other| {
+            other.id != session_id
+                && other.profile_id.as_deref() == Some(profile_id)
+                && !matches!(other.lease, LeaseState::Released | LeaseState::Expired)
+        })
+    {
+        return Err("handoff_exclusive_service_lease_required".into());
+    }
+    let profile = snapshot
+        .profiles
+        .get(profile_id)
+        .ok_or("handoff_profile_missing")?;
+    let path = profile
+        .user_data_dir
+        .as_deref()
+        .ok_or("handoff_profile_path_missing")?;
+    if fs::canonicalize(path).map_err(|_| "handoff_profile_path_unreadable")?
+        != browser.canonical_profile
+    {
+        return Err("handoff_profile_path_mismatch".into());
+    }
+    let browser_id = service_browser_id(session_id);
+    let record = snapshot
+        .browsers
+        .get(&browser_id)
+        .ok_or("handoff_browser_missing")?;
+    let tab_id = format!("target:{target_id}");
+    let tab = snapshot.tabs.get(&tab_id).ok_or("handoff_target_missing")?;
+    if record.pid != Some(browser.process.pid)
+        || record.cdp_endpoint.as_deref() != Some(browser.cdp_endpoint.as_str())
+        || record.profile_id.as_deref() != Some(profile_id)
+        || !session.browser_ids.contains(&browser_id)
+        || !session.tab_ids.contains(&tab_id)
+        || tab.browser_id != browser_id
+        || tab.owner_session_id.as_deref() != Some(session_id)
+        || tab.target_id.as_deref() != Some(target_id)
+    {
+        return Err("handoff_snapshot_identity_mismatch".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn handoff_display_proof(snapshot: &ServiceState, session_id: &str) -> Result<Value, String> {
+    let browser_id = service_browser_id(session_id);
+    let browser = snapshot
+        .browsers
+        .get(&browser_id)
+        .ok_or("handoff_browser_missing")?;
+    if browser.host != ServiceBrowserHost::RemoteHeaded {
+        return Ok(json!({"required": false, "verified": true}));
+    }
+    let display = browser
+        .display_name
+        .as_deref()
+        .ok_or("handoff_display_missing")?;
+    let allocation = browser
+        .display_allocation_id
+        .as_deref()
+        .ok_or("handoff_display_allocation_missing")?;
+    let routes = snapshot
+        .remote_view_routes
+        .values()
+        .filter(|route| {
+            route.browser_id.as_deref() == Some(browser_id.as_str())
+                && route.session_id.as_deref() == Some(session_id)
+                && route.display_allocation_id.as_deref() == Some(allocation)
+        })
+        .collect::<Vec<_>>();
+    let [route] = routes.as_slice() else {
+        return Err("handoff_display_route_not_unique".into());
+    };
+    let entries = snapshot
+        .route_pool
+        .values()
+        .filter(|entry| entry.route_id == route.id)
+        .collect::<Vec<_>>();
+    let [entry] = entries.as_slice() else {
+        return Err("handoff_display_pool_not_unique".into());
+    };
+    let user = ["routeUser", "username", "user"]
+        .iter()
+        .find_map(|key| entry.target.get(*key).and_then(Value::as_str))
+        .ok_or("handoff_route_user_missing")?;
+    // Route users are provisioned local accounts; never accept a UID from the request.
+    let passwd = fs::read_to_string("/etc/passwd").map_err(|_| "handoff_route_user_unreadable")?;
+    let uids = passwd
+        .lines()
+        .filter_map(|line| {
+            let fields = line.split(':').collect::<Vec<_>>();
+            (fields.first().copied() == Some(user))
+                .then(|| fields.get(2)?.parse::<u32>().ok())
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    let [uid] = uids.as_slice() else {
+        return Err("handoff_route_user_not_unique".into());
+    };
+    super::display_owner_proof::verify_display_owner(display, *uid)
+}
+
+#[cfg(target_os = "linux")]
+fn verify_active_handoff_custody(state: &DaemonState) -> Result<Value, String> {
+    let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+    verify_active_handoff_custody_against(state, &snapshot)
+}
+
+#[cfg(target_os = "linux")]
+fn verify_active_handoff_custody_against(
+    state: &DaemonState,
+    snapshot: &ServiceState,
+) -> Result<Value, String> {
+    let custody = state
+        .handoff_custody
+        .as_ref()
+        .ok_or("handoff_custody_missing")?;
+    if custody.receipt.phase != super::handoff_custody::CustodyPhase::Committed {
+        return Err("handoff_custody_not_committed".into());
+    }
+    custody._lease.verify_receipt(&custody.receipt)?;
+    let expected = serde_json::to_value(&custody.receipt).map_err(|error| error.to_string())?;
+    if snapshot.runtime_custody_receipts.get(&state.session_id) != Some(&expected) {
+        return Err("handoff_custody_receipt_snapshot_mismatch".into());
+    }
+    verify_handoff_snapshot(
+        snapshot,
+        &state.session_id,
+        &custody.receipt.browser,
+        &custody.receipt.target_id,
+    )?;
+    if state
+        .browser
+        .as_ref()
+        .and_then(|manager| manager.active_target_id().ok())
+        != Some(custody.receipt.target_id.as_str())
+    {
+        return Err("handoff_active_target_mismatch".into());
+    }
+    let display_owner = handoff_display_proof(snapshot, &state.session_id)?;
+    Ok(
+        json!({"complete": true, "missingProofs": [], "ownerCustody": {"basis": "verified_transfer_receipt", "descriptorSha256": custody.receipt.descriptor_sha256}, "displayOwner": display_owner}),
+    )
+}
+
 async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value, String> {
     let Some(manager) = state.browser.as_mut() else {
         let path = runtime_handoff_path(&state.session_id);
-        let _ = fs::remove_file(path);
-        return Ok(json!({
-            "prepared": false,
-            "browserPresent": false,
-            "sessionName": state.session_id,
-        }));
+        return browserless_runtime_handoff_prepare(&path, &state.session_id);
     };
     if !manager.is_connection_alive().await {
         return Err(format!(
@@ -10223,8 +10552,42 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
     }
 
     let host = current_service_browser_host(&state.session_id);
+    #[cfg(target_os = "linux")]
+    let custody = if let (Some(pid), Some(profile)) =
+        (manager.browser_pid(), manager.browser_user_data_dir())
+    {
+        let browser =
+            super::handoff_custody::BrowserIdentity::capture(pid, profile, manager.get_cdp_url())?;
+        let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+        verify_handoff_snapshot(
+            &snapshot,
+            &state.session_id,
+            &browser,
+            manager.active_target_id()?,
+        )?;
+        state.handoff_source_lease = Some(super::handoff_custody::DestinationLease::acquire(
+            &get_socket_dir(),
+            &browser,
+        )?);
+        Some(RuntimeHandoffCustodyProof {
+            source: super::handoff_custody::ProcessIdentity::capture(std::process::id())?,
+            browser,
+        })
+    } else if let Some(active) = state.handoff_custody.as_ref() {
+        Some(RuntimeHandoffCustodyProof {
+            source: super::handoff_custody::ProcessIdentity::capture(std::process::id())?,
+            browser: active.receipt.browser.clone(),
+        })
+    } else {
+        None
+    };
     let descriptor = RuntimeHandoffDescriptor {
+        #[cfg(target_os = "linux")]
+        schema_version: if custody.is_some() { 2 } else { 1 },
+        #[cfg(not(target_os = "linux"))]
         schema_version: 1,
+        #[cfg(target_os = "linux")]
+        custody,
         session_name: state.session_id.clone(),
         cdp_url: manager.get_cdp_url().to_string(),
         // attached_existing is endpoint authority, not process ownership. A
@@ -10249,6 +10612,13 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
             .unwrap_or_else(|_| OffsetDateTime::now_utc().unix_timestamp().to_string()),
     };
     let path = write_runtime_handoff(&descriptor)?;
+    state.handoff_retired = true;
+    if let Some(task) = state.fetch_handler_task.take() {
+        task.abort();
+    }
+    if let Some(task) = state.dialog_handler_task.take() {
+        task.abort();
+    }
     manager.relinquish_browser_for_handoff();
     state.browser = None;
     state.screencasting = false;
@@ -10274,8 +10644,10 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
             state.session_id
         ));
     }
+    state.handoff_recovery_pending |= !matches!(fs::symlink_metadata(runtime_handoff_path(&state.session_id)), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
     let descriptor = read_runtime_handoff(&state.session_id)?;
-    if descriptor.schema_version != 1 || descriptor.session_name != state.session_id {
+    state.handoff_recovery_pending = true;
+    if !matches!(descriptor.schema_version, 1 | 2) || descriptor.session_name != state.session_id {
         return Err(format!(
             "Runtime handoff identity mismatch for session '{}'",
             state.session_id
@@ -10296,11 +10668,95 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
         ));
     }
 
+    #[cfg(target_os = "linux")]
+    let mut destination_custody = if descriptor.schema_version == 2 {
+        let proof = descriptor
+            .custody
+            .as_ref()
+            .ok_or("handoff_v2_custody_missing")?;
+        if descriptor.browser_pid != Some(proof.browser.process.pid)
+            || descriptor.cdp_url != proof.browser.cdp_endpoint
+        {
+            return Err("handoff_v2_descriptor_binding_mismatch".into());
+        }
+        let target = descriptor
+            .active_target_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .ok_or("handoff_v2_target_missing")?;
+        // The source can still be draining after its response. Never signal it.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while let Err(error) = proof.source.require_gone() {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(error);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        proof.browser.verify_current()?;
+        let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+        verify_handoff_snapshot(&snapshot, &state.session_id, &proof.browser, target)?;
+        handoff_display_proof(&snapshot, &state.session_id)?;
+        let lease =
+            super::handoff_custody::DestinationLease::acquire(&get_socket_dir(), &proof.browser)?;
+        let receipt = super::handoff_custody::CustodyReceipt {
+            schema_version: 2,
+            phase: super::handoff_custody::CustodyPhase::Claimed,
+            source: proof.source.clone(),
+            destination: super::handoff_custody::ProcessIdentity::capture(std::process::id())?,
+            browser: proof.browser.clone(),
+            target_id: target.to_string(),
+            descriptor_sha256: format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&descriptor).map_err(|error| error.to_string())?)
+            ),
+        };
+        let receipt_path = handoff_receipt_path(&receipt);
+        lease.persist_receipt(&receipt_path, &receipt)?;
+        Some(ActiveHandoffCustody {
+            _lease: lease,
+            receipt,
+            receipt_path,
+        })
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    if descriptor.schema_version == 2 {
+        return Err("handoff_v2_platform_unsupported".into());
+    }
+
     let manager = BrowserManager::connect_cdp_for_handoff(
         &descriptor.cdp_url,
         descriptor.active_target_id.as_deref(),
     )
     .await?;
+    #[cfg(target_os = "linux")]
+    if let Some(custody) = destination_custody.as_mut() {
+        if manager.active_target_id()? != custody.receipt.target_id {
+            return Err("handoff_v2_attached_target_mismatch".into());
+        }
+        custody.receipt.phase = super::handoff_custody::CustodyPhase::Committed;
+        custody
+            ._lease
+            .persist_receipt(&custody.receipt_path, &custody.receipt)?;
+        LockedServiceStateRepository::default_json()?.mutate(|snapshot| {
+            verify_handoff_snapshot(
+                snapshot,
+                &state.session_id,
+                &custody.receipt.browser,
+                &custody.receipt.target_id,
+            )?;
+            snapshot.runtime_custody_receipts.insert(
+                state.session_id.clone(),
+                serde_json::to_value(&custody.receipt).map_err(|error| error.to_string())?,
+            );
+            Ok(())
+        })?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        state.handoff_custody = destination_custody;
+    }
     state.reset_input_state();
     state.attached_runtime_profile = descriptor.runtime_profile.clone();
     state.attached_browser_pid = if stale_attached_pid_dropped {
@@ -10316,6 +10772,7 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
     state.engine = descriptor.engine.clone();
     write_engine_file(&state.session_id, &state.engine);
     state.browser = Some(manager);
+    state.handoff_recovery_pending = false;
     state.subscribe_to_browser_events();
     state.start_fetch_handler();
     state.start_dialog_handler();
@@ -29630,6 +30087,152 @@ mod tests {
         ));
 
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_browserless_handoff_prepare_preserves_recovery_descriptors() {
+        let root = unique_socket_dir("browserless-handoff-retry");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("retry.handoff.json");
+
+        let absent = browserless_runtime_handoff_prepare(&path, "retry").unwrap();
+        assert_eq!(absent["prepared"], false);
+        assert_eq!(absent["browserPresent"], false);
+        assert_eq!(absent["sessionName"], "retry");
+        assert!(!path.exists());
+
+        for payload in [
+            br#"{"schemaVersion":1,"sessionName":"retry","cdpUrl":"ws://127.0.0.1:9222/devtools/browser/example","browserPid":42,"runtimeProfile":"retry-profile","engine":"chrome","host":"attached_existing","closeBrowserOnClose":false,"preparedAt":"2026-09-10T00:00:00Z"}"#.as_slice(),
+            b"malformed recovery descriptor".as_slice(),
+        ] {
+            fs::write(&path, payload).unwrap();
+            let error = browserless_runtime_handoff_prepare(&path, "retry").unwrap_err();
+            assert!(error.starts_with("runtime_handoff_recovery_pending:"));
+            assert_eq!(fs::read(&path).unwrap(), payload);
+        }
+
+        // A regular file cannot be a parent directory: inspection must fail
+        // closed without depending on chmod behavior under privileged runners.
+        let inaccessible = path.join("child.handoff.json");
+        let error = browserless_runtime_handoff_prepare(&inaccessible, "retry").unwrap_err();
+        assert!(error.starts_with("runtime_handoff_recovery_inspection_failed:"));
+        assert_eq!(fs::read(&path).unwrap(), b"malformed recovery descriptor");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn custody_resume_fixture(
+        target: &str,
+    ) -> (
+        EnvGuard<'_>,
+        super::super::handoff_custody::TestBrowserFixture,
+        RuntimeHandoffDescriptor,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = super::super::handoff_custody::TestBrowserFixture::new();
+        let sockets = fixture.root.join("sockets");
+        fs::create_dir(&sockets).unwrap();
+        fs::set_permissions(&sockets, fs::Permissions::from_mode(0o700)).unwrap();
+        let guard = EnvGuard::new(&["HOME", "AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_SESSION"]);
+        guard.set("HOME", fixture.root.to_str().unwrap());
+        guard.set("AGENT_BROWSER_SOCKET_DIR", sockets.to_str().unwrap());
+        guard.set("AGENT_BROWSER_SESSION", "custody-test");
+        let tab = format!("target:{target}");
+        let snapshot: ServiceState = serde_json::from_value(json!({
+            "profiles": {"custody-test": {"id": "custody-test", "userDataDir": fixture.root}},
+            "browsers": {"session:custody-test": {"id": "session:custody-test", "profileId": "custody-test", "pid": fixture.browser.process.pid, "cdpEndpoint": fixture.browser.cdp_endpoint, "host": "local_headless"}},
+            "sessions": {"custody-test": {"id": "custody-test", "profileId": "custody-test", "lease": "exclusive", "browserIds": ["session:custody-test"], "tabIds": [tab]}},
+            "tabs": {tab.clone(): {"id": tab, "browserId": "session:custody-test", "targetId": target, "ownerSessionId": "custody-test", "lifecycle": "ready"}}
+        })).unwrap();
+        LockedServiceStateRepository::default_json()
+            .unwrap()
+            .mutate(|state| {
+                *state = snapshot;
+                Ok(())
+            })
+            .unwrap();
+        let descriptor = RuntimeHandoffDescriptor {
+            schema_version: 2,
+            session_name: "custody-test".into(),
+            cdp_url: fixture.browser.cdp_endpoint.clone(),
+            browser_pid: Some(fixture.browser.process.pid),
+            runtime_profile: Some("custody-test".into()),
+            engine: "chrome".into(),
+            host: ServiceBrowserHost::LocalHeadless,
+            close_browser_on_close: false,
+            active_target_id: Some(target.into()),
+            prepared_at: "synthetic-test".into(),
+            custody: Some(RuntimeHandoffCustodyProof {
+                source: super::super::handoff_custody::stopped_source(),
+                browser: fixture.browser.clone(),
+            }),
+        };
+        write_runtime_handoff(&descriptor).unwrap();
+        (guard, fixture, descriptor)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_handoff_v2_resume_and_drift_are_governed() {
+        let (_guard, fixture, _descriptor) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        let slot = Arc::new(RwLock::new(None));
+        state.stream_client = Some(slot.clone());
+        assert!(state.handoff_recovery_pending);
+        let result = handle_runtime_handoff_resume(&mut state).await.unwrap();
+        assert_eq!(result["resumed"], true);
+        assert_eq!(result["browserPid"], fixture.browser.process.pid);
+        assert_eq!(
+            verify_active_handoff_custody(&state).unwrap()["complete"],
+            true
+        );
+        assert!(!state.allows_unfenced_cdp());
+        assert!(slot.read().await.is_none());
+        assert!(!runtime_handoff_path("custody-test").exists());
+        let before = fixture.methods();
+        LockedServiceStateRepository::default_json()
+            .unwrap()
+            .mutate(|snapshot| {
+                snapshot.runtime_custody_receipts.clear();
+                Ok(())
+            })
+            .unwrap();
+        let response = execute_command(&json!({"id":"drift", "action":"diagnostics", "includeScreenshot":true, "serviceTabHandle":{"browserId":"session:custody-test","targetId":"exact-target"}}), &mut state).await;
+        assert_eq!(response["success"], false);
+        assert_eq!(response["data"]["snapshotOnly"], true);
+        state.drain_cdp_events_background().await;
+        assert_eq!(fixture.methods(), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_handoff_v2_failed_resume_blocks_launch_and_preserves_evidence() {
+        let (_guard, fixture, _descriptor) = custody_resume_fixture("missing-target");
+        let path = runtime_handoff_path("custody-test");
+        let before = fs::read(&path).unwrap();
+        let mut state = DaemonState::new();
+        let error = handle_runtime_handoff_resume(&mut state).await.unwrap_err();
+        assert!(error.contains("required target"), "{error}");
+        assert!(state.handoff_recovery_pending);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let methods = fixture.methods();
+        let response = execute_command(
+            &json!({"id":"no-launch", "action":"navigate", "url":"https://example.test/forbidden"}),
+            &mut state,
+        )
+        .await;
+        assert_eq!(response["success"], false);
+        assert!(response["error"]
+            .as_str()
+            .unwrap()
+            .contains("recovery_pending"));
+        assert_eq!(fixture.methods(), methods);
+        assert!(!methods
+            .iter()
+            .any(|method| method == "Target.attachToTarget"));
+        let restarted = DaemonState::new();
+        assert!(restarted.handoff_recovery_pending);
+        assert!(!restarted.allows_unfenced_cdp());
     }
 
     #[test]

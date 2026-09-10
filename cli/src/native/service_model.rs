@@ -2324,6 +2324,9 @@ pub struct RemoteViewHandoff {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ServiceState {
+    /// Committed handoff receipts, checked together with current leases/tabs.
+    /// Older writers may erase these records; absence must deny attestation.
+    pub runtime_custody_receipts: BTreeMap<String, Value>,
     pub control_plane: Option<ControlPlaneSnapshot>,
     pub reconciliation: Option<ServiceReconciliationSnapshot>,
     pub events: Vec<ServiceEvent>,

@@ -112,6 +112,24 @@ handoff resume` starts a replacement daemon, reconnects to the same browser and
 open targets, refreshes the runtime stream record, and removes the retry record
 only after the attach succeeds.
 
+A recorded active target is required: resume refuses a missing or unresponsive
+target instead of switching to another tab. Legacy records without a target
+retain discovery behavior. Repeated prepare with no browser preserves any
+existing retry record and reports pending recovery. Inspect and resume that
+record; do not delete it to bypass recovery. These safeguards preserve continuity,
+but version-1 records do not provide exclusive ownership attestation.
+
+Linux version-2 handoffs from owned browsers verify source-process exit and the
+retained browser's process, profile and debugging listener. The replacement holds
+a profile-scoped exclusive lock and persists claimed and committed receipts.
+Failed transfers preserve evidence and block ordinary work across restarts.
+Diagnostics exposes `controlPlaneAttestation`, checked against the current
+service receipt, lease and target. Remote-headed operation additionally requires
+the configured route user's verified kernel display identity. Legacy records
+never qualify as complete proof. Transferred sessions deny direct dashboard CDP
+input, background handlers, private journeys and unsupported commands; use the
+governed command queue. This does not automatically migrate a live legacy daemon.
+
 The local development publisher runs this protocol automatically around
 executable replacement. Browser PIDs, DevTools ports, profiles, and tabs remain
 live during the changeover. Publishing fails before replacement if an active

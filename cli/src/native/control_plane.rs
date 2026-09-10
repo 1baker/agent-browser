@@ -1473,6 +1473,10 @@ async fn run_worker(
                     #[cfg(unix)]
                     WorkerMessage::Private(mut request) => {
                         status.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                        if !state.allows_unfenced_cdp() {
+                            let _ = request.response_tx.send(Err("private_handoff_custody_requires_governed_dispatch"));
+                            continue;
+                        }
                         if request.response_tx.is_closed() {
                             continue;
                         }
@@ -1702,6 +1706,7 @@ async fn run_worker(
                             persist_service_job_finished(&request, &response);
                         }
                         let follow_up = async {
+                            if !state.allows_unfenced_cdp() { return; }
                             if timed_out {
                                 run_post_timeout_health_circuit(
                                     &mut state,

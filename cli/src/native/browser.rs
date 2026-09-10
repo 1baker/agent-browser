@@ -157,12 +157,14 @@ fn runtime_handoff_candidate_indices(
     pages: &[PageInfo],
     preferred_target_id: Option<&str>,
 ) -> Vec<usize> {
-    let mut indices = Vec::with_capacity(pages.len());
+    // A recorded target is an identity requirement, not a preference. Never
+    // initialize a different page if that target vanished or cannot initialize.
     if let Some(preferred_target_id) = preferred_target_id {
-        if let Some(index) = page_index_for_target_id(pages, preferred_target_id) {
-            indices.push(index);
-        }
+        return page_index_for_target_id(pages, preferred_target_id)
+            .into_iter()
+            .collect();
     }
+    let mut indices = Vec::with_capacity(pages.len());
     for (index, page) in pages.iter().enumerate() {
         if !indices.contains(&index) && page.url != "about:blank" && !page.url.is_empty() {
             indices.push(index);
@@ -762,13 +764,24 @@ impl BrowserManager {
             .client
             .send_command_typed("Target.getTargets", &json!({}), None)
             .await?;
-        let page_targets: Vec<TargetInfo> = result
+        let mut page_targets: Vec<TargetInfo> = result
             .target_infos
             .into_iter()
             .filter(should_track_target)
             .collect();
         if page_targets.is_empty() {
             return Err("Runtime handoff found no retained page targets".to_string());
+        }
+
+        // Restrict attachment itself, not only the eventual active-page choice.
+        // Legacy descriptors without a target retain their discovery behavior.
+        if let Some(target_id) = preferred_target_id {
+            page_targets.retain(|target| target.target_id == target_id);
+            if page_targets.is_empty() {
+                return Err(format!(
+                    "Runtime handoff required target '{target_id}' is missing; refusing another page"
+                ));
+            }
         }
 
         for target in &page_targets {
@@ -3552,7 +3565,7 @@ mod tests {
     }
 
     #[test]
-    fn test_runtime_handoff_candidate_order_preserves_preferred_then_fallbacks() {
+    fn test_runtime_handoff_recorded_target_never_falls_back() {
         let pages = vec![
             PageInfo {
                 target_id: "frozen-first".to_string(),
@@ -3579,12 +3592,22 @@ mod tests {
 
         assert_eq!(
             runtime_handoff_candidate_indices(&pages, Some("preferred")),
-            vec![1, 0, 2]
+            vec![1]
         );
         assert_eq!(
             runtime_handoff_candidate_indices(&pages, Some("missing")),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            runtime_handoff_candidate_indices(&pages, None),
             vec![0, 1, 2]
         );
+        assert!(runtime_handoff_candidate_indices(&pages, Some("")).is_empty());
+        assert_eq!(
+            runtime_handoff_candidate_indices(&pages, Some("blank")),
+            vec![2]
+        );
+        assert!(runtime_handoff_candidate_indices(&[], Some("preferred")).is_empty());
     }
 
     #[test]
