@@ -38,6 +38,9 @@ const env = {
   XDG_RUNTIME_DIR: runtimeDir,
   AGENT_BROWSER_TEST_ISOLATED: '1',
 };
+// A host's private execution authority must never enter synthetic daemon tests.
+// Tests that need a coordinator provision their own temporary root explicitly.
+delete env.AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT;
 if (!env.CARGO_HOME && existsSync(join(realHome, '.cargo'))) {
   env.CARGO_HOME = join(realHome, '.cargo');
 }

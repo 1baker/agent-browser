@@ -4086,6 +4086,43 @@ fresh target validation at execution and private secret ingress/egress remain
 required before live credential automation. External RDP/OS viewers are outside
 this cooperative boundary. See `docs/dev/plans/0130-2026-09-08-private-credential-broker.md`.
 
+### Local private controller (Linux)
+
+`agent-browser private-controller setup /absolute/private/root` creates a
+separate random authentication key under an owner-only directory. Existing keys
+are validated and never rotated automatically. `agent-browser private-controller
+serve /absolute/private/root` serves only authenticated probes and immutable
+approved-plan bindings on `controller.sock`; it cannot execute browser actions,
+accept passwords or enable renewal. An existing socket fails closed rather than
+being unlinked. Keep this service separate from the browser daemon.
+
+The trusted LitScout adapter claims a current approved plan before connecting.
+Binding consumes that plan even if the reply is lost; never retry or represent
+binding success as authentication, recovery, key delivery or renewal. The Python
+client defaults to `~/.agent-browser/private-controller`. Protect its
+`authentication.key` as a credential; never print or export it. Same-user/root
+processes are outside this protection boundary.
+
+### Approved private executor (Linux, opt-in)
+
+`AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT` opts a browser daemon into a separate
+`executor.sock` under the prepared private-controller root. Leave it unset to
+keep execution disabled. The root must contain its existing owner-only key and
+an immutable `execution.json` prepared by the trusted renewal coordinator from
+an independently reviewed four-stage recipe and approved plan. Missing, expired
+or mismatched authority fails closed; a request cannot supply its own authority.
+
+The source adapter `scripts/private-renewal-coordinator.py` exposes internal
+`prepare_authority` and `execute_approved_renewal` functions, not a public secret
+CLI. The latter authenticates fresh daemon-owned broker preflight before
+extracting credentials, consumes one approval, executes the exact recipe and
+uses authenticated guarded LitScout delivery after cleanup. It never launches
+or replaces a browser, retries credentials, or enables unattended scheduling.
+Installing source or setting the variable alone is not live-renewal acceptance.
+Do not copy synthetic test recipes into production authority. External OS/RDP
+observers remain outside the cooperative privacy boundary; privacy stays closed
+after delivery pending explicit recovery.
+
 ### Local Slack token bootstrap (source checkout)
 
 Run `python3 scripts/setup-private-slack.py` in your own existing terminal.

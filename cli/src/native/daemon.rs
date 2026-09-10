@@ -337,6 +337,10 @@ async fn run_socket_server(
         service_monitor_interval_ms,
     );
 
+    #[cfg(target_os = "linux")]
+    let _private_executor = super::private_coordinator::start_configured(&control_plane, session)
+        .map_err(str::to_owned)?;
+
     let (reset_tx, mut reset_rx) = mpsc::channel::<()>(64);
     let reset_tx = idle_timeout_ms.map(|_| Arc::new(reset_tx));
 

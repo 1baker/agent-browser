@@ -1517,6 +1517,27 @@ fn force_close_session_from_metadata(session: &str) -> bool {
 }
 
 fn main() {
+    // Dedicated local binding service; never enters browser daemon routing or
+    // environment credential loading. Arguments contain paths, never secrets.
+    let private_args: Vec<String> = env::args().collect();
+    if private_args.get(1).map(String::as_str) == Some("private-controller") {
+        if private_args.len() != 4 {
+            print_json_error("private_controller_arguments_invalid");
+            exit(1);
+        }
+        match native::private_controller_socket::run(
+            std::path::Path::new(&private_args[3]),
+            &private_args[2],
+        ) {
+            Ok(()) => print_json_value(json!({"success":true,"renewalEnabled":false})),
+            Err(_) => {
+                print_json_error("private_controller_failed_closed");
+                exit(1);
+            }
+        }
+        return;
+    }
+
     // Rust ignores SIGPIPE by default, causing println! to panic on broken pipes.
     // Reset to SIG_DFL so the OS terminates the process cleanly instead.
     #[cfg(unix)]

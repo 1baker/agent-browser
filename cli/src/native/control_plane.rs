@@ -119,6 +119,14 @@ enum WorkerMessage {
     Request(Box<ControlRequest>),
     #[cfg(unix)]
     Private(PrivateWorkerRequest),
+    #[cfg(target_os = "linux")]
+    PrivatePreflight {
+        handle: Value,
+        origin: String,
+        url: String,
+        endpoint: String,
+        response_tx: oneshot::Sender<Result<(), &'static str>>,
+    },
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -126,9 +134,10 @@ enum WorkerMessage {
 #[cfg(unix)]
 struct PrivateWorkerRequest {
     staged: super::private_handoff::PrivateStagedHandoff,
-    response_tx: oneshot::Sender<
-        Result<super::private_journey::PrivateJourneyPendingReconciliation, &'static str>,
-    >,
+    controller: Arc<super::private_controller::RecoveryController>,
+    binding: Option<super::private_bound_execution::BoundExecution>,
+    response_tx:
+        oneshot::Sender<Result<super::private_journey::ReconciledPrivateJourney, &'static str>>,
 }
 
 pub struct ControlPlaneWorker;
@@ -198,14 +207,84 @@ impl ControlPlaneWorker {
 }
 
 impl ControlPlaneHandle {
+    /// Read actual broker and retained-page identity without launching, locking
+    /// privacy, or admitting a credential. Only the private coordinator uses it.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn private_preflight(
+        &self,
+        handle: Value,
+        origin: String,
+        url: String,
+        endpoint: String,
+    ) -> Result<(), &'static str> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.tx
+            .try_send(WorkerMessage::PrivatePreflight {
+                handle,
+                origin,
+                url,
+                endpoint,
+                response_tx,
+            })
+            .map_err(|_| "private_preflight_failed")?;
+        tokio::time::timeout(Duration::from_secs(5), response_rx)
+            .await
+            .map_err(|_| "private_preflight_failed")?
+            .map_err(|_| "private_preflight_failed")?
+    }
+
+    /// Trusted private coordinator entry: execute once under broker authority,
+    /// reconcile cleanup, then deliver only over the independently authenticated
+    /// consumer socket. Success is installation ACK, not browser privacy release
+    /// or consumer runtime activation. No ordinary command routes to this entry.
+    #[cfg(unix)]
+    pub(crate) async fn submit_bound_private_and_deliver(
+        &self,
+        staged: super::private_handoff::PrivateStagedHandoff,
+        controller: Arc<super::private_controller::RecoveryController>,
+        binding: super::private_bound_execution::BoundExecution,
+        consumer: tokio::net::UnixStream,
+        delivery_key: [u8; 32],
+    ) -> Result<(), &'static str> {
+        self.submit_bound_private(staged, controller, binding)
+            .await?
+            .deliver(consumer, delivery_key)
+            .await
+            .map_err(|_| "private_delivery_failed_closed")
+    }
+
+    /// Production internal entry: a durably consumed binding is mandatory.
+    /// No public socket operation exposes this method or enables renewal.
+    #[cfg(unix)]
+    pub(crate) async fn submit_bound_private(
+        &self,
+        staged: super::private_handoff::PrivateStagedHandoff,
+        controller: Arc<super::private_controller::RecoveryController>,
+        binding: super::private_bound_execution::BoundExecution,
+    ) -> Result<super::private_journey::ReconciledPrivateJourney, &'static str> {
+        self.enqueue_private(staged, controller, Some(binding))
+            .await
+    }
+
     /// Internal only: ingress has already authenticated and encrypted the
     /// payload. No private value or receipt enters the ordinary job journal.
     /// A timeout never retries or reopens the durable privacy interval.
-    #[cfg(unix)]
+    #[cfg(all(unix, test))]
     pub(crate) async fn submit_private(
         &self,
         staged: super::private_handoff::PrivateStagedHandoff,
-    ) -> Result<super::private_journey::PrivateJourneyPendingReconciliation, &'static str> {
+        controller: Arc<super::private_controller::RecoveryController>,
+    ) -> Result<super::private_journey::ReconciledPrivateJourney, &'static str> {
+        self.enqueue_private(staged, controller, None).await
+    }
+
+    #[cfg(unix)]
+    async fn enqueue_private(
+        &self,
+        staged: super::private_handoff::PrivateStagedHandoff,
+        controller: Arc<super::private_controller::RecoveryController>,
+        binding: Option<super::private_bound_execution::BoundExecution>,
+    ) -> Result<super::private_journey::ReconciledPrivateJourney, &'static str> {
         if !staged.is_current() {
             return Err("private_handoff_expired");
         }
@@ -215,6 +294,8 @@ impl ControlPlaneHandle {
             .tx
             .try_send(WorkerMessage::Private(PrivateWorkerRequest {
                 staged,
+                controller,
+                binding,
                 response_tx,
             }))
             .is_err()
@@ -1443,6 +1524,19 @@ async fn run_worker(
                 };
 
                 match message {
+                    #[cfg(target_os = "linux")]
+                    WorkerMessage::PrivatePreflight { handle, origin, url, endpoint, response_tx } => {
+                        if response_tx.is_closed() { continue; }
+                        let check = async {
+                            let browser = state.browser.as_ref().ok_or("private_preflight_failed")?;
+                            if browser.get_cdp_url() != endpoint { return Err("private_preflight_failed"); }
+                            super::private_broker::prepare_private_target(&state, &handle, &origin, &url).await
+                                .map(|_| ()).map_err(|_| "private_preflight_failed")
+                        };
+                        let result = tokio::time::timeout(Duration::from_secs(4), check).await
+                            .unwrap_or(Err("private_preflight_failed"));
+                        let _ = response_tx.send(result);
+                    }
                     #[cfg(unix)]
                     WorkerMessage::Private(mut request) => {
                         status.queue_depth.fetch_sub(1, Ordering::Relaxed);
@@ -1453,15 +1547,33 @@ async fn run_worker(
                             let _ = request.response_tx.send(Err("private_handoff_expired"));
                             continue;
                         }
+                        let bound_check = if let Some(binding) = &request.binding {
+                            state.browser.as_ref().ok_or("private_browser_unavailable")
+                                .and_then(|browser| binding.validate(&request.staged, browser.get_cdp_url(), &state.session_id))
+                        } else {
+                            // Only test fixtures can enqueue without a binding.
+                            if cfg!(test) { Ok(()) } else { Err("private_binding_required") }
+                        };
+                        if bound_check.is_err() {
+                            let _ = request.response_tx.send(Err("private_worker_failed_closed"));
+                            continue;
+                        }
                         let (store, references, expires_at) = request.staged.into_parts();
                         let remaining = expires_at.duration_since(std::time::SystemTime::now())
                             .unwrap_or_default().min(Duration::from_secs(120));
                         status.set_state(WorkerState::Busy);
                         let execution = async {
+                            let endpoint = state.browser.as_ref()
+                                .ok_or("private_browser_unavailable")?.get_cdp_url();
+                            request.controller.validate_scope(&store, endpoint, &state.session_id)?;
                             let pending = super::private_journey::execute_private_journey(
                                 &state, &store, &references,
                             ).await?;
-                            pending.sanitize_and_close(&mut state, &store).await
+                            let closed = pending.sanitize_and_close(&mut state, &store).await?;
+                            let reconciled = closed.reconcile(&mut state, &store, &request.controller)?;
+                            Ok(if let Some(binding) = request.binding.take() {
+                                reconciled.bind_delivery(Arc::clone(&store), binding)
+                            } else { reconciled })
                         };
                         let result = tokio::select! {
                             biased;

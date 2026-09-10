@@ -6261,6 +6261,18 @@ agent-browser - fast browser automation CLI for AI agents
 
 Usage: agent-browser <command> [args] [options]
 
+Local controller (Linux, no browser actions or renewal):
+  private-controller setup <absolute-root>  Create/validate private authentication key
+  private-controller serve <absolute-root>  Serve authenticated probe/binding socket
+  Keys never belong in arguments or logs; existing sockets fail closed.
+
+Approved private executor (Linux, opt-in daemon configuration):
+  AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT  Prepared root with immutable execution.json
+  Unset means disabled. Requires independently reviewed recipe and exact approved
+  plan. executor.sock uses private authenticated ingress and guarded key delivery.
+  Never put credentials in commands, logs or environment variables. No retries,
+  browser launch/replacement, automatic privacy release or unattended scheduling.
+
 Core Commands:
   open <url>                 Navigate to URL
   click <sel>                Click element (or @ref)

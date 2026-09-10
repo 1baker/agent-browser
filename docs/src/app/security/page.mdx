@@ -2,6 +2,31 @@
 
 agent-browser includes security features to protect against credential exposure, prompt injection via untrusted page content, and unauthorized browser actions.
 
+The Linux-only <code>private-controller setup /absolute/private/root</code> and
+<code>private-controller serve /absolute/private/root</code> commands create a
+separate owner-only authentication key and Unix socket service. The authenticated
+protocol accepts only probes and immutable approved-plan bindings; it cannot
+accept credentials, run browser actions or enable renewal. Fresh challenges bind
+both request and response authentication. LitScout commits one-shot approval
+before connecting, so lost replies never authorize retries. Existing sockets
+and unsafe key files fail closed; no automatic key rotation or stale-socket
+deletion occurs. The Python client defaults to
+<code>~/.agent-browser/private-controller</code>. Never print the key. Account
+owner and root access are outside this protection boundary.
+
+The Linux browser daemon has a separate opt-in
+<code>AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT</code> setting for
+<code>executor.sock</code>. Unset means disabled. Its existing private root/key
+and immutable <code>execution.json</code> must be independently provisioned from
+an approved plan and reviewed four-stage recipe; requests cannot create authority.
+The trusted source coordinator authenticates fresh broker preflight before
+credential extraction, executes once, verifies cleanup and uses authenticated
+guarded LitScout installation. Existing sockets, expired approval, changed recipe
+or target, and ambiguous outcomes fail closed. No browser launch/replacement,
+credential retry, privacy release or recurring scheduler is provided. Synthetic
+test recipes must never become production authority. This opt-in source path
+does not by itself establish installed or live renewal readiness.
+
 Navigation, action-policy and output-boundary controls below are opt-in. The
 Linux/macOS cooperative CDP privacy gate also validates its runtime filesystem
 and records pending command receipts automatically; unsafe paths fail closed.

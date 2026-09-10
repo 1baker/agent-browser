@@ -99,6 +99,22 @@ pub(crate) struct PrivateStagedHandoff {
 }
 
 impl PrivateStagedHandoff {
+    pub(crate) fn references(&self) -> &[String] {
+        &self.references
+    }
+    pub(crate) fn operation_store(&self) -> &SecretStore {
+        &self.store
+    }
+
+    pub(crate) fn binding_operations(&self) -> Result<Vec<PrivateOperation>, &'static str> {
+        self.references
+            .iter()
+            .map(|reference| {
+                PrivateOperation::parse(&self.store.load(reference)?).map_err(|_| FAILED)
+            })
+            .collect()
+    }
+
     pub(crate) fn expires_at(&self) -> SystemTime {
         self.expires_at
     }
@@ -117,6 +133,25 @@ pub(crate) async fn receive(
     mut stream: UnixStream,
     authority: PrivateHandoffAuthority,
     store: Arc<SecretStore>,
+) -> Result<PrivateStagedHandoff, &'static str> {
+    receive_frame(&mut stream, authority, store, true).await
+}
+
+/// Coordinator-only duplex ingress. A single length/MAC-delimited frame leaves
+/// the connection available for completion and authenticated private delivery.
+pub(crate) async fn receive_connected(
+    stream: &mut UnixStream,
+    authority: PrivateHandoffAuthority,
+    store: Arc<SecretStore>,
+) -> Result<PrivateStagedHandoff, &'static str> {
+    receive_frame(stream, authority, store, false).await
+}
+
+async fn receive_frame(
+    stream: &mut UnixStream,
+    authority: PrivateHandoffAuthority,
+    store: Arc<SecretStore>,
+    require_eof: bool,
 ) -> Result<PrivateStagedHandoff, &'static str> {
     let receive = async move {
         if stream.peer_cred().map_err(|_| FAILED)?.uid() != unsafe { libc::geteuid() }
@@ -138,7 +173,7 @@ pub(crate) async fn receive(
         let mut tag = [0u8; 32];
         stream.read_exact(&mut tag).await.map_err(|_| FAILED)?;
         let mut trailing = [0u8; 1];
-        if stream.read(&mut trailing).await.map_err(|_| FAILED)? != 0 {
+        if require_eof && stream.read(&mut trailing).await.map_err(|_| FAILED)? != 0 {
             return Err(FAILED);
         }
         let mut mac =
@@ -150,9 +185,14 @@ pub(crate) async fn receive(
             .await
             .map_err(|_| FAILED)?
     };
-    tokio::time::timeout(Duration::from_secs(5), receive)
-        .await
-        .map_err(|_| FAILED)?
+    // Duplex coordinator peers authenticate the server before refetching their
+    // approved private source, so allow a bounded source-fetch window there.
+    tokio::time::timeout(
+        Duration::from_secs(if require_eof { 5 } else { 60 }),
+        receive,
+    )
+    .await
+    .map_err(|_| FAILED)?
 }
 
 fn stage_validated(

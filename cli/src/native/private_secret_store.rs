@@ -242,6 +242,14 @@ mod platform {
     }
 
     impl SecretStore {
+        /// Compare anchored directory identities, including reopened handles.
+        /// Controller authority must not share the operation journal.
+        pub(crate) fn same_directory(&self, other: &Self) -> StoreResult<bool> {
+            let left = self.directory.metadata().map_err(|_| UNAVAILABLE)?;
+            let right = other.directory.metadata().map_err(|_| UNAVAILABLE)?;
+            Ok(left.dev() == right.dev() && left.ino() == right.ino())
+        }
+
         /// Existing runtime homes may be readable (0755), but must be owned by
         /// this user and never writable by another user. Never chmod or repair.
         pub(crate) fn ensure_gate_base(root: &Path) -> StoreResult<()> {
@@ -848,6 +856,30 @@ mod platform {
                 .map_err(|_| INVALID)
         }
 
+        /// Immutable epoch bookmark for a trusted recovery controller. Neither
+        /// this lookup nor its payload is an ordinary command/result surface.
+        pub(crate) fn bind_reconciliation(&self, epoch: &str, reference: &str) -> StoreResult<()> {
+            let _lock = self.checked_lock()?;
+            Self::reference(epoch)?;
+            Self::reference(reference)?;
+            self.decrypt(reference, "payload")?;
+            let key =
+                self.reservation_fingerprint(b"reconciliation-bookmark", &[epoch.as_bytes()])?;
+            let encrypted = self.encrypt(&key, "reconciliation", reference.as_bytes())?;
+            self.create(&format!("{key}.reconciliation"), &encrypted)
+        }
+
+        pub(crate) fn reconciliation_reference(&self, epoch: &str) -> StoreResult<String> {
+            let _lock = self.checked_lock()?;
+            Self::reference(epoch)?;
+            let key =
+                self.reservation_fingerprint(b"reconciliation-bookmark", &[epoch.as_bytes()])?;
+            let reference =
+                String::from_utf8(self.decrypt(&key, "reconciliation")?).map_err(|_| INVALID)?;
+            Self::reference(&reference)?;
+            Ok(reference)
+        }
+
         pub fn stage(&self, payload: &[u8]) -> StoreResult<String> {
             let _lock = self.checked_lock()?;
             if self.file_count()? + 3 > MAX_FILES {
@@ -1056,6 +1088,45 @@ mod platform {
             self.create(&format!("{reference}.result"), &encrypted)
         }
 
+        /// One irreversible delivery attempt per admitted result, including
+        /// crashes and lost acknowledgements. Never derive this from a new stage.
+        #[cfg(unix)]
+        pub(crate) fn admit_delivery(&self, reference: &str) -> StoreResult<()> {
+            let _lock = self.checked_lock()?;
+            Self::reference(reference)?;
+            if self
+                .read_optional(&format!("{reference}.result"), MAX_SECRET_BYTES + OVERHEAD)?
+                .is_none()
+            {
+                return Err(INVALID);
+            }
+            self.create(
+                &format!("{reference}.delivery-admitted"),
+                b"delivery-admitted-v1",
+            )
+        }
+
+        /// The authenticated receiver acknowledged its durable install. This
+        /// receipt neither releases browser privacy nor proves runtime use.
+        #[cfg(unix)]
+        pub(crate) fn complete_delivery(&self, reference: &str) -> StoreResult<()> {
+            let _lock = self.checked_lock()?;
+            Self::reference(reference)?;
+            if self
+                .read_optional(&format!("{reference}.delivery-admitted"), 32)?
+                .as_deref()
+                != Some(b"delivery-admitted-v1")
+            {
+                return Err(INVALID);
+            }
+            let encrypted = self.encrypt(
+                reference,
+                "delivery",
+                b"{\"installed\":true,\"privacyReleased\":false}",
+            )?;
+            self.create(&format!("{reference}.delivery"), &encrypted)
+        }
+
         pub fn load_result(&self, reference: &str) -> StoreResult<Vec<u8>> {
             let _lock = self.checked_lock()?;
             self.decrypt(reference, "result")
@@ -1091,6 +1162,10 @@ pub struct SecretStore;
 
 #[cfg(not(unix))]
 impl SecretStore {
+    pub(crate) fn same_directory(&self, _: &Self) -> StoreResult<bool> {
+        Err(UNAVAILABLE)
+    }
+
     pub(crate) fn gate_begin_private_journey(
         &self,
         _: &str,
@@ -1167,6 +1242,12 @@ impl SecretStore {
     }
     pub fn open(_: &Path) -> StoreResult<Self> {
         Err(UNAVAILABLE)
+    }
+    pub(crate) fn bind_reconciliation(&self, _: &str, _: &str) -> StoreResult<()> {
+        Err("private_store_unsupported")
+    }
+    pub(crate) fn reconciliation_reference(&self, _: &str) -> StoreResult<String> {
+        Err("private_store_unsupported")
     }
     pub fn stage(&self, _: &[u8]) -> StoreResult<String> {
         Err(UNAVAILABLE)
@@ -1283,6 +1364,22 @@ mod tests {
         assert!(store
             .gate_advance_private(&lease, &epoch, &second, 2, "retained", &second)
             .is_err());
+    }
+
+    #[test]
+    fn reconciliation_bookmark_is_immutable_and_survives_reopen() {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let epoch = "a".repeat(64);
+        let first = store.stage(b"synthetic intent").unwrap();
+        let second = store.stage(b"different intent").unwrap();
+        store.bind_reconciliation(&epoch, &first).unwrap();
+        assert!(store.bind_reconciliation(&epoch, &second).is_err());
+        assert!(store.bind_reconciliation("invalid", &first).is_err());
+        assert!(store.reconciliation_reference(&"b".repeat(64)).is_err());
+        drop(store);
+        let store = fixture.store();
+        assert_eq!(store.reconciliation_reference(&epoch).unwrap(), first);
     }
 
     #[test]

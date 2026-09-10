@@ -2100,6 +2100,27 @@ Ordinary fill/evaluate/password-stdin are not trace-private credential ingress.
 
 ## Ready-to-Use Templates
 
+The Linux-only `private-controller setup /absolute/private/root` and
+`private-controller serve /absolute/private/root` commands provision and serve
+a dedicated authenticated local socket. They never enter browser daemon routing.
+The default Python client root is `~/.agent-browser/private-controller`; its
+random `authentication.key` is owner-only and must never enter arguments, chat,
+logs or exports. Only probes and immutable approved-plan bindings are accepted.
+Bindings consume one-shot LitScout approval and do not enable renewal, private
+browser execution or recovery. Do not delete a pre-existing socket to force
+startup; diagnose its ownership first. Live binding requires a separately
+approved exact plan, not merely permission to create the socket service.
+
+The Linux daemon separately supports opt-in `AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT`
+for `executor.sock`. Keep it unset unless the trusted coordinator has prepared
+owner-only immutable `execution.json` from an independently reviewed recipe and
+approved exact plan. Never synthesize this authority from an incoming request or
+copy synthetic test selectors. The source `private-renewal-coordinator.py` uses
+fresh authenticated daemon broker preflight before credential extraction, one
+approval claim, exact private execution, verified cleanup and guarded LitScout
+delivery. It does not launch/replace the browser, retry credentials, release
+privacy, or schedule recurring renewals. Source tests are not live acceptance.
+
 For the explicitly approved local SAM Slack connection, an operator may run
 `python3 scripts/setup-private-slack.py` from the source checkout in an existing
 terminal. Never collect its token through chat, command arguments, environment

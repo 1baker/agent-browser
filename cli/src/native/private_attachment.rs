@@ -1,7 +1,7 @@
 //! Dedicated private page-session ownership. No public command, gate release,
 //! browser close, automatic retry, or caller-selected detach session is exposed.
 
-use super::cdp::client::CdpClient;
+use super::cdp::client::{CdpClient, PrivateTransportClosed};
 use super::privacy_gate::PrivatePermit;
 use super::private_secret_store::SecretStore;
 use serde_json::json;
@@ -127,6 +127,36 @@ impl PrivateAttachment {
             return Err(INVALID);
         }
         Ok(())
+    }
+
+    /// Verify the durable acknowledgment after sealing the transport. This is
+    /// read-only evidence: it neither retries detach nor releases observation.
+    pub(crate) fn verify_closed_detach(
+        &self,
+        client: &Arc<CdpClient>,
+        permit: &PrivatePermit,
+        closed: &PrivateTransportClosed,
+        store: &SecretStore,
+    ) -> Result<(), &'static str> {
+        if !Arc::ptr_eq(&self.client, client)
+            || permit.epoch_id() != self.epoch
+            || permit.target_id() != Some(self.target.as_str())
+            || !closed.matches(client, permit)
+            || !matches!(self.state, DetachState::Completed)
+        {
+            return Err(INVALID);
+        }
+        if store.load(&self.detach_reference)? != self.detach_payload
+            || store.load_result(&self.detach_reference)? != b"{\"detached\":true}"
+        {
+            return Err(INVALID);
+        }
+        Ok(())
+    }
+
+    /// Opaque durable reference; caller must verify closed detach before recording it.
+    pub(crate) fn detach_reference(&self) -> &str {
+        &self.detach_reference
     }
 
     /// Admit once before dispatch. Repetition is harmless only after both the
@@ -279,7 +309,15 @@ mod tests {
             "result_ready"
         );
         assert!(client.public_lease().is_err());
-        client.quiesce_private_transport(&permit).await.unwrap();
+        let closed = client.quiesce_private_transport(&permit).await.unwrap();
+        assert!(!client.private_permit_matches(&permit));
+        attachment
+            .verify_closed_detach(&client, &permit, &closed, &store)
+            .unwrap();
+        attachment
+            .verify_closed_detach(&client, &permit, &closed, &store)
+            .unwrap();
+        assert!(client.public_lease().is_err());
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(1), peer)
                 .await
@@ -314,7 +352,11 @@ mod tests {
             store.status(&attachment.detach_reference).unwrap(),
             "admitted"
         );
-        client.quiesce_private_transport(&permit).await.unwrap();
+        let closed = client.quiesce_private_transport(&permit).await.unwrap();
+        assert_eq!(
+            attachment.verify_closed_detach(&client, &permit, &closed, &store),
+            Err(INVALID)
+        );
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(1), peer)
                 .await
@@ -343,10 +385,25 @@ mod tests {
             "staged"
         );
         attachment.detach(&store, &permit).await.unwrap();
-        client.quiesce_private_transport(&permit).await.unwrap();
-        other
+        let closed = client.quiesce_private_transport(&permit).await.unwrap();
+        let other_closed = other
             .quiesce_private_transport(&other_permit)
             .await
+            .unwrap();
+        assert_eq!(
+            attachment.verify_closed_detach(&other, &permit, &closed, &store),
+            Err(INVALID)
+        );
+        assert_eq!(
+            attachment.verify_closed_detach(&client, &other_permit, &closed, &store),
+            Err(INVALID)
+        );
+        assert_eq!(
+            attachment.verify_closed_detach(&client, &permit, &other_closed, &store),
+            Err(INVALID)
+        );
+        attachment
+            .verify_closed_detach(&client, &permit, &closed, &store)
             .unwrap();
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(1), peer)
@@ -361,6 +418,93 @@ mod tests {
             .unwrap()
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn closed_detach_requires_exact_identity_and_durable_receipts() {
+        let (_fixture, store) = store();
+        let (_other_fixture, other_store) = self::store();
+        let (client, peer) = peer(0).await;
+        let permit = client.begin_private_interval(&target()).unwrap();
+        let mut attachment = PrivateAttachment::acquire(Arc::clone(&client), &store, &permit)
+            .await
+            .unwrap();
+        attachment.detach(&store, &permit).await.unwrap();
+        let closed = client.quiesce_private_transport(&permit).await.unwrap();
+        assert!(attachment
+            .verify_closed_detach(&client, &permit, &closed, &other_store)
+            .is_err());
+
+        attachment.target.push_str("-wrong");
+        assert_eq!(
+            attachment.verify_closed_detach(&client, &permit, &closed, &store),
+            Err(INVALID)
+        );
+        attachment.target = "retained".to_owned();
+        attachment.epoch.push_str("-wrong");
+        assert_eq!(
+            attachment.verify_closed_detach(&client, &permit, &closed, &store),
+            Err(INVALID)
+        );
+        attachment.epoch = permit.epoch_id().to_owned();
+        attachment.detach_payload.push(b' ');
+        assert_eq!(
+            attachment.verify_closed_detach(&client, &permit, &closed, &store),
+            Err(INVALID)
+        );
+        attachment.detach_payload.pop();
+
+        let exact_reference = attachment.detach_reference.clone();
+        let invalid_result_reference = store.stage(&attachment.detach_payload).unwrap();
+        store.admit(&invalid_result_reference).unwrap();
+        attachment.detach_reference = invalid_result_reference;
+        assert!(attachment
+            .verify_closed_detach(&client, &permit, &closed, &store)
+            .is_err());
+        store
+            .store_result(&attachment.detach_reference, b"{\"detached\":false}")
+            .unwrap();
+        assert_eq!(
+            attachment.verify_closed_detach(&client, &permit, &closed, &store),
+            Err(INVALID)
+        );
+        attachment.detach_reference = exact_reference;
+        attachment
+            .verify_closed_detach(&client, &permit, &closed, &store)
+            .unwrap();
+        assert!(client.public_lease().is_err());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), peer)
+                .await
+                .unwrap()
+                .unwrap()
+                .iter()
+                .filter(|method| method.as_str() == "Target.detachFromTarget")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_transport_without_detach_is_not_completion() {
+        let (_fixture, store) = store();
+        let (client, peer) = peer(0).await;
+        let permit = client.begin_private_interval(&target()).unwrap();
+        let attachment = PrivateAttachment::acquire(Arc::clone(&client), &store, &permit)
+            .await
+            .unwrap();
+        let closed = client.quiesce_private_transport(&permit).await.unwrap();
+        assert_eq!(
+            attachment.verify_closed_detach(&client, &permit, &closed, &store),
+            Err(INVALID)
+        );
+        assert!(client.public_lease().is_err());
+        assert!(!tokio::time::timeout(Duration::from_secs(1), peer)
+            .await
+            .unwrap()
+            .unwrap()
+            .iter()
+            .any(|method| method == "Target.detachFromTarget"));
     }
 
     #[tokio::test]
@@ -386,7 +530,11 @@ mod tests {
             "admitted"
         );
         assert!(client.public_lease().is_err());
-        client.quiesce_private_transport(&permit).await.unwrap();
+        let closed = client.quiesce_private_transport(&permit).await.unwrap();
+        assert_eq!(
+            attachment.verify_closed_detach(&client, &permit, &closed, &store),
+            Err(INVALID)
+        );
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(1), peer)
                 .await

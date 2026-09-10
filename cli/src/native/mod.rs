@@ -36,8 +36,20 @@ pub mod policy;
 pub mod privacy_gate;
 #[allow(dead_code)]
 pub mod private_attachment;
+#[cfg(unix)]
+#[allow(dead_code)]
+pub mod private_bound_execution;
 #[allow(dead_code)]
 pub mod private_broker;
+#[allow(dead_code)]
+pub mod private_controller;
+#[allow(dead_code)]
+pub mod private_controller_socket;
+#[cfg(target_os = "linux")]
+mod private_coordinator;
+#[cfg(unix)]
+#[allow(dead_code)]
+mod private_delivery;
 #[allow(dead_code)]
 pub mod private_execution;
 #[cfg(unix)]
@@ -49,6 +61,8 @@ pub mod private_identity;
 pub mod private_journey;
 #[allow(dead_code)]
 pub mod private_operation;
+#[allow(dead_code)]
+pub mod private_recovery;
 #[allow(dead_code)]
 pub mod private_secret_store;
 #[allow(dead_code)]
