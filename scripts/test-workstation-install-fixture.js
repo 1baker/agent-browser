@@ -25,6 +25,8 @@ const commandLog = join(fixtureRoot, 'commands.jsonl');
 const installRoot = join(fixtureRoot, 'workstation');
 const failedInstallRoot = join(fixtureRoot, 'failed-workstation');
 const lockedInstallRoot = join(fixtureRoot, 'locked-workstation');
+const retainedBlockedRoot = join(fixtureRoot, 'retained-blocked-workstation');
+const enforcedMissingRoot = join(fixtureRoot, 'enforced-missing-workstation');
 const home = join(fixtureRoot, 'home');
 const xdgRoot = join(fixtureRoot, 'xdg');
 const agentBrowser = resolveAgentBrowser();
@@ -45,6 +47,119 @@ installCommandShim('sudo');
 
 try {
   assertWorkstationInterface();
+  assertNativeRetainedRequirementOrdering();
+  const configuredEnvRequirement = join(fixtureRoot, 'env-override', 'missing.json');
+  const configuredEnvFile = join(fixtureRoot, 'retained-status.env');
+  writeFileSync(
+    configuredEnvFile,
+    `AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT=${configuredEnvRequirement}\n`,
+  );
+  const beforeNativeStatus = treeManifest(fixtureRoot, ignoredFixturePaths());
+  const nativeStatus = runInstaller(
+    installRoot,
+    ['retained-browser-status', '--json'],
+  );
+  assert.equal(
+    nativeStatus.status,
+    0,
+    `native retained-browser status must succeed:\n${nativeStatus.stdout}${nativeStatus.stderr}`,
+  );
+  const nativeStatusJson = JSON.parse(nativeStatus.stdout);
+  assert.equal(
+    nativeStatusJson.schemaVersion,
+    'agent-browser.workstation-retained-browser-status.v1',
+  );
+  assert.equal(
+    nativeStatusJson.retainedBrowserRequirement.state,
+    'not_configured',
+  );
+  assert.deepEqual(
+    treeManifest(fixtureRoot, ignoredFixturePaths()),
+    beforeNativeStatus,
+    'native retained-browser status must not create workstation or browser state',
+  );
+
+  const overrideRequirement = join(fixtureRoot, 'override', 'missing.json');
+  const overrideStatus = runInstaller(
+    installRoot,
+    ['retained-browser-status', '--json'],
+    { AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT: overrideRequirement },
+  );
+  assert.equal(
+    overrideStatus.status,
+    0,
+    `native retained-browser override status must succeed:\n${overrideStatus.stdout}${overrideStatus.stderr}`,
+  );
+  assert.equal(
+    JSON.parse(overrideStatus.stdout).retainedBrowserRequirement.requirementPath,
+    overrideRequirement,
+    'native status must honor the configured durable requirement path',
+  );
+  assert.equal(
+    existsSync(dirname(overrideRequirement)),
+    false,
+    'reading an absent configured requirement must not create its parent',
+  );
+
+  const envFileStatus = runInstaller(
+    installRoot,
+    ['retained-browser-status', '--json'],
+    { AGENT_BROWSER_ENV_FILE: configuredEnvFile },
+  );
+  assert.equal(
+    envFileStatus.status,
+    0,
+    `native retained-browser env-file status must succeed:\n${envFileStatus.stdout}${envFileStatus.stderr}`,
+  );
+  assert.equal(
+    JSON.parse(envFileStatus.stdout).retainedBrowserRequirement.requirementPath,
+    configuredEnvRequirement,
+    'native status must load the configured requirement path from the normal env file',
+  );
+  assert.equal(
+    existsSync(dirname(configuredEnvRequirement)),
+    false,
+    'env-file status must not create the configured requirement parent',
+  );
+
+  const enforcedRequirement = join(
+    enforcedMissingRoot,
+    '.agent-browser',
+    'publications',
+    'local-dashboard-retained-browser.json',
+  );
+  const enforcedMarker = `${enforcedRequirement}.required`;
+  mkdirSync(dirname(enforcedMarker), { recursive: true, mode: 0o700 });
+  writeFileSync(enforcedMarker, `${JSON.stringify({
+    schemaVersion: 'agent-browser.local-dashboard-retained-browser-enforcement.v1',
+    createdAt: '2026-08-15T12:00:00.000Z',
+    requirementSha256: '0'.repeat(64),
+  })}\n`, { mode: 0o600 });
+  chmodSync(enforcedMarker, 0o600);
+  writeFileSync(commandLog, '');
+  const enforcedMissingStatus = runInstaller(
+    enforcedMissingRoot,
+    ['retained-browser-status', '--json'],
+  );
+  assert.notEqual(
+    enforcedMissingStatus.status,
+    0,
+    'native status must reject an enforcement record with no requirement',
+  );
+  assert.match(
+    `${enforcedMissingStatus.stdout}${enforcedMissingStatus.stderr}`,
+    /retained_browser_requirement_missing/,
+  );
+  assert.deepEqual(
+    regularFiles(enforcedMissingRoot),
+    [enforcedMarker],
+    'enforced-missing status must not create state',
+  );
+  assert.equal(
+    readFileSync(commandLog, 'utf8'),
+    '',
+    'enforced-missing status must not invoke service commands',
+  );
   const beforeDryRun = treeManifest(fixtureRoot, ignoredFixturePaths());
   const dryRun = runInstaller(installRoot, ['--dry-run', '--json']);
   assert.equal(
@@ -117,6 +232,63 @@ try {
     const path = join(payloadRoot, file.path);
     assert.equal(sha256(path), file.sha256, `controller asset hash mismatch: ${file.path}`);
   }
+  const retainedPreparationScript = join(
+    payloadRoot,
+    'scripts',
+    'prepare-local-dashboard-retained-browser.js',
+  );
+  assert.equal(
+    existsSync(retainedPreparationScript),
+    true,
+    'source-free payload must include the retained-browser preparation controller',
+  );
+  assert.match(
+    readFileSync(retainedPreparationScript, 'utf8'),
+    /discoverVerifyAndPinRetainedBrowser/,
+    'installed preparation controller must use exact live discovery and pinning',
+  );
+  const installedPreparationHelp = spawnSync(installedBinary, [
+    'install',
+    'workstation',
+    'prepare-retained-browser',
+    '--help',
+  ], {
+    cwd: fixtureRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: home,
+      PATH: `${fakeBin}:/usr/bin:/bin`,
+      AGENT_BROWSER_WORKSTATION_ROOT: installRoot,
+    },
+  });
+  assert.equal(
+    installedPreparationHelp.status,
+    0,
+    `installed preparation help must run source-free:\n${installedPreparationHelp.stdout}${installedPreparationHelp.stderr}`,
+  );
+  assert.match(
+    `${installedPreparationHelp.stdout}${installedPreparationHelp.stderr}`,
+    /source-free workstation preparation command/,
+  );
+  const installedControllerHelp = spawnSync('node', [retainedPreparationScript, '--help'], {
+    cwd: payloadRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: home,
+      PATH: `${fakeBin}:/usr/bin:/bin`,
+    },
+  });
+  assert.equal(
+    installedControllerHelp.status,
+    0,
+    `installed preparation controller help must run without the checkout:\n${installedControllerHelp.stdout}${installedControllerHelp.stderr}`,
+  );
+  assert.match(
+    `${installedControllerHelp.stdout}${installedControllerHelp.stderr}`,
+    /This command has no page interaction or\s+prompt-submission action/,
+  );
   const guacamoleRoot = join(payloadRoot, 'guacamole');
   assert.equal(
     sha256(join(guacamoleRoot, 'manifest.json')),
@@ -375,6 +547,44 @@ try {
     'a lock-rejected apply must not quiesce or activate user units',
   );
 
+  const retainedRequirement = join(
+    retainedBlockedRoot,
+    '.agent-browser',
+    'publications',
+    'local-dashboard-retained-browser.json',
+  );
+  mkdirSync(dirname(retainedRequirement), { recursive: true });
+  writeFileSync(
+    retainedRequirement,
+    `${JSON.stringify({ schemaVersion: 'unsupported.fixture' })}\n`,
+    { mode: 0o600 },
+  );
+  chmodSync(retainedRequirement, 0o600);
+  writeFileSync(commandLog, '');
+  const retainedBlockedApply = runInstaller(
+    retainedBlockedRoot,
+    ['--apply', '--json'],
+  );
+  assert.notEqual(
+    retainedBlockedApply.status,
+    0,
+    'a configured invalid retained lane must fail workstation apply',
+  );
+  assert.match(
+    `${retainedBlockedApply.stdout}${retainedBlockedApply.stderr}`,
+    /retained_browser_requirement_invalid/,
+  );
+  assert.deepEqual(
+    regularFiles(retainedBlockedRoot),
+    [retainedRequirement],
+    'retained-lane refusal must occur before lock or payload staging',
+  );
+  assert.equal(
+    readFileSync(commandLog, 'utf8'),
+    '',
+    'retained-lane refusal must not quiesce or activate user units',
+  );
+
   console.log('Workstation install source-free fixture passed');
 } finally {
   rmSync(fixtureRoot, { recursive: true, force: true });
@@ -439,6 +649,55 @@ function assertWorkstationInterface() {
     `${help.stdout}${help.stderr}`,
     /install workstation/,
     'binary does not expose the required `agent-browser install workstation` interface',
+  );
+  assert.match(
+    `${help.stdout}${help.stderr}`,
+    /retained-browser-status/,
+    'binary does not expose the native retained-browser status interface',
+  );
+  assert.match(
+    `${help.stdout}${help.stderr}`,
+    /prepare-retained-browser/,
+    'binary does not expose the source-free retained-browser preparation interface',
+  );
+}
+
+function assertNativeRetainedRequirementOrdering() {
+  const source = readFileSync(
+    join(repoRoot, 'cli', 'src', 'workstation_install.rs'),
+    'utf8',
+  );
+  const start = source.indexOf('fn reconcile_workstation_locked(');
+  const end = source.indexOf('\nfn ensure_guacamole_header_user(', start);
+  assert.notEqual(start, -1, 'native workstation reconcile implementation must exist');
+  assert.notEqual(end, -1, 'native workstation reconcile boundary must be discoverable');
+  const reconcile = source.slice(start, end);
+  const verify = reconcile.indexOf('verify_retained_browser_requirement_for_root(root)?');
+  const quiesce = reconcile.indexOf('quiesce_existing_user_units(paths)?');
+  assert.notEqual(
+    verify,
+    -1,
+    'binary-owned reconcile must verify the durable retained browser requirement',
+  );
+  assert.ok(
+    verify < quiesce,
+    'retained browser verification must precede the first reconcile mutation',
+  );
+
+  const installStart = source.indexOf('fn run_workstation_install(');
+  const installEnd = source.indexOf('\n#[derive(Debug, Serialize)]', installStart);
+  const install = source.slice(installStart, installEnd);
+  const installVerify = install.indexOf('verify_retained_browser_requirement_for_root(&root)');
+  const installLock = install.indexOf('WorkstationLock::acquire(&root)');
+  const installQuiesce = install.indexOf('quiesce_existing_user_units(&paths)');
+  assert.notEqual(
+    installVerify,
+    -1,
+    'workstation apply must verify the durable retained browser requirement',
+  );
+  assert.ok(
+    installVerify < installLock && installVerify < installQuiesce,
+    'retained browser verification must precede apply lock, staging, and quiescence',
   );
 }
 

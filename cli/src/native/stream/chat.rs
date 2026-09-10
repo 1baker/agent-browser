@@ -525,10 +525,17 @@ pub(crate) async fn execute_chat_tool(session: &str, command: &str) -> String {
     }
 }
 
+async fn write_chat_event(stream: &mut tokio::net::TcpStream, event: &str) -> Result<(), String> {
+    stream
+        .write_all(event.as_bytes())
+        .await
+        .map_err(|_| "Chat client disconnected.".to_string())
+}
+
 async fn stream_gateway_response(
     stream: &mut tokio::net::TcpStream,
     gw_response: reqwest::Response,
-) -> Vec<(String, String, String)> {
+) -> Result<Vec<(String, String, String)>, String> {
     use futures_util::StreamExt as _;
 
     let mut text_part_id = uuid::Uuid::new_v4().to_string();
@@ -542,7 +549,7 @@ async fn stream_gateway_response(
     while let Some(chunk_result) = byte_stream.next().await {
         let chunk = match chunk_result {
             Ok(c) => c,
-            Err(_) => break,
+            Err(error) => return Err(format!("Gateway stream failed: {error}")),
         };
 
         buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -560,7 +567,7 @@ async fn stream_gateway_response(
             if data == "[DONE]" {
                 if text_started {
                     let ev = format!("data: {}\n\n", json!({"type":"text-end","id":text_part_id}));
-                    let _ = stream.write_all(ev.as_bytes()).await;
+                    write_chat_event(stream, &ev).await?;
                 }
                 let mut indices: Vec<usize> = tool_call_args.keys().copied().collect();
                 indices.sort();
@@ -569,7 +576,7 @@ async fn stream_gateway_response(
                         tool_calls.push(tc);
                     }
                 }
-                return tool_calls;
+                return Ok(tool_calls);
             }
             let Ok(sse_json) = serde_json::from_str::<Value>(data) else {
                 continue;
@@ -588,7 +595,7 @@ async fn stream_gateway_response(
                             json!({"type":"text-start","id":text_part_id})
                         );
                         if stream.write_all(ev.as_bytes()).await.is_err() {
-                            return tool_calls;
+                            return Err("Chat client disconnected.".to_string());
                         }
                         text_started = true;
                     }
@@ -597,7 +604,7 @@ async fn stream_gateway_response(
                         json!({"type":"text-delta","id":text_part_id,"delta":text})
                     );
                     if stream.write_all(ev.as_bytes()).await.is_err() {
-                        return tool_calls;
+                        return Err("Chat client disconnected.".to_string());
                     }
                 }
             }
@@ -605,7 +612,7 @@ async fn stream_gateway_response(
             if let Some(tcs) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                 if text_started {
                     let ev = format!("data: {}\n\n", json!({"type":"text-end","id":text_part_id}));
-                    let _ = stream.write_all(ev.as_bytes()).await;
+                    write_chat_event(stream, &ev).await?;
                     text_started = false;
                     text_part_id = uuid::Uuid::new_v4().to_string();
                 }
@@ -629,7 +636,7 @@ async fn stream_gateway_response(
                             "data: {}\n\n",
                             json!({"type":"tool-input-start","toolCallId":id,"toolName":name})
                         );
-                        let _ = stream.write_all(ev.as_bytes()).await;
+                        write_chat_event(stream, &ev).await?;
                         e.insert((id, name, String::new()));
                     }
                     if let Some(arg_delta) = tc
@@ -643,25 +650,30 @@ async fn stream_gateway_response(
                             "data: {}\n\n",
                             json!({"type":"tool-input-delta","toolCallId":entry.0,"inputTextDelta":arg_delta})
                         );
-                        let _ = stream.write_all(ev.as_bytes()).await;
+                        write_chat_event(stream, &ev).await?;
                     }
                 }
             }
         }
     }
 
-    if text_started {
-        let ev = format!("data: {}\n\n", json!({"type":"text-end","id":text_part_id}));
-        let _ = stream.write_all(ev.as_bytes()).await;
-    }
-    let mut indices: Vec<usize> = tool_call_args.keys().copied().collect();
-    indices.sort();
-    for idx in indices {
-        if let Some(tc) = tool_call_args.remove(&idx) {
-            tool_calls.push(tc);
+    Err("Gateway stream ended before [DONE]; no partial tool calls were executed.".to_string())
+}
+
+struct ChatLimits {
+    turn: std::time::Duration,
+    tool: std::time::Duration,
+    rounds: usize,
+}
+
+impl Default for ChatLimits {
+    fn default() -> Self {
+        Self {
+            turn: std::time::Duration::from_secs(300),
+            tool: std::time::Duration::from_secs(60),
+            rounds: 50,
         }
     }
-    tool_calls
 }
 
 pub(super) async fn handle_chat_request(
@@ -691,25 +703,88 @@ pub(super) async fn handle_chat_request(
     let default_model = std::env::var("AI_GATEWAY_MODEL")
         .unwrap_or_else(|_| "anthropic/claude-sonnet-4.6".to_string());
 
+    run_dashboard_chat(
+        stream,
+        body,
+        &cors,
+        &gateway_url,
+        &api_key,
+        &default_model,
+        ChatLimits::default(),
+    )
+    .await;
+}
+
+/// One deadline covers compaction, gateway IO, streaming and tool execution.
+/// Only a completed gateway turn emits finish; unknown outcomes never replay.
+async fn run_dashboard_chat(
+    stream: &mut tokio::net::TcpStream,
+    body: &str,
+    cors: &str,
+    gateway_url: &str,
+    api_key: &str,
+    default_model: &str,
+    limits: ChatLimits,
+) {
     let parsed: Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(e) => {
-            let err = format!(r#"{{"error":"Invalid JSON: {}"}}"#, e);
-            let resp = format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{cors}\r\n",
-                err.len()
-            );
-            let _ = stream.write_all(resp.as_bytes()).await;
-            let _ = stream.write_all(err.as_bytes()).await;
+        Ok(value) => value,
+        Err(error) => {
+            let body = json!({"error":format!("Invalid JSON: {error}")}).to_string();
+            let response = format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{cors}\r\n{body}", body.len());
+            let _ = stream.write_all(response.as_bytes()).await;
             return;
         }
     };
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nx-vercel-ai-ui-message-stream: v1\r\n{cors}\r\n"
+    );
+    if stream.write_all(headers.as_bytes()).await.is_err() {
+        return;
+    }
+    let result = tokio::time::timeout(
+        limits.turn,
+        dashboard_chat_turn(
+            stream,
+            &parsed,
+            gateway_url,
+            api_key,
+            default_model,
+            &limits,
+            |session, command| async move { execute_chat_tool(&session, &command).await },
+        ),
+    )
+    .await;
+    let final_event = match result {
+        Ok(Ok(())) => json!({"type":"finish"}),
+        Ok(Err(error)) => json!({"type":"error","errorText":error}),
+        Err(_) => {
+            json!({"type":"error","errorText":"Chat session timed out (5 minute limit); any in-flight tool outcome is unknown. No further actions were dispatched."})
+        }
+    };
+    // Bound reporting too: a disconnected or non-reading dashboard cannot hang a turn.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        let _ = stream
+            .write_all(format!("data: {final_event}\n\n").as_bytes())
+            .await;
+        let _ = stream.write_all(b"data: [DONE]\n\n").await;
+    })
+    .await;
+}
 
+async fn dashboard_chat_turn<F: std::future::Future<Output = String>>(
+    stream: &mut tokio::net::TcpStream,
+    parsed: &Value,
+    gateway_url: &str,
+    api_key: &str,
+    default_model: &str,
+    limits: &ChatLimits,
+    execute_tool: impl Fn(String, String) -> F,
+) -> Result<(), String> {
     let messages = parsed.get("messages").cloned().unwrap_or(json!([]));
     let model = parsed
         .get("model")
         .and_then(|v| v.as_str())
-        .unwrap_or(&default_model)
+        .unwrap_or(default_model)
         .to_string();
     let session = parsed
         .get("session")
@@ -785,7 +860,7 @@ pub(super) async fn handle_chat_request(
         let to_summarize = &openai_messages[1..split];
 
         if let Some(summary) =
-            summarize_for_compaction(client, &url, &api_key, &model, to_summarize).await
+            summarize_for_compaction(client, &url, api_key, &model, to_summarize).await
         {
             let summary_msg = json!({
                 "role": "system",
@@ -806,20 +881,13 @@ pub(super) async fn handle_chat_request(
         }
     }
 
-    let headers = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nx-vercel-ai-ui-message-stream: v1\r\n{cors}\r\n"
-    );
-    if stream.write_all(headers.as_bytes()).await.is_err() {
-        return;
-    }
-
     let message_id = uuid::Uuid::new_v4().to_string();
     let start_ev = format!(
         "data: {}\n\n",
         json!({"type":"start","messageId":message_id})
     );
     if stream.write_all(start_ev.as_bytes()).await.is_err() {
-        return;
+        return Err("Chat client disconnected.".to_string());
     }
 
     if let Some(ref summary) = compaction_summary {
@@ -834,7 +902,7 @@ pub(super) async fn handle_chat_request(
                 }
             })
         );
-        let _ = stream.write_all(ev.as_bytes()).await;
+        write_chat_event(stream, &ev).await?;
     } else if compaction_failed {
         let ev = format!(
             "data: {}\n\n",
@@ -846,25 +914,13 @@ pub(super) async fn handle_chat_request(
                 }
             })
         );
-        let _ = stream.write_all(ev.as_bytes()).await;
+        write_chat_event(stream, &ev).await?;
     }
 
-    let total_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
-    const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-
-    for _step in 0..50 {
-        if tokio::time::Instant::now() >= total_deadline {
-            let ev = format!(
-                "data: {}\n\n",
-                json!({"type":"error","errorText":"Chat session timed out (5 minute limit)."})
-            );
-            let _ = stream.write_all(ev.as_bytes()).await;
-            break;
-        }
-
+    for _step in 0..limits.rounds {
         let step_ev = "data: {\"type\":\"start-step\"}\n\n";
         if stream.write_all(step_ev.as_bytes()).await.is_err() {
-            return;
+            return Err("Chat client disconnected.".to_string());
         }
 
         let gateway_body = json!({
@@ -884,31 +940,21 @@ pub(super) async fn handle_chat_request(
         {
             Ok(r) => r,
             Err(e) => {
-                let ev = format!(
-                    "data: {}\n\n",
-                    json!({"type":"error","errorText":format!("Gateway request failed: {}", e)})
-                );
-                let _ = stream.write_all(ev.as_bytes()).await;
-                break;
+                return Err(format!("Gateway request failed: {e}"));
             }
         };
 
         if !gw_response.status().is_success() {
             let body_text = gw_response.text().await.unwrap_or_default();
-            let ev = format!(
-                "data: {}\n\n",
-                json!({"type":"error","errorText":body_text})
-            );
-            let _ = stream.write_all(ev.as_bytes()).await;
-            break;
+            return Err(body_text);
         }
 
-        let tool_calls = stream_gateway_response(stream, gw_response).await;
+        let tool_calls = stream_gateway_response(stream, gw_response).await?;
 
         if tool_calls.is_empty() {
             let finish_step_ev = "data: {\"type\":\"finish-step\"}\n\n";
-            let _ = stream.write_all(finish_step_ev.as_bytes()).await;
-            break;
+            write_chat_event(stream, finish_step_ev).await?;
+            return Ok(());
         }
 
         let tc_values: Vec<Value> = tool_calls.iter().map(|(id, name, args)| {
@@ -929,16 +975,16 @@ pub(super) async fn handle_chat_request(
                     "input": input
                 })
             );
-            let _ = stream.write_all(ev.as_bytes()).await;
+            write_chat_event(stream, &ev).await?;
 
             let result = match tokio::time::timeout(
-                TOOL_TIMEOUT,
-                execute_chat_tool(&session, command),
+                limits.tool,
+                execute_tool(session.clone(), command.to_string()),
             )
             .await
             {
                 Ok(r) => r,
-                Err(_) => "Tool execution timed out after 60 seconds.".to_string(),
+                Err(_) => return Err("Tool execution timed out; outcome is unknown. No further actions were dispatched.".to_string()),
             };
 
             let frontend_output = enrich_tool_output(&result);
@@ -950,7 +996,7 @@ pub(super) async fn handle_chat_request(
                     "output": frontend_output
                 })
             );
-            let _ = stream.write_all(ev.as_bytes()).await;
+            write_chat_event(stream, &ev).await?;
 
             openai_messages.push(json!({
                 "role": "tool",
@@ -960,11 +1006,215 @@ pub(super) async fn handle_chat_request(
         }
 
         let finish_step_ev = "data: {\"type\":\"finish-step\"}\n\n";
-        let _ = stream.write_all(finish_step_ev.as_bytes()).await;
+        write_chat_event(stream, finish_step_ev).await?;
     }
 
-    let finish_ev = "data: {\"type\":\"finish\"}\n\n";
-    let _ = stream.write_all(finish_ev.as_bytes()).await;
-    let done_ev = "data: [DONE]\n\n";
-    let _ = stream.write_all(done_ev.as_bytes()).await;
+    Err(format!(
+        "Chat did not complete within {} model rounds.",
+        limits.rounds
+    ))
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use tokio::io::AsyncReadExt;
+    use tokio::net::{TcpListener, TcpStream};
+
+    async fn sockets() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        (listener.accept().await.unwrap().0, client)
+    }
+
+    // Each accepted request is counted; no browser, environment changes or credentials.
+    async fn gateway(
+        body: String,
+        stall: bool,
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let count = Arc::new(AtomicUsize::new(0));
+        let requests = count.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                requests.fetch_add(1, Ordering::SeqCst);
+                let mut request = Vec::new();
+                let mut chunk = [0; 8192];
+                loop {
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                        let len = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length: "))
+                            .unwrap_or("0")
+                            .parse::<usize>()
+                            .unwrap();
+                        if request.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len() + usize::from(stall));
+                let _ = socket.write_all(headers.as_bytes()).await;
+                let _ = socket.write_all(body.as_bytes()).await;
+                if stall {
+                    std::future::pending::<()>().await;
+                }
+            }
+        });
+        (url, count, task)
+    }
+
+    fn tool_response(done: bool) -> String {
+        format!(
+            "data: {}\n\n{}",
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tool-one","function":{"name":"agent_browser","arguments":"{\"command\":\"not-a-browser-command\"}"}}]}}]}),
+            if done { "data: [DONE]\n\n" } else { "" }
+        )
+    }
+
+    async fn rendered(
+        body: String,
+        stall: bool,
+        messages: Value,
+        rounds: usize,
+    ) -> (String, usize) {
+        let (url, count, gateway_task) = gateway(body, stall).await;
+        let (mut server, mut client) = sockets().await;
+        let reader = tokio::spawn(async move {
+            let mut output = String::new();
+            client.read_to_string(&mut output).await.unwrap();
+            output
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            run_dashboard_chat(
+                &mut server,
+                &json!({"messages":messages}).to_string(),
+                "",
+                &url,
+                "fixture",
+                "fixture",
+                ChatLimits {
+                    turn: if stall {
+                        std::time::Duration::from_millis(500)
+                    } else {
+                        std::time::Duration::from_secs(5)
+                    },
+                    tool: std::time::Duration::from_millis(100),
+                    rounds,
+                },
+            ),
+        )
+        .await
+        .expect("dashboard deadline must bound the whole turn");
+        drop(server);
+        let output = reader.await.unwrap();
+        gateway_task.abort();
+        (output, count.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn completed_dashboard_turn_emits_finish() {
+        let (output, requests) = rendered("data: [DONE]\n\n".into(), false, json!([]), 50).await;
+        assert!(output.contains("\"type\":\"finish\""));
+        assert!(!output.contains("\"type\":\"error\""));
+        assert_eq!(requests, 1);
+    }
+
+    #[tokio::test]
+    async fn truncated_dashboard_turn_does_not_dispatch_partial_tools() {
+        let (output, requests) = rendered(tool_response(false), false, json!([]), 50).await;
+        assert!(output.contains("before [DONE]"));
+        assert!(!output.contains("tool-input-available"));
+        assert!(!output.contains("\"type\":\"finish\""));
+        assert_eq!(requests, 1);
+    }
+
+    #[tokio::test]
+    async fn dashboard_round_exhaustion_is_not_success() {
+        let (output, requests) = rendered(tool_response(true), false, json!([]), 50).await;
+        assert!(output.contains("did not complete within 50 model rounds"));
+        assert!(!output.contains("\"type\":\"finish\""));
+        assert_eq!(requests, 50);
+    }
+
+    #[tokio::test]
+    async fn dashboard_stalled_stream_respects_turn_deadline() {
+        let (output, requests) = rendered(tool_response(false), true, json!([]), 50).await;
+        assert!(output.contains("timed out"));
+        assert!(!output.contains("tool-input-available"));
+        assert!(!output.contains("\"type\":\"finish\""));
+        assert_eq!(requests, 1);
+    }
+
+    #[tokio::test]
+    async fn dashboard_stalled_compaction_respects_turn_deadline() {
+        let messages = (0..12)
+            .map(|_| json!({"role":"user","content":"x".repeat(20_000)}))
+            .collect::<Vec<_>>();
+        let (output, requests) = rendered(String::new(), true, json!(messages), 50).await;
+        assert!(output.contains("timed out"));
+        assert!(!output.contains("start-step"));
+        assert!(!output.contains("\"type\":\"finish\""));
+        assert_eq!(requests, 1);
+    }
+
+    #[tokio::test]
+    async fn dashboard_tool_timeout_stops_without_replay() {
+        let (url, requests, gateway_task) = gateway(tool_response(true), false).await;
+        let (mut server, _client) = sockets().await;
+        let dispatches = AtomicUsize::new(0);
+        let result = dashboard_chat_turn(
+            &mut server,
+            &json!({}),
+            &url,
+            "fixture",
+            "fixture",
+            &ChatLimits {
+                tool: std::time::Duration::from_millis(10),
+                ..ChatLimits::default()
+            },
+            |_, _| {
+                dispatches.fetch_add(1, Ordering::SeqCst);
+                std::future::pending::<String>()
+            },
+        )
+        .await;
+        assert!(result.unwrap_err().contains("outcome is unknown"));
+        assert_eq!(dispatches.load(Ordering::SeqCst), 1);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        gateway_task.abort();
+    }
+
+    #[tokio::test]
+    async fn dashboard_closed_output_stops_before_tools() {
+        let (url, requests, gateway_task) = gateway(tool_response(true), false).await;
+        let (mut server, _client) = sockets().await;
+        // Shutdown the output half deterministically instead of racing a peer FIN.
+        server.shutdown().await.unwrap();
+        let response = http_client()
+            .post(&url)
+            .body("fixture")
+            .send()
+            .await
+            .unwrap();
+        let result = stream_gateway_response(&mut server, response).await;
+        assert_eq!(result.unwrap_err(), "Chat client disconnected.");
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        gateway_task.abort();
+    }
 }

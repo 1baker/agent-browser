@@ -72,6 +72,12 @@ const displayIsolationSet = new Set([
  * @typedef {import('./service-request.generated.js').ServiceViewerLeaseReleaseOptions} ServiceViewerLeaseReleaseOptions
  * @typedef {import('./service-request.generated.js').ServiceViewerLeaseRequestHttpOptions} ServiceViewerLeaseRequestHttpOptions
  * @typedef {import('./service-request.generated.js').ServiceViewerLeaseRequestOptions} ServiceViewerLeaseRequestOptions
+ * @typedef {import('./service-request.generated.js').ServiceTaskAuthorityIssueOptions} ServiceTaskAuthorityIssueOptions
+ * @typedef {import('./service-request.generated.js').ServiceTaskAuthorityReadOptions} ServiceTaskAuthorityReadOptions
+ * @typedef {import('./service-request.generated.js').ServiceTaskAuthorityReconcileOptions} ServiceTaskAuthorityReconcileOptions
+ * @typedef {import('./service-request.generated.js').ServiceTaskAuthorityConfirmationOptions} ServiceTaskAuthorityConfirmationOptions
+ * @typedef {import('./service-request.generated.js').ServiceTaskAuthorityConfirmationCleanupOptions} ServiceTaskAuthorityConfirmationCleanupOptions
+ * @typedef {import('./service-request.generated.js').ServiceTaskAuthorityRevokeOptions} ServiceTaskAuthorityRevokeOptions
  */
 
 export {
@@ -2056,6 +2062,187 @@ function assertMonitorRunDueSummarySafe(summary, options) {
       `service monitor run-due requires inspection before ${options.actionLabel}: ${recommendedAction}`,
     );
   }
+}
+
+/**
+ * Ask the broker to derive and durably issue exact-target task authority.
+ * The initial response is confirmation-required; callers confirm the returned
+ * command through the same retained daemon lane.
+ *
+ * @param {ServiceTaskAuthorityIssueOptions} options
+ */
+export async function issueServiceTaskAuthority({ baseUrl, fetch = globalThis.fetch, signal, ...request }) {
+  assertTaskAuthorityHttp(baseUrl, fetch);
+  if (!Array.isArray(request.steps) || request.steps.length === 0) {
+    throw new TypeError('task authority steps must be a nonempty array');
+  }
+  for (const field of ['taskName', 'expectedTargetId', 'expectedUrl', 'approvalReference']) {
+    if (typeof request[field] !== 'string' || request[field].length === 0) {
+      throw new TypeError(`task authority ${field} must be a nonempty string`);
+    }
+  }
+  if (!Number.isInteger(request.expiresInSeconds) || request.expiresInSeconds < 1 || request.expiresInSeconds > 3600) {
+    throw new TypeError('task authority expiresInSeconds must be an integer from 1 through 3600');
+  }
+  const response = await fetch(new URL('/api/service/task-authorities/issue', baseUrl), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+    signal,
+  });
+  return taskAuthorityHttpResponse(response, 'issue');
+}
+
+/** @param {ServiceTaskAuthorityReadOptions} options */
+export async function getServiceTaskAuthorities({ baseUrl, fetch = globalThis.fetch, signal, sessionName }) {
+  assertTaskAuthorityHttp(baseUrl, fetch);
+  const url = new URL('/api/service/task-authorities', baseUrl);
+  if (sessionName !== undefined) url.searchParams.set('sessionName', sessionName);
+  const response = await fetch(url, { signal });
+  return taskAuthorityHttpResponse(response, 'status');
+}
+
+/**
+ * @param {string} authorityId
+ * @param {ServiceTaskAuthorityReadOptions} options
+ */
+export async function getServiceTaskAuthority(authorityId, { baseUrl, fetch = globalThis.fetch, signal, sessionName }) {
+  assertTaskAuthorityId(authorityId);
+  assertTaskAuthorityHttp(baseUrl, fetch);
+  const url = new URL(`/api/service/task-authorities/${encodeURIComponent(authorityId)}`, baseUrl);
+  if (sessionName !== undefined) url.searchParams.set('sessionName', sessionName);
+  const response = await fetch(url, { signal });
+  return taskAuthorityHttpResponse(response, 'status');
+}
+
+/** @param {ServiceTaskAuthorityReconcileOptions} options */
+export async function reconcileServiceTaskAuthority({ baseUrl, fetch = globalThis.fetch, signal, authorityId, ...request }) {
+  assertTaskAuthorityId(authorityId);
+  assertTaskAuthorityHttp(baseUrl, fetch);
+  if (!Array.isArray(request.steps) || request.steps.length === 0) {
+    throw new TypeError('task authority reconciliation steps must be a nonempty array');
+  }
+  for (const field of [
+    'reconciliationId',
+    'unresolvedStepId',
+    'taskName',
+    'expectedTargetId',
+    'expectedUrl',
+    'approvalReference',
+  ]) {
+    if (typeof request[field] !== 'string' || request[field].length === 0) {
+      throw new TypeError(`task authority reconciliation ${field} must be a nonempty string`);
+    }
+  }
+  if (!Number.isInteger(request.expiresInSeconds) || request.expiresInSeconds < 1 || request.expiresInSeconds > 3600) {
+    throw new TypeError('task authority reconciliation expiresInSeconds must be an integer from 1 through 3600');
+  }
+  const response = await fetch(
+    new URL(`/api/service/task-authorities/${encodeURIComponent(authorityId)}/reconcile`, baseUrl),
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+      signal,
+    },
+  );
+  return taskAuthorityHttpResponse(response, 'reconcile');
+}
+
+/** @param {ServiceTaskAuthorityConfirmationOptions} options */
+export async function decideServiceTaskAuthorityConfirmation({
+  baseUrl,
+  fetch = globalThis.fetch,
+  signal,
+  sessionName,
+  confirmationId,
+  expectedAction,
+  decision,
+}) {
+  assertTaskAuthorityHttp(baseUrl, fetch);
+  if (typeof confirmationId !== 'string' || confirmationId.length === 0) {
+    throw new TypeError('task authority confirmationId must be a nonempty string');
+  }
+  if (decision !== 'confirm' && decision !== 'deny') {
+    throw new TypeError('task authority confirmation decision must be confirm or deny');
+  }
+  if (!['task_authority_issue', 'task_authority_reconcile', 'task_authority_revoke'].includes(expectedAction)) {
+    throw new TypeError('task authority confirmation expectedAction is invalid');
+  }
+  const response = await fetch(new URL('/api/service/task-authorities/confirmation', baseUrl), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionName, confirmationId, expectedAction, decision }),
+    signal,
+  });
+  return taskAuthorityHttpResponse(response, 'confirmation');
+}
+
+/** @param {ServiceTaskAuthorityConfirmationCleanupOptions} options */
+export async function cleanupServiceTaskAuthorityConfirmations({
+  baseUrl,
+  fetch = globalThis.fetch,
+  signal,
+  sessionName,
+  retainCount,
+  minAgeSeconds,
+  apply = false,
+  reviewSha256,
+}) {
+  assertTaskAuthorityHttp(baseUrl, fetch);
+  if (retainCount !== undefined && (!Number.isInteger(retainCount) || retainCount < 0)) {
+    throw new TypeError('task authority confirmation cleanup retainCount must be a nonnegative integer');
+  }
+  if (minAgeSeconds !== undefined && (!Number.isInteger(minAgeSeconds) || minAgeSeconds < 0)) {
+    throw new TypeError('task authority confirmation cleanup minAgeSeconds must be a nonnegative integer');
+  }
+  if (apply && (typeof reviewSha256 !== 'string' || !/^[0-9a-fA-F]{64}$/.test(reviewSha256))) {
+    throw new TypeError('task authority confirmation cleanup apply requires reviewSha256');
+  }
+  const response = await fetch(new URL('/api/service/task-authorities/confirmations/cleanup', baseUrl), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionName, retainCount, minAgeSeconds, apply, reviewSha256 }),
+    signal,
+  });
+  return taskAuthorityHttpResponse(response, 'confirmation cleanup');
+}
+
+/** @param {ServiceTaskAuthorityRevokeOptions} options */
+export async function revokeServiceTaskAuthority({ baseUrl, fetch = globalThis.fetch, signal, authorityId, ...request }) {
+  assertTaskAuthorityId(authorityId);
+  assertTaskAuthorityHttp(baseUrl, fetch);
+  if (typeof request.reason !== 'string' || request.reason.length === 0) {
+    throw new TypeError('task authority reason must be a nonempty string');
+  }
+  const response = await fetch(
+    new URL(`/api/service/task-authorities/${encodeURIComponent(authorityId)}/revoke`, baseUrl),
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(request),
+      signal,
+    },
+  );
+  return taskAuthorityHttpResponse(response, 'revoke');
+}
+
+function assertTaskAuthorityHttp(baseUrl, fetch) {
+  if (typeof fetch !== 'function') throw new TypeError('task authority request requires fetch');
+  if (typeof baseUrl !== 'string' || baseUrl.length === 0) {
+    throw new TypeError('task authority request requires a baseUrl string');
+  }
+}
+
+function assertTaskAuthorityId(authorityId) {
+  if (typeof authorityId !== 'string' || authorityId.length === 0 || authorityId.includes('/')) {
+    throw new TypeError('task authority authorityId must be a nonempty path-safe string');
+  }
+}
+
+async function taskAuthorityHttpResponse(response, operation) {
+  if (!response.ok) throw new Error(`agent-browser task authority ${operation} failed: ${response.status}`);
+  return response.json();
 }
 
 /**

@@ -17,9 +17,22 @@ use super::cdp::client::CdpClient;
 use super::control_plane::{ControlPlaneHandle, ControlPlaneWorker};
 use super::state;
 use super::stream::StreamServer;
+use crate::connection::get_socket_dir;
 
 const DAEMON_AUTH_TOKEN_ENV: &str = "AGENT_BROWSER_DAEMON_AUTH_TOKEN";
 const DAEMON_AUTH_FIELD: &str = "_agentBrowserAuthToken";
+const CONTROL_PLANE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+async fn await_bounded_shutdown<F>(shutdown: F, timeout: Duration) -> bool
+where
+    F: std::future::Future<Output = ()>,
+{
+    tokio::time::timeout(timeout, shutdown).await.is_ok()
+}
+
+async fn shutdown_control_plane_bounded(control_plane: &ControlPlaneHandle) {
+    let _ = await_bounded_shutdown(control_plane.shutdown(), CONTROL_PLANE_SHUTDOWN_TIMEOUT).await;
+}
 
 #[cfg(unix)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,7 +82,7 @@ fn file_sha256(path: &Path) -> Result<String, std::io::Error> {
 
 pub async fn run_daemon(session: &str) {
     let startup_started = Instant::now();
-    let socket_dir = get_daemon_socket_dir();
+    let socket_dir = get_socket_dir();
     if !socket_dir.exists() {
         let _ = fs::create_dir_all(&socket_dir);
     }
@@ -324,6 +337,10 @@ async fn run_socket_server(
         service_monitor_interval_ms,
     );
 
+    #[cfg(target_os = "linux")]
+    let _private_executor = super::private_coordinator::start_configured(&control_plane, session)
+        .map_err(str::to_owned)?;
+
     let (reset_tx, mut reset_rx) = mpsc::channel::<()>(64);
     let reset_tx = idle_timeout_ms.map(|_| Arc::new(reset_tx));
 
@@ -360,7 +377,7 @@ async fn run_socket_server(
                     None => std::future::pending::<()>().await,
                 }
             }, if idle_timeout_ms.is_some() => {
-                control_plane.shutdown().await;
+                shutdown_control_plane_bounded(&control_plane).await;
                 break;
             }
             _ = reset_rx.recv(), if idle_timeout_ms.is_some() => {
@@ -372,11 +389,11 @@ async fn run_socket_server(
                 // "close" command was handled; browser already closed by
                 // handle_close(). Break to run cleanup and exit gracefully
                 // so destructors fire.
-                control_plane.shutdown().await;
+                shutdown_control_plane_bounded(&control_plane).await;
                 break;
             }
             _ = shutdown_signal() => {
-                control_plane.shutdown().await;
+                shutdown_control_plane_bounded(&control_plane).await;
                 break;
             }
         }
@@ -464,7 +481,7 @@ async fn run_socket_server(
                     None => std::future::pending::<()>().await,
                 }
             }, if idle_timeout_ms.is_some() => {
-                control_plane.shutdown().await;
+                shutdown_control_plane_bounded(&control_plane).await;
                 let _ = fs::remove_file(&port_path);
                 break;
             }
@@ -474,12 +491,12 @@ async fn run_socket_server(
                 continue;
             }
             _ = close_notify.notified() => {
-                control_plane.shutdown().await;
+                shutdown_control_plane_bounded(&control_plane).await;
                 let _ = fs::remove_file(&port_path);
                 break;
             }
             _ = shutdown_signal() => {
-                control_plane.shutdown().await;
+                shutdown_control_plane_bounded(&control_plane).await;
                 let _ = fs::remove_file(&port_path);
                 break;
             }
@@ -487,6 +504,10 @@ async fn run_socket_server(
     }
 
     Ok(())
+}
+
+fn successful_exit_response(exits_daemon: bool, response: &Value) -> bool {
+    exits_daemon && response.get("success").and_then(Value::as_bool) == Some(true)
 }
 
 async fn handle_connection<S>(
@@ -591,7 +612,7 @@ async fn handle_connection<S>(
                     break;
                 }
 
-                if exits_daemon {
+                if successful_exit_response(exits_daemon, &response) {
                     if let Some(ref path) = stream_file_cleanup {
                         let _ = fs::remove_file(path);
                     }
@@ -660,26 +681,6 @@ async fn shutdown_signal() {
     }
 }
 
-fn get_daemon_socket_dir() -> PathBuf {
-    if let Ok(dir) = env::var("AGENT_BROWSER_SOCKET_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-
-    if let Ok(xdg) = env::var("XDG_RUNTIME_DIR") {
-        if !xdg.is_empty() {
-            return PathBuf::from(xdg).join("agent-browser");
-        }
-    }
-
-    if let Some(home) = dirs::home_dir() {
-        return home.join(".agent-browser");
-    }
-
-    std::env::temp_dir().join("agent-browser")
-}
-
 #[cfg(windows)]
 fn get_port_for_session(session: &str) -> u16 {
     let mut hash: i32 = 0;
@@ -693,6 +694,33 @@ fn get_port_for_session(session: &str) -> u16 {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+
+    #[test]
+    fn denied_close_or_handoff_does_not_exit_daemon() {
+        assert!(!successful_exit_response(
+            true,
+            &serde_json::json!({"success": false, "error": "privacy_gate_locked"})
+        ));
+        assert!(!successful_exit_response(true, &serde_json::json!({})));
+        assert!(!successful_exit_response(
+            false,
+            &serde_json::json!({"success": true})
+        ));
+        assert!(successful_exit_response(
+            true,
+            &serde_json::json!({"success": true})
+        ));
+    }
+
+    #[tokio::test]
+    async fn bounded_shutdown_does_not_wait_forever() {
+        let started = tokio::time::Instant::now();
+        let completed =
+            await_bounded_shutdown(std::future::pending::<()>(), Duration::from_millis(25)).await;
+
+        assert!(!completed);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[cfg(unix)]
     #[test]

@@ -60,7 +60,12 @@ export async function GET(req: NextRequest) {
     )
     .sort((a, b) => b.score - a.score)
     .slice(0, 20)
-    .map(({ score: _, ...rest }) => rest);
+    .map((result) => ({
+      title: result.title,
+      href: result.href,
+      section: result.section,
+      snippet: result.snippet,
+    }));
 
   return NextResponse.json(
     { results },

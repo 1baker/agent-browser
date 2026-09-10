@@ -276,6 +276,86 @@
       "type": "string",
       "description": "Calling task name, for example probeACSwebsite."
     },
+    "taskAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "taskName",
+        "allowedOrigins",
+        "targetBinding",
+        "evidenceBudget",
+        "consequenceCeiling",
+        "expiresAt"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "taskName": { "type": "string", "minLength": 1 },
+        "serviceName": { "type": "string", "minLength": 1 },
+        "agentName": { "type": "string", "minLength": 1 },
+        "allowedOrigins": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "format": "uri" }
+        },
+        "allowedActions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Broker-derived action allowlist. Required-mode commands must use an action present in the durable issuance record."
+        },
+        "planSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Broker-derived binding to the immutable ordered plan. Required on v2 broker issuances."
+        },
+        "targetBinding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["targetId", "initialUrl"],
+          "properties": {
+            "targetId": { "type": "string", "minLength": 1 },
+            "initialUrl": { "type": "string", "format": "uri" }
+          }
+        },
+        "evidenceBudget": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxActions", "maxEvidenceBytes"],
+          "properties": {
+            "maxActions": { "type": "integer", "minimum": 1 },
+            "maxEvidenceBytes": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "consequenceCeiling": {
+          "type": "string",
+          "enum": [
+            "read_only",
+            "navigation",
+            "page_mutation",
+            "external_mutation",
+            "file_transfer",
+            "credentials",
+            "script_execution",
+            "browser_lifecycle",
+            "control_plane"
+          ]
+        },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      },
+      "description": "Immutable task-level authority. The daemon binds its id to the complete envelope in a durable per-session ledger and rejects task, caller, origin, retained-target, expiry, or budget drift before execution. Actions above consequenceCeiling require fresh target-bound confirmation."
+    },
+    "taskStepId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Broker-assigned ID of the exact next ordered plan step. Required for every command using a v2 broker-issued taskAuthority."
+    },
+    "taskEvidenceBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Evidence-byte reservation charged atomically before this command executes. It must exactly match the approved step reservation for v2 broker-issued authority; legacy non-broker envelopes may use action-specific safe defaults when omitted."
+    },
     "targetServiceId": {
       "type": "string",
       "description": "Target site or identity provider for profile selection."

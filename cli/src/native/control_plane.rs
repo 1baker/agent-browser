@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 use super::actions::{
-    execute_command, service_profile_lease_gate, DaemonState, ServiceProfileLeaseGate,
+    execute_command, recover_owned_browser_after_timeout, service_profile_lease_gate, DaemonState,
+    ServiceProfileLeaseGate,
 };
 use super::browser_session_authority::browser_session_authority_snapshot;
 use super::cancellation::CancellationToken as RunningJobCancel;
@@ -36,6 +37,10 @@ use super::service_store::{LockedServiceStateRepository, ServiceStateRepository}
 
 const DEFAULT_QUEUE_CAPACITY: usize = 256;
 const MAX_SERVICE_EVENTS: usize = 100;
+
+#[cfg(all(test, unix))]
+#[path = "control_plane_private_tests.rs"]
+mod private_tests;
 
 #[derive(Clone)]
 pub struct ControlPlaneHandle {
@@ -112,7 +117,27 @@ pub struct ControlRequest {
 
 enum WorkerMessage {
     Request(Box<ControlRequest>),
+    #[cfg(unix)]
+    Private(PrivateWorkerRequest),
+    #[cfg(target_os = "linux")]
+    PrivatePreflight {
+        handle: Value,
+        origin: String,
+        url: String,
+        endpoint: String,
+        response_tx: oneshot::Sender<Result<(), &'static str>>,
+    },
     Shutdown(oneshot::Sender<()>),
+}
+
+/// Separate from serializable public commands and persisted service jobs.
+#[cfg(unix)]
+struct PrivateWorkerRequest {
+    staged: super::private_handoff::PrivateStagedHandoff,
+    controller: Arc<super::private_controller::RecoveryController>,
+    binding: Option<super::private_bound_execution::BoundExecution>,
+    response_tx:
+        oneshot::Sender<Result<super::private_journey::ReconciledPrivateJourney, &'static str>>,
 }
 
 pub struct ControlPlaneWorker;
@@ -182,6 +207,108 @@ impl ControlPlaneWorker {
 }
 
 impl ControlPlaneHandle {
+    /// Read actual broker and retained-page identity without launching, locking
+    /// privacy, or admitting a credential. Only the private coordinator uses it.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn private_preflight(
+        &self,
+        handle: Value,
+        origin: String,
+        url: String,
+        endpoint: String,
+    ) -> Result<(), &'static str> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.tx
+            .try_send(WorkerMessage::PrivatePreflight {
+                handle,
+                origin,
+                url,
+                endpoint,
+                response_tx,
+            })
+            .map_err(|_| "private_preflight_failed")?;
+        tokio::time::timeout(Duration::from_secs(5), response_rx)
+            .await
+            .map_err(|_| "private_preflight_failed")?
+            .map_err(|_| "private_preflight_failed")?
+    }
+
+    /// Trusted private coordinator entry: execute once under broker authority,
+    /// reconcile cleanup, then deliver only over the independently authenticated
+    /// consumer socket. Success is installation ACK, not browser privacy release
+    /// or consumer runtime activation. No ordinary command routes to this entry.
+    #[cfg(unix)]
+    pub(crate) async fn submit_bound_private_and_deliver(
+        &self,
+        staged: super::private_handoff::PrivateStagedHandoff,
+        controller: Arc<super::private_controller::RecoveryController>,
+        binding: super::private_bound_execution::BoundExecution,
+        consumer: tokio::net::UnixStream,
+        delivery_key: [u8; 32],
+    ) -> Result<(), &'static str> {
+        self.submit_bound_private(staged, controller, binding)
+            .await?
+            .deliver(consumer, delivery_key)
+            .await
+            .map_err(|_| "private_delivery_failed_closed")
+    }
+
+    /// Production internal entry: a durably consumed binding is mandatory.
+    /// No public socket operation exposes this method or enables renewal.
+    #[cfg(unix)]
+    pub(crate) async fn submit_bound_private(
+        &self,
+        staged: super::private_handoff::PrivateStagedHandoff,
+        controller: Arc<super::private_controller::RecoveryController>,
+        binding: super::private_bound_execution::BoundExecution,
+    ) -> Result<super::private_journey::ReconciledPrivateJourney, &'static str> {
+        self.enqueue_private(staged, controller, Some(binding))
+            .await
+    }
+
+    /// Internal only: ingress has already authenticated and encrypted the
+    /// payload. No private value or receipt enters the ordinary job journal.
+    /// A timeout never retries or reopens the durable privacy interval.
+    #[cfg(all(unix, test))]
+    pub(crate) async fn submit_private(
+        &self,
+        staged: super::private_handoff::PrivateStagedHandoff,
+        controller: Arc<super::private_controller::RecoveryController>,
+    ) -> Result<super::private_journey::ReconciledPrivateJourney, &'static str> {
+        self.enqueue_private(staged, controller, None).await
+    }
+
+    #[cfg(unix)]
+    async fn enqueue_private(
+        &self,
+        staged: super::private_handoff::PrivateStagedHandoff,
+        controller: Arc<super::private_controller::RecoveryController>,
+        binding: Option<super::private_bound_execution::BoundExecution>,
+    ) -> Result<super::private_journey::ReconciledPrivateJourney, &'static str> {
+        if !staged.is_current() {
+            return Err("private_handoff_expired");
+        }
+        let (response_tx, response_rx) = oneshot::channel();
+        self.status.queue_depth.fetch_add(1, Ordering::Relaxed);
+        if self
+            .tx
+            .try_send(WorkerMessage::Private(PrivateWorkerRequest {
+                staged,
+                controller,
+                binding,
+                response_tx,
+            }))
+            .is_err()
+        {
+            self.status.queue_depth.fetch_sub(1, Ordering::Relaxed);
+            return Err("private_worker_unavailable");
+        }
+        tokio::time::timeout(Duration::from_secs(120), response_rx)
+            .await
+            .map_err(|_| "private_worker_timeout")?
+            .map_err(|_| "private_worker_unavailable")?
+    }
+
     pub fn status_response(&self, id: &str) -> Value {
         json!({
             "id": id,
@@ -342,8 +469,7 @@ impl ControlPlaneHandle {
                     },
                 });
             }
-            Err(mpsc::error::TrySendError::Full(WorkerMessage::Shutdown(_)))
-            | Err(mpsc::error::TrySendError::Closed(WorkerMessage::Shutdown(_))) => {
+            Err(_) => {
                 self.status.queue_depth.fetch_sub(1, Ordering::Relaxed);
                 return json!({
                     "id": id,
@@ -520,6 +646,13 @@ fn persist_process_exited_browser_health_in_repository(
             profile_id: previous
                 .as_ref()
                 .and_then(|browser| browser.profile_id.clone()),
+            browser_build: previous.as_ref().and_then(|browser| browser.browser_build),
+            executable_path: previous
+                .as_ref()
+                .and_then(|browser| browser.executable_path.clone()),
+            browser_build_proof: previous
+                .as_ref()
+                .and_then(|browser| browser.browser_build_proof.clone()),
             host,
             health: ServiceBrowserHealth::ProcessExited,
             display_isolation: previous
@@ -1033,8 +1166,7 @@ fn enqueue_due_monitor_run(
             status.queue_depth.fetch_sub(1, Ordering::Relaxed);
             persist_service_job_failed_to_enqueue(&request, "Control plane worker is stopped");
         }
-        Err(mpsc::error::TrySendError::Full(WorkerMessage::Shutdown(_)))
-        | Err(mpsc::error::TrySendError::Closed(WorkerMessage::Shutdown(_))) => {
+        Err(_) => {
             status.queue_depth.fetch_sub(1, Ordering::Relaxed);
         }
     }
@@ -1392,6 +1524,69 @@ async fn run_worker(
                 };
 
                 match message {
+                    #[cfg(target_os = "linux")]
+                    WorkerMessage::PrivatePreflight { handle, origin, url, endpoint, response_tx } => {
+                        if response_tx.is_closed() { continue; }
+                        let check = async {
+                            let browser = state.browser.as_ref().ok_or("private_preflight_failed")?;
+                            if browser.get_cdp_url() != endpoint { return Err("private_preflight_failed"); }
+                            super::private_broker::prepare_private_target(&state, &handle, &origin, &url).await
+                                .map(|_| ()).map_err(|_| "private_preflight_failed")
+                        };
+                        let result = tokio::time::timeout(Duration::from_secs(4), check).await
+                            .unwrap_or(Err("private_preflight_failed"));
+                        let _ = response_tx.send(result);
+                    }
+                    #[cfg(unix)]
+                    WorkerMessage::Private(mut request) => {
+                        status.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                        if request.response_tx.is_closed() {
+                            continue;
+                        }
+                        if !request.staged.is_current() {
+                            let _ = request.response_tx.send(Err("private_handoff_expired"));
+                            continue;
+                        }
+                        let bound_check = if let Some(binding) = &request.binding {
+                            state.browser.as_ref().ok_or("private_browser_unavailable")
+                                .and_then(|browser| binding.validate(&request.staged, browser.get_cdp_url(), &state.session_id))
+                        } else {
+                            // Only test fixtures can enqueue without a binding.
+                            if cfg!(test) { Ok(()) } else { Err("private_binding_required") }
+                        };
+                        if bound_check.is_err() {
+                            let _ = request.response_tx.send(Err("private_worker_failed_closed"));
+                            continue;
+                        }
+                        let (store, references, expires_at) = request.staged.into_parts();
+                        let remaining = expires_at.duration_since(std::time::SystemTime::now())
+                            .unwrap_or_default().min(Duration::from_secs(120));
+                        status.set_state(WorkerState::Busy);
+                        let execution = async {
+                            let endpoint = state.browser.as_ref()
+                                .ok_or("private_browser_unavailable")?.get_cdp_url();
+                            request.controller.validate_scope(&store, endpoint, &state.session_id)?;
+                            let pending = super::private_journey::execute_private_journey(
+                                &state, &store, &references,
+                            ).await?;
+                            let closed = pending.sanitize_and_close(&mut state, &store).await?;
+                            let reconciled = closed.reconcile(&mut state, &store, &request.controller)?;
+                            Ok(if let Some(binding) = request.binding.take() {
+                                reconciled.bind_delivery(Arc::clone(&store), binding)
+                            } else { reconciled })
+                        };
+                        let result = tokio::select! {
+                            biased;
+                            _ = request.response_tx.closed() => Err("private_worker_cancelled"),
+                            result = tokio::time::timeout(remaining, execution) => {
+                                result.unwrap_or(Err("private_worker_timeout"))
+                            }
+                        };
+                        // No ordinary health circuit, retry, publication or
+                        // privacy unlock. Reconciliation remains mandatory.
+                        status.set_state(WorkerState::Faulted);
+                        let _ = request.response_tx.send(result.map_err(|_| "private_worker_failed_closed"));
+                    }
                     WorkerMessage::Request(request) => {
                         let mut request = *request;
                         let queue_wait_ms = u64::try_from(
@@ -1576,12 +1771,20 @@ async fn run_worker(
                         if !timed_out && !cancelled {
                             persist_service_job_finished(&request, &response);
                         }
-                        send_response_before_follow_up(
-                            request.response_tx,
-                            response,
-                            refresh_browser_health(&mut state, &status),
-                        )
-                        .await;
+                        let follow_up = async {
+                            if timed_out {
+                                run_post_timeout_health_circuit(
+                                    &mut state,
+                                    &status,
+                                    &request.command,
+                                )
+                                .await;
+                            } else {
+                                refresh_browser_health(&mut state, &status).await;
+                            }
+                        };
+                        send_response_before_follow_up(request.response_tx, response, follow_up)
+                            .await;
                         status.set_state(WorkerState::Ready);
                     }
                     WorkerMessage::Shutdown(done_tx) => {
@@ -1593,6 +1796,7 @@ async fn run_worker(
                 }
             }
             _ = drain_interval.tick() => {
+                let Ok(_privacy_lease) = state.public_browser_lease() else { continue; };
                 if state.browser.is_some() {
                     status.set_state(WorkerState::Draining);
                     let browser_exited = state
@@ -1632,12 +1836,18 @@ async fn run_worker(
 }
 
 async fn close_browser(state: &mut DaemonState) {
+    let Ok(_privacy_lease) = state.public_browser_lease() else {
+        return;
+    };
     if let Some(ref mut mgr) = state.browser {
         let _ = mgr.close().await;
     }
 }
 
 async fn cleanup_exited_browser(state: &mut DaemonState) {
+    let Ok(_privacy_lease) = state.public_browser_lease() else {
+        return;
+    };
     if state.browser.is_some() {
         persist_process_exited_browser_health(state);
     }
@@ -1654,6 +1864,9 @@ fn browser_health_requires_cleanup_after_interruption(health: BrowserHealth) -> 
 }
 
 async fn refresh_browser_health(state: &mut DaemonState, status: &ControlPlaneStatus) {
+    let Ok(_privacy_lease) = state.public_browser_lease() else {
+        return;
+    };
     let Some(ref mut mgr) = state.browser else {
         status.set_browser_health(BrowserHealth::NotStarted);
         return;
@@ -1669,6 +1882,87 @@ async fn refresh_browser_health(state: &mut DaemonState, status: &ControlPlaneSt
     }
 
     if mgr.is_connection_alive().await {
+        status.set_browser_health(BrowserHealth::Ready);
+    } else {
+        status.set_browser_health(BrowserHealth::CdpDisconnected);
+        if tokio::time::timeout(
+            Duration::from_millis(POST_TIMEOUT_BROWSER_RECOVERY_MS),
+            recover_owned_browser_after_timeout(state),
+        )
+        .await
+        .is_ok_and(|result| result == Ok(true))
+        {
+            status.set_browser_health(BrowserHealth::Ready);
+        }
+    }
+}
+
+const POST_TIMEOUT_TARGET_REPLACEMENT_MS: u64 = 5_000;
+const POST_TIMEOUT_BROWSER_RECOVERY_MS: u64 = 12_000;
+
+fn command_requires_post_timeout_renderer_circuit(command: &Value) -> bool {
+    if command.get("serviceTabHandle").is_some() {
+        return false;
+    }
+    matches!(
+        command.get("action").and_then(Value::as_str).unwrap_or(""),
+        "navigate" | "evaluate" | "snapshot" | "screenshot" | "content" | "title" | "url" | "wait"
+    )
+}
+
+/// Run only after the caller has received its timeout result. The circuit uses
+/// browser-level CDP first, never replays the timed-out action, and refuses to
+/// mutate externally attached or service-handle-owned targets.
+async fn run_post_timeout_health_circuit(
+    state: &mut DaemonState,
+    status: &ControlPlaneStatus,
+    command: &Value,
+) {
+    let Ok(_privacy_lease) = state.public_browser_lease() else {
+        return;
+    };
+    if !command_requires_post_timeout_renderer_circuit(command) {
+        refresh_browser_health(state, status).await;
+        return;
+    }
+
+    let Some(manager) = state.browser.as_mut() else {
+        status.set_browser_health(BrowserHealth::NotStarted);
+        return;
+    };
+    if manager.has_process_exited() {
+        status.set_browser_health(BrowserHealth::ProcessExited);
+        cleanup_exited_browser(state).await;
+        return;
+    }
+
+    if !manager.is_connection_alive().await {
+        status.set_browser_health(BrowserHealth::CdpDisconnected);
+        if tokio::time::timeout(
+            Duration::from_millis(POST_TIMEOUT_BROWSER_RECOVERY_MS),
+            recover_owned_browser_after_timeout(state),
+        )
+        .await
+        .is_ok_and(|result| result == Ok(true))
+        {
+            status.set_browser_health(BrowserHealth::Ready);
+        }
+        return;
+    }
+
+    if manager.is_cdp_connection() {
+        status.set_browser_health(BrowserHealth::Ready);
+        return;
+    }
+    let replacement = tokio::time::timeout(
+        Duration::from_millis(POST_TIMEOUT_TARGET_REPLACEMENT_MS),
+        manager.replace_active_page_after_timeout(),
+    )
+    .await;
+    if replacement.is_ok_and(|result| result.is_ok()) {
+        state.ref_map.clear();
+        state.reset_input_state();
+        state.update_stream_client().await;
         status.set_browser_health(BrowserHealth::Ready);
     } else {
         status.set_browser_health(BrowserHealth::CdpDisconnected);
@@ -2106,13 +2400,10 @@ mod tests {
             response.get("id").and_then(|v| v.as_str()),
             Some("test-service-status")
         );
-        assert_eq!(
-            response
-                .pointer("/data/control_plane/worker_state")
-                .and_then(|v| v.as_str())
-                .is_some(),
-            true
-        );
+        assert!(response
+            .pointer("/data/control_plane/worker_state")
+            .and_then(|v| v.as_str())
+            .is_some());
         assert_eq!(
             response
                 .pointer("/data/closedTabProjection/mode")
@@ -2998,6 +3289,26 @@ mod tests {
 
         handle.shutdown().await;
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn post_timeout_renderer_circuit_is_narrow_and_preserves_service_handles() {
+        assert!(command_requires_post_timeout_renderer_circuit(&json!({
+            "action": "evaluate"
+        })));
+        assert!(command_requires_post_timeout_renderer_circuit(&json!({
+            "action": "navigate"
+        })));
+        assert!(!command_requires_post_timeout_renderer_circuit(&json!({
+            "action": "evaluate",
+            "serviceTabHandle": { "targetId": "retained-target" }
+        })));
+        assert!(!command_requires_post_timeout_renderer_circuit(&json!({
+            "action": "state_list"
+        })));
+        assert!(!command_requires_post_timeout_renderer_circuit(&json!({
+            "action": "__test_sleep"
+        })));
     }
 
     #[tokio::test]

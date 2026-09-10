@@ -1,0 +1,225 @@
+# Plan 0128 | Autonomous headless execution
+
+State: ACTIVE
+Date: 2026-09-07
+Plan version: 2
+
+## Original objective
+
+you are a software engineer trying to make a headless browser that can autonomously act like a human. be able to login to accounts, emails, cloudflare captcha, the bwkuehl.com cloudflare website. you want to make agent browser truly autonomous for any task given. this should be headless. based on the prompt you should be able to figure out what is necessary to make this happen and be able to know what decisions needed to be made without the users input
+
+## Requirements and completion evidence
+
+- Headless operation: prove the actual launched process is headless and reaches
+  rendered pages through agent-browser's lifecycle and service handles.
+- Autonomous execution: demonstrate natural-language task planning, observation,
+  action, verification, and continuation against a representative task suite.
+- Account login and email: prove authorized authentication, persistent session
+  reuse, expiration handling, and a bounded read task with credentials remaining
+  inside the configured credential system. Do not infer login from a page title.
+- Cloudflare and bwkuehl.com: inspect the actual rendered site and distinguish
+  ordinary loading, site denial, authentication, and interactive challenges.
+  Record which routes work unattended and which require external authorization.
+- Reliability: prove bounded waits, accurate unfinished outcomes, preserved
+  targets, and recovery without replaying actions whose outcome is unknown.
+- General tasks: measure task-level outcomes rather than treating isolated unit
+  tests as proof of arbitrary-task autonomy. The universal objective remains
+  unproven until representative live evidence supports its claimed scope.
+
+## Current checkpoint
+
+Classification: progress through implementation and new live evidence.
+
+Starting commit: `8e1ca4bb`; the worktree was clean. The previous goal-related
+engineering turn made progress by installing build-proof checks, but did not
+prove autonomous headless task completion.
+
+The no-launch MCP access plan for `https://bwkuehl.com` selected no profile. Its
+registry reports Linux stock Chromium as headless-capable and the Windows
+stealth build as headed-only. An attributed, disposable public-page probe then
+launched Linux Chromium headlessly, but navigation failed because launch metadata
+recorded `browserBuild: null` and capability reason
+`no_matching_preference_binding`. The process was ready but command admission
+required `stock_chrome`. This is a launch-proof persistence regression before
+site access, not evidence of a Cloudflare rejection.
+
+The current CLI chat loop also had three independently reproduced failure modes:
+50 tool rounds returned success without a final response; the five-minute budget
+did not bound a stalled gateway body; and EOF could dispatch partial tool calls.
+The implementation now rejects all three, and ends a turn on tool timeout with
+an unknown-outcome error rather than inviting another model action.
+
+Validation includes three local HTTP-backed Rust stream regressions and an
+actual CLI/local-model fixture covering 50-round exhaustion, truncated tool
+streams, and a completed response. No external model or authenticated browser
+action is needed by these fixtures.
+
+The native build, strict Clippy, Rust formatting, targeted ESLint, and diff
+checks passed. CodeGraph was synchronized. The planning audit reports no
+problems but is not applicable to this repository's adopted contract set; it
+does not independently validate the objective. This checkpoint is a source
+change and tested local build, not an installed-runtime or full-autonomy claim.
+
+## Next work
+
+1. Resolve the required retained-session deployment blocker without bypassing
+   browser identity or preservation checks, then install the tested changes.
+2. Prove the new fresh-launch evidence through an isolated rendered-page test;
+   the earlier scoped registry workaround is not acceptance for the source fix.
+3. Add durable task continuation and task-level verification coverage after the
+   bounded CLI/dashboard completion repair.
+4. Inspect configured model and credential providers, and execute representative
+   headless tasks through the same authority and recovery paths.
+
+Neither the prior Pro review nor this checkpoint constitutes a passing
+independent review of the full objective. No further ChatGPT turn is authorized
+by recovery of the failed prior review.
+
+## Blocker repair checkpoint | 2026-09-07
+
+The user requested blocker fixes and a clean worktree. The starting worktree at
+`8f4acea3` was already clean; no user changes were discarded.
+
+- Fresh owned Chrome processes now carry the executable actually selected by
+  the launcher. After successful fresh launch, both explicit and automatic
+  command paths persist stock-build evidence when that executable is exactly
+  the installer-managed Chrome. Missing binding and explicit installed-path
+  launches are supported; attached browsers, custom executables, stealth builds,
+  and failed registry validation are not relabeled. Unit regressions include
+  serialization through the service repository and negative identity cases.
+- Dashboard Chat now shares the bounded-completion behavior: one five-minute
+  budget includes compaction, gateway IO, stream delivery, and tools; each tool
+  has a 60-second cap. Missing stream completion, 50-round exhaustion, client
+  disconnect, and unknown tool outcomes terminate without another dispatch.
+  Error endings do not emit a successful finish event.
+- Earlier public-headless inspection reached bwkuehl.com using an explicit
+  scoped registry binding and read Cloudflare Tunnel error 1033. That was an
+  operational route workaround, not proof of this new source fix. Current
+  read-only host inspection finds `codex-research-cloudflared.service` disabled
+  and inactive with the loopback origin listening on 8787. No tunnel was enabled
+  and no public exposure settings were changed.
+- Deployment is blocked before mutation by the retained-browser guard:
+  `retained_daemon_missing` for required session `nyse-developer`.
+  Publication status is terminal `recovered_ready`, not an incomplete transaction
+  requiring recovery. The installed binary remains SHA-256
+  `2dff309146ce62e2383ceaf6c2fe9169d92093049b5b29b9e3cb6260a5e2c9fe`.
+  Do not remove the required pin or create a substitute browser to install.
+
+Delegation receipt: `spawned`, `/root/dashboard_completion`; bounded dashboard
+implementation and socket tests in one disjoint Rust file. Primary reviewed its
+diff and owns integration and final validation. No ChatGPT submission occurred.
+
+Validation: two focused launch-proof tests, seven dashboard socket regressions,
+three actual-CLI fixture scenarios, and the isolated full Rust rerun (1918 passed,
+zero failed, 57 ignored). Native build, strict Clippy, Rust formatting, targeted
+ESLint, dashboard TypeScript check, CodeGraph sync, and diff check passed. The
+planning audit is clean but not applicable to this repo's adopted contract set.
+The initial broad run's child-executable spawn failure did not recur when Rust
+validation ran without competing builds. No fresh installed live QA is claimed.
+
+Full autonomy, durable task continuation, authentication/MFA handoff, CAPTCHA
+outcomes, and newly installed live-browser verification remain unproven. Restore
+the exact required retained session, or obtain explicit approval to retire its
+obsolete requirement, before publication. Do not treat a clean commit as deployment.
+
+## CLI compaction follow-through | 2026-09-07
+
+The previous goal turn was progress: commit `6ed97936` contains the fresh-launch
+proof and dashboard completion repairs. Current source inspection found that CLI
+interactive history compaction still ran before its turn deadline. A stalled
+summary therefore bypassed the published five-minute guarantee.
+
+Compaction now runs at the start of `run_chat_turn`, under the same absolute
+deadline used by gateway and tool work. Timeout returns failure before model/tool
+dispatch and retains the unmodified message history; success preserves the
+original system message and recent turns. Two local socket regressions cover
+stalled compaction and successful history replacement. No live model request or
+browser action is part of these fixtures. Durable recovery remains separate.
+
+Delegation: `/root/dashboard_completion` receives only a read-only closed-world
+review of this bounded CLI diff; implementation and validation stay primary-owned
+to avoid concurrent builds replacing the test executable. Installation remains
+subject to the unresolved retained-session guard; no bypass is authorized.
+
+Validation for this follow-through: five CLI Rust tests, three actual-CLI fixture
+scenarios, and isolated full suite with 1920 passes, zero failures, 57 ignored.
+Build, strict Clippy, formatting, targeted ESLint, dashboard TypeScript,
+CodeGraph synchronization, and diff checks passed. The independent scoped review
+returned no blocking findings. Plan audit remains clean but not applicable.
+
+## Authorized installation checkpoint | 2026-09-07
+
+The user approved retiring the obsolete NYSE requirement. Its two private files
+were archived recoverably without altering the profile or login data. The runtime
+through `2164f6d8` is now installed; live manifest hash is
+`d2183f7679e4261f45305e5d1a3e9541f911a643b064169b3d4e1603d9b8fe09`.
+Installed CLI fixture and dashboard HTTP checks pass. Install doctor is clean
+after payload refresh, but full workstation apply fails at the Guacamole viewer:
+the installer-selected Linux executable inherits an incompatible stealth build
+requirement. Displays 10 and 11 remain absent. Dashboard and backup scheduling
+were restored; runtime interlock remains paused. See RUNBOOK Turn 132 for exact
+publication evidence and next repair. Live headless/autonomous QA is still pending.
+
+## Workstation viewer build repair | 2026-09-07
+
+The installer now binds `AGENT_BROWSER_RDP_ROUTE_VIEWER_BROWSER_BUILD` to
+`stock_chrome` with its selected installed executable. The route helper carries
+that scoped identity on launch, header setup, and navigation; unrelated global
+browser preferences remain unchanged and invalid build names fail before command
+execution. The real command builders are exercised through an isolated VM test.
+The installer unit test covers paired selection and repeated updates.
+
+Validation: route-viewer JavaScript regression, 21 isolated installer Rust tests,
+source-free installer fixture, build, strict Clippy, formatting, targeted ESLint,
+dashboard TypeScript, and diff checks pass. CodeGraph was synced; planning audit
+is clean but not applicable. `/root/dashboard_completion` independently reviewed
+the bounded diff read-only and returned no blocking findings. Live reconciliation
+must pass before declaring the remote-desktop blocker resolved.
+
+Live follow-through: both route desktops reached ready after the installer-owned
+legacy Route A viewer was gracefully terminated by exact PID/executable/profile
+identity. Its old handed-off connection had detached without closing the process.
+No profile data was deleted. Reconciliation then exposed a sole unreadable
+dashboard manifest immediately after activation, while both standalone doctors
+passed. Final verification now allows two retries for only that startup condition;
+other issues and mismatched hashes remain fatal. The 22 installer tests and an
+independent closed-world review pass for this follow-up.
+
+Resolved live: installed runtime
+`09288ffad7a132b888eea6e79d47d49d6302599bb39310b6204eea058d64afda`
+completed workstation apply with exit zero, `complete: true`, and `state: ready`.
+The ready receipt is `~/.agent-browser/convergence/workstation-latest.json`.
+Publisher preserved both viewer browser processes through the final deployment.
+See RUNBOOK Turn 133; the prior deployment/workstation blocker is resolved.
+The full autonomous headless task objective remains active and unproven.
+
+## Session continuation follow-through | 2026-09-07
+
+After publication through `da609250`, public headless QA reached Example Domain,
+clicked its documentation link, verified the rendered IANA destination, and
+released only its exact service tab. No account or ChatGPT action was sent.
+
+This bounded slice repairs follow-up command admission: a proven active browser
+build survives a different global launch default. Explicit requests and
+site/profile/registry requirements remain binding; missing proof still fails
+against the resolved planned build. Fresh launch selection is unchanged.
+Missing/refused MCP retained-daemon connections now carry actionable recovery
+guidance without launching, falling back, or adding replay. `sessionName` is an
+existing-route hint, not new-session authority. Automatic cold-session creation
+is intentionally not introduced.
+
+Primary validation: two active-dispatch regressions, the full isolated Rust suite
+(1928 passed, zero failed, 57 ignored), format check, strict Clippy, native debug
+build, API/MCP parity, generated-client contract and TypeScript checks, docs build,
+targeted ESLint, and diff check. The actual MCP stdio fixture
+`scripts/test-mcp-retained-route-unavailable.js` verifies both session and browser
+route hints return the diagnostic with no socket, PID, browser, session, or job
+creation. Planning audit reports clean but not applicable. CodeGraph reports
+current but omits the oversized actions symbols; targeted source reads were used.
+
+Delegation: `/root/cold_session_review` implemented only MCP diagnostics and
+reviewed the continuation diff read-only. Its terminal review reported no blocking
+findings; the primary inspected its diff and independently ran all validation.
+Concurrent installer-recovery edits appeared during this slice and are preserved.
+Live installation is deferred to avoid deploying those unrelated in-progress
+changes. No GitHub write or live browser mutation occurred in this slice.

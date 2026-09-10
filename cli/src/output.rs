@@ -3570,6 +3570,12 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                 .unwrap_or("");
             println!("Confirmation required:");
             println!("  {}: {}", category, description);
+            if let Some(binding) = data.get("expectedTargetBinding") {
+                println!("  Target: {}", binding);
+            }
+            if let Some(expires) = data.get("expiresInMs").and_then(|v| v.as_u64()) {
+                println!("  Expires in: {} ms", expires);
+            }
             println!("  Run: agent-browser confirm {}", cid);
             println!("  Or:  agent-browser deny {}", cid);
             return;
@@ -4300,6 +4306,20 @@ default browser. The proxy routes DevTools traffic through the daemon's
 existing CDP connection, so both DevTools and agent-browser commands work
 simultaneously.
 
+Replacing an inspect proxy waits for its connection tasks to stop. On Linux and
+macOS, cooperative CDP privacy receipts live under the configured runtime home's
+private-gates directory. Private locks deny commands and observation; interrupted
+or raw traffic denies private admission until verified reconciliation. Do not
+delete these receipts to force a retry. Automated private login is not enabled.
+Internal page cleanup does not unlock observation. Old connection generations
+stay revoked; private commands require a persisted target scope and matching
+CDP session. Live broker coordination is not enabled.
+
+Source-checkout Slack token setup: python3 scripts/setup-private-slack.py
+Linux/WSL only; hidden operator input, auth.test only, owner-only plaintext
+bootstrap file; never pass a token in arguments or chat. Use --status for local
+metadata. This helper does not read Slack messages or enable automated login.
+
 Usage: agent-browser inspect
 
 Examples:
@@ -4326,6 +4346,7 @@ Subcommands:
   title                      Get page title
   url                        Get current URL
   browser-pid                Get local browser process PID
+  page --url <url>           Bounded page fetch without Runtime.evaluate
   count <selector>           Count matching elements
   box <selector>             Get bounding box (x, y, width, height)
   styles <selector>          Get computed styles of elements
@@ -4340,6 +4361,7 @@ Examples:
   agent-browser get html "#content"
   agent-browser get value "#email-input"
   agent-browser get browser-pid
+  agent-browser get page --url https://example.com --max-bytes 64000 --timeout 15000
   agent-browser get attr "#link" href
   agent-browser get title
   agent-browser get url
@@ -4747,11 +4769,12 @@ Usage:
   agent-browser confirm <confirmation-id>
   agent-browser deny <confirmation-id>
 
-When --confirm-actions is set, certain action categories return a
-confirmation_required response with a confirmation ID. Use confirm/deny
-to approve or reject the action.
+When --confirm-actions is set, exact actions or consequence categories return
+a confirmation_required response with a confirmation ID, consequence class,
+exact target binding, and 60-second expiry. Use confirm/deny to approve or
+reject the action. Approval fails closed if the ID, lifetime, or target changed.
 
-Pending confirmations auto-deny after 60 seconds.
+Pending confirmations expire after 60 seconds.
 
 Examples:
   agent-browser confirm c_8f3a1234
@@ -5032,12 +5055,26 @@ Usage: agent-browser session [operation]
 Manage isolated browser sessions. Each session has its own browser
 instance with separate cookies, storage, and state.
 
+Active sessions retain their proven browser build across follow-up commands
+when only the global launch default differs. Explicit builds and site/profile
+or registry policies still apply; missing proof fails closed.
+MCP service_request sessionName/browserId select existing daemons, not new ones.
+On retained_daemon_unavailable, refresh the access plan and inspect recovery;
+do not launch a duplicate profile or blindly replay an uncertain action.
+
 Operations:
   (none)               Show current session name
   list                 List all active sessions
 
 Environment:
   AGENT_BROWSER_SESSION    Default session name
+  AGENT_BROWSER_SOCKET_DIR Explicit daemon socket directory
+  XDG_RUNTIME_DIR          Linux user runtime root for daemon sockets
+
+On Linux, when neither socket variable is set, agent-browser securely infers
+the current user's private /run/user/<uid>/agent-browser directory before the
+home fallback. This keeps noninteractive clients and user services in the same
+daemon namespace.
 
 Global Options:
   --json               Output as JSON
@@ -5057,16 +5094,53 @@ agent-browser install - Install browser binaries
 
 Usage: agent-browser install [--with-deps] [--with-remote-view-privileges]
        agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]
+       agent-browser install workstation retained-browser-status [--json]
+       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--rotate-stale-requirement-sha256 <sha256>] [--json]
        agent-browser install workstation reconcile [--json]
        agent-browser install workstation backup [--json]
        agent-browser install stealthcdp-chromium [--force]
-       agent-browser install doctor [--json]
+       agent-browser install doctor [--compact] [--json]
 
 Downloads and installs browser binaries required for automation. The doctor is
-no-launch and also reports service-status, duplicate profile pressure, and
-remote-view privilege readiness. Workstation payload checks bind the installed
+no-launch and also reports service-status, duplicate profile pressure,
+read-only local dashboard publication state, and remote-view privilege
+readiness. Recoverable publication state reports an explicit recovery-only
+command; doctor does not perform it. Publication status also reports whether a
+retained-browser identity guard was required and verified without exposing its
+session, target, or URL. Workstation payload checks bind the installed
 binary and support assets to recorded SHA-256 provenance. Real-host preflight
 requires at least 6 GiB free before sudo, payload staging, or package mutation.
+Repository publication tooling can pin a private retained-lane requirement;
+both the source-checkout user-service interlock and the installed binary-owned
+workstation reconciler verify any configured requirement before convergence
+mutation. Native verification requires the exact ready browser, active session,
+valid service-tab handle, profile, target, canonical URL, and loopback DevTools
+inventory. Locally launched browsers also require a live browser PID; an
+explicit attached-existing browser may omit that local PID only while its live
+daemon and exact loopback DevTools identity still verify. It never launches a
+daemon or browser.
+Use workstation retained-browser-status for the same source-free, no-lock,
+no-launch check before apply or reconcile. It honors
+AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT from the normal agent-browser env
+file and projects no retained identity. Pinning commits a separate private
+enforcement record before the requirement; once that record exists, a missing
+requirement fails closed instead of reverting to not_configured. The
+enforcement record binds the exact requirement SHA-256, so a stale marker and
+replaced requirement also fail before service-state access.
+Repository operators can pin a uniquely selected live page with
+pnpm pin:local-dashboard-retained-browser --
+--discover-retained-url-prefix <reviewed-origin-and-path-prefix>. Discovery
+does not launch or navigate and writes only after exactly one ready session,
+profile, target, canonical URL, local PID when locally launched, and loopback
+DevTools lane matches.
+The source-free workstation preparation command removes the manual navigation
+handoff. It invokes only route-bound remote-view open for the exact URL, proves
+the requested profile and rendered identity, then uniquely rediscovers and
+marker-first pins that same lane. It exposes no page interaction or prompt
+submission action. If retained-browser-status proves the old daemon is gone,
+--rotate-stale-requirement-sha256 performs an explicit digest-bound replacement.
+It refuses live or unreadable old authority, journals the two private-file
+updates, fails closed during a partial commit, and resumes safely after a crash.
 
 Workstation apply reruns stop the managed dashboard, runtime interlock, and
 backup timer during reconciliation, then reactivate them after final readiness.
@@ -5103,17 +5177,28 @@ Options:
                        Set the workstation dashboard port (default: 4848)
   --guacamole-port <port>
                        Set the loopback Guacamole port (default: 8092)
+  --compact            Emit bounded readiness, issue, remedy, and count fields in doctor JSON
   --json               Output install or doctor results as JSON
+  --url <url>           Exact canonical URL for retained-browser preparation
+  --url-prefix <url>    Reviewed origin and path boundary for preparation
+  --runtime-profile <id>
+                       Required managed profile for preparation
+  --rotate-stale-requirement-sha256 <sha256>
+                       Replace only a proven-dead retained requirement matching this digest
 
 Examples:
   agent-browser install
   agent-browser install stealthcdp-chromium
   agent-browser install doctor
   agent-browser install doctor --json
+  agent-browser install doctor --compact --json
   agent-browser install --with-deps
   agent-browser install --with-deps --with-remote-view-privileges
   agent-browser install workstation --dry-run --json
   agent-browser install workstation --apply --json
+  agent-browser install workstation retained-browser-status --json
+  agent-browser install workstation prepare-retained-browser --url https://example.com/project/conversation --url-prefix https://example.com/project/ --runtime-profile work --json
+  agent-browser install workstation prepare-retained-browser --url https://example.com/project/conversation --url-prefix https://example.com/project/ --runtime-profile work --rotate-stale-requirement-sha256 <sha256> --json
   agent-browser install workstation reconcile --json
   agent-browser install workstation backup --json
 "##
@@ -5194,8 +5279,13 @@ the operator's browser to reach per-session localhost ports.
 The dashboard self-guards its API routes with a superuser login. On first
 start it creates ~/.agent-browser/dashboard-auth.json plus the mode-0600
 bootstrap credential file ~/.agent-browser/dashboard-auth.env. The default
-admin user and the codex observer user are superusers. Rotate or remove the
-bootstrap credential file after recording the intended operator password.
+admin user is a superuser and the codex user is an observer. Rotate or remove
+the bootstrap credential file after recording the intended operator password.
+For a localhost-only dashboard exposed exclusively through Tailscale Serve,
+set AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH=1 and explicitly allow operator
+logins with AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS. This mode accepts
+only HTTPS .ts.net requests carrying a matching Tailscale-User-Login header.
+Do not enable it on a listener also reached by Funnel or another reverse proxy.
 
 Options:
   --port <n>           Port for the dashboard server (default: 4848)
@@ -5203,6 +5293,10 @@ Options:
 Environment:
   AGENT_BROWSER_DASHBOARD_AUTH_FILE
                        Override the dashboard auth store path
+  AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH
+                       Trust allowlisted Tailscale Serve identity on HTTPS .ts.net requests
+  AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS
+                       Comma-separated exact Tailscale login allowlist
 
 Global Options:
   --json               Output as JSON
@@ -5300,11 +5394,11 @@ Examples:
 agent-browser doctor - Diagnose local environment and browser connectivity
 
 Usage: agent-browser doctor windows-browser [--port <port>] [--host <host>] [--scan-ports] [--firewall] [--json]
-       agent-browser doctor remote-view [--allow-shared-target] [--json]
+       agent-browser doctor remote-view [--allow-shared-target] [--compact] [--json]
        agent-browser remote-view open [url] [--runtime-profile <id>] [--browser-build <build>] [--view-stream-provider rdp_gateway] [--route-pool-entry-id <id>] [--route-pool-entry-json <json>] [--display <name>] [--manual-login-launch] [--dry-run]
 
 Subcommands:
-  windows-browser       Diagnose WSL to Windows browser CDP routing without changing system state
+  windows-browser       Diagnose operator-owned WSL to Windows browser CDP routing without changing system state
   remote-view           Diagnose install, RDP gateway, private display allocator, Guacamole local/public routes, XRDP, RDP user, privilege, config, route-display, and display-access state
   remote-view open      Select a service-owned remote-view route, launch on the bound display, open a tab, and return dashboard/external route URLs
 
@@ -5314,8 +5408,13 @@ Options:
   --scan-ports          Run a bounded scan of common browser/debug ports and localhost listeners
   --firewall            Query Windows firewall and Hyper-V firewall state through PowerShell when available
   --allow-shared-target Treat shared Guacamole RDP targets as diagnostic-ready for route-pool inspection
+  --compact            Emit bounded readiness, issue, remedy, and next-action fields in doctor JSON
   --browser-build <build>
                        Select the browser build for remote-view open, for example stealthcdp_chromium
+
+Managed WSL NAT launches of Windows Chromium use an automatic private loopback
+relay tied to the exact browser PID and profile. They do not require mirrored
+networking, firewall changes, an SSH tunnel, or a persistent terminal.
   --view-stream-provider rdp_gateway
                        Select the RDP gateway view stream for remote-view open
   --provider rdp_gateway
@@ -5368,6 +5467,7 @@ Examples:
   agent-browser doctor windows-browser --host 127.0.0.1 --port 9222 --json
   agent-browser doctor remote-view
   agent-browser doctor remote-view --json
+  agent-browser doctor remote-view --compact --json
   agent-browser remote-view open https://www.linkedin.com/ --runtime-profile stealthcdp-default --browser-build stealthcdp_chromium --view-stream-provider rdp_gateway
   agent-browser remote-view open linkedin.com --route-pool-entry-id pool-a --display :11 --dry-run
 "##
@@ -5408,6 +5508,34 @@ Examples:
   agent-browser setup windows-browser --print-powershell --doctor
   agent-browser setup windows-browser --print-powershell --port 9222 > windows-browser-setup.ps1
   agent-browser setup windows-browser --print-powershell --mode ssh --windows-user ecoch --windows-host winhost
+"##
+        }
+
+        // === Electron ===
+        "electron" => {
+            r##"
+agent-browser electron - Manage WSL access to operator-owned Windows Electron apps
+
+Usage:
+  agent-browser electron relay install --name <id> --process-name <app.exe> --local-port <port> --remote-port <port> [--dry-run|--apply] [--json]
+  agent-browser electron relay doctor --name <id> [--json]
+  agent-browser electron relay run --name <id> [--json]
+  agent-browser electron relay uninstall --name <id> [--dry-run|--apply] [--json]
+
+The managed relay is WSL-only and never launches the Windows app. It requires
+one exact Electron main process, one Windows 127.0.0.1 listener on the remote
+port, and listener ownership by that process. The WSL endpoint also binds only
+127.0.0.1. Missing, duplicate, non-loopback, wrong-owner, and drifted states
+fail closed.
+
+Install and uninstall are dry-run by default. Apply creates or removes only the
+named user-scoped config, service, and timer. The service exits with the app;
+the bounded timer discovers a normally reopened app without keeping a shell
+alive. No firewall, SSH, mirrored-network, app-launch, or terminal changes are
+made.
+
+Example:
+  agent-browser electron relay install --name termius --process-name Termius.exe --local-port 19222 --remote-port 9222 --dry-run --json
 "##
         }
 
@@ -5657,7 +5785,7 @@ Notes:
   - The bounded events log records reconciliation summaries, browser launch metadata including profileSelectionReason and profileLeaseDisposition when known, browser health transitions, browser recovery starts, profile lease wait transitions, and tab lifecycle changes.
   - Event filters match kind, browser ID, profile ID, session ID, service name, agent name, task name, and RFC 3339 timestamps before applying --limit.
   - The stream server exposes named browser control endpoints at /api/browser/url, /api/browser/title, /api/browser/tabs, /api/browser/navigate, /api/browser/back, /api/browser/forward, /api/browser/reload, /api/browser/new-tab, /api/browser/switch-tab, /api/browser/close-tab, /api/browser/viewport, /api/browser/user-agent, /api/browser/media, /api/browser/timezone, /api/browser/locale, /api/browser/geolocation, /api/browser/permissions, /api/browser/cookies/get, /api/browser/cookies/set, /api/browser/cookies/clear, /api/browser/storage/get, /api/browser/storage/set, /api/browser/storage/clear, /api/browser/console, /api/browser/errors, /api/browser/set-content, /api/browser/headers, /api/browser/offline, /api/browser/dialog, /api/browser/clipboard, /api/browser/upload, /api/browser/download, /api/browser/wait-for-download, /api/browser/pdf, /api/browser/response-body, /api/browser/har/start, /api/browser/har/stop, /api/browser/route, /api/browser/unroute, /api/browser/requests, /api/browser/request-detail, /api/browser/snapshot, /api/browser/screenshot, /api/browser/click, /api/browser/fill, /api/browser/wait, /api/browser/type, /api/browser/press, /api/browser/hover, /api/browser/select, /api/browser/get-text, /api/browser/get-value, /api/browser/is-visible, /api/browser/get-attribute, /api/browser/get-html, /api/browser/get-styles, /api/browser/count, /api/browser/get-box, /api/browser/is-enabled, /api/browser/is-checked, /api/browser/check, /api/browser/uncheck, /api/browser/scroll, /api/browser/scroll-into-view, /api/browser/focus, and /api/browser/clear.
-  - The stream server exposes the service surface at /api/service/status, /api/service/request, /api/service/profiles, /api/service/profiles/lookup, /api/service/profiles/<id>/allocation, /api/service/profiles/<id>/readiness, /api/service/profiles/<id>/seeding-handoff, /api/service/profiles/<id>, /api/service/profiles/<id>/freshness, /api/service/sessions, /api/service/sessions/<id>, /api/service/browsers, /api/service/tabs, /api/service/monitors, /api/service/monitors/run-due, /api/service/monitors/<id>/pause, /api/service/monitors/<id>/resume, /api/service/monitors/<id>/reset-failures, /api/service/monitors/<id>/triage, /api/service/site-policies, /api/service/site-policies/<id>, /api/service/providers, /api/service/providers/<id>, /api/service/challenges, /api/service/trace, /api/service/jobs, /api/service/jobs/<id>, /api/service/jobs/<id>/cancel, /api/service/incidents, /api/service/incidents/<id>, /api/service/incidents/<id>/activity, /api/service/incidents/<id>/acknowledge, /api/service/incidents/<id>/resolve, /api/service/events, and /api/service/reconcile. GET /api/service/monitors accepts state, failed, and summary query parameters.
+  - The stream server exposes the service surface at /api/service/status, /api/service/publications/local-dashboard, /api/service/request, /api/service/profiles, /api/service/profiles/lookup, /api/service/profiles/<id>/allocation, /api/service/profiles/<id>/readiness, /api/service/profiles/<id>/seeding-handoff, /api/service/profiles/<id>, /api/service/profiles/<id>/freshness, /api/service/sessions, /api/service/sessions/<id>, /api/service/browsers, /api/service/tabs, /api/service/monitors, /api/service/monitors/run-due, /api/service/monitors/<id>/pause, /api/service/monitors/<id>/resume, /api/service/monitors/<id>/reset-failures, /api/service/monitors/<id>/triage, /api/service/site-policies, /api/service/site-policies/<id>, /api/service/providers, /api/service/providers/<id>, /api/service/challenges, /api/service/trace, /api/service/jobs, /api/service/jobs/<id>, /api/service/jobs/<id>/cancel, /api/service/incidents, /api/service/incidents/<id>, /api/service/incidents/<id>/activity, /api/service/incidents/<id>/acknowledge, /api/service/incidents/<id>/resolve, /api/service/events, and /api/service/reconcile. The local-dashboard publication route is read-only and never authorizes recovery. GET /api/service/monitors accepts state, failed, and summary query parameters.
   - POST /api/service/request accepts one intent object with serviceName, agentName, taskName, siteId/loginId, targetServiceId, accountId, url, browserBuild, profile or runtimeProfile hints, top-level browserId/sessionName reuse route hints, profileLeasePolicy, profileLeaseWaitTimeoutMs, action, params, and jobTimeoutMs, then queues the browser command through the same service-owned control path. Top-level browserId/sessionName route ordinary commands to an existing daemon lane selected by access-plan profileReuse; params.browserId/params.sessionName remain action parameters. Direct launches that select a profile already backed by a live retained browser are rejected unless they use those route hints or allowDuplicateProfileLane=true for reviewed isolation or throwaway work. Use action=view_takeover with params.browserId, params.sessionName, params.streamId, params.provider, and params.openMode when an RDP or Guacamole viewer needs a service-owned takeover or reconnect request without closing or relaunching the browser. Use service_viewer_lease_request, service_viewer_lease_heartbeat, service_viewer_lease_release, and service_controller_lease_takeover when software clients need explicit observer heartbeat, release, and controller ownership state for retained remote-view routes.
   - POST /api/service/profiles/<id>, POST /api/service/profiles/<id>/freshness, POST /api/service/sessions/<id>, POST /api/service/site-policies/<id>, POST /api/service/monitors/<id>, and POST /api/service/providers/<id> persist service config records through the service worker queue. POST /api/service/monitors/run-due runs due active monitors now. POST /api/service/monitors/<id>/pause and POST /api/service/monitors/<id>/resume update retained monitor state. POST /api/service/monitors/<id>/triage acknowledges related incidents and clears reviewed failures. DELETE on the same entity paths removes persisted records through the same queue.
   - Service config mutation uses the path ID as authoritative and rejects a request body whose nested id conflicts with the path.
@@ -5671,7 +5799,7 @@ Notes:
   - Service-scoped launches reject active exclusive profile conflicts by default before browser start; set profileLeasePolicy=wait and profileLeaseWaitTimeoutMs to keep the job queued while polling for release, leaving the worker available for other commands. Same-session retained browser reuse remains allowed.
   - service status includes launchConfig, a no-launch diagnostic for service.defaultBrowserBuild and the resolved executablePath from config, AGENT_BROWSER_EXECUTABLE_PATH, or service.browserBuildManifests.<build>.manifestPath. launchConfig.profileSmoke tells API, MCP, and CLI clients whether the WSL Windows chromium-stealthcdp profile-write smoke is applicable. If stealthcdp_chromium is selected but no executable path or ready manifest exists, status reports a warning. Ordinary launch and queued tab paths consume service.defaultBrowserBuild through the service access-plan resolver unless the caller explicitly supplies a profile, browser host, headless mode, executable, or browser build. When no explicit default is configured and a ready stealthcdp_chromium manifest is available, fresh installs prefer that build automatically.
   - Ordinary service status retains every live or referenced tab and at most 50 unreferenced closed-tab rows. closedTabProjection reports retained, omitted, cap, and ordering metadata. Use --full-tab-history for the complete response-only diagnostic projection; persisted service state is never compacted by a status read.
-  - Service profiles can set browserBuild to stock_chrome, stealthcdp_chromium, or cdp_free_headed. Exact authenticated target, account, and target-site matches win first; browserBuild then breaks ties and can select a generic default profile for new identities.
+  - Service profiles can set browserBuild to stock_chrome, stealthcdp_chromium, or cdp_free_headed. Exact authenticated target, account, and target-site matches win first; browserBuild then breaks ties and can select a generic default profile for new identities. Retained browser rows persist browserBuild, executablePath, and browserBuildProof. When a build is resolved, access-plan reuse and daemon command dispatch require an exact proven build; missing legacy proof or a mismatch fails closed while preserving the retained process and duplicate-profile guard.
   - service.browserCapabilityRegistry carries draft browser host, executable, capability, profile compatibility, preference binding, and validation evidence arrays into service_state.browserCapabilityRegistry for no-launch status consumers. Access-plan recommendations can use preference bindings for browserBuild selection, and populated target, account, service, and task filters are conjunctive. Guarded launches record browserCapabilityLaunch diagnostics explaining whether a local executable binding was applied or skipped. A matching failed, stale, incompatible, or operator-override row blocks launch routing even if another matching row passed.
   - service browser-capability preflight is the operator no-launch gate check for that same guarded launch path. It accepts the requested build, site/login/account hints, caller labels, profile hint, headed or headless posture, and CDP-free posture, evaluates effective configured service state, and returns browserCapabilityLaunch plus selected evidence IDs when the route passes. Manifest-derived default executables do not count as explicit operator overrides.
   - Commands should include serviceName, agentName, and taskName when available for traceability.
@@ -6090,6 +6218,17 @@ Requires AI_GATEWAY_API_KEY to be set.
 
 In interactive mode, type "quit", "exit", or "q" to leave the REPL.
 
+CLI and dashboard Chat turns stop after five minutes or 50 steps and report failure if unfinished.
+History compaction shares that deadline; timeout preserves the existing history.
+Incomplete gateway streams never dispatch partial tool calls. Earlier browser
+actions may have completed; inspect the retained page before continuing.
+
+Fresh stock Chrome launches preserve exact installer executable proof; attached
+or custom browsers are not relabeled, and retained reuse still requires proof.
+Workstation Guacamole viewers use the installed stock Chrome build independently
+of the global browser-build preference.
+Final workstation checks retry only an unreadable startup dashboard manifest twice.
+
 Chat Options:
   --model <name>         AI model (or AI_GATEWAY_MODEL env, default: anthropic/claude-sonnet-4.6)
   -v, --verbose          Show tool commands and their raw output
@@ -6121,6 +6260,18 @@ pub fn print_help() {
 agent-browser - fast browser automation CLI for AI agents
 
 Usage: agent-browser <command> [args] [options]
+
+Local controller (Linux, no browser actions or renewal):
+  private-controller setup <absolute-root>  Create/validate private authentication key
+  private-controller serve <absolute-root>  Serve authenticated probe/binding socket
+  Keys never belong in arguments or logs; existing sockets fail closed.
+
+Approved private executor (Linux, opt-in daemon configuration):
+  AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT  Prepared root with immutable execution.json
+  Unset means disabled. Requires independently reviewed recipe and exact approved
+  plan. executor.sock uses private authenticated ingress and guarded key delivery.
+  Never put credentials in commands, logs or environment variables. No retries,
+  browser launch/replacement, automatic privacy release or unattended scheduling.
 
 Core Commands:
   open <url>                 Navigate to URL
@@ -6156,7 +6307,7 @@ Navigation:
   reload                     Reload page
 
 Get Info:  agent-browser get <what> [selector]
-  text, html, value, attr <name>, title, url, browser-pid, count, box, styles, cdp-url
+  text, html, value, attr <name>, title, url, browser-pid, count, box, styles, cdp-url, page --url <url>
 
 Check State:  agent-browser is <what> <selector>
   visible, enabled, checked
@@ -6284,6 +6435,7 @@ Setup:
   doctor remote-view         Diagnose Guacamole and RDP remote-view setup
   remote-view open <url>     Open a route-bound remote-headed browser and return view URLs
   setup windows-browser      Print a reviewed PowerShell setup script for Windows browser routing
+  electron relay             Manage a loopback-only WSL relay to an operator-owned Windows Electron app
   install --with-deps        Also install system dependencies (Linux)
   install --with-remote-view-privileges
                              Install the Linux privilege helper for RDP/Guacamole desktop setup
@@ -6352,7 +6504,7 @@ Options:
   --max-output <chars>       Truncate page output to N chars (or AGENT_BROWSER_MAX_OUTPUT)
   --allowed-domains <list>   Restrict navigation domains (or AGENT_BROWSER_ALLOWED_DOMAINS)
   --action-policy <path>     Action policy JSON file (or AGENT_BROWSER_ACTION_POLICY)
-  --confirm-actions <list>   Categories requiring confirmation (or AGENT_BROWSER_CONFIRM_ACTIONS)
+  --confirm-actions <list>   Exact actions or consequence categories requiring confirmation (or AGENT_BROWSER_CONFIRM_ACTIONS)
   --confirm-interactive      Interactive confirmation prompts; auto-denies if stdin is not a TTY (or AGENT_BROWSER_CONFIRM_INTERACTIVE)
   --engine <name>            Browser engine: chrome (default), lightpanda (or AGENT_BROWSER_ENGINE)
   --service-reconcile-interval <ms> Background service browser-health reconciliation interval (default: 60000); 0 disables it
@@ -6454,6 +6606,10 @@ Configuration:
   Pass `--job-timeout-ms` on one CLI command when its worker deadline must be
   shorter than an outer subprocess or client deadline. The worker cancels the
   dispatched operation and releases the serialized command queue first.
+  Renderer-facing timeouts are never replayed. The daemon then probes
+  browser-level CDP, replaces only the affected ordinary owned target when
+  possible, or performs one bounded locally owned browser recovery. Service-tab
+  handles and external attachments remain untouched.
   Set `service.recoveryRetryBudget`, `service.recoveryBaseBackoffMs`, and
   `service.recoveryMaxBackoffMs` or pass the matching service recovery flags
   to control when repeated browser relaunch attempts become faulted. Recovery
@@ -6495,12 +6651,15 @@ Environment:
   AGENT_BROWSER_ENCRYPTION_KEY   64-char hex key for AES-256-GCM session encryption
   AGENT_BROWSER_STREAM_PORT      Override WebSocket streaming port (default: OS-assigned)
   AGENT_BROWSER_REMOTE_HEADED_DISPLAY Shared display for explicit remote_headed shared_display launches (default: private Xvfb on Linux)
+  AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH Linux-local executable for remote_headed launches when the default is manifest-selected
   AGENT_BROWSER_REMOTE_VIEW_URL  External operator view URL recorded on remote_headed browser records
   AGENT_BROWSER_REMOTE_VIEW_FRAME_URL Embeddable route URL recorded on remote_headed browser records
   AGENT_BROWSER_REMOTE_VIEW_EXTERNAL_URL External route URL recorded on remote_headed browser records
   AGENT_BROWSER_REMOTE_VIEW_ROUTE_ID Service-owned remote-view route id
   AGENT_BROWSER_GUACAMOLE_CONNECTION_ID Guacamole connection id or route token for rdp_gateway streams
   AGENT_BROWSER_GUACAMOLE_CONNECTION_NAME Human-readable Guacamole connection name for rdp_gateway streams
+  AGENT_BROWSER_GUACAMOLE_HEADER_USER Local Guacamole principal injected by the authenticated dashboard proxy
+  AGENT_BROWSER_GUACAMOLE_HTTP_PORT Loopback Guacamole port used by the authenticated dashboard proxy (default: 8092)
   AGENT_BROWSER_REMOTE_VIEW_PROVIDER View stream provider label for remote_headed records
   AGENT_BROWSER_REMOTE_CONTROL_INPUT_PROVIDER Control-input provider label for remote_headed records
   AGENT_BROWSER_IDLE_TIMEOUT_MS  Auto-shutdown daemon after N ms of inactivity (disabled by default)
@@ -6520,8 +6679,19 @@ Environment:
   AGENT_BROWSER_MAX_OUTPUT       Max characters for page output
   AGENT_BROWSER_ALLOWED_DOMAINS  Comma-separated allowed domain patterns
   AGENT_BROWSER_ACTION_POLICY    Path to action policy JSON file
-  AGENT_BROWSER_CONFIRM_ACTIONS  Action categories requiring confirmation
+  AGENT_BROWSER_CONFIRM_ACTIONS  Exact actions or consequence categories requiring confirmation
   AGENT_BROWSER_CONFIRM_INTERACTIVE Enable interactive confirmation prompts
+  AGENT_BROWSER_REQUIRE_TASK_AUTHORITY Require taskAuthority on daemon browser commands
+  AGENT_BROWSER_TASK_AUTHORITY_DIR Durable task-authority ledger directory
+
+Task authority broker APIs:
+  POST /api/service/task-authorities/issue            Derive authority from an approved bounded plan (confirmation required)
+  GET  /api/service/task-authorities[/<id>]           Read issuer, plan, state, usage, and remaining budgets (no launch)
+  POST /api/service/task-authorities/<id>/reconcile   Replace one indeterminate step with lineage-bound authority (confirmation required)
+  POST /api/service/task-authorities/confirmation     Decide as the authenticated dashboard principal
+  POST /api/service/task-authorities/confirmations/cleanup  Preview exact candidates plus verified checkpoint-ledger proof before digest-bound apply
+  POST /api/service/task-authorities/<id>/revoke      Revoke exact-target authority (confirmation required)
+  MCP  service_task_authority_issue|status|reconcile|confirmation|confirmation_cleanup|revoke  OS-owned stdio-principal broker operations
   AGENT_BROWSER_NO_AUTO_DIALOG   Disable automatic dismissal of alert/beforeunload dialogs
   AGENT_BROWSER_ENGINE           Browser engine: chrome (default), lightpanda
   HTTP_PROXY / HTTPS_PROXY       Standard proxy env vars (fallback if AGENT_BROWSER_PROXY not set)

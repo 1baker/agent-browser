@@ -79,6 +79,60 @@ impl LockedServiceStateRepository<JsonServiceStateStore> {
             default_service_state_path()?,
         )))
     }
+
+    /// Commit private reconciliation without waiting behind another service writer.
+    /// An error can mean the write is uncertain; callers must keep privacy closed.
+    /// Private mutator and storage errors are deliberately replaced with fixed text.
+    pub(crate) fn try_mutate_durable<R>(
+        &self,
+        mutator: impl FnOnce(&mut ServiceState) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let lock = SERVICE_STATE_MUTATION_LOCK.get_or_init(|| Mutex::new(()));
+        let _guard = lock
+            .try_lock()
+            .map_err(|_| "private_service_state_lock_unavailable".to_string())?;
+        let parent = self
+            .store
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)
+            .map_err(|_| "private_service_state_directory_unavailable".to_string())?;
+        let file_guard = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(service_state_lock_path(&self.store.path))
+            .map_err(|_| "private_service_state_lock_unavailable".to_string())?;
+        file_guard
+            .try_lock()
+            .map_err(|_| "private_service_state_lock_unavailable".to_string())?;
+        let mut state = self
+            .store
+            .load()
+            .map_err(|_| "private_service_state_load_failed".to_string())?;
+        let result = mutator(&mut state)
+            .map_err(|_| "private_service_state_mutation_rejected".to_string())?;
+        self.store
+            .save(&state)
+            .map_err(|_| "private_service_state_commit_uncertain".to_string())?;
+        // Both files are replaced by save(); keep both locks until their data and
+        // the directory entries are durable. Never return the mutator result early.
+        for path in [
+            self.store.path.clone(),
+            remote_view_handoff_registry_path(&self.store.path),
+        ] {
+            File::open(path)
+                .and_then(|file| file.sync_all())
+                .map_err(|_| "private_service_state_commit_uncertain".to_string())?;
+        }
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| "private_service_state_commit_uncertain".to_string())?;
+        Ok(result)
+    }
 }
 
 impl ServiceStateStore for JsonServiceStateStore {
@@ -391,6 +445,85 @@ mod tests {
                     .as_nanos()
             ))
             .join("state.json")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires isolated serial runner for deliberate process-lock contention"]
+    fn private_durable_mutation_is_nonblocking_and_fail_closed() {
+        assert_eq!(
+            std::env::var("AGENT_BROWSER_TEST_ISOLATED").as_deref(),
+            Ok("1")
+        );
+        let path = unique_state_path("private-durable-service-state");
+        let repository = LockedServiceStateRepository::new(JsonServiceStateStore::new(&path));
+        let lock = SERVICE_STATE_MUTATION_LOCK.get_or_init(|| Mutex::new(()));
+        let process_guard = lock.lock().unwrap();
+        assert_eq!(
+            repository
+                .try_mutate_durable::<()>(|_| panic!("contended mutation must not execute"))
+                .unwrap_err(),
+            "private_service_state_lock_unavailable"
+        );
+        drop(process_guard);
+
+        let file_guard =
+            acquire_service_state_file_lock(&path, ServiceStateFileLockMode::Exclusive).unwrap();
+        assert_eq!(
+            repository
+                .try_mutate_durable::<()>(|_| panic!("contended mutation must not execute"))
+                .unwrap_err(),
+            "private_service_state_lock_unavailable"
+        );
+        drop(file_guard);
+
+        let result = repository
+            .try_mutate_durable(|state| {
+                state.browsers.insert(
+                    "retained".to_string(),
+                    BrowserProcess {
+                        id: "retained".to_string(),
+                        health: BrowserHealth::Ready,
+                        ..BrowserProcess::default()
+                    },
+                );
+                Ok("committed")
+            })
+            .unwrap();
+        assert_eq!(result, "committed");
+        assert_eq!(
+            JsonServiceStateStore::new(&path).load().unwrap().browsers["retained"].health,
+            BrowserHealth::Ready
+        );
+        let before = fs::read(&path).unwrap();
+        assert_eq!(
+            repository
+                .try_mutate_durable(|state| {
+                    state.browsers.clear();
+                    Err::<(), _>("private sentinel must not escape".to_string())
+                })
+                .unwrap_err(),
+            "private_service_state_mutation_rejected"
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        // A directory at the temporary file path causes a write failure after
+        // the companion registry was written. The caller receives uncertainty.
+        fs::create_dir(temp_state_path(&path)).unwrap();
+        assert_eq!(
+            repository.try_mutate_durable(|_| Ok(())).unwrap_err(),
+            "private_service_state_commit_uncertain"
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::remove_dir(temp_state_path(&path)).unwrap();
+        fs::write(&path, "private invalid JSON sentinel").unwrap();
+        assert_eq!(
+            repository
+                .try_mutate_durable::<()>(|_| panic!("invalid state must not mutate"))
+                .unwrap_err(),
+            "private_service_state_load_failed"
+        );
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

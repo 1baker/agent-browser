@@ -42,7 +42,9 @@ use super::element::RefMap;
 use super::inspect_server::InspectServer;
 use super::interaction;
 use super::network::{self, DomainFilter, EventTracker};
-use super::policy::{ActionPolicy, ConfirmActions, PolicyResult};
+use super::policy::{
+    action_consequence, ActionConsequence, ActionPolicy, ConfirmActions, PolicyResult,
+};
 use super::providers;
 use super::recording::{self, RecordingState};
 use super::remote_view::{
@@ -104,9 +106,10 @@ use super::service_lifecycle::{
     ProfileSelectionRequest, ServiceLaunchMetadata,
 };
 use super::service_model::{
-    retained_display_allocation_candidates, retained_display_allocation_summary,
-    service_profile_allocations, service_profile_seeding_handoff, service_profile_sources,
-    BrowserBuild, BrowserCapabilityRegistry, BrowserHealth as ServiceBrowserHealth,
+    browser_matches_required_build, retained_display_allocation_candidates,
+    retained_display_allocation_summary, service_profile_allocations,
+    service_profile_seeding_handoff, service_profile_sources, BrowserBuild,
+    BrowserCapabilityRegistry, BrowserHealth as ServiceBrowserHealth,
     BrowserHost as ServiceBrowserHost, BrowserProcess, BrowserProfile, BrowserSession, BrowserTab,
     ControlInputProvider, DisplayAllocation, JobState as ServiceJobState, LeaseState, MonitorState,
     ProfileAllocationPolicy, ProfileClass, ProfileKeyringPolicy, ProfileLeaseDisposition,
@@ -130,6 +133,18 @@ use super::snapshot::{self, SnapshotOptions};
 use super::state;
 use super::storage;
 use super::stream::{self, StreamServer};
+use super::task_authority::{
+    active_task_authority_pending_confirmation, admit_task_authority,
+    cleanup_task_authority_confirmations, decide_task_authority_confirmation,
+    finalize_task_authority_confirmation, finalize_task_authority_step, issue_task_authority,
+    load_task_authority_pending_confirmation, reconcile_task_authority, revoke_task_authority,
+    stage_task_authority_confirmation, task_authority_confirmation_status,
+    task_authority_ledger_root, task_authority_required_from_env, task_authority_status,
+    CleanupTaskAuthorityConfirmations, DecideTaskAuthorityConfirmation,
+    StageTaskAuthorityConfirmation, TaskAuthorityConfirmationRecord, TaskAuthorityContext,
+    TaskAuthorityDecision, TaskAuthorityIssuer, DEFAULT_CONFIRMATION_RECEIPT_MIN_AGE_SECONDS,
+    DEFAULT_CONFIRMATION_RECEIPT_RETENTION_COUNT,
+};
 use super::tracing::{self as native_tracing, TracingState};
 use super::webdriver::appium::AppiumManager;
 use super::webdriver::backend::{BrowserBackend, WebDriverBackend, WEBDRIVER_UNSUPPORTED_ACTIONS};
@@ -246,10 +261,52 @@ async fn relaunch_and_restore_page(
     Ok(())
 }
 
+/// Recover a locally owned browser after browser-level CDP loss without
+/// replaying the command that timed out. Externally attached browsers remain
+/// under their original owner's lifecycle authority and are left untouched.
+pub(crate) async fn recover_owned_browser_after_timeout(
+    state: &mut DaemonState,
+) -> Result<bool, String> {
+    let Some(manager) = state.browser.as_ref() else {
+        return Ok(false);
+    };
+    if manager.is_cdp_connection() {
+        return Ok(false);
+    }
+
+    if let Some(ref mut manager) = state.browser {
+        manager.force_close_owned_after_cdp_timeout().await?;
+    }
+    state.browser = None;
+    state.launch_hash = None;
+    state.attached_runtime_profile = None;
+    state.attached_browser_pid = None;
+    state.close_behavior = CloseBehavior::CloseBrowser;
+    state.screencasting = false;
+    state.reset_input_state();
+    state.update_stream_client().await;
+    auto_launch(state, &json!({})).await?;
+    Ok(true)
+}
+
 pub struct PendingConfirmation {
+    pub confirmation_id: String,
     pub action: String,
     pub cmd: Value,
+    pub consequence: ActionConsequence,
+    pub target_binding: ConfirmationTargetBinding,
+    pub requested_at: Instant,
+    pub durable_task_authority: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmationTargetBinding {
+    pub target_id: Option<String>,
+    pub url: Option<String>,
+}
+
+const CONFIRMATION_TTL: Duration = Duration::from_secs(60);
 
 pub(crate) fn action_skips_browser_launch(action: &str) -> bool {
     matches!(
@@ -278,6 +335,13 @@ pub(crate) fn action_skips_browser_launch(action: &str) -> bool {
             | "state_clear"
             | "state_clean"
             | "state_rename"
+            | "confirm"
+            | "deny"
+            | "task_authority_issue"
+            | "task_authority_reconcile"
+            | "task_authority_revoke"
+            | "task_authority_confirmation_cleanup"
+            | "task_authority_status"
             | "dependent_batch"
             | "device_list"
             | "stream_enable"
@@ -628,9 +692,17 @@ fn launch_command_with_effective_service_defaults(
     command: &Value,
     options: &LaunchOptions,
 ) -> Value {
-    let Ok(service_state) = browser_capability_service_state(command) else {
+    let Some(plan) = service_access_plan_from_command(command) else {
         return command.clone();
     };
+    let Some(planned_request) = plan.pointer("/decision/serviceRequest/request") else {
+        return command.clone();
+    };
+    apply_planned_launch_defaults(command, &plan, planned_request, options)
+}
+
+fn service_access_plan_from_command(command: &Value) -> Option<Value> {
+    let service_state = browser_capability_service_state(command).ok()?;
     let request = ServiceAccessPlanRequest {
         service_name: optional_command_string(command, "serviceName"),
         agent_name: optional_command_string(command, "agentName"),
@@ -668,11 +740,7 @@ fn launch_command_with_effective_service_defaults(
             .and_then(|value| parse_control_input_provider(&value)),
         display_isolation: remote_headed_display_isolation_from_command(command),
     };
-    let plan = service_access_plan_for_state(&service_state, request);
-    let Some(planned_request) = plan.pointer("/decision/serviceRequest/request") else {
-        return command.clone();
-    };
-    apply_planned_launch_defaults(command, &plan, planned_request, options)
+    Some(service_access_plan_for_state(&service_state, request))
 }
 
 fn apply_planned_launch_defaults(
@@ -998,6 +1066,52 @@ fn apply_service_browser_capability_selection(
     };
     options.executable_path = Some(selection.executable_path.clone());
     BrowserCapabilityLaunchResolution::applied(browser_build, profile_id, selection)
+}
+
+fn required_stealth_launch_proof_error(
+    resolution: &BrowserCapabilityLaunchResolution,
+) -> Option<String> {
+    if resolution.browser_build != Some(BrowserBuild::StealthcdpChromium) || resolution.applied {
+        return None;
+    }
+
+    Some(format!(
+        "Stealth browser launch proof unavailable: request requires 'stealthcdp_chromium', but the validated executable binding was not applied ({reason}). Refusing to launch or silently fall back to another Chromium build; run the browser-capability preflight and repair its binding, compatibility, or validation evidence first.",
+        reason = resolution.reason,
+    ))
+}
+
+/// Record native installer provenance only after a fresh owned launch succeeds.
+/// Registry validation failures and unknown/custom binaries remain unproven.
+fn apply_fresh_installed_chrome_proof(
+    metadata: &mut ServiceLaunchMetadata,
+    launched_path: Option<&std::path::Path>,
+    installed_path: Option<&std::path::Path>,
+) {
+    let Some(proof) = metadata.browser_capability_launch.as_mut() else {
+        return;
+    };
+    if proof["applied"] != false
+        || proof["browserBuild"] != "stock_chrome"
+        || !matches!(
+            proof["reason"].as_str(),
+            Some("no_matching_preference_binding" | "explicit_executable_path")
+        )
+    {
+        return;
+    }
+    let Some(launched) = launched_path.and_then(|path| path.canonicalize().ok()) else {
+        return;
+    };
+    let Some(installed) = installed_path.and_then(|path| path.canonicalize().ok()) else {
+        return;
+    };
+    if launched != installed || !launched.is_file() {
+        return;
+    }
+    proof["applied"] = json!(true);
+    proof["reason"] = json!("fresh_installed_chrome_launch");
+    proof["executablePath"] = json!(launched.to_string_lossy());
 }
 
 fn browser_capability_service_state(cmd: &Value) -> Result<ServiceState, String> {
@@ -2357,7 +2471,15 @@ fn service_profile_lease_metadata_for_command(command: &Value) -> Option<Service
         .and_then(|value| value.as_str())
         .is_some_and(|action| {
             action.starts_with("service_")
-                || matches!(action, "runtime_handoff_prepare" | "runtime_handoff_resume")
+                || matches!(
+                    action,
+                    "runtime_handoff_prepare"
+                        | "runtime_handoff_resume"
+                        | "task_authority_issue"
+                        | "task_authority_reconcile"
+                        | "task_authority_revoke"
+                        | "task_authority_status"
+                )
         })
     {
         return None;
@@ -2395,6 +2517,19 @@ fn apply_explicit_launch_identity_from_command(options: &mut LaunchOptions, comm
     }
 }
 
+fn explicit_launch_args_from_command(command: &Value) -> Option<Vec<String>> {
+    let args = command_or_params_value(command, "args")?;
+    Some(
+        args.as_array()
+            .map(|args| {
+                args.iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    )
+}
+
 fn apply_auto_launch_command_hints(
     options: &mut LaunchOptions,
     command: &Value,
@@ -2407,6 +2542,9 @@ fn apply_auto_launch_command_hints(
 ) {
     let effective_command = launch_command_with_effective_service_defaults(command, options);
     apply_explicit_launch_identity_from_command(options, &effective_command);
+    if let Some(args) = explicit_launch_args_from_command(&effective_command) {
+        options.args = args;
+    }
     apply_retained_remote_headed_launch_hints(options, retained_remote_headed);
     let service_host = apply_launch_host_hints(options, &effective_command);
     let selection_reason = apply_service_profile_selection(options, &effective_command);
@@ -2544,10 +2682,60 @@ fn active_browser_profile_mismatch(command: &Value, state: &DaemonState) -> Opti
     active_browser_profile_mismatch_message(
         optional_command_string(command, "runtimeProfile").as_deref(),
         optional_command_string(command, "profile").as_deref(),
-        browser.runtime_profile_name(),
+        browser
+            .runtime_profile_name()
+            .or(state.attached_runtime_profile.as_deref()),
         browser.browser_user_data_dir(),
         &state.session_id,
     )
+}
+
+fn active_browser_build_mismatch(command: &Value, state: &DaemonState) -> Option<String> {
+    let browser_id = service_browser_id(&state.session_id);
+    let retained_build = LockedServiceStateRepository::default_json()
+        .and_then(|repository| repository.load_snapshot())
+        .ok()
+        .and_then(|service_state| {
+            service_state
+                .browsers
+                .get(&browser_id)
+                .and_then(|browser| browser.browser_build)
+        });
+    let plan = service_access_plan_from_command(command);
+    let required_build = retained_dispatch_required_build(command, plan.as_ref(), retained_build)?;
+    if retained_build == Some(required_build) {
+        return None;
+    }
+
+    Some(format!(
+        "Retained browser build mismatch: request requires '{}' but browser '{}' proves '{}'. Refusing command dispatch; preserve this browser and acquire an exact-build retained route instead.",
+        browser_build_label(required_build),
+        browser_id,
+        retained_build.map(browser_build_label).unwrap_or("unknown"),
+    ))
+}
+
+/// Launch defaults do not replace a proven active lane on continuation. Explicit
+/// requests, site policy, profile policy and registry bindings still constrain it.
+/// Missing retained proof continues to fail against the planned default build.
+fn retained_dispatch_required_build(
+    command: &Value,
+    plan: Option<&Value>,
+    retained_build: Option<BrowserBuild>,
+) -> Option<BrowserBuild> {
+    if let Some(explicit) = browser_build_from_command(command) {
+        return Some(explicit);
+    }
+    let plan = plan?;
+    let planned = plan
+        .pointer("/decision/serviceRequest/request")
+        .and_then(browser_build_from_command);
+    if plan.pointer("/decision/launchPosture/browserBuildSource") == Some(&json!("service_default"))
+    {
+        retained_build.or(planned)
+    } else {
+        planned
+    }
 }
 
 fn active_browser_profile_mismatch_message(
@@ -2773,6 +2961,10 @@ pub struct DaemonState {
     pub har_recording: bool,
     pub har_entries: Vec<HarEntry>,
     pub confirm_actions: Option<ConfirmActions>,
+    pub require_task_authority: bool,
+    task_authority_ledger_root: PathBuf,
+    confirmed_task_authority_id: Option<String>,
+    confirmed_control_plane_command_id: Option<String>,
     pub inspect_server: Option<InspectServer>,
     pub routes: Arc<RwLock<Vec<RouteEntry>>>,
     pub tracked_requests: Vec<TrackedRequest>,
@@ -2831,6 +3023,20 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
+    #[cfg(test)]
+    pub(crate) fn set_private_journey_test_profile(&mut self, profile: &str) {
+        self.attached_runtime_profile = Some(profile.to_owned());
+    }
+
+    /// Provenance from the owned manager or governed managed-profile attach,
+    /// never from the current command's claimed runtimeProfile.
+    pub(crate) fn private_runtime_profile(&self) -> Option<&str> {
+        self.browser
+            .as_ref()?
+            .runtime_profile_name()
+            .or(self.attached_runtime_profile.as_deref())
+    }
+
     pub fn new() -> Self {
         Self {
             browser: None,
@@ -2857,6 +3063,10 @@ impl DaemonState {
             har_recording: false,
             har_entries: Vec::new(),
             confirm_actions: ConfirmActions::from_env(),
+            require_task_authority: task_authority_required_from_env(),
+            task_authority_ledger_root: task_authority_ledger_root(),
+            confirmed_task_authority_id: None,
+            confirmed_control_plane_command_id: None,
             inspect_server: None,
             routes: Arc::new(RwLock::new(Vec::new())),
             tracked_requests: Vec::new(),
@@ -2901,7 +3111,7 @@ impl DaemonState {
             .unwrap_or(self.default_timeout_ms)
     }
 
-    fn reset_input_state(&mut self) {
+    pub(crate) fn reset_input_state(&mut self) {
         self.mouse_state = MouseState::default();
     }
 
@@ -3172,8 +3382,21 @@ impl DaemonState {
     }
 
     pub async fn drain_cdp_events_background(&mut self) {
+        let Ok(_privacy_lease) = self.public_browser_lease() else {
+            return;
+        };
         let drained = self.drain_cdp_events();
         self.apply_drained_events(drained).await;
+    }
+
+    pub(crate) fn public_browser_lease(
+        &self,
+    ) -> Result<Option<super::privacy_gate::PublicLease>, &'static str> {
+        self.browser
+            .as_ref()
+            .map(|mgr| mgr.client.public_lease())
+            .transpose()
+            .map(Option::flatten)
     }
 
     async fn apply_drained_events(&mut self, drained: DrainedEvents) {
@@ -3856,12 +4079,18 @@ fn shared_profile_attach_target_for_auto_launch(
     let service_state = repository.load_snapshot().ok()?;
     let requested_host = browser_host_from_command(command);
     let requested_display_isolation = remote_headed_display_isolation_from_command(command);
+    let required_browser_build = metadata
+        .browser_capability_launch
+        .as_ref()
+        .and_then(|proof| proof.get("browserBuild"))
+        .and_then(|value| serde_json::from_value::<BrowserBuild>(value.clone()).ok());
     let current_browser_id = service_browser_id(session_id);
     let mut candidates = service_state
         .browsers
         .values()
         .filter(|browser| browser.profile_id.as_deref() == Some(profile_id))
         .filter(|browser| service_browser_health_counts_as_live(browser.health))
+        .filter(|browser| browser_matches_required_build(browser, required_browser_build))
         .filter(|browser| {
             requested_host.is_none_or(|host| {
                 host == browser.host || host == ServiceBrowserHost::AttachedExisting
@@ -3908,6 +4137,7 @@ fn shared_profile_attach_target_for_auto_launch(
 fn retained_session_attach_target_for_auto_launch(
     command: &Value,
     session_id: &str,
+    required_browser_build: Option<BrowserBuild>,
 ) -> Option<SharedProfileAttachTarget> {
     let action = command.get("action").and_then(Value::as_str)?;
     if matches!(
@@ -3930,6 +4160,7 @@ fn retained_session_attach_target_for_auto_launch(
         .browsers
         .values()
         .filter(|browser| service_browser_health_counts_as_live(browser.health))
+        .filter(|browser| browser_matches_required_build(browser, required_browser_build))
         .filter(|browser| {
             browser.id == current_browser_id
                 || browser
@@ -4295,6 +4526,377 @@ fn active_target_binding(state: &DaemonState) -> Option<String> {
         .map(str::to_string)
 }
 
+fn confirmation_target_binding(cmd: &Value, state: &DaemonState) -> ConfirmationTargetBinding {
+    let service_handle = cmd.get("serviceTabHandle").and_then(Value::as_object);
+    let requested_target_id = service_handle
+        .and_then(|handle| handle.get("targetId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let requested_url = service_handle
+        .and_then(|handle| handle.get("url"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if requested_target_id.is_some() {
+        return ConfirmationTargetBinding {
+            target_id: requested_target_id,
+            url: requested_url,
+        };
+    }
+    ConfirmationTargetBinding {
+        target_id: state
+            .browser
+            .as_ref()
+            .and_then(|manager| manager.active_target_id().ok())
+            .map(str::to_string),
+        url: state
+            .browser
+            .as_ref()
+            .and_then(|manager| manager.active_page_url())
+            .map(str::to_string),
+    }
+}
+
+fn task_authority_decision(
+    cmd: &Value,
+    state: &DaemonState,
+    action: &str,
+    reserve_budget: bool,
+) -> Result<TaskAuthorityDecision, String> {
+    if matches!(
+        action,
+        "confirm"
+            | "deny"
+            | "task_authority_issue"
+            | "task_authority_reconcile"
+            | "task_authority_revoke"
+            | "task_authority_confirmation_cleanup"
+            | "task_authority_status"
+    ) {
+        return Ok(TaskAuthorityDecision::NotPresent);
+    }
+    let binding = confirmation_target_binding(cmd, state);
+    admit_task_authority(
+        cmd,
+        action,
+        action_consequence(action),
+        &TaskAuthorityContext {
+            session_id: &state.session_id,
+            target_id: binding.target_id.as_deref(),
+            url: binding.url.as_deref(),
+            confirmed_authority_id: state.confirmed_task_authority_id.as_deref(),
+            require_authority: state.require_task_authority,
+            ledger_root: state.task_authority_ledger_root.clone(),
+        },
+        reserve_budget,
+    )
+}
+
+fn finalize_ordered_task_response(
+    cmd: &Value,
+    state: &DaemonState,
+    ordered_step_admitted: bool,
+    response: Value,
+) -> Value {
+    if !ordered_step_admitted {
+        return response;
+    }
+    let binding = confirmation_target_binding(cmd, state);
+    let context = TaskAuthorityContext {
+        session_id: &state.session_id,
+        target_id: binding.target_id.as_deref(),
+        url: binding.url.as_deref(),
+        confirmed_authority_id: state.confirmed_task_authority_id.as_deref(),
+        require_authority: state.require_task_authority,
+        ledger_root: state.task_authority_ledger_root.clone(),
+    };
+    if let Err(error) = finalize_task_authority_step(cmd, &context, &response) {
+        return error_response(
+            cmd.get("id").and_then(Value::as_str).unwrap_or(""),
+            &format!("Task authority outcome finalization failed: {error}"),
+        );
+    }
+    response
+}
+
+fn task_authority_control_requires_confirmation(action: &str) -> bool {
+    matches!(
+        action,
+        "task_authority_issue" | "task_authority_reconcile" | "task_authority_revoke"
+    )
+}
+
+fn task_authority_active_target(state: &DaemonState) -> Result<(String, String), String> {
+    let binding = confirmation_target_binding(&json!({}), state);
+    Ok((
+        binding
+            .target_id
+            .ok_or("Task authority control requires a live retained target")?,
+        binding
+            .url
+            .ok_or("Task authority control requires the retained target URL")?,
+    ))
+}
+
+async fn handle_task_authority_issue(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
+    let request = cmd
+        .get("request")
+        .ok_or("Task authority issue requires request")?;
+    let request_object = request
+        .as_object()
+        .ok_or("Task authority issue request must be an object")?;
+    for field in ["taskName", "serviceName", "agentName"] {
+        let requested = request_object.get(field).and_then(Value::as_str);
+        let command = cmd.get(field).and_then(Value::as_str);
+        if requested != command {
+            return Err(format!(
+                "Task authority issue {field} must exactly match the command caller label"
+            ));
+        }
+    }
+    let (target_id, url) = task_authority_active_target(state)?;
+    issue_task_authority(
+        request,
+        &state.session_id,
+        &target_id,
+        &url,
+        &state.task_authority_ledger_root,
+    )
+}
+
+async fn handle_task_authority_revoke(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
+    let authority_id = cmd
+        .get("authorityId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("Task authority revoke requires authorityId")?;
+    let revoked_by = cmd.get("revokedBy").and_then(Value::as_str).unwrap_or("");
+    let reason = cmd.get("reason").and_then(Value::as_str).unwrap_or("");
+    let (target_id, url) = task_authority_active_target(state)?;
+    revoke_task_authority(
+        &state.task_authority_ledger_root,
+        &state.session_id,
+        authority_id,
+        revoked_by,
+        reason,
+        &target_id,
+        &url,
+    )
+}
+
+async fn handle_task_authority_reconcile(
+    cmd: &Value,
+    state: &DaemonState,
+) -> Result<Value, String> {
+    let predecessor_authority_id = cmd
+        .get("authorityId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("Task authority reconcile requires authorityId")?;
+    let request = cmd
+        .get("request")
+        .ok_or("Task authority reconcile requires request")?;
+    let request_object = request
+        .as_object()
+        .ok_or("Task authority reconcile request must be an object")?;
+    for field in ["taskName", "serviceName", "agentName"] {
+        if request_object.get(field).and_then(Value::as_str)
+            != cmd.get(field).and_then(Value::as_str)
+        {
+            return Err(format!(
+                "Task authority reconcile {field} must exactly match the command caller label"
+            ));
+        }
+    }
+    let (target_id, url) = task_authority_active_target(state)?;
+    reconcile_task_authority(
+        &state.task_authority_ledger_root,
+        &state.session_id,
+        predecessor_authority_id,
+        request,
+        &target_id,
+        &url,
+    )
+}
+
+async fn handle_task_authority_status(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
+    let mut status = task_authority_status(
+        &state.task_authority_ledger_root,
+        &state.session_id,
+        cmd.get("authorityId").and_then(Value::as_str),
+    )?;
+    status["confirmationStatus"] =
+        task_authority_confirmation_status(&state.task_authority_ledger_root, &state.session_id)?;
+    Ok(status)
+}
+
+async fn handle_task_authority_confirmation_cleanup(
+    cmd: &Value,
+    state: &DaemonState,
+) -> Result<Value, String> {
+    let requested_by: TaskAuthorityIssuer = serde_json::from_value(
+        cmd.get("requestedBy")
+            .cloned()
+            .ok_or("Task authority confirmation cleanup requires requestedBy")?,
+    )
+    .map_err(|error| format!("Invalid confirmation cleanup requestedBy: {error}"))?;
+    let retain_count = cmd
+        .get("retainCount")
+        .and_then(Value::as_u64)
+        .map(usize::try_from)
+        .transpose()
+        .map_err(|_| "Confirmation retainCount overflow")?
+        .unwrap_or(DEFAULT_CONFIRMATION_RECEIPT_RETENTION_COUNT);
+    let min_age_seconds = cmd
+        .get("minAgeSeconds")
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_CONFIRMATION_RECEIPT_MIN_AGE_SECONDS);
+    cleanup_task_authority_confirmations(CleanupTaskAuthorityConfirmations {
+        root: &state.task_authority_ledger_root,
+        session_id: &state.session_id,
+        retain_count,
+        min_age_seconds,
+        requested_by,
+        apply: cmd.get("apply").and_then(Value::as_bool).unwrap_or(false),
+        review_sha256: cmd.get("reviewSha256").and_then(Value::as_str),
+    })
+}
+
+fn stage_confirmation(cmd: &Value, state: &mut DaemonState, action: &str) -> Value {
+    let now = Instant::now();
+    if let Some(pending) = state.pending_confirmation.as_ref() {
+        if now.duration_since(pending.requested_at) < CONFIRMATION_TTL {
+            return error_response(
+                cmd.get("id").and_then(Value::as_str).unwrap_or(""),
+                &format!(
+                    "Confirmation '{}' for action '{}' is still pending",
+                    pending.confirmation_id, pending.action
+                ),
+            );
+        }
+        state.pending_confirmation = None;
+    }
+    if !task_authority_control_requires_confirmation(action) {
+        match active_task_authority_pending_confirmation(
+            &state.task_authority_ledger_root,
+            &state.session_id,
+        ) {
+            Ok(Some(pending)) => {
+                return error_response(
+                    cmd.get("id").and_then(Value::as_str).unwrap_or(""),
+                    &format!(
+                        "Confirmation '{}' for action '{}' is still pending",
+                        pending.confirmation_id, pending.action
+                    ),
+                )
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return error_response(cmd.get("id").and_then(Value::as_str).unwrap_or(""), &error)
+            }
+        }
+    }
+
+    let confirmation_id = cmd
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("confirmation-{}", uuid::Uuid::new_v4()));
+    let consequence = action_consequence(action);
+    let mut target_binding = confirmation_target_binding(cmd, state);
+    if task_authority_control_requires_confirmation(action) {
+        let request = cmd.get("request");
+        if target_binding.target_id.is_none() {
+            target_binding.target_id = request
+                .and_then(|value| value.get("expectedTargetId"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        if target_binding.url.is_none() {
+            target_binding.url = request
+                .and_then(|value| value.get("expectedUrl"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+    }
+    let durable_task_authority = task_authority_control_requires_confirmation(action);
+    let durable_record = if durable_task_authority {
+        let Some(target_id) = target_binding.target_id.as_deref() else {
+            return error_response(
+                cmd.get("id").and_then(Value::as_str).unwrap_or(""),
+                "Task authority confirmation requires an exact retained target",
+            );
+        };
+        let Some(url) = target_binding.url.as_deref() else {
+            return error_response(
+                cmd.get("id").and_then(Value::as_str).unwrap_or(""),
+                "Task authority confirmation requires an exact retained URL",
+            );
+        };
+        match stage_task_authority_confirmation(StageTaskAuthorityConfirmation {
+            root: &state.task_authority_ledger_root,
+            session_id: &state.session_id,
+            confirmation_id: &confirmation_id,
+            action,
+            consequence_class: consequence.as_str(),
+            command: cmd,
+            target_id,
+            url,
+            ttl_seconds: CONFIRMATION_TTL.as_secs(),
+        }) {
+            Ok(record) => Some(record),
+            Err(error) => {
+                return error_response(cmd.get("id").and_then(Value::as_str).unwrap_or(""), &error)
+            }
+        }
+    } else {
+        None
+    };
+    state.pending_confirmation = Some(PendingConfirmation {
+        confirmation_id: confirmation_id.clone(),
+        action: action.to_string(),
+        cmd: cmd.clone(),
+        consequence,
+        target_binding: target_binding.clone(),
+        requested_at: now,
+        durable_task_authority,
+    });
+    let mut response = json!({
+        "id": cmd.get("id").cloned().unwrap_or(Value::Null),
+        "success": true,
+        "data": {
+            "confirmation_required": true,
+            "confirmation_id": confirmation_id.clone(),
+            "confirmationId": confirmation_id,
+            "action": action,
+            "category": consequence.as_str(),
+            "consequenceClass": consequence.as_str(),
+            "description": consequence.description(),
+            "expectedTargetBinding": target_binding,
+            "expiresInMs": CONFIRMATION_TTL.as_millis() as u64,
+            "durable": durable_task_authority,
+        },
+    });
+    if let Some(record) = durable_record {
+        response["data"]["requestSha256"] = json!(record.request_sha256);
+        response["data"]["requestedBy"] = json!(record.requested_by);
+        response["data"]["requestedAt"] = json!(record.requested_at);
+        response["data"]["expiresAt"] = json!(record.expires_at);
+    }
+    if let Some(authority) = cmd.get("taskAuthority") {
+        response["data"]["taskAuthority"] = json!({
+            "id": authority.get("id").cloned().unwrap_or(Value::Null),
+            "taskName": authority.get("taskName").cloned().unwrap_or(Value::Null),
+            "consequenceCeiling": authority
+                .get("consequenceCeiling")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "expiresAt": authority.get("expiresAt").cloned().unwrap_or(Value::Null),
+        });
+    }
+    response
+}
+
 /// Executes parsed commands under the outer control-plane request. Stable
 /// steps must preserve the active target identity; target-changing steps make
 /// the next step bind to the new active target.
@@ -4421,6 +5023,13 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
 
     let cmd_start = std::time::Instant::now();
 
+    // Hold the cooperative browser barrier through dispatch and publication.
+    // Refuse before tracing, authority staging, event draining or auto-recovery.
+    let _privacy_lease = match state.public_browser_lease() {
+        Ok(lease) => lease,
+        Err(error) => return error_response(&id, error),
+    };
+
     #[cfg(test)]
     if action == "__test_sleep" {
         let ms = cmd.get("ms").and_then(|value| value.as_u64()).unwrap_or(1);
@@ -4435,6 +5044,26 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     // Drain and apply pending CDP events (console, errors, screencast frames, target lifecycle)
     state.drain_cdp_events_background().await;
 
+    match task_authority_decision(cmd, state, action, false) {
+        Ok(TaskAuthorityDecision::RequiresConfirmation(_)) => {
+            return stage_confirmation(cmd, state, action);
+        }
+        Ok(TaskAuthorityDecision::NotPresent | TaskAuthorityDecision::Admitted(_)) => {}
+        Err(error) => return error_response(&id, &error),
+    }
+
+    if task_authority_control_requires_confirmation(action)
+        && state.confirmed_control_plane_command_id.as_deref() != Some(id.as_str())
+    {
+        if id.is_empty() {
+            return error_response(
+                &id,
+                "Task authority issue and revoke commands require a non-empty id",
+            );
+        }
+        return stage_confirmation(cmd, state, action);
+    }
+
     // Hot-reload and check action policy
     if let Some(ref mut policy) = state.policy {
         let _ = policy.reload();
@@ -4447,15 +5076,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                 );
             }
             PolicyResult::RequiresConfirmation => {
-                state.pending_confirmation = Some(PendingConfirmation {
-                    action: action.to_string(),
-                    cmd: cmd.clone(),
-                });
-                return json!({
-                    "id": id,
-                    "success": true,
-                    "data": { "confirmation_required": true, "action": action },
-                });
+                return stage_confirmation(cmd, state, action);
             }
         }
     }
@@ -4464,22 +5085,19 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     if action != "confirm" && action != "deny" {
         if let Some(ref ca) = state.confirm_actions {
             if ca.requires_confirmation(action) {
-                state.pending_confirmation = Some(PendingConfirmation {
-                    action: action.to_string(),
-                    cmd: cmd.clone(),
-                });
-                return json!({
-                    "id": id,
-                    "success": true,
-                    "data": {
-                        "confirmation_required": true,
-                        "confirmation_id": id,
-                        "action": action,
-                    },
-                });
+                return stage_confirmation(cmd, state, action);
             }
         }
     }
+
+    let ordered_step_admitted = match task_authority_decision(cmd, state, action, true) {
+        Ok(TaskAuthorityDecision::NotPresent) => false,
+        Ok(TaskAuthorityDecision::Admitted(admission)) => admission.step_id.is_some(),
+        Ok(TaskAuthorityDecision::RequiresConfirmation(_)) => {
+            return stage_confirmation(cmd, state, action);
+        }
+        Err(error) => return error_response(&id, &error),
+    };
 
     if action == "dependent_batch" {
         let action_started = std::time::Instant::now();
@@ -4507,7 +5125,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                 "daemonTotalMs": daemon_total_ms,
             });
         }
-        return response;
+        return finalize_ordered_task_response(cmd, state, ordered_step_admitted, response);
     }
 
     let skip_launch = action_skips_browser_launch(action)
@@ -4560,10 +5178,20 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                 );
             }
             if let BrowserRecoveryPersistence::Blocked(reason) = recovery_persistence {
-                return error_response(&id, &reason);
+                return finalize_ordered_task_response(
+                    cmd,
+                    state,
+                    ordered_step_admitted,
+                    error_response(&id, &reason),
+                );
             }
             if let Err(e) = auto_launch(state, cmd).await {
-                return error_response(&id, &format!("Auto-launch failed: {}", e));
+                return finalize_ordered_task_response(
+                    cmd,
+                    state,
+                    ordered_step_admitted,
+                    error_response(&id, &format!("Auto-launch failed: {}", e)),
+                );
             }
         }
 
@@ -4574,7 +5202,20 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         }
 
         if let Some(mismatch) = active_browser_profile_mismatch(cmd, state) {
-            return error_response(&id, &mismatch);
+            return finalize_ordered_task_response(
+                cmd,
+                state,
+                ordered_step_admitted,
+                error_response(&id, &mismatch),
+            );
+        }
+        if let Some(mismatch) = active_browser_build_mismatch(cmd, state) {
+            return finalize_ordered_task_response(
+                cmd,
+                state,
+                ordered_step_admitted,
+                error_response(&id, &mismatch),
+            );
         }
     }
 
@@ -4582,11 +5223,16 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     if matches!(state.backend_type, BackendType::WebDriver)
         && WEBDRIVER_UNSUPPORTED_ACTIONS.contains(&action)
     {
-        return error_response(
-            &id,
-            &format!(
-                "Action '{}' is not supported on the WebDriver backend",
-                action
+        return finalize_ordered_task_response(
+            cmd,
+            state,
+            ordered_step_admitted,
+            error_response(
+                &id,
+                &format!(
+                    "Action '{}' is not supported on the WebDriver backend",
+                    action
+                ),
             ),
         );
     }
@@ -4611,6 +5257,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "inspect" => handle_inspect(state).await,
         "title" => handle_title(state).await,
         "content" => handle_content(state).await,
+        "read_page" => handle_read_page(cmd, state).await,
         "evaluate" => handle_evaluate(cmd, state).await,
         "runtime_handoff_prepare" => handle_runtime_handoff_prepare(state).await,
         "runtime_handoff_resume" => handle_runtime_handoff_resume(state).await,
@@ -4740,6 +5387,13 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "stream_disable" => handle_stream_disable(state).await,
         "stream_status" => handle_stream_status(state).await,
         "service_status" => handle_service_status(cmd).await,
+        "task_authority_issue" => handle_task_authority_issue(cmd, state).await,
+        "task_authority_reconcile" => handle_task_authority_reconcile(cmd, state).await,
+        "task_authority_revoke" => handle_task_authority_revoke(cmd, state).await,
+        "task_authority_confirmation_cleanup" => {
+            handle_task_authority_confirmation_cleanup(cmd, state).await
+        }
+        "task_authority_status" => handle_task_authority_status(cmd, state).await,
         "service_reconcile" => handle_service_reconcile(cmd).await,
         "service_browser_close" => handle_service_browser_close(cmd, state).await,
         "service_browser_repair" => handle_service_browser_repair(cmd).await,
@@ -4858,7 +5512,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         _ => Err(format!("Not yet implemented: {}", action)),
     };
 
-    let mut resp = match result {
+    let resp = match result {
         Ok(mut data) => {
             let warning = take_response_warning(&mut data);
             let mut resp = success_response(&id, data);
@@ -4880,6 +5534,8 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         Err(e) => error_response(&id, &super::browser::to_ai_friendly_error(&e)),
     };
 
+    let mut resp = resp;
+
     let action_execution_ms =
         u64::try_from(action_started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -4894,31 +5550,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                         dialog.dialog_type, dialog.message
                     )),
                 );
-            }
-        }
-    }
-
-    if let Some(ref server) = state.stream_server {
-        let duration_ms = cmd_start.elapsed().as_millis() as u64;
-        let success = resp
-            .get("status")
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| s == "success");
-        let data = resp.get("data").cloned().unwrap_or(Value::Null);
-        server.broadcast_result(&id, action, success, &data, duration_ms);
-
-        if let Some(ref mgr) = state.browser {
-            server.broadcast_tabs(&mgr.tab_list(false)).await;
-
-            // Keep the stream server's CDP session in sync with the active tab
-            // so screencasting always targets the correct page.
-            if matches!(
-                action,
-                "tab_new" | "tab_switch" | "tab_close" | "open" | "navigate" | "view_focus"
-            ) {
-                let session_id = mgr.active_session_id().ok().map(|s| s.to_string());
-                server.set_cdp_session_id(session_id).await;
-                server.notify_client_changed();
             }
         }
     }
@@ -4943,6 +5574,33 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                     "daemonTotalMs": daemon_total_ms,
                 }),
             );
+        }
+    }
+
+    let resp = finalize_ordered_task_response(cmd, state, ordered_step_admitted, resp);
+
+    if let Some(ref server) = state.stream_server {
+        let duration_ms = cmd_start.elapsed().as_millis() as u64;
+        let success = resp
+            .get("status")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s == "success");
+        let data = resp.get("data").cloned().unwrap_or(Value::Null);
+        server.broadcast_result(&id, action, success, &data, duration_ms);
+
+        if let Some(ref mgr) = state.browser {
+            server.broadcast_tabs(&mgr.tab_list(false)).await;
+
+            // Keep the stream server's CDP session in sync with the active tab
+            // so screencasting always targets the correct page.
+            if matches!(
+                action,
+                "tab_new" | "tab_switch" | "tab_close" | "open" | "navigate" | "view_focus"
+            ) {
+                let session_id = mgr.active_session_id().ok().map(|s| s.to_string());
+                server.set_cdp_session_id(session_id).await;
+                server.notify_client_changed();
+            }
         }
     }
 
@@ -5040,11 +5698,6 @@ async fn auto_launch(state: &mut DaemonState, command: &Value) -> Result<(), Str
         options.viewport_size = Some(server.viewport().await);
     }
     let engine = env::var("AGENT_BROWSER_ENGINE").ok();
-    if let Some(target) = retained_session_attach_target_for_auto_launch(command, &state.session_id)
-    {
-        attach_retained_service_session_browser_for_auto_launch(state, &target).await?;
-        return Ok(());
-    }
     let retained_remote_headed = retained_remote_headed_launch_hint(&state.session_id, command);
     let (service_host, selection_reason, browser_capability_launch, effective_command) =
         apply_auto_launch_command_hints(&mut options, command, retained_remote_headed.as_ref());
@@ -5055,6 +5708,15 @@ async fn auto_launch(state: &mut DaemonState, command: &Value) -> Result<(), Str
     );
     apply_retained_remote_headed_metadata(&mut metadata, retained_remote_headed.as_ref());
     metadata.browser_capability_launch = Some(browser_capability_launch.to_value());
+    let required_browser_build = browser_capability_launch.browser_build;
+    if let Some(target) = retained_session_attach_target_for_auto_launch(
+        &effective_command,
+        &state.session_id,
+        required_browser_build,
+    ) {
+        attach_retained_service_session_browser_for_auto_launch(state, &target).await?;
+        return Ok(());
+    }
     if let Some(target) = shared_profile_attach_target_for_auto_launch(
         &metadata,
         &effective_command,
@@ -5069,6 +5731,9 @@ async fn auto_launch(state: &mut DaemonState, command: &Value) -> Result<(), Str
         )
         .await?;
         return Ok(());
+    }
+    if let Some(error) = required_stealth_launch_proof_error(&browser_capability_launch) {
+        return Err(error);
     }
     ensure_service_profile_lease_available(&metadata, &state.session_id, &effective_command)
         .await?;
@@ -5201,6 +5866,11 @@ async fn auto_launch(state: &mut DaemonState, command: &Value) -> Result<(), Str
     }
     let remote_focus_options = options.clone();
     let mgr = launch_browser_with_transient_retry(options, engine.as_deref()).await?;
+    apply_fresh_installed_chrome_proof(
+        &mut metadata,
+        mgr.launched_chrome_executable(),
+        crate::install::find_installed_chrome().as_deref(),
+    );
     let _ = focus_remote_headed_launch_for_view(&mgr, &remote_focus_options).await;
     state.reset_input_state();
     state.attached_runtime_profile = None;
@@ -5425,6 +6095,11 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     );
     apply_retained_remote_headed_metadata(&mut metadata, retained_remote_headed.as_ref());
     metadata.browser_capability_launch = Some(browser_capability_launch.to_value());
+    if !has_cdp && !auto_connect {
+        if let Some(error) = required_stealth_launch_proof_error(&browser_capability_launch) {
+            return Err(error);
+        }
+    }
     ensure_service_profile_lease_available(&metadata, &state.session_id, &effective_cmd).await?;
 
     let new_hash = launch_hash(&launch_options);
@@ -5480,6 +6155,14 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
             state.update_stream_client().await;
         }
     } else {
+        if runtime_attach_managed {
+            state.attached_runtime_profile = launch_options.runtime_profile.clone();
+            state.attached_browser_pid =
+                runtime_profile_pid(launch_options.runtime_profile.as_deref())
+                    .or_else(|| state.browser.as_ref().and_then(BrowserManager::browser_pid));
+            state.close_behavior =
+                close_behavior_for_attached_browser(runtime_attach_managed, leave_open);
+        }
         persist_current_browser_health(
             state,
             service_host,
@@ -5676,6 +6359,11 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     state.attached_browser_pid = None;
     let launched_browser =
         launch_browser_with_transient_retry(launch_options, engine.as_deref()).await?;
+    apply_fresh_installed_chrome_proof(
+        &mut metadata,
+        launched_browser.launched_chrome_executable(),
+        crate::install::find_installed_chrome().as_deref(),
+    );
     let remote_view_focus =
         focus_remote_headed_launch_for_view(&launched_browser, &remote_focus_options).await;
     state.browser = Some(launched_browser);
@@ -5774,6 +6462,20 @@ async fn handle_external_byop_adopt(cmd: &Value, state: &mut DaemonState) -> Res
     if cdp_url.is_some() == cdp_port.is_some() {
         return Err("external_byop_adopt requires exactly one of cdpUrl or cdpPort".to_string());
     }
+    let browser_pid = match cmd.get("browserPid").and_then(Value::as_u64) {
+        Some(pid) => {
+            let pid = u32::try_from(pid).map_err(|_| {
+                "external_byop_adopt browserPid must be a live positive process id".to_string()
+            })?;
+            if pid == 0 || !pid_is_running(pid) {
+                return Err(
+                    "external_byop_adopt browserPid must be a live positive process id".to_string(),
+                );
+            }
+            Some(pid)
+        }
+        None => None,
+    };
 
     let repository = LockedServiceStateRepository::default_json()?;
     let service_state = repository.load_snapshot()?;
@@ -5812,6 +6514,8 @@ async fn handle_external_byop_adopt(cmd: &Value, state: &mut DaemonState) -> Res
     } else {
         BrowserManager::connect_cdp(&cdp_port.unwrap().to_string()).await?
     };
+    state.attached_runtime_profile = Some(profile_id.clone());
+    state.attached_browser_pid = browser_pid;
     state.browser = Some(mgr);
     state.subscribe_to_browser_events();
     state.start_fetch_handler();
@@ -5878,6 +6582,7 @@ async fn handle_external_byop_adopt(cmd: &Value, state: &mut DaemonState) -> Res
         "profileId": profile_id,
         "profileOrigin": "external_byop",
         "browserHost": ServiceBrowserHost::AttachedExisting,
+        "browserPid": browser_pid,
         "targetId": target_id,
         "url": url,
         "title": title,
@@ -6698,9 +7403,10 @@ async fn handle_inspect(state: &mut DaemonState) -> Result<Value, String> {
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
 
     // Shut down any existing inspect server so we always target the current page
-    if let Some(server) = state.inspect_server.take() {
-        server.shutdown();
+    if let Some(server) = state.inspect_server.as_mut() {
+        server.shutdown_and_wait().await?;
     }
+    state.inspect_server = None;
 
     let target_id = mgr.active_target_id()?.to_string();
     let chrome_hp = mgr.chrome_host_port().to_string();
@@ -6813,6 +7519,75 @@ async fn handle_content(state: &mut DaemonState) -> Result<Value, String> {
         .await
         .unwrap_or_default();
     Ok(json!({ "html": html, "origin": url }))
+}
+
+const MAX_PAGE_RESOURCE_BYTES: u64 = 1_000_000;
+const MAX_PAGE_RESOURCE_TIMEOUT_MS: u64 = 60_000;
+
+async fn handle_read_page(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    let url = cmd
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or("Missing 'url' parameter")?;
+    let parsed = url::Url::parse(url).map_err(|error| format!("Invalid page URL: {error}"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Page reader only supports http and https URLs".to_string());
+    }
+    {
+        let domain_filter = state.domain_filter.read().await;
+        if let Some(filter) = domain_filter.as_ref() {
+            filter.check_url(url)?;
+        }
+    }
+
+    let max_bytes = cmd
+        .get("maxBytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(64_000);
+    let timeout_ms = cmd
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(15_000);
+    if max_bytes == 0 || max_bytes > MAX_PAGE_RESOURCE_BYTES {
+        return Err(format!(
+            "Page resource maxBytes must be between 1 and {MAX_PAGE_RESOURCE_BYTES}"
+        ));
+    }
+    if timeout_ms == 0 || timeout_ms > MAX_PAGE_RESOURCE_TIMEOUT_MS {
+        return Err(format!(
+            "Page resource timeoutMs must be between 1 and {MAX_PAGE_RESOURCE_TIMEOUT_MS}"
+        ));
+    }
+    let include_credentials = cmd
+        .get("includeCredentials")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let manager = state.browser.as_ref().ok_or("Browser not launched")?;
+    let active_target_url = manager.active_page_url().unwrap_or_default().to_string();
+    let active_target_title = manager.active_page_title().unwrap_or_default().to_string();
+    let result = manager
+        .read_page_resource(
+            url,
+            usize::try_from(max_bytes).map_err(|_| "Page resource maxBytes is too large")?,
+            timeout_ms,
+            include_credentials,
+        )
+        .await?;
+
+    Ok(json!({
+        "url": url,
+        "activeTargetUrl": active_target_url,
+        "activeTargetTitle": active_target_title,
+        "httpStatusCode": result.http_status_code,
+        "mimeType": result.mime_type,
+        "source": "Network.loadNetworkResource",
+        "bytesRead": result.bytes_read,
+        "bytesReturned": result.bytes_returned,
+        "truncated": result.truncated,
+        "includeCredentials": include_credentials,
+        "text": result.body,
+    }))
 }
 
 fn command_evaluation_timeout_ms(cmd: &Value) -> Option<u64> {
@@ -9439,17 +10214,26 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
         ));
     }
 
+    let host = current_service_browser_host(&state.session_id);
     let descriptor = RuntimeHandoffDescriptor {
         schema_version: 1,
         session_name: state.session_id.clone(),
         cdp_url: manager.get_cdp_url().to_string(),
-        browser_pid: manager.browser_pid().or(state.attached_browser_pid),
+        // attached_existing is endpoint authority, not process ownership. A
+        // WSL relay or other intermediary PID may disappear while the exact
+        // CDP endpoint remains healthy, so do not persist that PID as a
+        // browser-liveness requirement across executable handoff.
+        browser_pid: if host == ServiceBrowserHost::AttachedExisting {
+            None
+        } else {
+            manager.browser_pid().or(state.attached_browser_pid)
+        },
         runtime_profile: manager
             .runtime_profile_name()
             .map(str::to_string)
             .or_else(|| state.attached_runtime_profile.clone()),
         engine: state.engine.clone(),
-        host: current_service_browser_host(&state.session_id),
+        host,
         close_browser_on_close: state.close_behavior == CloseBehavior::CloseBrowser,
         active_target_id: manager.active_target_id().ok().map(str::to_string),
         prepared_at: OffsetDateTime::now_utc()
@@ -9470,6 +10254,7 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
         "browserPid": descriptor.browser_pid,
         "cdpUrl": descriptor.cdp_url,
         "runtimeProfile": descriptor.runtime_profile,
+        "host": descriptor.host,
         "handoffPath": path,
     }))
 }
@@ -9488,9 +10273,14 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
             state.session_id
         ));
     }
+    let stale_attached_pid_dropped = descriptor
+        .browser_pid
+        .is_some_and(|browser_pid| !pid_is_running(browser_pid))
+        && descriptor.host == ServiceBrowserHost::AttachedExisting;
     if descriptor
         .browser_pid
         .is_some_and(|browser_pid| !pid_is_running(browser_pid))
+        && !stale_attached_pid_dropped
     {
         return Err(format!(
             "Runtime handoff browser PID is no longer running for session '{}'",
@@ -9505,7 +10295,11 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
     .await?;
     state.reset_input_state();
     state.attached_runtime_profile = descriptor.runtime_profile.clone();
-    state.attached_browser_pid = descriptor.browser_pid;
+    state.attached_browser_pid = if stale_attached_pid_dropped {
+        None
+    } else {
+        descriptor.browser_pid
+    };
     state.close_behavior = if descriptor.close_browser_on_close {
         CloseBehavior::CloseBrowser
     } else {
@@ -9524,7 +10318,9 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
     Ok(json!({
         "resumed": true,
         "sessionName": descriptor.session_name,
-        "browserPid": descriptor.browser_pid,
+        "browserPid": state.attached_browser_pid,
+        "preparedBrowserPid": descriptor.browser_pid,
+        "staleBrowserPidDropped": stale_attached_pid_dropped,
         "cdpUrl": descriptor.cdp_url,
         "runtimeProfile": descriptor.runtime_profile,
         "activeTargetId": state
@@ -9651,9 +10447,10 @@ async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
     state.safari_driver = None;
     state.backend_type = BackendType::Cdp;
 
-    if let Some(server) = state.inspect_server.take() {
-        server.shutdown();
+    if let Some(server) = state.inspect_server.as_mut() {
+        server.shutdown_and_wait().await?;
     }
+    state.inspect_server = None;
 
     state.ref_map.clear();
     Ok(json!({ "closed": true }))
@@ -11214,11 +12011,12 @@ async fn handle_tab_new(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
         let target_id = object.get("targetId").cloned().unwrap_or(Value::Null);
         let current_url = object.get("url").cloned().unwrap_or(Value::Null);
         let title = object.get("title").cloned().unwrap_or(Value::Null);
-        if let Some(runtime_profile) = mgr.runtime_profile_name() {
+        let manager_runtime_profile = mgr.runtime_profile_name();
+        let profile_id = service_tab_profile_id(cmd, manager_runtime_profile);
+        if let Some(runtime_profile) = profile_id.as_str() {
             object.insert("runtimeProfile".to_string(), json!(runtime_profile));
             object.insert("profileId".to_string(), json!(runtime_profile));
         }
-        let profile_id = object.get("profileId").cloned().unwrap_or(Value::Null);
         object.insert(
             "sharedAcquisition".to_string(),
             tab_new_shared_acquisition_evidence(cmd, &state.session_id, profile_id.clone()),
@@ -11411,11 +12209,12 @@ async fn remote_view_open_acquire_tab(
                 "tabSwitch": switched,
             });
             if let Some(object) = result.as_object_mut() {
-                if let Some(runtime_profile) = mgr.runtime_profile_name() {
+                let manager_runtime_profile = mgr.runtime_profile_name();
+                let profile_id = service_tab_profile_id(cmd, manager_runtime_profile);
+                if let Some(runtime_profile) = profile_id.as_str() {
                     object.insert("runtimeProfile".to_string(), json!(runtime_profile));
                     object.insert("profileId".to_string(), json!(runtime_profile));
                 }
-                let profile_id = object.get("profileId").cloned().unwrap_or(Value::Null);
                 object.insert(
                     "sharedAcquisition".to_string(),
                     tab_new_shared_acquisition_evidence(cmd, &state.session_id, profile_id.clone()),
@@ -11543,7 +12342,10 @@ async fn remote_view_open_acquire_tab(
                 let requested_url = requested_url.unwrap_or("about:blank");
                 let title = mgr.get_title().await.unwrap_or_default();
                 mgr.set_page_metadata_for_target(&target_id, Some(requested_url), Some(&title));
-                let profile_id = mgr.runtime_profile_name().unwrap_or_default().to_string();
+                let profile_id = service_tab_profile_id(cmd, mgr.runtime_profile_name())
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
                 let service_tab_handle = json!({
                     "browserId": browser_id,
                     "sessionName": session_id,
@@ -11629,6 +12431,13 @@ async fn remote_view_open_acquire_tab(
     }
     opened["tabAcquisitionDecision"] = json!("opened_new_target");
     Ok(opened)
+}
+
+fn service_tab_profile_id(cmd: &Value, manager_runtime_profile: Option<&str>) -> Value {
+    runtime_profile_from_sources(cmd, false)
+        .or_else(|| manager_runtime_profile.map(str::to_string))
+        .map(Value::String)
+        .unwrap_or(Value::Null)
 }
 
 async fn remote_view_open_wait_for_target_url(
@@ -13739,7 +14548,7 @@ fn remote_view_open_ensure_managed_one_time_profile(
     intent: &mut super::remote_view::RemoteViewOpenIntent,
     dry_run: bool,
 ) -> Result<Value, String> {
-    if intent.runtime_profile.is_some() || intent.profile.is_some() {
+    if intent.profile.is_some() {
         return Ok(Value::Null);
     }
     if !remote_view_open_looks_like_one_time_operator_handoff(intent) {
@@ -13747,7 +14556,11 @@ fn remote_view_open_ensure_managed_one_time_profile(
     }
 
     let profile_id = remote_view_open_managed_one_time_profile_id(intent);
-    intent.runtime_profile = Some(profile_id.clone());
+    match intent.runtime_profile.as_deref() {
+        Some(runtime_profile) if runtime_profile != profile_id => return Ok(Value::Null),
+        Some(_) => {}
+        None => intent.runtime_profile = Some(profile_id.clone()),
+    }
 
     if let Some(profile) = service_state.profiles.get(&profile_id) {
         return Ok(json!({
@@ -13870,6 +14683,9 @@ fn remote_view_open_one_time_profile_warning(
         return Value::Null;
     }
     let recommended_profile_id = remote_view_open_managed_one_time_profile_id(intent);
+    if runtime_profile == recommended_profile_id {
+        return Value::Null;
+    }
     json!({
         "state": "warning",
         "code": "arbitrary_runtime_profile_for_one_time_handoff",
@@ -23014,32 +23830,195 @@ async fn handle_auth_login(cmd: &Value, state: &mut DaemonState) -> Result<Value
 }
 
 // ---------------------------------------------------------------------------
-// Confirmation handlers (stub)
+// Confirmation handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_confirm(_cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+fn take_matching_confirmation(
+    cmd: &Value,
+    state: &mut DaemonState,
+) -> Result<PendingConfirmation, String> {
+    let confirmation_id = cmd
+        .get("confirmationId")
+        .or_else(|| cmd.get("confirmation_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("Missing confirmationId")?;
     let pending = state
         .pending_confirmation
         .take()
         .ok_or("No pending confirmation")?;
+    if pending.confirmation_id != confirmation_id {
+        return Err(format!(
+            "Confirmation ID mismatch: expected '{}', got '{}'",
+            pending.confirmation_id, confirmation_id
+        ));
+    }
+    if let Some(expected_action) = cmd
+        .get("expectedAction")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        if pending.action != expected_action {
+            return Err(format!(
+                "Confirmation action mismatch: expected '{}', got '{}'",
+                expected_action, pending.action
+            ));
+        }
+    }
+    if pending.requested_at.elapsed() >= CONFIRMATION_TTL {
+        return Err(format!(
+            "Confirmation '{}' expired after {} seconds",
+            pending.confirmation_id,
+            CONFIRMATION_TTL.as_secs()
+        ));
+    }
+    Ok(pending)
+}
+
+fn task_authority_decision_actor(cmd: &Value) -> Result<TaskAuthorityIssuer, String> {
+    serde_json::from_value(
+        cmd.get("decidedBy")
+            .cloned()
+            .ok_or("Task authority confirmation requires decidedBy")?,
+    )
+    .map_err(|error| format!("Invalid task authority confirmation decidedBy: {error}"))
+}
+
+fn pending_from_durable_record(
+    record: &TaskAuthorityConfirmationRecord,
+) -> Result<PendingConfirmation, String> {
+    Ok(PendingConfirmation {
+        confirmation_id: record.confirmation_id.clone(),
+        action: record.action.clone(),
+        cmd: record.command().clone(),
+        consequence: ActionConsequence::parse(&record.consequence_class)
+            .ok_or("Durable confirmation has an invalid consequence class")?,
+        target_binding: ConfirmationTargetBinding {
+            target_id: Some(record.target_binding.target_id.clone()),
+            url: Some(record.target_binding.url.clone()),
+        },
+        requested_at: Instant::now(),
+        durable_task_authority: true,
+    })
+}
+
+fn decide_durable_task_authority_confirmation(
+    cmd: &Value,
+    state: &mut DaemonState,
+    decision: &str,
+) -> Result<Option<(PendingConfirmation, TaskAuthorityConfirmationRecord)>, String> {
+    let durable = load_task_authority_pending_confirmation(
+        &state.task_authority_ledger_root,
+        &state.session_id,
+    )?;
+    let in_memory_durable = state
+        .pending_confirmation
+        .as_ref()
+        .is_some_and(|pending| pending.durable_task_authority);
+    if durable.is_none() {
+        if in_memory_durable {
+            return Err(
+                "Pending task authority confirmation has no matching durable record".to_string(),
+            );
+        }
+        return Ok(None);
+    }
+    state.pending_confirmation = None;
+    let confirmation_id = cmd
+        .get("confirmationId")
+        .or_else(|| cmd.get("confirmation_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("Missing confirmationId")?;
+    let expected_action = cmd
+        .get("expectedAction")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("Task authority confirmation requires expectedAction")?;
+    let actor = task_authority_decision_actor(cmd)?;
+    let current = confirmation_target_binding(&json!({}), state);
+    let decided = decide_task_authority_confirmation(DecideTaskAuthorityConfirmation {
+        root: &state.task_authority_ledger_root,
+        session_id: &state.session_id,
+        confirmation_id,
+        expected_action,
+        decision,
+        decided_by: actor,
+        target_id: current.target_id.as_deref(),
+        url: current.url.as_deref(),
+    })?;
+    let pending = pending_from_durable_record(&decided)?;
+    Ok(Some((pending, decided)))
+}
+
+async fn handle_confirm(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    let durable = decide_durable_task_authority_confirmation(cmd, state, "confirm")?;
+    let (pending, durable_record) = if let Some((pending, record)) = durable {
+        (pending, Some(record))
+    } else {
+        let pending = take_matching_confirmation(cmd, state)?;
+        let current_target_binding = confirmation_target_binding(&pending.cmd, state);
+        if current_target_binding != pending.target_binding {
+            return Err(format!(
+                "Confirmation target changed before approval: expected {}, got {}",
+                serde_json::to_string(&pending.target_binding).unwrap_or_default(),
+                serde_json::to_string(&current_target_binding).unwrap_or_default()
+            ));
+        }
+        (pending, None)
+    };
 
     // Temporarily remove policy and confirm_actions to avoid re-triggering confirmation
     let policy = state.policy.take();
     let confirm_actions = state.confirm_actions.take();
+    let previous_confirmed_authority = state.confirmed_task_authority_id.take();
+    let previous_confirmed_control_plane = state.confirmed_control_plane_command_id.take();
+    state.confirmed_task_authority_id = pending
+        .cmd
+        .get("taskAuthority")
+        .and_then(|authority| authority.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    state.confirmed_control_plane_command_id = pending
+        .cmd
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let result = Box::pin(execute_command(&pending.cmd, state)).await;
+    state.confirmed_task_authority_id = previous_confirmed_authority;
+    state.confirmed_control_plane_command_id = previous_confirmed_control_plane;
     state.policy = policy;
     state.confirm_actions = confirm_actions;
+    if let Some(record) = durable_record.as_ref() {
+        finalize_task_authority_confirmation(&state.task_authority_ledger_root, record, &result)?;
+    }
 
-    Ok(json!({ "confirmed": true, "action": pending.action, "result": result }))
+    Ok(json!({
+        "confirmed": true,
+        "confirmationId": pending.confirmation_id,
+        "action": pending.action,
+        "consequenceClass": pending.consequence.as_str(),
+        "targetBinding": pending.target_binding,
+        "result": result,
+    }))
 }
 
-async fn handle_deny(_cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let pending = state
-        .pending_confirmation
-        .take()
-        .ok_or("No pending confirmation")?;
+async fn handle_deny(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    let pending = if let Some((pending, _)) =
+        decide_durable_task_authority_confirmation(cmd, state, "deny")?
+    {
+        pending
+    } else {
+        take_matching_confirmation(cmd, state)?
+    };
 
-    Ok(json!({ "denied": true, "action": pending.action }))
+    Ok(json!({
+        "denied": true,
+        "confirmationId": pending.confirmation_id,
+        "action": pending.action,
+        "consequenceClass": pending.consequence.as_str(),
+        "targetBinding": pending.target_binding,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -23528,6 +24507,284 @@ mod tests {
     use crate::test_utils::EnvGuard;
     use std::collections::BTreeMap;
     use std::fs;
+
+    fn confirm_actions(categories: &[&str]) -> ConfirmActions {
+        ConfirmActions {
+            categories: categories
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn agentic_confirmation_is_classified_and_denial_executes_no_action() {
+        let mut state = DaemonState::new();
+        state.confirm_actions = Some(confirm_actions(&["external_mutation"]));
+        let requested = execute_command(
+            &json!({ "id": "approval-1", "action": "click", "selector": "#submit" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(requested["success"], true);
+        assert_eq!(requested["data"]["confirmation_required"], true);
+        assert_eq!(requested["data"]["confirmation_id"], "approval-1");
+        assert_eq!(requested["data"]["consequenceClass"], "external_mutation");
+        assert_eq!(requested["data"]["expiresInMs"], 60_000);
+        assert_eq!(
+            requested["data"]["expectedTargetBinding"]["targetId"],
+            Value::Null
+        );
+        assert!(state.browser.is_none());
+
+        let denied = execute_command(
+            &json!({ "id": "deny-1", "action": "deny", "confirmationId": "approval-1" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(denied["success"], true);
+        assert_eq!(denied["data"]["denied"], true);
+        assert_eq!(denied["data"]["consequenceClass"], "external_mutation");
+        assert!(state.pending_confirmation.is_none());
+        assert!(state.browser.is_none());
+    }
+
+    #[tokio::test]
+    async fn agentic_confirmation_requires_exact_id_and_consumes_mismatch() {
+        let mut state = DaemonState::new();
+        state.confirm_actions = Some(confirm_actions(&["state_list"]));
+        let requested = execute_command(
+            &json!({ "id": "approval-expected", "action": "state_list" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(requested["data"]["confirmation_required"], true);
+
+        let rejected = execute_command(
+            &json!({ "id": "confirm-wrong", "action": "confirm", "confirmationId": "wrong" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(rejected["success"], false);
+        assert!(rejected["error"].as_str().unwrap().contains("ID mismatch"));
+        assert!(state.pending_confirmation.is_none());
+    }
+
+    #[tokio::test]
+    async fn confirmation_expected_action_cannot_approve_a_different_pending_control() {
+        let mut state = DaemonState::new();
+        state.confirm_actions = Some(confirm_actions(&["state_list"]));
+        let requested = execute_command(
+            &json!({ "id": "approval-expected-action", "action": "state_list" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(requested["data"]["confirmation_required"], true);
+
+        let rejected = execute_command(
+            &json!({
+                "id": "confirm-wrong-action",
+                "action": "confirm",
+                "confirmationId": "approval-expected-action",
+                "expectedAction": "task_authority_reconcile"
+            }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(rejected["success"], false);
+        assert!(rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("action mismatch"));
+        assert!(state.pending_confirmation.is_none());
+    }
+
+    #[tokio::test]
+    async fn agentic_confirmation_rejects_expiry_and_target_change() {
+        let mut expired = DaemonState::new();
+        expired.pending_confirmation = Some(PendingConfirmation {
+            confirmation_id: "expired".to_string(),
+            action: "state_list".to_string(),
+            cmd: json!({ "id": "expired", "action": "state_list" }),
+            consequence: ActionConsequence::ReadOnly,
+            target_binding: ConfirmationTargetBinding {
+                target_id: None,
+                url: None,
+            },
+            requested_at: Instant::now() - CONFIRMATION_TTL,
+            durable_task_authority: false,
+        });
+        let rejected = execute_command(
+            &json!({ "id": "confirm-expired", "action": "confirm", "confirmationId": "expired" }),
+            &mut expired,
+        )
+        .await;
+        assert_eq!(rejected["success"], false);
+        assert!(rejected["error"].as_str().unwrap().contains("expired"));
+
+        let mut changed = DaemonState::new();
+        changed.pending_confirmation = Some(PendingConfirmation {
+            confirmation_id: "target-bound".to_string(),
+            action: "state_list".to_string(),
+            cmd: json!({ "id": "target-bound", "action": "state_list" }),
+            consequence: ActionConsequence::ReadOnly,
+            target_binding: ConfirmationTargetBinding {
+                target_id: Some("target-before".to_string()),
+                url: Some("https://example.com/before".to_string()),
+            },
+            requested_at: Instant::now(),
+            durable_task_authority: false,
+        });
+        let rejected = execute_command(
+            &json!({ "id": "confirm-target", "action": "confirm", "confirmationId": "target-bound" }),
+            &mut changed,
+        )
+        .await;
+        assert_eq!(rejected["success"], false);
+        assert!(rejected["error"]
+            .as_str()
+            .unwrap()
+            .contains("target changed"));
+        assert!(changed.pending_confirmation.is_none());
+    }
+
+    #[tokio::test]
+    async fn agentic_confirmation_does_not_overwrite_live_pending_action() {
+        let mut state = DaemonState::new();
+        state.confirm_actions = Some(confirm_actions(&["state_list"]));
+        let first = execute_command(
+            &json!({ "id": "first", "action": "state_list" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(first["data"]["confirmation_id"], "first");
+
+        let second = execute_command(
+            &json!({ "id": "second", "action": "state_list" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(second["success"], false);
+        assert_eq!(
+            state.pending_confirmation.as_ref().unwrap().confirmation_id,
+            "first"
+        );
+    }
+
+    #[tokio::test]
+    async fn agentic_confirmation_executes_once_for_matching_id_and_target() {
+        let mut state = DaemonState::new();
+        state.confirm_actions = Some(confirm_actions(&["state_list"]));
+        let requested = execute_command(
+            &json!({ "id": "approval-ok", "action": "state_list" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(requested["data"]["confirmation_required"], true);
+
+        let confirmed = execute_command(
+            &json!({ "id": "confirm-ok", "action": "confirm", "confirmationId": "approval-ok" }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(confirmed["success"], true);
+        assert_eq!(confirmed["data"]["confirmed"], true);
+        assert_eq!(confirmed["data"]["result"]["success"], true);
+        assert!(state.pending_confirmation.is_none());
+    }
+
+    #[tokio::test]
+    async fn task_authority_issue_always_requires_confirmation_and_denial_writes_nothing() {
+        let root = unique_socket_dir("task-authority-issue-confirmation");
+        let mut state = DaemonState::new();
+        state.task_authority_ledger_root = root.clone();
+        let requested = execute_command(
+            &json!({
+                "id": "issue-authority-1",
+                "action": "task_authority_issue",
+                "request": {
+                    "taskName": "research-task",
+                    "expectedTargetId": "target-1",
+                    "expectedUrl": "https://example.com/",
+                    "issuer": {"kind": "operator", "id": "operator-1"},
+                    "approvalReference": "approval-1",
+                    "expiresInSeconds": 300,
+                    "steps": [{"action": "title"}]
+                }
+            }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(requested["success"], true);
+        assert_eq!(requested["data"]["confirmation_required"], true);
+        assert_eq!(requested["data"]["consequenceClass"], "control_plane");
+        assert_eq!(requested["data"]["durable"], true);
+        state.pending_confirmation = None;
+        state.confirm_actions = Some(confirm_actions(&["state_list"]));
+        let competing = execute_command(
+            &json!({"id": "generic-after-restart", "action": "state_list"}),
+            &mut state,
+        )
+        .await;
+        assert_eq!(competing["success"], false);
+        assert!(competing["error"]
+            .as_str()
+            .unwrap()
+            .contains("still pending"));
+        state.confirm_actions = None;
+
+        let denied = execute_command(
+            &json!({
+                "id": "deny-authority-1",
+                "action": "deny",
+                "confirmationId": "issue-authority-1",
+                "expectedAction": "task_authority_issue",
+                "decidedBy": {"kind": "operator", "id": "operator-1"}
+            }),
+            &mut state,
+        )
+        .await;
+        assert_eq!(denied["success"], true);
+        let status = task_authority_status(&root, &state.session_id, None).unwrap();
+        assert_eq!(status["count"], 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ordered_task_response_fails_closed_when_terminal_receipt_cannot_be_written() {
+        let root = unique_socket_dir("task-authority-outcome-fail-closed");
+        let mut state = DaemonState::new();
+        state.task_authority_ledger_root = root.clone();
+        let response = finalize_ordered_task_response(
+            &json!({
+                "id": "ordered-response-1",
+                "taskStepId": "authority-1:step-0",
+                "taskAuthority": {
+                    "id": "authority-1",
+                    "taskName": "research-task",
+                    "allowedOrigins": ["https://example.com"],
+                    "allowedActions": ["title"],
+                    "planSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "targetBinding": {
+                        "targetId": "target-1",
+                        "initialUrl": "https://example.com/start"
+                    },
+                    "evidenceBudget": {"maxActions": 1, "maxEvidenceBytes": 1024},
+                    "consequenceCeiling": "read_only",
+                    "expiresAt": "2099-01-01T00:00:00Z"
+                }
+            }),
+            &state,
+            true,
+            success_response("ordered-response-1", json!({"title": "Example"})),
+        );
+        assert_eq!(response["success"], false);
+        assert!(response["error"]
+            .as_str()
+            .unwrap()
+            .contains("outcome finalization failed"));
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn evaluate_uses_per_command_worker_deadline() {
@@ -24581,6 +25838,53 @@ mod tests {
         assert_eq!(managed["profileId"], profile_id);
         assert_eq!(intent.runtime_profile.as_deref(), Some(profile_id.as_str()));
         assert_eq!(service_state.profiles.len(), 1);
+    }
+
+    #[test]
+    fn test_remote_view_open_registers_exact_recommended_managed_one_time_profile() {
+        let repository = LockedServiceStateRepository::default_json().expect("repository");
+        let mut intent = crate::native::remote_view::RemoteViewOpenIntent {
+            url: Some("https://direct.sos.state.tx.us/acct/acct-templogin.asp".to_string()),
+            runtime_profile: None,
+            profile: None,
+            browser_id: None,
+            session_name: None,
+            service_name: Some("sosdirect".to_string()),
+            agent_name: Some("codex".to_string()),
+            task_name: Some("temporary-login-payment".to_string()),
+            browser_build: Some("stock_chrome".to_string()),
+            browser_host: "remote_headed".to_string(),
+            view_stream_provider: ViewStreamProvider::RdpGateway,
+            control_input: "manual_attached_desktop".to_string(),
+            route_pool_entry_id: None,
+            route_id: None,
+            display_allocation_id: None,
+            remote_headed_display: None,
+            display_isolation: Some("private_virtual_display".to_string()),
+            manual_login_launch: false,
+            dry_run: true,
+        };
+        let recommended_profile_id = remote_view_open_managed_one_time_profile_id(&intent);
+        intent.runtime_profile = Some(recommended_profile_id.clone());
+        let mut service_state = ServiceState::default();
+
+        let managed = remote_view_open_ensure_managed_one_time_profile(
+            &repository,
+            &mut service_state,
+            &mut intent,
+            true,
+        )
+        .expect("exact recommended managed one-time profile");
+        let warning = remote_view_open_one_time_profile_warning(&intent, &service_state);
+
+        assert_eq!(managed["state"], "planned");
+        assert_eq!(managed["profileId"], recommended_profile_id);
+        assert_eq!(managed["profileClass"], "managed_one_time");
+        assert_eq!(
+            service_state.profiles[&recommended_profile_id].profile_class,
+            ProfileClass::ManagedOneTime
+        );
+        assert!(warning.is_null());
     }
 
     #[test]
@@ -25804,6 +27108,7 @@ mod tests {
             Some(executable.to_str().expect("path should be utf-8"))
         );
         assert!(browser_capability_launch.applied);
+        assert!(required_stealth_launch_proof_error(&browser_capability_launch).is_none());
         assert_eq!(
             browser_capability_launch.to_value()["bindingId"],
             "canary-stealth-default"
@@ -25823,6 +27128,170 @@ mod tests {
             Some("http://agent-browser.localhost/guacamole/")
         );
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_required_stealth_launch_fails_closed_without_validated_binding() {
+        let stealth = BrowserCapabilityLaunchResolution::skipped(
+            "no_matching_preference_binding",
+            Some(BrowserBuild::StealthcdpChromium),
+            Some("chatgpt-pro".to_string()),
+        );
+        let error = required_stealth_launch_proof_error(&stealth)
+            .expect("unproven stealth launch should fail closed");
+        assert!(error.contains("Refusing to launch or silently fall back"));
+        assert!(error.contains("no_matching_preference_binding"));
+
+        let stock = BrowserCapabilityLaunchResolution::skipped(
+            "no_matching_preference_binding",
+            Some(BrowserBuild::StockChrome),
+            None,
+        );
+        assert!(required_stealth_launch_proof_error(&stock).is_none());
+    }
+
+    #[test]
+    fn test_fresh_installed_chrome_proof_requires_exact_owned_launch() {
+        let root = env::temp_dir().join(format!("fresh-chrome-proof-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let installed = root.join("chrome");
+        let custom = root.join("custom-chrome");
+        fs::write(&installed, "fixture").unwrap();
+        fs::write(&custom, "fixture").unwrap();
+        for reason in ["no_matching_preference_binding", "explicit_executable_path"] {
+            let mut metadata =
+                ServiceLaunchMetadata::from_launch_options(&LaunchOptions::default(), None, None);
+            metadata.profile_id = Some("qa".into());
+            metadata.browser_capability_launch = Some(
+                BrowserCapabilityLaunchResolution::skipped(
+                    reason,
+                    Some(BrowserBuild::StockChrome),
+                    Some("qa".into()),
+                )
+                .to_value(),
+            );
+            let original = metadata.browser_capability_launch.clone();
+            for actual in [None, Some(custom.as_path())] {
+                apply_fresh_installed_chrome_proof(&mut metadata, actual, Some(&installed));
+                assert_eq!(metadata.browser_capability_launch, original);
+            }
+            apply_fresh_installed_chrome_proof(&mut metadata, Some(&installed), None);
+            assert_eq!(metadata.browser_capability_launch, original);
+            apply_fresh_installed_chrome_proof(&mut metadata, Some(&installed), Some(&installed));
+            let proof = metadata.browser_capability_launch.as_ref().unwrap();
+            assert_eq!(proof["applied"], true);
+            assert_eq!(proof["browserBuild"], "stock_chrome");
+            assert_eq!(proof["profileId"], "qa");
+            assert_eq!(proof["reason"], "fresh_installed_chrome_launch");
+            assert_eq!(
+                proof["executablePath"],
+                installed.canonicalize().unwrap().to_string_lossy().as_ref()
+            );
+            let repository = LockedServiceStateRepository::new(
+                super::super::service_store::JsonServiceStateStore::new(root.join("state.json")),
+            );
+            super::super::service_health::persist_service_browser_record_in_repository(
+                &repository,
+                "fresh-proof",
+                ServiceBrowserHost::LocalHeadless,
+                ServiceBrowserHealth::Ready,
+                Some(1234),
+                Some("http://127.0.0.1:9222".into()),
+                None,
+                Some(metadata),
+            )
+            .unwrap();
+            let restored = repository.load_snapshot().unwrap();
+            let browser = &restored.browsers["session:fresh-proof"];
+            assert_eq!(browser.browser_build, Some(BrowserBuild::StockChrome));
+            assert_eq!(browser.profile_id.as_deref(), Some("qa"));
+            assert_eq!(
+                browser.executable_path.as_deref(),
+                installed.canonicalize().unwrap().to_str()
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn test_fresh_installed_chrome_proof_does_not_override_registry_or_stealth() {
+        let root = env::temp_dir().join(format!("fresh-chrome-proof-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let installed = root.join("chrome");
+        fs::write(&installed, "fixture").unwrap();
+        for (build, reason) in [
+            (
+                BrowserBuild::StealthcdpChromium,
+                "no_matching_preference_binding",
+            ),
+            (BrowserBuild::StockChrome, "profile_incompatible"),
+            (BrowserBuild::StockChrome, "service_state_unavailable"),
+        ] {
+            let mut metadata =
+                ServiceLaunchMetadata::from_launch_options(&LaunchOptions::default(), None, None);
+            metadata.browser_capability_launch = Some(
+                BrowserCapabilityLaunchResolution::skipped(reason, Some(build), None).to_value(),
+            );
+            let original = metadata.browser_capability_launch.clone();
+            apply_fresh_installed_chrome_proof(&mut metadata, Some(&installed), Some(&installed));
+            assert_eq!(metadata.browser_capability_launch, original);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_explicit_launch_fails_before_browser_start_without_stealth_proof() {
+        let guard = EnvGuard::new(&[
+            "AGENT_BROWSER_EXECUTABLE_PATH",
+            "AGENT_BROWSER_EXECUTABLE_PATH_SOURCE",
+        ]);
+        guard.remove("AGENT_BROWSER_EXECUTABLE_PATH");
+        guard.remove("AGENT_BROWSER_EXECUTABLE_PATH_SOURCE");
+        let command = json!({
+            "action": "launch",
+            "browserBuild": "stealthcdp_chromium",
+            "profile": "/tmp/agent-browser-unproven-stealth",
+            "serviceState": {
+                "browserCapabilityRegistry": {}
+            }
+        });
+        let mut state = DaemonState::new();
+
+        let error = handle_launch(&command, &mut state)
+            .await
+            .expect_err("unproven explicit stealth launch must fail before browser start");
+
+        assert!(error.contains("Stealth browser launch proof unavailable"));
+        assert!(error.contains("no_matching_preference_binding"));
+        assert!(state.browser.is_none());
+    }
+
+    #[test]
+    fn test_apply_auto_launch_command_hints_uses_only_explicit_request_args() {
+        let command = json!({
+            "action": "navigate",
+            "params": {
+                "args": ["--no-sandbox"]
+            }
+        });
+        let mut options = LaunchOptions {
+            args: vec!["--ambient-sentinel".to_string()],
+            ..LaunchOptions::default()
+        };
+
+        apply_auto_launch_command_hints(&mut options, &command, None);
+
+        assert_eq!(options.args, vec!["--no-sandbox".to_string()]);
+
+        let command = json!({
+            "action": "navigate",
+            "args": []
+        });
+        options.args = vec!["--ambient-sentinel".to_string()];
+
+        apply_auto_launch_command_hints(&mut options, &command, None);
+
+        assert!(options.args.is_empty());
     }
 
     #[test]
@@ -27363,6 +28832,7 @@ mod tests {
                     BrowserProcess {
                         id: "browser-existing".to_string(),
                         profile_id: Some("last30days-facebook".to_string()),
+                        browser_build: Some(BrowserBuild::StealthcdpChromium),
                         host: ServiceBrowserHost::RemoteHeaded,
                         health: ServiceBrowserHealth::Ready,
                         display_isolation: Some("private_virtual_display".to_string()),
@@ -27377,6 +28847,9 @@ mod tests {
             .expect("service state should be persisted");
         let metadata = ServiceLaunchMetadata {
             profile_id: Some("last30days-facebook".to_string()),
+            browser_capability_launch: Some(json!({
+                "browserBuild": "stealthcdp_chromium"
+            })),
             ..ServiceLaunchMetadata::default()
         };
 
@@ -27400,6 +28873,56 @@ mod tests {
         assert_eq!(
             target.owner_session_ids,
             vec!["facebook-operator".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_shared_profile_attach_rejects_wrong_build_without_duplicate_lane() {
+        let guard = EnvGuard::new(&["HOME"]);
+        let home = unique_socket_dir("shared-profile-build-mismatch-home");
+        fs::create_dir_all(&home).expect("test home should be created");
+        guard.set("HOME", home.to_str().expect("test home should be utf-8"));
+
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        store
+            .save(&ServiceState {
+                browsers: BTreeMap::from([(
+                    "browser-existing".to_string(),
+                    BrowserProcess {
+                        id: "browser-existing".to_string(),
+                        profile_id: Some("work".to_string()),
+                        browser_build: Some(BrowserBuild::StockChrome),
+                        health: ServiceBrowserHealth::Ready,
+                        cdp_endpoint: Some("http://127.0.0.1:9222".to_string()),
+                        active_session_ids: vec!["owner".to_string()],
+                        ..BrowserProcess::default()
+                    },
+                )]),
+                ..ServiceState::default()
+            })
+            .expect("service state should be persisted");
+        let metadata = ServiceLaunchMetadata {
+            profile_id: Some("work".to_string()),
+            browser_capability_launch: Some(json!({
+                "browserBuild": "stealthcdp_chromium"
+            })),
+            ..ServiceLaunchMetadata::default()
+        };
+        let command = json!({
+            "action": "tab_new",
+            "runtimeProfile": "work",
+            "browserBuild": "stealthcdp_chromium"
+        });
+
+        assert!(
+            shared_profile_attach_target_for_auto_launch(&metadata, &command, "new-session")
+                .is_none()
+        );
+        assert_eq!(
+            service_profile_live_reusable_browser_ids("new-session", "work"),
+            vec!["browser-existing".to_string()]
         );
 
         let _ = fs::remove_dir_all(&home);
@@ -27453,6 +28976,7 @@ mod tests {
         let target = retained_session_attach_target_for_auto_launch(
             &json!({"action": "tab_list"}),
             "last30days-facebook",
+            None,
         )
         .expect("registered session should reconnect to its retained browser");
 
@@ -27505,10 +29029,198 @@ mod tests {
                 "sessionName": "last30days-facebook"
             }),
             "unrelated-client",
+            None,
         )
         .is_none());
 
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_retained_attach_rejects_wrong_or_unproven_browser_build() {
+        let guard = EnvGuard::new(&["HOME"]);
+        let home = unique_socket_dir("retained-session-build-mismatch-home");
+        fs::create_dir_all(&home).expect("test home should be created");
+        guard.set("HOME", home.to_str().expect("test home should be utf-8"));
+
+        for retained_build in [None, Some(BrowserBuild::StockChrome)] {
+            let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+            store
+                .save(&ServiceState {
+                    browsers: BTreeMap::from([(
+                        "session:work".to_string(),
+                        BrowserProcess {
+                            id: "session:work".to_string(),
+                            profile_id: Some("work".to_string()),
+                            browser_build: retained_build,
+                            health: ServiceBrowserHealth::Ready,
+                            cdp_endpoint: Some("http://127.0.0.1:9222".to_string()),
+                            active_session_ids: vec!["work".to_string()],
+                            ..BrowserProcess::default()
+                        },
+                    )]),
+                    ..ServiceState::default()
+                })
+                .expect("service state should be persisted");
+
+            assert!(retained_session_attach_target_for_auto_launch(
+                &json!({"action": "tab_list"}),
+                "work",
+                Some(BrowserBuild::StealthcdpChromium),
+            )
+            .is_none());
+        }
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_active_browser_dispatch_requires_exact_retained_build_proof() {
+        let guard = EnvGuard::new(&["HOME"]);
+        let home = unique_socket_dir("active-browser-build-mismatch-home");
+        fs::create_dir_all(&home).expect("test home should be created");
+        guard.set("HOME", home.to_str().expect("test home should be utf-8"));
+
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        let mut state = DaemonState::new();
+        state.session_id = "work".to_string();
+        let command = json!({
+            "action": "url",
+            "browserBuild": "stealthcdp_chromium"
+        });
+
+        for retained_build in [None, Some(BrowserBuild::StockChrome)] {
+            store
+                .save(&ServiceState {
+                    browsers: BTreeMap::from([(
+                        "session:work".to_string(),
+                        BrowserProcess {
+                            id: "session:work".to_string(),
+                            browser_build: retained_build,
+                            health: ServiceBrowserHealth::Ready,
+                            ..BrowserProcess::default()
+                        },
+                    )]),
+                    ..ServiceState::default()
+                })
+                .expect("service state should be persisted");
+            let error = active_browser_build_mismatch(&command, &state)
+                .expect("unknown and wrong build proof should fail closed");
+            assert!(error.contains("request requires 'stealthcdp_chromium'"));
+            assert!(error.contains("Refusing command dispatch"));
+        }
+
+        store
+            .save(&ServiceState {
+                browsers: BTreeMap::from([(
+                    "session:work".to_string(),
+                    BrowserProcess {
+                        id: "session:work".to_string(),
+                        browser_build: Some(BrowserBuild::StealthcdpChromium),
+                        health: ServiceBrowserHealth::Ready,
+                        ..BrowserProcess::default()
+                    },
+                )]),
+                ..ServiceState::default()
+            })
+            .expect("service state should be persisted");
+        assert!(active_browser_build_mismatch(&command, &state).is_none());
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn test_retained_dispatch_build_continuation_only_overrides_service_default() {
+        for source in [
+            "service_default",
+            "request",
+            "site_policy",
+            "profile_default",
+            "browser_preference_binding",
+            "requires_cdp_free",
+            "unknown",
+        ] {
+            let plan = json!({"decision": {
+                "launchPosture": {"browserBuildSource": source},
+                "serviceRequest": {"request": {"browserBuild": "stealthcdp_chromium"}}
+            }});
+            assert_eq!(
+                retained_dispatch_required_build(
+                    &json!({"action": "url"}),
+                    Some(&plan),
+                    Some(BrowserBuild::StockChrome),
+                ),
+                Some(if source == "service_default" {
+                    BrowserBuild::StockChrome
+                } else {
+                    BrowserBuild::StealthcdpChromium
+                }),
+                "source={source}",
+            );
+            // Legacy rows without proof cannot use continuation to escape a gate.
+            assert_eq!(
+                retained_dispatch_required_build(&json!({"action": "url"}), Some(&plan), None),
+                Some(BrowserBuild::StealthcdpChromium),
+            );
+            // Explicit top-level and nested build requests always remain binding.
+            for command in [
+                json!({"action": "url", "browserBuild": "stealthcdp_chromium"}),
+                json!({"action": "url", "params": {"browserBuild": "stealthcdp_chromium"}}),
+            ] {
+                assert_eq!(
+                    retained_dispatch_required_build(
+                        &command,
+                        Some(&plan),
+                        Some(BrowserBuild::StockChrome),
+                    ),
+                    Some(BrowserBuild::StealthcdpChromium),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_active_browser_dispatch_keeps_proven_build_with_different_launch_default() {
+        let guard = EnvGuard::new(&["HOME"]);
+        let home = unique_socket_dir("active-browser-build-continuation-home");
+        fs::create_dir_all(&home).unwrap();
+        guard.set("HOME", home.to_str().unwrap());
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        let mut state = DaemonState::new();
+        state.session_id = "work".to_string();
+        let command = json!({
+            "action": "url",
+            "serviceState": {"defaultBrowserBuild": "stealthcdp_chromium"}
+        });
+        let plan = service_access_plan_from_command(&command).unwrap();
+        assert_eq!(
+            plan["decision"]["launchPosture"]["browserBuildSource"],
+            "service_default"
+        );
+        for retained_build in [Some(BrowserBuild::StockChrome), None] {
+            store
+                .save(&ServiceState {
+                    browsers: BTreeMap::from([(
+                        "session:work".to_string(),
+                        BrowserProcess {
+                            id: "session:work".to_string(),
+                            browser_build: retained_build,
+                            health: ServiceBrowserHealth::Ready,
+                            ..BrowserProcess::default()
+                        },
+                    )]),
+                    ..ServiceState::default()
+                })
+                .unwrap();
+            assert_eq!(
+                active_browser_build_mismatch(&command, &state).is_none(),
+                retained_build.is_some()
+            );
+            let mut explicit = command.clone();
+            explicit["browserBuild"] = json!("stealthcdp_chromium");
+            assert!(active_browser_build_mismatch(&explicit, &state).is_some());
+        }
+        let _ = fs::remove_dir_all(home);
     }
 
     #[test]
@@ -27832,6 +29544,10 @@ mod tests {
             "runtime_handoff_prepare",
             "runtime_handoff_resume",
             "service_status",
+            "task_authority_issue",
+            "task_authority_reconcile",
+            "task_authority_revoke",
+            "task_authority_status",
             "service_reconcile",
             "service_job_cancel",
             "service_browser_retry",
@@ -28673,7 +30389,9 @@ mod tests {
         assert_eq!(result["success"], false);
         let error_msg = result["error"].as_str().unwrap();
         assert!(
-            error_msg.contains("Not yet implemented") || error_msg.contains("Auto-launch failed"),
+            error_msg.contains("Not yet implemented")
+                || error_msg.contains("Auto-launch failed")
+                || error_msg.contains("Retained browser build mismatch"),
             "Unexpected error: {}",
             error_msg
         );
@@ -33126,11 +34844,10 @@ mod tests {
         assert_eq!(rollback["state"], "rolled_back");
         let restored = repository.load_snapshot().unwrap();
         assert_eq!(restored.route_pool["pool-a"].state, "available");
-        assert!(restored
+        assert!(!restored
             .display_allocations
-            .get("remote-view-display:41")
-            .is_none());
-        assert!(restored.remote_view_routes.get("route-a").is_none());
+            .contains_key("remote-view-display:41"));
+        assert!(!restored.remote_view_routes.contains_key("route-a"));
         assert_eq!(
             restored.remote_view_acquisition_leases[&lease.id].state,
             "failed"
@@ -33351,15 +35068,13 @@ mod tests {
         assert_eq!(result["repaired"], true);
         assert_eq!(result["candidateCounts"]["stalePendingAcquisitions"], 1);
         assert_eq!(result["repairedCounts"]["stalePendingAcquisitions"], 1);
-        assert!(service_state.route_pool.get("pool-pending").is_none());
-        assert!(service_state
+        assert!(!service_state.route_pool.contains_key("pool-pending"));
+        assert!(!service_state
             .remote_view_routes
-            .get("route-pending")
-            .is_none());
-        assert!(service_state
+            .contains_key("route-pending"));
+        assert!(!service_state
             .display_allocations
-            .get("display-pending")
-            .is_none());
+            .contains_key("display-pending"));
         let lease = &service_state.remote_view_acquisition_leases["lease-pending"];
         assert_eq!(lease.state, "failed");
         assert_eq!(lease.phase, "rollback_complete");
@@ -36373,7 +38088,6 @@ mod tests {
                 view_streams: Vec::new(),
                 display_isolation: Some("shared_display".to_string()),
                 display_name: Some(":93".to_string()),
-                ..ServiceLaunchMetadata::default()
             }),
         )
         .unwrap();
@@ -37423,7 +39137,6 @@ mod tests {
             force_kill_succeeded: false,
             force_kill_failed: true,
             errors: vec!["permission denied".to_string()],
-            ..BrowserShutdownOutcome::default()
         };
 
         let (health, last_error) = close_health_from_outcome(Some(&outcome));
@@ -37718,6 +39431,33 @@ mod tests {
 
         guard.remove("AGENT_BROWSER_PROFILE");
         assert_eq!(launch_profile_from_sources(&json!({}), true), None);
+    }
+
+    #[test]
+    fn test_service_tab_profile_id_prefers_access_plan_profile_for_attached_existing_browser() {
+        assert_eq!(
+            service_tab_profile_id(&json!({ "runtimeProfile": "chatgpt-pro" }), None,),
+            json!("chatgpt-pro")
+        );
+        assert_eq!(
+            service_tab_profile_id(
+                &json!({ "profileId": "chatgpt-pro" }),
+                Some("wrong-manager-profile"),
+            ),
+            json!("chatgpt-pro")
+        );
+    }
+
+    #[test]
+    fn test_service_tab_profile_id_falls_back_to_manager_and_never_environment() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_RUNTIME_PROFILE"]);
+        guard.set("AGENT_BROWSER_RUNTIME_PROFILE", "ambient-profile");
+
+        assert_eq!(
+            service_tab_profile_id(&json!({}), Some("manager-profile")),
+            json!("manager-profile")
+        );
+        assert_eq!(service_tab_profile_id(&json!({}), None), Value::Null);
     }
 
     #[test]

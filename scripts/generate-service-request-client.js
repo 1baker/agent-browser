@@ -1455,6 +1455,83 @@ export interface ServiceControllerLeaseTakeoverHttpOptions extends ServiceContro
   signal?: AbortSignal;
 }
 
+export interface ServiceTaskAuthorityPlanStep {
+  action: string;
+  url?: string;
+  evidenceBytes?: number;
+}
+
+export interface ServiceTaskAuthorityIssueOptions {
+  baseUrl: string;
+  fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
+  sessionName?: string;
+  taskName: string;
+  serviceName?: string;
+  agentName?: string;
+  expectedTargetId: string;
+  expectedUrl: string;
+  approvalReference: string;
+  expiresInSeconds: number;
+  steps: ServiceTaskAuthorityPlanStep[];
+}
+
+export interface ServiceTaskAuthorityReadOptions {
+  baseUrl: string;
+  fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
+  sessionName?: string;
+}
+
+export interface ServiceTaskAuthorityRevokeOptions extends ServiceTaskAuthorityReadOptions {
+  authorityId: string;
+  reason: string;
+}
+
+export interface ServiceTaskAuthorityReconcileOptions extends ServiceTaskAuthorityReadOptions {
+  authorityId: string;
+  reconciliationId: string;
+  unresolvedStepId: string;
+  taskName: string;
+  serviceName?: string;
+  agentName?: string;
+  expectedTargetId: string;
+  expectedUrl: string;
+  approvalReference: string;
+  expiresInSeconds: number;
+  steps: ServiceTaskAuthorityPlanStep[];
+}
+
+export interface ServiceTaskAuthorityConfirmationOptions extends ServiceTaskAuthorityReadOptions {
+  confirmationId: string;
+  expectedAction: "task_authority_issue" | "task_authority_reconcile" | "task_authority_revoke";
+  decision: "confirm" | "deny";
+}
+
+export interface ServiceTaskAuthorityConfirmationCleanupOptions extends ServiceTaskAuthorityReadOptions {
+  retainCount?: number;
+  minAgeSeconds?: number;
+  apply?: boolean;
+  reviewSha256?: string;
+}
+
+export interface ServiceTaskAuthorityStatus {
+  schema: string;
+  id: string;
+  sessionId: string;
+  state: "active" | "revoked" | "expired" | "exhausted" | string;
+  usable: boolean;
+  envelope: Record<string, unknown>;
+  envelopeSha256: string;
+  issuer: { kind: string; id: string };
+  approvalReference: string;
+  approvedPlan: Record<string, unknown>;
+  issuedAt: string;
+  revocation?: Record<string, unknown> | null;
+  usage: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export declare const SERVICE_REQUEST_ACTIONS: readonly ServiceRequestAction[];
 export declare const SERVICE_REQUEST_REQUIRED_FIELDS: readonly string[];
 export declare const SERVICE_REQUEST_STRING_FIELDS: readonly string[];
@@ -1661,6 +1738,28 @@ export declare function releaseServiceViewerLease(
 export declare function takeoverServiceControllerLease(
   options: ServiceControllerLeaseTakeoverHttpOptions,
 ): Promise<ServiceRequestResponse<ServiceViewerLeaseMutationData>>;
+export declare function issueServiceTaskAuthority(
+  options: ServiceTaskAuthorityIssueOptions,
+): Promise<ServiceRequestResponse<ServiceTaskAuthorityStatus>>;
+export declare function getServiceTaskAuthorities(
+  options: ServiceTaskAuthorityReadOptions,
+): Promise<ServiceRequestResponse<{ authorities: ServiceTaskAuthorityStatus[]; count: number }>>;
+export declare function getServiceTaskAuthority(
+  authorityId: string,
+  options: ServiceTaskAuthorityReadOptions,
+): Promise<ServiceRequestResponse<ServiceTaskAuthorityStatus>>;
+export declare function reconcileServiceTaskAuthority(
+  options: ServiceTaskAuthorityReconcileOptions,
+): Promise<ServiceRequestResponse<{ predecessor: ServiceTaskAuthorityStatus; replacement: ServiceTaskAuthorityStatus; lineage: Record<string, unknown> }>>;
+export declare function decideServiceTaskAuthorityConfirmation(
+  options: ServiceTaskAuthorityConfirmationOptions,
+): Promise<ServiceRequestResponse<Record<string, unknown>>>;
+export declare function cleanupServiceTaskAuthorityConfirmations(
+  options: ServiceTaskAuthorityConfirmationCleanupOptions,
+): Promise<ServiceRequestResponse<Record<string, unknown>>>;
+export declare function revokeServiceTaskAuthority(
+  options: ServiceTaskAuthorityRevokeOptions,
+): Promise<ServiceRequestResponse<ServiceTaskAuthorityStatus>>;
 export declare function summarizeServiceCdpFreeLaunchAvailability(
   data: ServiceCdpFreeLaunchData,
 ): ServiceCdpFreeLaunchAvailability;

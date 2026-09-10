@@ -286,35 +286,43 @@ async fn handle_ws_client(
 
     {
         let guard = client_slot.read().await;
-        let connected = guard.is_some();
-        let sc = *screencasting.lock().await;
-        let vw = *viewport_width.lock().await;
-        let vh = *viewport_height.lock().await;
-        let eng = last_engine.read().await.clone();
-        let rec = *recording.lock().await;
-        let status = json!({
-            "type": "status",
-            "connected": connected,
-            "screencasting": sc,
-            "viewportWidth": vw,
-            "viewportHeight": vh,
-            "engine": eng,
-            "recording": rec,
-        });
-        let _ = ws_tx.send(Message::Text(status.to_string())).await;
-
-        let tabs = last_tabs.read().await;
-        if !tabs.is_empty() {
-            let tabs_msg = json!({
-                "type": "tabs",
-                "tabs": *tabs,
-                "timestamp": timestamp_ms(),
+        let privacy_lease = guard
+            .as_ref()
+            .map(|client| client.public_lease())
+            .transpose();
+        // Do not replay cached frames or tabs into a private interval. Cleanup
+        // below still decrements the viewer count for a rejected connection.
+        if privacy_lease.is_ok() {
+            let connected = guard.is_some();
+            let sc = *screencasting.lock().await;
+            let vw = *viewport_width.lock().await;
+            let vh = *viewport_height.lock().await;
+            let eng = last_engine.read().await.clone();
+            let rec = *recording.lock().await;
+            let status = json!({
+                "type": "status",
+                "connected": connected,
+                "screencasting": sc,
+                "viewportWidth": vw,
+                "viewportHeight": vh,
+                "engine": eng,
+                "recording": rec,
             });
-            let _ = ws_tx.send(Message::Text(tabs_msg.to_string())).await;
-        }
+            let _ = ws_tx.send(Message::Text(status.to_string())).await;
 
-        if let Some(ref cached) = *last_frame.read().await {
-            let _ = ws_tx.send(Message::Text(cached.clone())).await;
+            let tabs = last_tabs.read().await;
+            if !tabs.is_empty() {
+                let tabs_msg = json!({
+                    "type": "tabs",
+                    "tabs": *tabs,
+                    "timestamp": timestamp_ms(),
+                });
+                let _ = ws_tx.send(Message::Text(tabs_msg.to_string())).await;
+            }
+
+            if let Some(ref cached) = *last_frame.read().await {
+                let _ = ws_tx.send(Message::Text(cached.clone())).await;
+            }
         }
     }
 
@@ -331,6 +339,10 @@ async fn handle_ws_client(
             frame = frame_rx.recv() => {
                 match frame {
                     Ok(data) => {
+                        let guard = client_slot.read().await;
+                        let Ok(_privacy_lease) = guard.as_ref().map(|client| client.public_lease()).transpose() else {
+                            continue;
+                        };
                         if ws_tx.send(Message::Text(data)).await.is_err() {
                             break;
                         }
@@ -366,6 +378,9 @@ async fn handle_ws_client(
 }
 
 async fn handle_client_message(msg: &str, client: &CdpClient, session_id: Option<&str>) {
+    let Ok(_privacy_lease) = client.public_lease() else {
+        return;
+    };
     let parsed: Value = match serde_json::from_str(msg) {
         Ok(v) => v,
         Err(_) => return,
@@ -423,5 +438,113 @@ async fn handle_client_message(msg: &str, client: &CdpClient, session_id: Option
         }
         "status" => {}
         _ => {}
+    }
+}
+
+#[cfg(all(test, unix))]
+mod privacy_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn private_interval_blocks_cached_live_frames_tabs_and_keyboard_input() {
+        const SENTINEL: &str = "SYNTHETIC_STREAM_PRIVATE_SENTINEL";
+        let cdp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cdp_address = cdp_listener.local_addr().unwrap();
+        let (observed_tx, mut observed_rx) = tokio::sync::mpsc::unbounded_channel();
+        let cdp_peer = tokio::spawn(async move {
+            let (stream, _) = cdp_listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(message)) = ws.next().await {
+                if let Message::Text(text) = message {
+                    observed_tx.send(text).unwrap();
+                }
+            }
+        });
+        let client = Arc::new(
+            CdpClient::connect(&format!("ws://{cdp_address}"))
+                .await
+                .unwrap(),
+        );
+        // No public command or inspect attachment precedes this admission.
+        let gate =
+            crate::native::privacy_gate::PrivacyGate::for_endpoint(&format!("ws://{cdp_address}"))
+                .unwrap();
+        let _private_permit = gate.begin_private().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (frame_tx, frame_rx) = broadcast::channel(8);
+        let client_count = Arc::new(Mutex::new(0));
+        let handler_count = Arc::clone(&client_count);
+        let client_notify = Arc::new(Notify::new());
+        let handler_notify = Arc::clone(&client_notify);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handler = tokio::spawn(async move {
+            let (stream, addr) = listener.accept().await.unwrap();
+            handle_ws_client(
+                stream,
+                addr,
+                frame_rx,
+                handler_count,
+                Arc::new(RwLock::new(Some(client))),
+                handler_notify,
+                Arc::new(Mutex::new(true)),
+                Arc::new(RwLock::new(Some("synthetic-session".into()))),
+                Arc::new(Mutex::new(800)),
+                Arc::new(Mutex::new(600)),
+                Arc::new(RwLock::new(vec![json!({"title": SENTINEL})])),
+                Arc::new(RwLock::new("chrome".into())),
+                Arc::new(RwLock::new(Some(
+                    json!({"type": "frame", "data": SENTINEL}).to_string(),
+                ))),
+                Arc::new(Mutex::new(false)),
+                shutdown_rx,
+            )
+            .await;
+        });
+        let (mut viewer, _) = tokio_tungstenite::connect_async(format!("ws://{address}/"))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), client_notify.notified())
+            .await
+            .unwrap();
+        assert_eq!(*client_count.lock().await, 1);
+        frame_tx
+            .send(json!({"type": "frame", "data": SENTINEL}).to_string())
+            .unwrap();
+        frame_tx
+            .send(json!({"type": "tabs", "tabs": [{"title": SENTINEL}]}).to_string())
+            .unwrap();
+        viewer
+            .send(Message::Text(
+                json!({"type": "input_keyboard", "eventType": "keyDown", "text": SENTINEL})
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+        // No cached status/tabs/frame or queued live output may escape.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), viewer.next())
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), observed_rx.recv())
+                .await
+                .is_err()
+        );
+        shutdown_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), handler)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*client_count.lock().await, 0);
+        assert_eq!(frame_tx.receiver_count(), 0);
+        let closed = tokio::time::timeout(Duration::from_secs(2), viewer.next())
+            .await
+            .unwrap();
+        assert!(matches!(closed, Some(Ok(Message::Close(_)))));
+        cdp_peer.abort();
+        let _ = cdp_peer.await;
     }
 }

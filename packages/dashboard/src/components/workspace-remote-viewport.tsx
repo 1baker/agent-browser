@@ -213,6 +213,7 @@ type GuacamoleAngularScope = {
 type GuacamoleMenuScope = GuacamoleAngularScope & {
   menu?: {
     shown?: boolean;
+    inputMethod?: string;
   };
   $apply?: (fn: () => void) => void;
   $evalAsync?: (fn: () => void) => void;
@@ -394,6 +395,15 @@ function installGuacamoleTouchClickBridge(frame: HTMLIFrameElement | null): (() 
     return true;
   };
 
+  const focusTextInput = (): void => {
+    const textInputMethod = doc?.querySelector<HTMLInputElement>("#ime-text");
+    const target = doc?.querySelector<HTMLTextAreaElement>("textarea.target");
+    const scope = guacamoleScopeWithMenu(win?.angular?.element?.(display)?.scope?.());
+    const textInputEnabled = textInputMethod?.checked || scope?.menu?.inputMethod === "text";
+    if (!textInputEnabled || !target || target.disabled) return;
+    target.focus({ preventScroll: true });
+  };
+
   const stopTouch = (event: TouchEvent): void => {
     if (event.cancelable) event.preventDefault();
     event.stopPropagation();
@@ -448,6 +458,11 @@ body,
 
     const touch = event.touches.item(0);
     if (!touch) return;
+    // Mobile Safari and Chrome only open the software keyboard when focus is
+    // established directly from the initial trusted touch gesture. Focusing
+    // after preventDefault() or waiting for touchend is too late on some
+    // phones, even though desktop keystrokes still reach Guacamole.
+    focusTextInput();
     stopTouch(event);
     clearReleaseTimer();
     activeTouchIdentifier = touch.identifier;
@@ -487,6 +502,10 @@ body,
     const isTap = !moved && Math.hypot(dx, dy) <= movementThreshold() && elapsed <= GUACAMOLE_TOUCH_BRIDGE_TAP_MS;
     sendMouse(touch, false);
     if (isTap && sendMouse(touch, true)) {
+      // The touch bridge replaces Guacamole's native touch handlers. Restore
+      // their keyboard-focus side effect while the tap is still a user gesture
+      // so mobile browsers can open the text keyboard for the remote field.
+      focusTextInput();
       releaseTimer = win?.setTimeout(() => {
         sendMouse(touch, false);
         releaseTimer = null;

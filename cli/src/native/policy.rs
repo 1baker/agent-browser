@@ -15,6 +15,124 @@ pub enum PolicyResult {
     RequiresConfirmation,
 }
 
+/// Stable consequence category used by agentic confirmation policy and
+/// approval receipts. Categories describe what an action can change, not the
+/// caller's claimed intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionConsequence {
+    ReadOnly,
+    Navigation,
+    PageMutation,
+    ExternalMutation,
+    FileTransfer,
+    Credentials,
+    ScriptExecution,
+    BrowserLifecycle,
+    ControlPlane,
+}
+
+impl ActionConsequence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::Navigation => "navigation",
+            Self::PageMutation => "page_mutation",
+            Self::ExternalMutation => "external_mutation",
+            Self::FileTransfer => "file_transfer",
+            Self::Credentials => "credentials",
+            Self::ScriptExecution => "script_execution",
+            Self::BrowserLifecycle => "browser_lifecycle",
+            Self::ControlPlane => "control_plane",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "Read browser or service state without changing the page.",
+            Self::Navigation => "Change the selected page, history entry, or tab.",
+            Self::PageMutation => "Change page-local input or document state.",
+            Self::ExternalMutation => {
+                "Interact with a page control that may commit an external effect."
+            }
+            Self::FileTransfer => "Move a file into or out of the browser session.",
+            Self::Credentials => "Change authentication, cookie, storage, or permission state.",
+            Self::ScriptExecution => "Execute caller-supplied code in the page context.",
+            Self::BrowserLifecycle => "Change browser, target, attachment, or session lifecycle.",
+            Self::ControlPlane => "Change or inspect agent-browser control-plane state.",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "read_only" => Some(Self::ReadOnly),
+            "navigation" => Some(Self::Navigation),
+            "page_mutation" => Some(Self::PageMutation),
+            "external_mutation" => Some(Self::ExternalMutation),
+            "file_transfer" => Some(Self::FileTransfer),
+            "credentials" => Some(Self::Credentials),
+            "script_execution" => Some(Self::ScriptExecution),
+            "browser_lifecycle" => Some(Self::BrowserLifecycle),
+            "control_plane" => Some(Self::ControlPlane),
+            _ => None,
+        }
+    }
+
+    pub fn authority_rank(self) -> u8 {
+        match self {
+            Self::ReadOnly => 0,
+            Self::Navigation => 1,
+            Self::PageMutation => 2,
+            Self::ExternalMutation => 3,
+            Self::FileTransfer => 4,
+            Self::Credentials => 5,
+            Self::ScriptExecution => 6,
+            Self::BrowserLifecycle => 7,
+            Self::ControlPlane => 8,
+        }
+    }
+}
+
+pub fn action_consequence(action: &str) -> ActionConsequence {
+    match action {
+        "url" | "title" | "content" | "read_page" | "inspect" | "snapshot" | "screenshot"
+        | "gettext" | "getattribute" | "gethtml" | "getstyles" | "count" | "getbox"
+        | "isvisible" | "isenabled" | "ischecked" | "console" | "errors" | "requests"
+        | "request_detail" | "cookies_get" | "storage_get" | "tab_list" | "browser_pid"
+        | "wait" | "cdp_url" | "diagnostics" | "probe" | "stream_status" | "state_list"
+        | "state_show" => ActionConsequence::ReadOnly,
+        "task_authority_status" => ActionConsequence::ReadOnly,
+        "task_authority_reconcile" => ActionConsequence::ControlPlane,
+        "navigate" | "back" | "forward" | "reload" | "tab_new" | "tab_switch" => {
+            ActionConsequence::Navigation
+        }
+        "fill" | "type" | "clear" | "focus" | "hover" | "scroll" | "scrollintoview"
+        | "setcontent" | "viewport" | "useragent" | "media" | "timezone" | "locale"
+        | "geolocation" | "headers" | "offline" => ActionConsequence::PageMutation,
+        "click" | "dblclick" | "press" | "select" | "check" | "uncheck" | "ui_action"
+        | "dialog" => ActionConsequence::ExternalMutation,
+        "upload" | "download" | "wait_for_download" | "file_transfer" | "pdf" => {
+            ActionConsequence::FileTransfer
+        }
+        "credentials_set" | "credentials_delete" | "auth_save" | "auth_delete" | "cookies_set"
+        | "cookies_clear" | "storage_set" | "storage_clear" | "permissions" => {
+            ActionConsequence::Credentials
+        }
+        "evaluate" => ActionConsequence::ScriptExecution,
+        "launch"
+        | "close"
+        | "tab_close"
+        | "cdp_attach"
+        | "cdp_detach"
+        | "cdp_free_launch"
+        | "external_byop_adopt"
+        | "runtime_handoff_prepare"
+        | "runtime_handoff_resume"
+        | "remote_view_open"
+        | "view_takeover" => ActionConsequence::BrowserLifecycle,
+        _ => ActionConsequence::ControlPlane,
+    }
+}
+
 /// Policy configuration loaded from a JSON file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionPolicy {
@@ -55,7 +173,18 @@ impl ConfirmActions {
     }
 
     pub fn requires_confirmation(&self, action: &str) -> bool {
+        let consequence = action_consequence(action);
         self.categories.contains(action)
+            || self.categories.contains(consequence.as_str())
+            || (self.categories.contains("mutation")
+                && matches!(
+                    consequence,
+                    ActionConsequence::PageMutation
+                        | ActionConsequence::ExternalMutation
+                        | ActionConsequence::FileTransfer
+                        | ActionConsequence::Credentials
+                        | ActionConsequence::ScriptExecution
+                ))
     }
 }
 
@@ -220,5 +349,54 @@ mod tests {
         assert!(ca.requires_confirmation("click"));
         assert!(ca.requires_confirmation("fill"));
         assert!(!ca.requires_confirmation("screenshot"));
+    }
+
+    #[test]
+    fn test_confirm_actions_accept_consequence_categories_and_mutation_group() {
+        let category = ConfirmActions {
+            categories: HashSet::from(["external_mutation".to_string()]),
+        };
+        assert!(category.requires_confirmation("click"));
+        assert!(!category.requires_confirmation("snapshot"));
+
+        let mutation = ConfirmActions {
+            categories: HashSet::from(["mutation".to_string()]),
+        };
+        for action in ["fill", "press", "upload", "cookies_set", "evaluate"] {
+            assert!(mutation.requires_confirmation(action), "{action}");
+        }
+        assert!(!mutation.requires_confirmation("title"));
+        assert!(!mutation.requires_confirmation("navigate"));
+    }
+
+    #[test]
+    fn test_action_consequence_classification_is_stable_for_agentic_boundaries() {
+        assert_eq!(action_consequence("snapshot"), ActionConsequence::ReadOnly);
+        assert_eq!(action_consequence("wait"), ActionConsequence::ReadOnly);
+        assert_eq!(
+            action_consequence("navigate"),
+            ActionConsequence::Navigation
+        );
+        assert_eq!(action_consequence("fill"), ActionConsequence::PageMutation);
+        assert_eq!(
+            action_consequence("click"),
+            ActionConsequence::ExternalMutation
+        );
+        assert_eq!(
+            action_consequence("upload"),
+            ActionConsequence::FileTransfer
+        );
+        assert_eq!(
+            action_consequence("cookies_set"),
+            ActionConsequence::Credentials
+        );
+        assert_eq!(
+            action_consequence("evaluate"),
+            ActionConsequence::ScriptExecution
+        );
+        assert_eq!(
+            action_consequence("close"),
+            ActionConsequence::BrowserLifecycle
+        );
     }
 }

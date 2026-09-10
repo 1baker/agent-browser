@@ -6,9 +6,16 @@ use std::path::PathBuf;
 const DEFAULT_ENV_FILE: &str = ".agent-browser/.env";
 const KNOWN_VARS: &[&str] = &[
     "AGENT_BROWSER_DASHBOARD_AUTH_FILE",
+    "AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT",
+    "AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH",
+    "AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS",
+    "AGENT_BROWSER_GUACAMOLE_HEADER_USER",
+    "AGENT_BROWSER_GUACAMOLE_HTTP_PORT",
     "AGENT_BROWSER_KEYCHAIN_PASSWORD",
+    "AGENT_BROWSER_RDP_ROUTE_VIEWER_EXECUTABLE",
     "AGENT_BROWSER_REMOTE_CONTROL_INPUT_PROVIDER",
     "AGENT_BROWSER_REMOTE_HEADED_DISPLAY",
+    "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH",
     "AGENT_BROWSER_REMOTE_VIEW_EXTERNAL_URL",
     "AGENT_BROWSER_REMOTE_VIEW_FRAME_URL",
     "AGENT_BROWSER_REMOTE_VIEW_PROVIDER",
@@ -161,6 +168,12 @@ mod tests {
 export AGENT_BROWSER_KEYCHAIN_PASSWORD="line1\nline2"
 AGENT_BROWSER_USE_REAL_KEYCHAIN=1 # force real keychain
 AGENT_BROWSER_REMOTE_HEADED_DISPLAY=:10
+AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH=/opt/agent-browser/chrome
+AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH=1
+AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS=operator@example.com
+AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT=/tmp/private-retained.json
+AGENT_BROWSER_GUACAMOLE_HEADER_USER=operator
+AGENT_BROWSER_GUACAMOLE_HTTP_PORT=8092
 # AGENT_BROWSER_KEYCHAIN_PASSWORD=ignored
 AGENT_BROWSER_KEYCHAIN_PASSWORD='quoted'
 AGENT_BROWSER_UNKNOWN=ignored
@@ -178,6 +191,30 @@ AGENT_BROWSER_UNKNOWN=ignored
         assert_eq!(
             parsed.get("AGENT_BROWSER_REMOTE_HEADED_DISPLAY"),
             Some(&":10".to_string())
+        );
+        assert_eq!(
+            parsed.get("AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH"),
+            Some(&"/opt/agent-browser/chrome".to_string())
+        );
+        assert_eq!(
+            parsed.get("AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH"),
+            Some(&"1".to_string())
+        );
+        assert_eq!(
+            parsed.get("AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS"),
+            Some(&"operator@example.com".to_string())
+        );
+        assert_eq!(
+            parsed.get("AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT"),
+            Some(&"/tmp/private-retained.json".to_string())
+        );
+        assert_eq!(
+            parsed.get("AGENT_BROWSER_GUACAMOLE_HEADER_USER"),
+            Some(&"operator".to_string())
+        );
+        assert_eq!(
+            parsed.get("AGENT_BROWSER_GUACAMOLE_HTTP_PORT"),
+            Some(&"8092".to_string())
         );
         assert!(!parsed.contains_key("AGENT_BROWSER_UNKNOWN"));
     }

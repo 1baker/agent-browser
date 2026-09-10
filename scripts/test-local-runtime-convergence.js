@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 const script = readFileSync('scripts/converge-local-runtime.js', 'utf8');
 const installer = readFileSync('scripts/install-dashboard-user-service.sh', 'utf8');
 const publisher = readFileSync('scripts/publish-local-dashboard-runtime.js', 'utf8');
+const publisherOrchestration = readFileSync('scripts/lib/local-dashboard-publisher-orchestration.js', 'utf8');
 const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
 const plan = readFileSync('docs/dev/plans/0042-2026-06-22-runtime-convergence-plan.md', 'utf8');
 
@@ -35,8 +36,8 @@ assert.match(
 
 assert.match(
   script,
-  /report\.initial = readDoctors\('initial', \{ required: !options\.apply \}\)/,
-  'apply mode must proceed after repairable nonzero initial doctor JSON',
+  /report\.initial = readDoctors\('initial', \{ required: false \}\)/,
+  'dry-run and apply modes must inspect repairable nonzero initial doctor JSON',
 );
 
 assert.match(
@@ -149,20 +150,37 @@ assert.doesNotMatch(
 
 assert.match(
   installer,
+  /ExecStartPre=.*check:local-dashboard-retained-browser[\s\S]*ExecStart=.*converge:local-runtime -- --apply --skip-publish --json/,
+  'runtime-health interlock must verify a configured critical retained lane before mutation',
+);
+assert.match(
+  installer,
   /Description=agent-browser runtime health interlock[\s\S]*converge:local-runtime -- --apply --skip-publish --json/,
   'dashboard service installation must install the runtime-health interlock service',
 );
 
 assert.match(
-  publisher,
-  /prepareRuntimeHandoffs\(builtBin, installBin\)[\s\S]*installBinaryAtomically\(builtBin, installBin[\s\S]*resumeRuntimeHandoffs\(installBin\)/,
+  publisherOrchestration,
+  /adapters\.prepareRuntimeHandoffs\(builtBin, installBin\)[\s\S]*adapters\.installBinaryAtomically\([\s\S]*builtBin,[\s\S]*installBin,[\s\S]*adapters\.resumeRuntimeHandoffs\(installBin\)/,
   'local publishing must bracket executable replacement with daemon handoff',
+);
+
+assert.match(
+  publisher,
+  /runLocalDashboardPublisherOrchestration\([\s\S]*prepareRuntimeHandoffs,[\s\S]*installBinaryAtomically,[\s\S]*resumeRuntimeHandoffs,/,
+  'production publisher must wire real handoff and replacement adapters into tested orchestration',
 );
 
 assert.match(
   publisher,
   /data\.browserPid !== prepared\.browserPid[\s\S]*data\.cdpUrl !== prepared\.cdpUrl/,
   'local publishing must verify browser PID and CDP endpoint continuity',
+);
+
+assert.match(
+  publisher,
+  /existingDaemonPid = readRuntimePid\(prepared\.sessionName\)[\s\S]*serviceBrowserForSession\([\s\S]*Number\.isInteger\(existingDaemonPid\)[\s\S]*browserProcessIsLive\(existingDaemonPid\)[\s\S]*isRuntimeHandoffBrowserActive/,
+  'retained service-state evidence must not substitute for a live resumed daemon',
 );
 
 assert.match(
@@ -179,14 +197,20 @@ assert.match(
 
 assert.match(
   publisher,
-  /const daemonClientBin = runtimeDaemonClientBinary\(daemonPid, rollbackBin\)[\s\S]*serviceBrowserForSession\(daemonClientBin[\s\S]*runAgentJson\(daemonClientBin, sessionName, \['close'\]\)/,
-  'publisher inventory and idle retirement must use the running daemon executable without triggering hash replacement',
+  /const daemonClientBin = runtimeDaemonClientBinary\(daemonPid, rollbackBin\)[\s\S]*runAgentJson\(clientBin, sessionName, \['handoff', 'prepare'\]\)[\s\S]*serviceBrowserForSession\(daemonClientBin[\s\S]*runAgentJson\(daemonClientBin, sessionName, \['close'\]\)/,
+  'publisher must try authenticated handoff before service-record-based compatibility close',
 );
 
 assert.match(
   publisher,
-  /function runtimeDaemonClientBinary\(daemonPid, fallbackBin\)[\s\S]*`\/proc\/\$\{daemonPid\}\/exe`/,
-  'Linux publisher preflight must resolve the running daemon executable through procfs',
+  /runAgentJson\(daemonClientBin, sessionName, \['close'\]\)[\s\S]*!browserProcessIsLive\(daemonPid\)[\s\S]*alreadyExited: true/,
+  'idle-daemon retirement must tolerate the exact executable disappearing after the liveness check',
+);
+
+assert.match(
+  publisher,
+  /resolveRuntimeDaemonClientBinary as runtimeDaemonClientBinary/,
+  'Linux publisher preflight must use the shared deleted-inode-safe daemon client resolver',
 );
 
 assert.match(

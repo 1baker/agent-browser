@@ -4927,6 +4927,13 @@ pub enum ProfileReadinessState {
 pub struct BrowserProcess {
     pub id: String,
     pub profile_id: Option<String>,
+    /// Browser build selected by the governed launch path. Missing proof must
+    /// not satisfy a request that requires a specific build.
+    pub browser_build: Option<BrowserBuild>,
+    /// Exact executable selected by the launch resolver when it is known.
+    pub executable_path: Option<String>,
+    /// Durable, redacted launch-selection evidence used to audit retained reuse.
+    pub browser_build_proof: Option<serde_json::Value>,
     pub host: BrowserHost,
     pub health: BrowserHealth,
     pub display_isolation: Option<String>,
@@ -4948,6 +4955,9 @@ impl Default for BrowserProcess {
         Self {
             id: String::new(),
             profile_id: None,
+            browser_build: None,
+            executable_path: None,
+            browser_build_proof: None,
             host: BrowserHost::LocalHeaded,
             health: BrowserHealth::NotStarted,
             display_isolation: None,
@@ -4963,6 +4973,15 @@ impl Default for BrowserProcess {
             last_health_observation: None,
         }
     }
+}
+
+/// Returns true only when a retained browser proves the exact governed build.
+/// Unconstrained callers preserve legacy direct-attachment behavior.
+pub(crate) fn browser_matches_required_build(
+    browser: &BrowserProcess,
+    required_build: Option<BrowserBuild>,
+) -> bool {
+    required_build.is_none_or(|required| browser.browser_build == Some(required))
 }
 
 /// Service-owned remote display allocation for a browser workspace.

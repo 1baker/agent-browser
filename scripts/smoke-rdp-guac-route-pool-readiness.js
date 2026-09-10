@@ -657,6 +657,7 @@ function routePoolEntry(connection, index, routeBases, routeReadiness) {
     },
     providerMode: 'simultaneous_view',
     target: {
+      displayAllocationId: `remote-view-display:guacamole-rdp-${label}`,
       hostname: connection.hostname || null,
       port: connection.port || '3389',
       colorDepth: connection.colorDepth || null,

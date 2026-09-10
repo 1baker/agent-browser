@@ -2694,14 +2694,16 @@ mod tests {
         LockedServiceStateRepository<JsonServiceStateStore>,
         RemoteViewAcquisitionLease,
     ) {
-        let path = std::env::temp_dir().join(format!(
-            "agent-browser-handoff-rollback-{}-{}.json",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = std::env::temp_dir()
+            .join(format!(
+                "agent-browser-handoff-rollback-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+            .join("state.json");
         let store = JsonServiceStateStore::new(path.clone());
         store
             .save(&ServiceState {
@@ -3178,7 +3180,7 @@ mod tests {
         let state = store.load().unwrap();
         assert_eq!(state.route_pool["pool-a"].state, "available");
 
-        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -3205,7 +3207,7 @@ mod tests {
         let state = store.load().unwrap();
         assert_eq!(state.display_allocations["display-a"].state, "ready");
 
-        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -3306,7 +3308,7 @@ mod tests {
             Some("https://guac.example/remote-view/job-handoff-a")
         );
 
-        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

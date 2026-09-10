@@ -12,6 +12,7 @@
     "agent-browser": "./bin/agent-browser.js"
   },
   "scripts": {
+    "lint": "eslint eslint.config.js \"scripts/**/*.js\"",
     "version:sync": "node scripts/sync-version.js",
     "version": "npm run version:sync && git add cli/Cargo.toml",
     "validation:select": "node scripts/dev/select-validation.js",
@@ -26,10 +27,30 @@
     "postinstall": "node scripts/postinstall.js",
     "build:dashboard": "cd packages/dashboard && pnpm build",
     "smoke:local-dashboard-runtime": "node scripts/smoke-local-dashboard-runtime.js",
+    "smoke:local-dashboard-retained-browser-preparation-live": "node scripts/smoke-local-dashboard-retained-browser-preparation-live.js",
+    "test:local-dashboard-smoke-policy": "node scripts/test-local-dashboard-smoke-policy.js",
+    "test:local-dashboard-publisher-lifecycle": "node scripts/test-local-dashboard-publisher-lifecycle.js",
+    "test:local-dashboard-publisher-orchestration": "node scripts/test-local-dashboard-publisher-orchestration.js",
+    "test:local-dashboard-retained-browser-guard": "node scripts/test-local-dashboard-retained-browser-guard.js",
+    "test:local-dashboard-retained-browser-live": "node scripts/test-local-dashboard-retained-browser-live.js",
+    "test:local-dashboard-retained-browser-requirement": "node scripts/test-local-dashboard-retained-browser-requirement.js",
+    "test:local-dashboard-retained-browser-discovery": "node scripts/test-local-dashboard-retained-browser-discovery.js",
+    "test:local-dashboard-retained-browser-preparation": "node scripts/test-local-dashboard-retained-browser-preparation.js",
+    "test:local-dashboard-retained-browser-preparation-command": "node scripts/test-local-dashboard-retained-browser-preparation-command.js",
+    "test:local-dashboard-retained-browser-watchdog": "node scripts/test-local-dashboard-retained-browser-watchdog.js",
+    "test:local-dashboard-publication-journal": "node scripts/test-local-dashboard-publication-journal.js",
+    "test:local-dashboard-publication-operations": "node scripts/test-local-dashboard-publication-operations.js",
+    "test:dashboard-publication-status-projection": "node scripts/test-dashboard-publication-status-projection.js",
     "smoke:dashboard-operator-plan0022-live": "node scripts/smoke-dashboard-operator-plan0022-live.js",
     "converge:local-runtime": "node scripts/converge-local-runtime.js",
     "audit:route-handoff": "node scripts/audit-route-handoff.js",
     "publish:local-dashboard": "node scripts/publish-local-dashboard-runtime.js",
+    "status:local-dashboard-publication": "node scripts/publish-local-dashboard-runtime.js --journal-status --json",
+    "check:local-dashboard-retained-browser": "node scripts/check-local-dashboard-retained-browser.js --json",
+    "pin:local-dashboard-retained-browser": "node scripts/publish-local-dashboard-runtime.js --write-retained-requirement --json",
+    "prepare:local-dashboard-retained-browser": "node scripts/prepare-local-dashboard-retained-browser.js --json",
+    "recover:local-dashboard-publication": "node scripts/publish-local-dashboard-runtime.js --recover-only",
+    "test:rust-isolated": "node scripts/run-rust-tests-isolated.js",
     "test:dashboard-trace": "node --no-warnings --experimental-strip-types scripts/test-dashboard-service-trace.js",
     "test:cross-seam-interlocks": "node --no-warnings --experimental-strip-types scripts/test-cross-seam-interlocks.js",
     "test:dashboard-view-streams": "node --no-warnings --experimental-strip-types scripts/test-dashboard-view-streams.js",
@@ -46,8 +67,9 @@
     "test:dashboard-workspace-inspector-tab": "node --no-warnings --experimental-strip-types scripts/test-dashboard-workspace-inspector-tab.js",
     "test:dashboard-browser-row-actions-render": "node --no-warnings --experimental-strip-types scripts/test-dashboard-browser-row-actions-render.js",
     "test:dashboard-workspace-nodes": "node --no-warnings --experimental-strip-types scripts/test-dashboard-workspace-nodes.js",
+    "test:dashboard-task-authorities": "node --no-warnings --experimental-strip-types scripts/test-dashboard-task-authorities.js",
     "test:dashboard-workspace-navigator": "node scripts/test-dashboard-workspace-navigator.js",
-    "test:local-runtime-convergence": "node scripts/test-local-runtime-convergence.js && node scripts/test-local-runtime-convergence-fixture.js",
+    "test:local-runtime-convergence": "node scripts/test-runtime-socket-dir.js && node scripts/test-runtime-daemon-client-binary.js && node scripts/test-prepared-daemon-retirement.js && node scripts/test-runtime-handoff-browser-selection.js && node scripts/test-local-runtime-convergence.js && node scripts/test-local-runtime-convergence-fixture.js",
     "test:runtime-executable-handoff-live": "node scripts/smoke-runtime-executable-handoff.js",
     "test:route-handoff-audit": "node scripts/test-route-handoff-audit.js",
     "test:rdp-route-xsession": "node scripts/test-rdp-route-xsession.js",
@@ -93,6 +115,7 @@
     "test:service-browser-row-remedies-no-launch": "node scripts/smoke-service-browser-row-remedies-no-launch.js",
     "test:service-browser-row-close-live": "node scripts/smoke-service-browser-row-close-live.js",
     "test:service-external-byop-adopt-live": "node scripts/smoke-service-external-byop-adopt-live.js",
+    "test:service-cdp-tab-streaming-fixture": "node scripts/test-smoke-browser-fixture.js",
     "test:service-cdp-tab-streaming-live": "node scripts/smoke-service-cdp-tab-streaming-live.js",
     "test:service-cdp-evaluate-diagnostics-live": "node scripts/smoke-service-cdp-evaluate-diagnostics-live.js",
     "test:service-probe-live": "node scripts/smoke-service-probe-live.js",
@@ -104,6 +127,7 @@
     "test:service-remote-view-control-live": "node --no-warnings --experimental-strip-types scripts/smoke-service-remote-view-control-live.js",
     "test:remote-view-route-preflight-timing": "node scripts/smoke-remote-view-route-preflight-timing.js",
     "test:remote-view-open-live": "node scripts/smoke-remote-view-open-live.js",
+    "test:blocking-safe-fixture-server": "node scripts/test-blocking-safe-fixture-server.js",
     "test:remote-view-live-state": "node scripts/test-remote-view-live-state.js",
     "test:remote-view-open-fixture-live": "node scripts/smoke-remote-view-open-live.js --fixture",
     "test:remote-view-target-attribution-live": "node scripts/smoke-remote-view-target-attribution-live.js",
@@ -164,8 +188,15 @@
     "test:p67-rdp-dashboard-rail-persistence-live": "node scripts/test-p67-rdp-stress-hardening-live.js --mode=dashboard-rail-persistence",
     "test:service-config-live": "node scripts/smoke-service-config.js",
     "test:service-job-naming-live": "node scripts/smoke-service-job-naming.js",
+    "test:electron-relay-lifecycle": "node scripts/test-electron-relay-lifecycle.js",
     "test:windows-browser-setup-powershell-live": "bash scripts/smoke-windows-browser-setup-powershell.sh",
-    "test:wsl-windows-chromium-profile-live": "bash scripts/smoke-wsl-windows-chromium-profile.sh"
+    "test:wsl-windows-chromium-profile-paths": "bash scripts/test-wsl-windows-chromium-profile-paths.sh",
+    "test:wsl-windows-chromium-profile-live": "bash scripts/smoke-wsl-windows-chromium-profile.sh",
+    "test:agentic-research-concierge-live": "node scripts/smoke-agentic-research-concierge-live.js",
+    "test:target-bound-agentic-confirmation-live": "node scripts/smoke-target-bound-agentic-confirmation-live.js",
+    "test:durable-task-authority-live": "node scripts/smoke-durable-task-authority-live.js",
+    "test:broker-task-authority-live": "node scripts/smoke-broker-task-authority-live.js",
+    "test:task-authority-reconciliation-live": "node scripts/smoke-task-authority-reconciliation-live.js"
   },
   "keywords": [
     "browser",
@@ -185,5 +216,9 @@
     "url": "https://github.com/CochranResearchGroup/agent-browser/issues"
   },
   "homepage": "https://agent-browser.dev",
-  "devDependencies": {}
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.9.1",
+    "globals": "^17.11.0"
+  }
 }

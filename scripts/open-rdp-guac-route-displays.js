@@ -69,12 +69,23 @@ function agentBrowserCommand() {
     null;
 }
 
+// The installer binds this identity to its selected executable, independent of
+// the operator's global stealth default. Keep follow-up commands on that build.
+function routeViewerArgs(args) {
+  const build = process.env.AGENT_BROWSER_RDP_ROUTE_VIEWER_BROWSER_BUILD;
+  if (!build) return args;
+  if (!['stock_chrome', 'stealthcdp_chromium', 'cdp_free_headed'].includes(build)) {
+    throw new Error('invalid_route_viewer_browser_build');
+  }
+  return ['--browser-build', build, ...args];
+}
+
 function runAgentBrowser(args, label, options = {}) {
   const command = agentBrowserCommand();
   if (!command) {
     throw new Error('agent_browser_command_missing: install agent-browser or set AGENT_BROWSER_ROUTE_DISPLAY_AGENT_BROWSER_CMD');
   }
-  const result = commandResult(command, args, {
+  const result = commandResult(command, routeViewerArgs(args), {
     timeout: agentBrowserTimeoutMs,
     ...options,
   });
@@ -390,7 +401,7 @@ function navigateRoute(args, label) {
   if (!command) {
     throw new Error('agent_browser_command_missing: install agent-browser or set AGENT_BROWSER_ROUTE_DISPLAY_AGENT_BROWSER_CMD');
   }
-  const result = commandResult(command, args, { timeout: routeNavigationTimeoutMs });
+  const result = commandResult(command, routeViewerArgs(args), { timeout: routeNavigationTimeoutMs });
   if (result.error?.code === 'ETIMEDOUT') return;
   if (result.error) {
     throw new Error(`${label} failed using ${command}\n${result.error.message}`.trim());

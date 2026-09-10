@@ -1,6 +1,7 @@
 use crate::color;
 use crate::connection::{cleanup_stale_files, get_socket_dir};
 use crate::flags::{launch_config_status, Flags};
+use crate::native::publication_status::local_dashboard_publication_status;
 use crate::native::stream::runtime_manifest_json;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -908,13 +909,19 @@ pub fn run_install(with_deps: bool, with_remote_view_privileges: bool) {
     }
 }
 
-/// Inspect the user-scoped command and package binaries without launching a browser.
-pub fn run_install_doctor(flags: &Flags) {
+/// Inspect user-scoped install state without launching a browser. `--compact`
+/// projects the same report into bounded agent-facing JSON.
+pub fn run_install_doctor(flags: &Flags, clean: &[String]) {
     let report = install_doctor_report(flags);
     if flags.json {
+        let output = if clean.iter().any(|arg| arg == "--compact") {
+            install_doctor_compact_report(&report)
+        } else {
+            report.clone()
+        };
         println!(
             "{}",
-            serde_json::to_string_pretty(&report).unwrap_or_else(|_| {
+            serde_json::to_string_pretty(&output).unwrap_or_else(|_| {
                 r#"{"success":false,"error":"Failed to serialize install doctor report"}"#
                     .to_string()
             })
@@ -1007,6 +1014,14 @@ pub fn run_install_doctor(flags: &Flags) {
         report.pointer("/data/liveDashboardRuntime/executable/sha256"),
     );
     print_doctor_field(
+        "dashboard publication action",
+        report.pointer("/data/localDashboardPublication/recommendedAction"),
+    );
+    print_doctor_field(
+        "dashboard publication phase",
+        report.pointer("/data/localDashboardPublication/transaction/phase"),
+    );
+    print_doctor_field(
         "runtime convergence",
         report.pointer("/data/runtimeConvergence/status"),
     );
@@ -1051,6 +1066,74 @@ pub fn run_install_doctor(flags: &Flags) {
     }
 }
 
+fn install_doctor_compact_report(report: &Value) -> Value {
+    let issues = report
+        .pointer("/data/issues")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let compact_issues = issues
+        .iter()
+        .take(20)
+        .map(compact_doctor_issue)
+        .collect::<Vec<_>>();
+    let issue_codes = compact_issues
+        .iter()
+        .filter_map(|issue| issue.get("code").cloned())
+        .collect::<Vec<_>>();
+    let success = report
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    json!({
+        "success": success,
+        "data": {
+            "schemaVersion": "agent-browser.install-doctor-summary.v1",
+            "status": if success { "ready" } else { "needs_attention" },
+            "version": report.pointer("/data/version").cloned().unwrap_or(Value::Null),
+            "readiness": {
+                "launchConfigReady": report.pointer("/data/launchConfig/stealthCdpChromiumReady").cloned().unwrap_or(Value::Null),
+                "serviceReady": report.pointer("/data/service/ready").cloned().unwrap_or(Value::Null),
+                "serviceNoLaunch": report.pointer("/data/service/noLaunch").cloned().unwrap_or(Value::Null),
+                "remoteViewPrivilegesReady": report.pointer("/data/remoteViewPrivileges/ready").cloned().unwrap_or(Value::Null),
+                "liveDashboardReady": report.pointer("/data/liveDashboardRuntime/ready").cloned().unwrap_or(Value::Null),
+                "liveDashboardState": report.pointer("/data/liveDashboardRuntime/state").cloned().unwrap_or(Value::Null),
+                "runtimeConvergence": report.pointer("/data/runtimeConvergence/status").cloned().unwrap_or(Value::Null),
+                "runtimeCount": report.pointer("/data/runtimeInventory/runtimeCount").cloned().unwrap_or(Value::Null),
+                "staleRuntimeCount": report.pointer("/data/runtimeInventory/staleCount").cloned().unwrap_or(Value::Null),
+                "workstationPayloadReady": report.pointer("/data/workstationPayload/ready").cloned().unwrap_or(Value::Null),
+                "workstationPayloadState": report.pointer("/data/workstationPayload/state").cloned().unwrap_or(Value::Null),
+            },
+            "publication": {
+                "recommendedAction": report.pointer("/data/localDashboardPublication/recommendedAction").cloned().unwrap_or(Value::Null),
+                "recoverable": report.pointer("/data/localDashboardPublication/recoverable").cloned().unwrap_or(Value::Null),
+            },
+            "resources": {
+                "candidateCount": report.pointer("/data/serviceResources/candidateCount").cloned().unwrap_or(Value::Null),
+                "readinessImpactingCandidateCount": report.pointer("/data/serviceResources/readinessImpactingCandidates").cloned().unwrap_or(Value::Null),
+            },
+            "issueCount": issues.len(),
+            "issuesOmitted": issues.len().saturating_sub(compact_issues.len()),
+            "issueCodes": issue_codes,
+            "issues": compact_issues,
+        }
+    })
+}
+
+fn compact_doctor_issue(issue: &Value) -> Value {
+    json!({
+        "code": issue.get("code").cloned().unwrap_or(Value::Null),
+        "message": issue.get("message").cloned().unwrap_or(Value::Null),
+        "nextAction": issue.get("nextAction").cloned().unwrap_or(Value::Null),
+        "remedy": {
+            "command": issue.pointer("/remedy/command").cloned().unwrap_or(Value::Null),
+            "requiresInteractiveSudo": issue.pointer("/remedy/requiresInteractiveSudo").cloned().unwrap_or(Value::Null),
+            "requiresExplicitOperatorConfirmation": issue.pointer("/remedy/requiresExplicitOperatorConfirmation").cloned().unwrap_or(Value::Null),
+        }
+    })
+}
+
 fn print_doctor_field(label: &str, value: Option<&serde_json::Value>) {
     let rendered = match value {
         Some(value) if value.is_string() => value.as_str().unwrap_or("").to_string(),
@@ -1076,6 +1159,17 @@ fn install_doctor_report(flags: &Flags) -> serde_json::Value {
     let remote_view_privileges = remote_view_privilege_status();
     install_doctor_trace("dashboard_runtime");
     let dashboard_runtime = runtime_manifest_json();
+    install_doctor_trace("local_dashboard_publication");
+    let local_dashboard_publication =
+        local_dashboard_publication_status().unwrap_or_else(|error| {
+            json!({
+                "schemaVersion": "agent-browser.local-dashboard-publication.v1",
+                "available": false,
+                "recoverable": false,
+                "recommendedAction": "investigate_publication_journal",
+                "error": error,
+            })
+        });
     install_doctor_trace("live_dashboard_runtime");
     let live_dashboard_runtime = live_dashboard_runtime_probe(
         current_executable
@@ -1117,6 +1211,9 @@ fn install_doctor_report(flags: &Flags) -> serde_json::Value {
         runtime_inventory: &runtime_inventory,
         daemon_listener_inventory: &daemon_listener_inventory,
     });
+    issues.extend(local_dashboard_publication_issues(
+        &local_dashboard_publication,
+    ));
     issues.extend(workstation_payload_issues(&workstation_payload));
 
     json!({
@@ -1133,6 +1230,7 @@ fn install_doctor_report(flags: &Flags) -> serde_json::Value {
             "remoteViewPrivileges": remote_view_privileges,
             "dashboardRuntime": dashboard_runtime,
             "liveDashboardRuntime": live_dashboard_runtime,
+            "localDashboardPublication": local_dashboard_publication,
             "runtimeInventory": runtime_inventory,
             "daemonListenerInventory": daemon_listener_inventory,
             "runtimeConvergence": runtime_convergence,
@@ -1140,6 +1238,57 @@ fn install_doctor_report(flags: &Flags) -> serde_json::Value {
             "issues": issues,
         }
     })
+}
+
+fn local_dashboard_publication_issues(status: &Value) -> Vec<Value> {
+    let action = status
+        .get("recommendedAction")
+        .and_then(Value::as_str)
+        .unwrap_or("investigate_publication_journal");
+    match action {
+        "none" => Vec::new(),
+        "wait_for_active_publisher" => vec![json!({
+            "code": "dashboard_publication_active",
+            "message": "a local dashboard publication transaction is currently active",
+            "nextAction": "wait_for_active_publisher",
+            "remedy": {
+                "kind": "operator_command",
+                "command": "pnpm status:local-dashboard-publication",
+                "argv": ["pnpm", "status:local-dashboard-publication"],
+                "requiresInteractiveSudo": false,
+                "why": "Wait for the exact publisher lock owner to finish, then inspect the transaction again."
+            }
+        })],
+        "recover_only" => vec![json!({
+            "code": "dashboard_publication_recovery_required",
+            "message": "an incomplete local dashboard publication has verified evidence and requires explicit recovery",
+            "nextAction": "recover_only",
+            "remedy": {
+                "kind": "operator_command",
+                "command": "pnpm recover:local-dashboard-publication",
+                "argv": ["pnpm", "recover:local-dashboard-publication"],
+                "requiresInteractiveSudo": false,
+                "requiresExplicitOperatorConfirmation": true,
+                "why": "Review the bounded transaction and artifact evidence before explicitly authorizing recovery-only."
+            }
+        })],
+        "investigate_installed_artifact" => vec![json!({
+            "code": "dashboard_publication_artifact_unverified",
+            "message": "an incomplete local dashboard publication references installed bytes that do not match verified transaction evidence",
+            "nextAction": "investigate_installed_artifact"
+        })],
+        "investigate_retained_browser" => vec![json!({
+            "code": "dashboard_publication_retained_browser_unverified",
+            "message": "a terminal local dashboard publication lacks final exact retained-browser verification",
+            "nextAction": "investigate_retained_browser"
+        })],
+        _ => vec![json!({
+            "code": "dashboard_publication_status_unreadable",
+            "message": "the local dashboard publication journal could not be safely inspected",
+            "nextAction": "investigate_publication_journal",
+            "detail": status.get("error").cloned().unwrap_or(Value::Null)
+        })],
+    }
 }
 
 fn workstation_payload_status() -> serde_json::Value {
@@ -3539,6 +3688,49 @@ mod tests {
     use tokio::net::TcpListener;
     use zip::write::SimpleFileOptions;
 
+    #[test]
+    fn compact_install_doctor_report_is_bounded_and_preserves_remedies() {
+        let issues = (0..25)
+            .map(|index| {
+                json!({
+                    "code": format!("issue_{index}"),
+                    "message": "repairable drift",
+                    "nextAction": "repair_runtime",
+                    "remedy": {
+                        "command": "agent-browser repair",
+                        "requiresInteractiveSudo": false,
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        let report = json!({
+            "success": false,
+            "data": {
+                "version": "0.28.0",
+                "currentExecutable": { "path": "/private/path", "sha256": "secret-detail" },
+                "runtimeInventory": { "runtimeCount": 3, "staleCount": 1 },
+                "runtimeConvergence": { "status": "stale" },
+                "workstationPayload": { "ready": true, "state": "installed" },
+                "issues": issues,
+            },
+        });
+
+        let compact = install_doctor_compact_report(&report);
+
+        assert_eq!(compact["success"], false);
+        assert_eq!(compact["data"]["issueCount"], 25);
+        assert_eq!(compact["data"]["issuesOmitted"], 5);
+        assert_eq!(compact["data"]["issues"].as_array().unwrap().len(), 20);
+        assert_eq!(
+            compact["data"]["issues"][0]["remedy"]["command"],
+            "agent-browser repair"
+        );
+        let serialized = serde_json::to_string(&compact).unwrap();
+        assert!(!serialized.contains("currentExecutable"));
+        assert!(!serialized.contains("secret-detail"));
+        assert!(serialized.len() < 8_000);
+    }
+
     fn http_response(status: u16, reason: &str, body: &[u8]) -> Vec<u8> {
         let header = format!(
             "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -3688,6 +3880,47 @@ mod tests {
             .unwrap()
             .iter()
             .any(|feature| feature == "workspace.noRetainedLiveRail"));
+    }
+
+    #[test]
+    fn install_doctor_publication_recovery_requires_explicit_operator_command() {
+        let issues = local_dashboard_publication_issues(&json!({
+            "recommendedAction": "recover_only",
+            "recoverable": true,
+        }));
+
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0]["code"], "dashboard_publication_recovery_required");
+        assert_eq!(
+            issues[0]["remedy"]["command"],
+            "pnpm recover:local-dashboard-publication"
+        );
+        assert_eq!(
+            issues[0]["remedy"]["requiresExplicitOperatorConfirmation"],
+            true
+        );
+    }
+
+    #[test]
+    fn install_doctor_publication_none_is_not_install_drift() {
+        assert!(local_dashboard_publication_issues(&json!({
+            "recommendedAction": "none",
+            "recoverable": false,
+        }))
+        .is_empty());
+    }
+
+    #[test]
+    fn install_doctor_publication_retained_browser_gap_is_distinct() {
+        let issues = local_dashboard_publication_issues(&json!({
+            "recommendedAction": "investigate_retained_browser"
+        }));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(
+            issues[0]["code"],
+            "dashboard_publication_retained_browser_unverified"
+        );
+        assert_eq!(issues[0]["nextAction"], "investigate_retained_browser");
     }
 
     #[test]

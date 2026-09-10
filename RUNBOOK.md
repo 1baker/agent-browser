@@ -4,6 +4,2206 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## 2026-09-10 | Scoped private coordinator publication
+
+This checkpoint publishes the disabled private controller, coordinator, recovery
+and delivery source lane only. Retained-browser provenance, installer changes,
+temporary RDP work and their implementation changes remain outside this commit.
+Plan history mentioning those local experiments is not publication evidence.
+The Python integration still depends on unpublished credential-consumer changes
+in the separate LitScout checkout. This is not a standalone deployable release
+or permission to activate renewal. No live recipe has been approved or executed.
+
+Publication scope was independently inspected by `/root/publication_scope`
+(read-only, completed). Primary accepted the dependency and mixed-hunk mapping,
+and materialized the staged snapshot separately for clean-slice validation.
+
+Primary clean-slice checks: Rust format and Clippy passed; private-filter tests
+passed 115 with 16 ignored; all nine explicitly enabled private-journey tests
+passed, including connected coordinator delivery and process-death recovery.
+The working checkout's ESLint, service-client typecheck and docs build passed.
+Python coordinator tests passed 12 and controller integration passed five using
+the explicit local LitScout dependency and development test binary. Initial
+invocations missing that Python path or binary setting failed during setup;
+the corrected runs passed. Plan audit reported no problems but applicable=false.
+Added-line credential-pattern scan found zero matches; it is not a complete
+secret audit. Staged whitespace validation passed.
+
+Read-only recipe preflight selected litscout-sam-linux but returned zero
+compatible live browsers, active_profile_lease_conflict and
+retained_browser_build_mismatch_or_missing_proof. It provided no reusable
+browser/session route. No queued tab request, CDP attach, credential retrieval,
+login, renewal, or executable recipe provisioning followed that refusal.
+
+## 2026-09-10 | Executing coordinator and protected activation boundary
+
+Added `private_coordinator.rs`, daemon startup integration, a read-only private
+worker preflight, secure independent authority loading and duplex private ingress.
+Added fixed `private-renewal-coordinator.py` provisioning/execution adapter and
+offline tests. Updated help, README, bundled skill and security docs for the
+opt-in root setting. The existing binding-only controller stays separate.
+
+Private readiness is authenticated only after fresh daemon-owned broker/page
+validation. The recipe comes from a separate immutable authority record, not
+the incoming operations. A single consumed plan flows through binding, exact
+private execution, verified cleanup and guarded installation acknowledgement.
+Source refetch gets a bounded 60-second duplex-ingress window; an accepted
+review finding corrected the original five-second mismatch. Primary ran the
+synthetic connected coordinator test with a real 5.1-second ingress delay:
+one attach/login/backup/renew/read/sanitize/detach, delivery ACK, retained target
+preserved, public observation still locked and second binding claim rejected.
+
+Focused receipts: three coordinator Rust tests passed; 12 Python coordinator
+tests and six existing source-adapter tests passed; Python compilation passed.
+All nine explicitly enabled isolated private-journey tests passed in 7.39
+seconds. Format, Clippy, development build, ESLint, service-client typecheck and
+docs build passed. Planning audit has no problems but is not applicable to the
+repo's adopted contracts. CodeGraph refreshed; diff whitespace checks passed.
+
+Initial widened native run had 1,240 passes, 72 ignored and one failure:
+`private_recovery_reconnects_only_to_bound_endpoint_without_public_output`
+reported `privacy_gate_locked`. It passed alone in a new isolated test root.
+Endpoint/port reuse between persistent test gates is a possible cause, not a
+confirmed live defect. No production gate was removed or relaxed; final widened
+rerun evidence follows below.
+
+Final widened rerun: 1,241 passed, zero failed, 72 ignored in 58.07 seconds.
+The isolated private-recovery case also passed independently. Its initial
+failure remains documented rather than being described as a fixed production
+bug; no lasting change was made to the CDP recovery implementation or its test.
+
+Independent delegates: `/root/coordinator_adapter` implementation complete;
+`/root/coordinator_review` read-only review complete, accepted timeout finding
+closed after source inspection. The primary reran the tests; no delegate
+performed live browser, network, secret, or GitHub operations.
+
+Live metadata-only check at `/home/bak3r/.agent-browser/private-controller`:
+root and `controller.sock` exist; `execution.json` and `executor.sock` do not.
+This is the concrete activation prerequisite, not authority to synthesize a
+production recipe. No runtime installation, setting activation, browser change,
+credential retrieval, login, backup-code consumption or SAM renewal occurred.
+Retain the existing sessions and obtain/provision the reviewed exact live
+recipe and plan before enabling the scoped daemon executor.
+
+Coordinator source SHA256:
+`544df5480412b9bb414fdb3abf5e69acfbc17ef7a6c8dfc8938df7197d818e7a`.
+Python adapter SHA256:
+`efd4f64585c74d00b9249c9164b1fc3df39f3e589f92d80e7e98592c62fb15e4`.
+Uninstalled development binary SHA256:
+`2ad1849473e0c099aa446462b38d2c0c7cd1f5c3ed00bea391477b40c54cc8fb`.
+
+## 2026-09-10 | Protected SAM result delivery implementation
+
+Added ABPD1 private result delivery from a typed bound/reconciled journey and a
+matching internal LitScout consumer. Receiver-ready and installation-ACK MACs
+are domain-separated and plan/frame-bound. Result admission and installation
+reservation each precede their side effect; uncertain outcomes cannot replay.
+The guarded installer checks authority immediately before atomic replacement.
+No plaintext key enters an ordinary browser job result or public command.
+
+Initial validation: three Rust transport tests passed; the explicitly enabled
+isolated bound-ingress/CDP-worker/reconciliation/delivery regression passed;
+1,238 widened native tests passed with 70 ignored. Clippy, development build,
+ESLint and service-client typecheck passed. Planning audit returned no problems
+but `applicable:false`, not plan-acceptance evidence. Touched Rust formatting and
+diff checks passed. Whole-repository format checking found an existing unrelated
+line-wrap difference in `cli/src/workstation_install.rs`, left unchanged.
+
+Delegated consumer implementation and independent source review were scoped to
+offline work. Accepted DR-1 (expiry at commit) and DR-2 (receiver authentication)
+were fixed; reviewer reported no remaining blocking source findings. Primary
+cross-language and final Python validation receipts follow below.
+
+Fresh installed workstation dry-run returned `mutated:false`, retained
+requirement verified, `ready:false`, substrate preparation required. This
+supersedes the earlier missing-retained-browser refusal but does not authorize
+an arbitrary runtime replacement or demonstrate private renewal readiness.
+The installed probe/bind controller has no executing coordinator route to this
+new internal capability, so renewal was not enabled and no live key was touched.
+
+Final primary verification: the explicit isolated
+`private_delivery_rust_to_litscout_guarded_install` test passed (1.78 seconds).
+The Rust producer spoke ABPD1 to the real Python consumer, which used temporary
+approval/installation DB records, the fixed validator with mock HTTP and the
+real guarded atomic installer, then returned the verified ACK. This complements
+the separate typed broker-journey/CDP-cleanup test; it is not a live combined
+Slack/browser renewal. The primary widened Python run passed 119 tests in
+72.83 seconds; an added ACK-loss regression is covered by the final delivery
+rerun. Delegated combined consumer/approval checks passed 120 tests separately.
+The final primary delivery rerun passed all 40 tests in 27.73 seconds, including
+ACK loss after durable installation; Python compilation also passed.
+
+Source SHA256: Rust `private_delivery.rs`
+`437fecc4da56620936b02389a56d9e9b06c4ab0a2e42e6f23250750630e52aa6`;
+Python `credential_delivery.py`
+`f75dcafefbf20b5f9225c4bc7ffa82fc9314682d69adc7ede225e6850eb562fe`.
+Uninstalled development binary SHA256:
+`db99e4a7ae9aa3ca438161c412cd6bc359380aa94ab1f9451c9d589a4fe21485`.
+
+Test isolation caveat: early delegated mock-provider tests did not redirect
+SAM quota bookkeeping and may have incremented the local counter (approximately
+eight validations; exact delta unverified). No live HTTP occurred and no quota
+history was reset. All final delivery tests and the interoperability helper now
+redirect both quota path and cached state to their temporary fixture.
+
+## 2026-09-09 | Plan 0130 production handoff boundary assessment
+
+Read-only source assessment confirmed that the bound executor has test callers
+only. The saved browser binding does not supply `PrivateHandoffAuthority`.
+LitScout's approval manifest identifies the account, renewal action, entry URL
+and installation destination, but does not specify the four-stage approved page
+sequence consumed by that authority. `reserve_credential_installation` still
+rejects `authentication_executor_required`; deleting that guard would not prove
+protected delivery or consumer activation.
+
+Production activation remains blocked. Next acceptance packet must establish a
+reviewed account/page/action recipe, carry the existing one-shot approval through
+protected dispatch without reclaiming it, and deliver the reconciled result to
+the approved installer with an authenticated, one-shot completion receipt.
+Missing or changed authority and ambiguous delivery must remain fail-closed.
+Do not fabricate page selectors, enable renewal, or reuse a consumed plan.
+
+Delegation: `spawned`, `/root/handoff_boundary_check`, read-only three-boundary
+review completed. Primary independently inspected the cited code and accepted
+its production-blocked conclusion. CodeGraph skill guided callers inspection;
+direct reads covered Python approval policy and Rust authority fields. The
+unavailable graphiti-discovery skill was replaced by read-only local retrieval.
+
+Primary reran `scripts/test-private-controller-integration.py`: five tests passed
+using the existing debug binary with SHA-256
+`90538cc4ca791fd3627ca0f40a32d26c264ca71e084126bedb2491c0ea111531`.
+These are synthetic socket/binding tests, not production handoff or installation
+proof. No implementation changes, rebuild, installed-service changes, credential
+access, browser actions, Pro submissions or GitHub writes occurred. Existing
+dirty changes were preserved. Only this execution receipt and Plan 0130 changed.
+
+## 2026-09-09 | Plan 0130 stored binding to internal executor
+
+Added `cli/src/native/private_bound_execution.rs`; updated
+`private_handoff.rs`, `control_plane.rs`, `control_plane_private_tests.rs`,
+`private_journey.rs`, test-only socket support in `private_controller_socket.rs`,
+and `native/mod.rs`. Plan 0130 records the internal-only scope. No LitScout,
+public service contract, installed unit, authentication key or live runtime changed.
+
+The additional gate validates the immutable plan bookmark, strict saved binding,
+exact digest/profile/browser/session/target, all four staged operations, expiry
+ceiling and distinct stores. Admission is durable before returning the move-only
+queue token. Reopened and repeated claims fail. Worker dequeue checks the binding
+against actual endpoint/session before the existing controller and journey gates.
+`submit_bound_private` is the production internal entry; legacy unbound submission
+is now test-only. Existing independent handoff approval remains mandatory; stored
+binding metadata never grants account/origin/action authority by itself.
+
+The new Linux synthetic test sends an authenticated binding through the actual
+ABPC1 handler, persists it, refuses a second claim, then uses the bound worker
+for the single synthetic attach/login/backup/renew/read/sanitize/detach sequence
+and reconciliation. It preserves observation closure. Queue-full/closed,
+cancellation and expiration fixtures now use consumed bindings. Negative cases
+reject staged-operation mismatch, wrong digest/endpoint/session, expired or
+too-short bindings, and aliased stores before admission. Synthetic retained IDs
+were adjusted to the socket's 32-uppercase-hex schema; no real target changed.
+
+Delegation: `spawned`, `/root/binding_execution_gate` owned only the new module;
+primary read the complete implementation and independently ran isolated tests.
+The agent initially ran two pure parser tests through direct Cargo; this was
+corrected to the isolated-runner convention and is not the accepted validation
+basis. No filesystem/runtime fixture ran in that direct invocation.
+Fresh `/root/bound_executor_review` returned no blocking implementation findings.
+Primary accepted that disposition, then filled its nonblocking operation-mismatch,
+expiry-ceiling and alias coverage gaps. A dedicated actual-worker endpoint/session
+drift fixture remains nonblocking backlog; source ordering and pure drift checks
+were reviewed. CodeGraph skill guided callers inspection and index refresh;
+direct reads covered changed bodies. The unavailable graphiti-discovery skill
+was replaced by a read-only local context query, not a provider submission.
+
+Primary validation: focused private suite 78 passed, nine ignored; explicit
+journey suite eight passed; bound queue/negative suite four passed; widened
+isolated native suite 1,228 passed, 71 ignored. Rust format, clippy with warnings
+denied, service-client typecheck, ESLint and docs build passed. Docs retain the
+existing multiple-lockfile warning. Planning audit had no problems but
+`applicable: false`; diff check and native build passed.
+
+Source SHA-256: new gate
+`49de4f2e5373e05cc1a85c0a9742f73d808fdf02bfb7dc1e91dab37b6c67eab7`;
+handoff `be34b892ab585fec0ddfc9281932f31ec16342543af91bb0cfed1996b3039507`;
+worker `1a602ce15d01cd117cb5204966838e28eb3d5f21a5f1d11f3186df55117ad67f`;
+queue tests `cefdad3161da006f85748bc835571103a28eb520cefe3f57a2232bbb631397c5`;
+journey `2893d166ebc2074eadc34ed5c44939a47621a1b6e52fc0a36ee8954d1e6aebd8`;
+socket test seam `556bf9910491cc99ffd981821101f440dcd490a56bf75076d100a5f0824e8604`;
+module registry `b677aed71bec6d96a8d82dc2a939862139bf0a9d29d0f4956eeac02361865a5e`.
+
+No live approval, secret use, browser actions, installation/restart, Pro prompts
+or GitHub writes. Dirty worktrees preserved. Next: protected production caller
+for independent account/page/action authority and private material delivery,
+followed by guarded consumer delivery proof. The installed socket remains
+binding-only; internal source integration does not enable live renewal.
+
+## 2026-09-09 | Plan 0130 authenticated local controller installed
+
+User explicitly authorized a same-user Unix socket and separate authentication
+key. Added `cli/src/native/private_controller_socket.rs`, early isolated routing
+in `cli/src/main.rs`, registration in `native/mod.rs`, the Python
+`scripts/private-controller-client.py`, adapter `bind_approved_controller` in
+`scripts/private-sam-discovery.py`, cross-language
+`scripts/test-private-controller-integration.py`, and
+`scripts/agent-browser-private-controller.service`. Updated output help, README,
+skill instructions, security MDX and Plan 0130 in the same slice. No LitScout
+source edits were needed: its existing durable claim API is reused.
+
+The Linux-only service accepts authenticated probe/bind messages only. Same-UID
+checks, fresh challenge, domain-separated request/response HMAC, strict JSON,
+16 KiB cap, five-second deadline and mandatory EOF precede dispatch. Random
+key creation uses mode 0600 and durability sync under a mode-0700 root; unsafe
+or missing keys in a used root are never repaired/rotated. Bindings are encrypted
+and immutable per plan ID, including changed-digest attempts. The Python adapter
+checks exact approved manifest digest and retained profile/browser/session/target
+and ready state after LitScout's one-shot claim. The trusted caller supplies
+the broker-resolved endpoint; key possession is not independent browser proof.
+
+Binding metadata is not a credential payload, execution permit, recovery result,
+authentication verdict or renewal receipt. The new socket has no route into
+browser actions or the typed private journey/recovery worker. A lost response
+leaves approval consumed and cannot authorize replay. Live renewal remains off.
+
+Delegation: `spawned`, `/root/local_controller_transport` implemented only the
+Rust transport and four tests. Primary read its complete source and independently
+ran all accepted tests. Fresh read-only `/root/controller_socket_audit` reported
+no blocking findings. Its nonblocking misleading test-name observation was
+resolved by naming the test for second-server refusal, not server restart;
+Rust separately reopens the store to verify immutable bindings survive reopen.
+CodeGraph skill guided integration queries and was refreshed after edits. The
+unavailable graphiti-discovery skill was replaced with a local read-only context
+query, without provider submission or extracted-authority assumptions.
+
+Primary tests: four transport unit tests passed; widened isolated native suite
+1,226 passed, 69 ignored. Five real Python/Rust socket tests passed, including
+captured-frame replay refusal, duplicate server/binding refusal, insecure key
+refusal, and a synthetic LitScout claim committed before the socket opens.
+The latter also rejects wrong retained identity without socket dispatch. Existing
+private SAM adapter tests: six passed. LitScout broker/discovery/approval tests:
+42 passed. Explicit isolated journey regressions: seven passed.
+Rust format/clippy with warnings denied, native build, service-client typecheck,
+ESLint and docs build passed. Existing docs multiple-lockfile warning remains.
+Planning audit had no problems but `applicable: false`. Diff check passed.
+
+Installed a separate binary, without replacing the normal agent-browser runtime:
+`~/.local/lib/agent-browser-private-controller/20260909-v1/agent-browser`.
+Installed SHA-256 matches the tested build:
+`f7bab851b2b58c305b71d50940e2815c30574a4a5fa7a97105aba7e5bdbfd13d`.
+Created and validated the new key privately under
+`~/.agent-browser/private-controller/authentication.key`; no value or digest of
+the key was printed. Verified root/key/socket permissions 0700/0600/0600 and
+key size 32 bytes. Installed the matching user unit, verified its syntax after
+binary installation, then enabled/started it. `ActiveState=active`,
+`SubState=running`, `ExecMainStatus=0`, `UnitFileState=enabled`, `LimitCORE=0`,
+`RestrictAddressFamilies=AF_UNIX`, `Restart=no`. A live authenticated Python probe
+returned exactly `success: true, renewalEnabled: false`. No live plan was bound.
+The user service manager was already degraded before this installation; this is
+component-level verification, not a whole-workstation health claim.
+
+An existing socket is never unlinked on startup. An unclean stop can leave one
+that requires explicit ownership diagnosis before restart; automatic restart is
+disabled to avoid repeated failures or takeover. No browser sessions, helper
+tmux tabs, real Slack discovery, passwords, MFA, keys for external services,
+ChatGPT prompts or GitHub writes occurred. Dirty worktrees remain preserved.
+
+Source SHA-256: transport
+`ab386b5a80a0e0efc39cf5433cd41b25a29c2cac2f63f6e3c9a57d5b84224834`;
+client `519ddd1497473b81a311fce036e7f07a6609bcf1639440e068a8f8c0467f2759`;
+adapter `f1de0e1b325fadb7a259ac625bbd5077f665071cbe32f2ccd963c0b1cd0953b8`;
+integration tests `6ec4754bdf3bbb963d57903da8af23e441b7ef1552a739184acbe3c4cde4f8ab`;
+unit `e1f1157fc8986cdab9ca72659e91b20c8b485886fb5f5bd781b9fcc735531ac1`.
+
+Next: consume the persisted approved binding inside the typed private
+journey/recovery coordinator, with synthetic end-to-end proof before live use.
+Do not treat the installed binding service as enabling that coordinator.
+
+## 2026-09-09 | Plan 0130 durable controller handoff
+
+Implemented source-only controller retention and offline restart dispatch in
+new `cli/src/native/private_controller.rs`. Updated `private_journey.rs`,
+`control_plane.rs`, `control_plane_private_tests.rs`, `private_secret_store.rs`
+and `native/mod.rs`; governing scope is in Plan 0130's latest section. Existing
+recovery and unrelated dirty RDP/installer changes remain preserved.
+
+The typed private worker requires independently pinned controller endpoint and
+session, checked before journey execution. Reconciliation repeats scope checks,
+stages and bookmarks the exact intent, then requires immutable encrypted
+controller retention before admission. Authority and operation stores cannot
+alias by anchored device/inode, including separate opens. The offline dispatcher
+uses the saved authority digest/reference, not a digest minted from the examined
+intent during restart. Errors never retry browser actions or unlock privacy.
+
+The real SIGKILL fixture now recovers from the controller journal. Test handoff
+metadata contains only epoch/endpoint, not a digest. Six phases cover prepared
+intent, retained authority, admitted intent, broker commit, daemon update and
+completion commit. The first two must refuse recovery with unchanged broker
+state; the latter four recover twice while observation remains closed and the
+single synthetic attach/login/backup/renew/read/sanitize/detach sequence stays
+unchanged. A new private-worker fixture rejects wrong endpoint, wrong session
+and aliased journals before any CDP command; all three record zero commands.
+These are synthetic peers, not live browser or installed-service acceptance.
+
+Delegation: `spawned`, `/root/controller_boundary_review` assessed the missing
+producer then implemented only the controller module and four pure tests.
+Primary inspected its full source and independently ran all accepted tests.
+Fresh read-only `/root/controller_integration_audit` returned no blocking
+findings for the frozen source-only contract; primary accepted that disposition.
+No delegated validation result was substituted for primary test execution.
+CodeGraph skill guided call-path inspection and was refreshed after edits;
+exact source reads covered implementation bodies. The unavailable
+graphiti-discovery skill was replaced with a read-only local context query;
+its unrelated AuraCall excerpt supplied no implementation authority.
+
+Primary validation: focused private tests 72 passed, seven ignored; final
+explicit ignored journey suite seven passed, private queue suite three passed;
+isolated widened native suite 1,222 passed, 69 ignored. Rust format and clippy
+with warnings denied, service-client typecheck, ESLint and docs build passed.
+Docs retained the pre-existing multiple-lockfile warning. Planning audit returned
+no problems with `applicable: false`, not full planning-contract coverage.
+Native build and final diff check passed.
+
+Source SHA-256: `private_controller.rs`
+`51b1aae8735e86d61d25b0e426ca58b3d1a4dc540cfa70a248f3987a118a81d5`;
+`private_journey.rs`
+`65cbc803ecf1972a3b5dab38e4d4c64abc1f263cc5777cf625957d6bedfd6040`;
+`private_secret_store.rs`
+`e99ed86724e909490980742b007a566b2a64bbf16e54577ec9ce54f57dd77c75`;
+`control_plane.rs`
+`6e6941094f9d2bbe4724f2712b728fa225ad62b61262d274b578aebf73993fb2`;
+`control_plane_private_tests.rs`
+`6905665b89b968f3c66b4665eb1ac28b950b9406a5ea6d28478f706cfb157ce4`;
+`native/mod.rs`
+`c99bc81297472f96e098a9cc1844a57338743580ae825a80be7290d72e3f704d`.
+
+No credentials, live browser actions, Pro prompts, installation, GitHub writes,
+privacy release or renewal enablement. Concrete remaining deployment blocker:
+no installed trusted producer connects an approved LitScout plan to controller
+provisioning and restart lookup. Next recommendation is that bounded producer
+integration with synthetic end-to-end acceptance before any live activation.
+
+## 2026-09-09 | Plan 0130 actual process-death recovery
+
+Added `cli/src/native/private_recovery.rs`, registered in `native/mod.rs`.
+`private_journey.rs` now records admitted v2 intents with verified detach
+references; `private_attachment.rs` provides that opaque reference; and
+`private_secret_store.rs` persists an immutable encrypted epoch bookmark.
+Updated Plan 0130 with exact scope and production-controller prerequisites.
+
+Recovery is offline broker-record repair, not browser attachment. It verifies
+the independent controller digest/endpoint/epoch/session, immutable bookmark,
+stage-3 scope, original read operation and encrypted result, complete owned
+attachment/detach receipt chain, and exact pre/post broker identity. Repeated
+recovery preserves the existing completion result; wrong/mixed/expired state
+fails closed. The returned internal object retains the private permit and has
+no key accessor or public serialization. Older v1 intents and crashes before
+durable admission remain outside this bounded recovery path.
+
+`/root/durable_recovery` implemented only the recovery module and pure tests.
+Primary reviewed the full implementation, corrected post-state handle checks
+for normal derived-handle rebuilding, and independently tested integration.
+Fresh read-only `/root/restart_recovery_review` reported no blocking findings.
+Its authority-delivery caveat remains explicit: the synthetic handoff file is
+not a production trusted-controller integration.
+
+The parent fixture kills only its own isolated synthetic child with SIGKILL at
+four points: admitted intent, committed broker, updated daemon metadata, and
+committed completion. A fresh process recovers twice per phase, keeps observation
+locked, preserves the retained target record and fixed single-dispatch action
+counts, and rejects changed authority, alternate intent reference, profile,
+session, target, URL and expired lease. No destructor-only simulated restart is
+used. The synthetic CDP peer does not model a surviving real Chrome process.
+The child entrypoint requires parent-supplied isolated test state; exclude it
+with `--skip reconciliation_crash_child` in direct ignored journey-suite runs.
+
+Primary final validation: isolated native suite 1,218 passed, 68 ignored;
+explicit ignored journey suite six passed (including the four-crash parent),
+and private queue suite three passed. Earlier focused private run: 67 passed,
+seven ignored; the later immutable-bookmark test is included in the widened
+suite. Native build, Rust format/clippy with warnings denied, service-client
+typecheck, ESLint, docs build and diff check passed. Docs retain the pre-existing
+multiple-lockfile warning. Audit reported no problems but `applicable: false`.
+CodeGraph refreshed. Initial test-only missing-tempfile dependency and misplaced
+match-arm compilation errors were corrected before the accepted final runs;
+no dependency or production validation bypass was added.
+
+Source SHA-256: `private_recovery.rs`
+`24316fd4002438e9a5b5975f4fd84cf18aff43a1575cc2badaa238174fe69a8a`;
+`private_journey.rs`
+`e505c0f9dcfb9217268ab6e6a9fb9f3e58b52cb68384e60cb69155206dc1e90c`;
+`private_secret_store.rs`
+`73fe5a678160700874283341629167625836365e8e554be7825808672fc119e7`;
+`private_attachment.rs`
+`31c29a7d6262ef7780476fe108eec3f8e780f796e0428f3f3d2608fdf67aa8e5`;
+`native/mod.rs`
+`24626a324ecd30ce491f3a5d6fbb6f98e81595c4911d0dd89530dec8e2ca64e8`.
+
+No real credentials, live browser actions, installed runtime changes, Pro prompts,
+GitHub writes or privacy release. Dirty semantic and unrelated RDP/installer work
+preserved. Next: trusted-controller durable authority handoff and restart dispatch;
+fresh private browser verification, guarded consumer key delivery and live renewal
+remain separate gates.
+
+## 2026-09-09 | Plan 0130 post-cleanup reconciliation
+
+Implemented the internal success-path reconciliation seam in
+`cli/src/native/private_journey.rs` and the typed worker response in
+`cli/src/native/control_plane.rs`. `private_broker.rs` exposes its existing
+snapshot validator internally; no validation rules were relaxed.
+`private_attachment.rs` verifies completed detach against the closed transport
+and encrypted acknowledgment without a second detach. `service_store.rs` adds
+a private nonblocking durable mutation path while leaving ordinary writes intact.
+Plan 0130 now records implemented behavior and the separate restart-recovery gate.
+
+The coordinator admits an encrypted reconciliation intent, compares exact old
+authority under broker locks, marks the retained browser connection disconnected,
+clears stale target metadata/references, sanitizes local cached metadata, then
+commits its private completion record. It keeps the manager, retained browser,
+original target, and closed privacy authority; no browser launch/close, public
+completion, key delivery or privacy release occurs. The broker's post-cleanup
+URL is historical sanitation evidence, not a fresh observation after closure.
+
+Delegation: `/root/closed_detach_proof` implemented only attachment verification
+and tests; `/root/durable_reconcile_store` implemented only the repository method
+and tests. Primary inspected both diffs and ran validation independently.
+Fresh read-only evaluator `/root/reconcile_review` returned no blocking findings
+within the frozen slice. Its caveat is retained: checkpoint failures simulate
+in-process interruption, not subprocess crash/restart recovery. No reviewer
+summary substitutes for primary execution evidence.
+
+Primary focused results: 64 private tests passed, five ignored. Explicit isolated
+journey fixtures: five passed, including actual socket-to-worker reconciliation,
+post-login cancellation, changed profile/session/target/URL/lease refusal, and
+failure after intent admission, broker persistence and daemon metadata update.
+Explicit isolated private durable-store fixture: one passed, covering lock
+contention, successful persistence, rejected mutation, uncertain write and invalid
+state. The attachment tests include foreign client/epoch/proof, bad/missing
+receipts and unfinished detach rejection, plus repeated read-only verification.
+The three isolated private-queue regressions also passed explicitly, for nine
+separately executed ignored fixtures in this slice.
+
+Rust format and clippy with warnings denied, service-client typecheck, ESLint,
+and docs build passed. Docs retain the existing multiple-lockfile warning.
+Plan audit returned no problems but remains `applicable: false`. CodeGraph was
+refreshed. Final isolated native suite: 1,214 passed, 66 ignored. Native build
+and whitespace checks passed. Ignored live-browser E2E tests were not run.
+
+Source SHA-256: `private_journey.rs`
+`d93c0139ea6a0ea29e920772a98fbfcb5f022ad693aec80ad141e3478fc0ff71`;
+`private_attachment.rs`
+`8599f7f6e7a8382886d8078f8e2a54070a30ac286aae19844baadeb0dce2fa78`;
+`private_broker.rs`
+`5f509759d4a4223a03bcdaa5580389060dce5aafa93b053f7ce590c44d385d47`;
+`control_plane.rs`
+`4c9e7a2bb6457c41d8616f12798652179025fdbf588771104a98dcf468b77217`;
+`service_store.rs`
+`e7afbd8ef91f66e9d76d2e32a2c4ab27c53c8801348239bf1f465848906e8960`.
+
+No real credentials, browser operations, installed-runtime changes, Pro prompts
+or GitHub writes. Existing dirty RDP/installer changes preserved. Next: durable
+intent recovery under actual subprocess restart, without replay or unlock.
+Trusted consent production and guarded consumer installation/probe remain later
+deployment gates; this slice does not enable renewal.
+
+## 2026-09-09 | Push-protection fixture remediation
+
+GitHub rejected the first private-broker checkpoint because three explicitly
+synthetic test strings nevertheless matched Slack's token format. User approved
+replacing the fixtures and amending the unpublished commit. Replaced them with
+inert non-token placeholders in the three private Python test files; tests mock
+only token acceptance for their offline transport, storage and PTY scenarios.
+Production validation is unchanged. A separate unmocked regression proves the
+placeholder and malformed values are rejected before network access.
+
+Primary reran bootstrap, discovery and cross-repo adapter suites: 13, 17 and 6
+passed. The PTY echo-suppression test still runs against a real synthetic terminal.
+Only tests and this receipt changed since the prior validated source checkpoint;
+no Rust or installed runtime changed. Preserve the prior Rust validation receipt
+rather than implying a fresh Rust run. No secret-scanning exemption, allow URL,
+force push or repository-rule change is authorized or used. Amend only the local
+unpublished checkpoint, then retry the existing personal branch. Other dirty
+RDP/installer work remains excluded. This bounded test-only correction stayed
+local because delegation would duplicate its short validation path.
+
+## 2026-09-09 | Private broker publication checkpoint
+
+User requested personal GitHub publication and a next-step recommendation.
+Selected `1baker/agent-browser`, existing
+`agent/wsl-windows-chromium-paths` branch, through the verified personal helper
+route. Staged only Plan 0130 private broker code, prerequisites, local Slack
+helpers and matching documentation. RDP, installer and retained-URL changes
+remain unstaged and preserved. This is a disabled-runtime source checkpoint,
+not a release, installation or enabled renewal.
+
+Validated an index-only exported snapshot (source tree
+`a52ca22bdf9709c79daa358874a1fc7ce529dd69`, before this documentation receipt
+and next-slice note): 1,211 native tests passed, 63 ignored; all six private
+isolated fixtures explicitly passed separately. The difference from the prior
+1,212 count is the excluded unrelated retained-URL test. Rust format and
+clippy with warnings denied and native build passed. Python bootstrap/discovery/adapter suites
+passed 12, 17 and 6 tests respectively; the cross-repo adapter check uses the
+current local LitScout checkout, not a separately published dependency pin.
+The isolated MCP absent-retained-route smoke also passed without creating a
+daemon, browser or service job. ESLint and service-client typecheck passed in
+the original checkout. Bounded
+credential-pattern scan of 30 staged files found three explicitly synthetic
+Slack token fixtures and no real token literal matching those patterns; this
+is not a claim of exhaustive secret scanning. Audit had no problems but remains
+`applicable: false`. No installed runtime or live browser was touched.
+
+Read-only delegate `/root/next_renewal_slice` returned the missing post-cleanup
+reconciliation seam; primary verified its source references and recorded the
+bounded acceptance checks at the top of Plan 0130. Implementation is a future
+slice. Durable crash recovery and guarded consumer delivery remain required
+before live renewal. No automatic CI babysitting or additional GitHub writes
+are part of this publication request.
+
+## 2026-09-09 | Plan 0130 private socket-to-worker handoff
+
+Added `cli/src/native/private_handoff.rs` and
+`cli/src/native/control_plane_private_tests.rs`; integrated the separate private
+worker message in `cli/src/native/control_plane.rs`, registered modules in
+`cli/src/native/mod.rs`, and expanded `cli/src/native/private_journey.rs`
+validation visibility and synthetic full-sequence tests. Updated Plan 0130 and
+this Runbook. No public command, installed listener or approval producer exists.
+
+Private ingress authenticates one bounded same-user connected Unix frame and
+binds four operations to independently supplied consent, account, retained
+identity and destinations before encrypted staging. The queue carries opaque
+references, not credentials or ordinary service-job JSON. Expiry, queue failure
+and cancellation fail closed without replay. Success returns only the internal
+pending-reconciliation object after sanitation, owned detach and transport
+closure. It does not release privacy or deliver/install the key.
+
+`/root/private_integration_review` implemented the ingress and queue test files
+only. Primary reviewed both and independently ran their tests. Independent
+`/root/private_owned_attachment_review` identified active caller cancellation as
+blocking; primary accepted and fixed it, and closed-world source review found
+that finding resolved without a blocking regression. The initial cancellation
+fixture failed because it expected lowercase `faulted` instead of the existing
+`Faulted` status spelling; corrected and rerun successfully. No secret-bearing
+type gained Debug or public serialization to satisfy a test assertion.
+
+Primary validation: 62 focused private tests passed (three ignored). Explicit
+isolated `native::private_journey::tests::` ignored run: three passed, including
+authenticated socket-to-worker completion and cancellation after login with no
+backup/renew/read dispatch. Explicit isolated
+`native::control_plane::private_tests::` ignored run: three passed, covering full
+and closed queues, expiry while queued and cancellation before dequeue, all
+without ordinary job persistence. All tests use synthetic data and CDP peers.
+
+Broader isolated native suite: 1,212 passed, 63 ignored. The six isolated-only
+private fixtures above were explicitly run separately; other ignored live E2E
+tests were not run. Service-client typecheck, ESLint, Rust format, clippy with
+warnings denied, native build, docs build and whitespace check passed.
+Docs retain the pre-existing multiple-lockfile warning. Planning audit reported
+no problems but `applicable: false`, not full contract coverage. CodeGraph was
+refreshed after source integration.
+
+Source SHA-256: `private_handoff.rs`
+`8a61b3e5d67176fcc21e6e8726a4a5dad5d8581bc0e53d551e14c697c0ab9c1f`;
+`control_plane.rs`
+`453f52ced08b9946a06541b134c79491657ce4d694a1936943192a68c7ea5935`;
+`control_plane_private_tests.rs`
+`8fbce1bc83806cc810602032f93095be59a6cb63b9be86a6c46d8d321ea6602b`;
+`private_journey.rs`
+`5134f3c701a7ad323e7130cc2d211106c3691d5fcf67703257bd93b516f666cd`.
+
+No real credentials, live browser operations, runtime installation, ChatGPT
+submissions or GitHub writes. Dirty work preserved. Next: bounded recovery and
+daemon/broker reconciliation, then independently authorized ingress deployment
+and guarded LitScout key installation with a real consumer probe. Renewal stays
+disabled until those gates are verified; internal tests are not live acceptance.
+
+## 2026-09-09 | Plan 0130 owned attachment integration
+
+Added `native/private_attachment.rs` and routed private execution, transitions
+and sanitation through its dedicated original-target session. Cleanup now
+detaches the owned session before transport closure. It never treats the generic
+borrowed-session `cdp_detach` acknowledgment as private cleanup proof. Existing
+public attach/detach behavior is unchanged.
+
+Changed `native/mod.rs`, `private_execution.rs`, `private_broker.rs`,
+`private_journey.rs` and the internal permit check in `cdp/client.rs`.
+Test-only constructors in `actions.rs` and `browser.rs` support an isolated
+full-sequence fixture without launching Chrome or changing runtime authority.
+The fixture refuses to run outside the repository isolated runner.
+
+`/root/private_integration_review` implemented only the attachment module and
+reported four passing tests. Primary inspected its code and independently ran
+58 focused private tests (one ignored), then explicitly ran the ignored full
+production-path synthetic sequence: one passed. Fresh closed-world evaluator
+`/root/private_owned_attachment_review` found no blocking issue by source review.
+
+Primary final gates: isolated native suite 1,208 passed, 58 ignored; Rust format
+and clippy with warnings denied passed; service-client typecheck, ESLint, native
+build, docs build and whitespace check passed. The ignored full-sequence fixture
+was run explicitly and passed separately. Docs retain the existing multiple-
+lockfile warning. Planning audit reported no problems but `applicable: false`,
+not full contract coverage. CodeGraph was refreshed after the integration.
+
+Source SHA-256: `private_attachment.rs`
+`c9177df70f8aa790b7c86b4da45853836118033bc9e90da171577a371dec2a7e`;
+`private_journey.rs`
+`db3359b6f403e7120b717b06f99dc2181622b394f25ccafc22d9c2e0de8d0bca`.
+
+No live credentials, retained-browser operations, runtime installation or GitHub
+writes. The remaining ingress, daemon-state reconciliation and consumer-delivery
+gates are explicit in Plan 0130; this is not enabled renewal or a Pro verdict.
+
+## 2026-09-09 | Plan 0130 shared transport cleanup
+
+Updated `native/cdp/client.rs`, `native/privacy_gate.rs` and
+`native/private_journey.rs`: shared terminal sink state, cancellation-safe
+worker joins, exact epoch/client closure proof, and an internal sanitation-to-
+transport-closure handoff that still requires broker detach. Seven new synthetic
+transport regressions cover retained handles, queued writes, cancellation,
+concurrent cleanup, delayed replies, worker panic and wrong authority; the
+existing sanitation fixture also exercises transport closure without unlocking.
+
+Independent read-only review `/root/private_integration_review` completed,
+including the `Arc<CdpClient>` revision; no blocking issue found in this slice.
+Primary ran tests. No production ingress, broker detach, privacy release, key
+installation or live renewal is claimed. Plan 0130 records remaining deployment
+gates. No runtime installation, private browser mutation or GitHub writes.
+
+Validation detail: 16 focused CDP-client tests passed, including seven new
+transport cases. Rust format, clippy with warnings denied, service-client
+typecheck, ESLint, native build and docs build passed. Docs retain the existing
+multiple-lockfile warning. Planning audit returned no problems but
+`applicable: false`; CodeGraph was refreshed and whitespace check passed.
+
+The initial non-isolated wider run failed the existing renderer-deadline and
+inspect-server shutdown checks and was terminated. Both checks passed in fresh
+isolated environments. Persistent host/port-scoped privacy-gate contamination
+is a plausible explanation, not a proven root cause. Final wider evidence uses
+the repository's isolated runner: 1,204 passed, 57 ignored, zero failures. The
+failed/stopped run is not accepted as a pass. No live privacy gate was cleared
+to make tests pass.
+
+Source SHA-256: `cdp/client.rs`
+`b165e132819f1f04395982ff53cd884b4f6f85fb087dd29681dcc32a53720d95`;
+`privacy_gate.rs`
+`581e4bd192ab462e97f421b25ddb116166260a7f836ec476a44670f3257f40b6`;
+`private_journey.rs`
+`1904ea1b51a4c7965f620c02e05384049e972d512df92516a4e57121bb3094b1`.
+
+## 2026-09-09 | Plan 0130 internal ordered execution
+
+Added `cli/src/native/private_journey.rs`, registered it in `native/mod.rs`,
+and added whole-consent reservation to `private_secret_store.rs`. All four
+stages validate before admission; one private permit spans exact transitions.
+Whole-run consumption survives fresh staging and subprocess death. Completion
+remains pending cleanup, never public renewal or activation evidence.
+
+Independent read-only review `/root/private_integration_review` completed and
+its whole-consent replay finding was implemented. Closed-world review found no
+blocking issue in this disabled internal slice; primary ran validation. The
+first concurrency test expected only a consumed-receipt error and failed on
+the store's intended nonblocking busy rejection. Corrected the test to require
+exactly one winner, only either safe rejection, and subsequent consumed proof.
+
+Primary final validation: 54 focused private tests passed; 1,197 wider native
+tests passed, 57 ignored. Rust format, clippy with warnings denied, native debug
+build, service-client typecheck, ESLint, docs build and whitespace check passed.
+The initial wider run overlapped a test-binary rebuild and reported subprocess
+executable-not-found failures plus the old concurrency assertion. That run is
+not accepted evidence; the final wider run used the corrected built test binary
+without another test rebuild. Docs build retains the existing multiple-lockfile
+warning. Planning audit returned no problems but `applicable: false`, not full
+planning-contract coverage. CodeGraph is current.
+
+Source SHA-256 bindings: `private_journey.rs`
+`60b4e8489643fcd01e0e7feb5e26401787dcd7607530a9dcab033c0313f07256`;
+`private_secret_store.rs`
+`34f5d2aa0823c5be3e5ec1044afa1c2572bdc1ae64c6cf4d036b0e32cbd80a47`.
+
+No live credentials, browser actions, installation or GitHub writes. Remaining
+deployment gates and evidence limits are in Plan 0130.
+
+## Turn 183 | 2026-08-29
+
+Scope: implement, publish, and safely migrate P126 without interrupting active
+Termius SSH terminals.
+
+Actions:
+
+- Added the generic dry-run-first `electron relay` lifecycle, exact Windows
+  process/listener authority checks, loopback-only foreground relay, bounded
+  user timer, drift-guarded uninstall, docs, help, skill guidance, and isolated
+  lifecycle fixture.
+- Repaired attached-existing runtime handoff identity and liveness handling,
+  stale intermediary PID recovery, a disappearing idle-daemon executable race,
+  and persistent DevTools HTTP response validation found during live migration.
+- Published the runtime through guarded browser handoff, migrated Termius to
+  the managed unit, and quarantined rather than deleted the obsolete wrapper
+  and units.
+- Removed only tailnet TCP 2223. Preserved tailnet TCP 22 forwarding to the
+  home SSH listener and every HTTPS/web route.
+
+Validation:
+
+- Electron relay fixture, runtime handoff selection, publisher orchestration,
+  local convergence, Rust formatting, focused Rust tests, production-target
+  strict Clippy, lint, typecheck, dashboard/docs builds, optimized build,
+  direct plan audit, CodeGraph synchronization, and diff hygiene.
+- All-target strict Clippy remains blocked by 12 existing test-only findings in
+  unrelated `mcp.rs`, service, and control-plane test code; those user changes
+  were preserved rather than folded into P126.
+- Installed doctor reported `ready=true`, Windows PID 6672, active managed PID
+  2831626, and loopback-only endpoints. Service stop/start preserved all three
+  exact Termius target IDs.
+- The publication journal reached terminal `ready`; retained browser handoffs
+  and the exact Workshop conversation survived without a prompt submission.
+
+Result:
+
+- P126 is ready for its disruptive drill. A real Termius close/reopen and a
+  coordinated reboot remain operator-gated because they close active SSH
+  terminals; neither was performed during this turn.
+- Bilateral DOCX/PDF submission stopped before Send because the document guard
+  rejected the retained AuraCall session as not live even though read-only CDP
+  and service inventory proved the exact browser and Workshop target healthy.
+  No substitute browser was launched and no document prompt was submitted.
+
+## Turn 182 | 2026-08-29
+
+Scope: begin P126 managed WSL Electron relay productization.
+
+Actions:
+
+- Froze an immutable intake covering a generic loopback-only Windows Electron
+  relay lifecycle, retained Termius preservation, close/reopen recovery, and a
+  separate Tailscale cleanup audit.
+- Reused Plan 0098's exact process, listener-owner, and private-loopback
+  invariants instead of broadening Windows network exposure.
+- Confirmed the bilateral controller can enforce complete per-side packet
+  collection, Codex approval before Pro submission, and one bridge transit.
+- Recorded a no-delegation receipt because this runtime does not authorize
+  sub-agent spawning and the change has one overlapping lifecycle surface.
+
+Validation:
+
+- `codegraph status`
+- `./bin/dual_hemisphere_thought --help`
+- `git status --short --branch`
+
+Result:
+
+- P126 is active. No browser, relay, SSH, firewall, Tailscale, or installed
+  runtime state changed during intake.
+
+## Turn 181 | 2026-08-27
+
+Scope: replace static runtime-handoff alias coverage with behavioral recovery
+identity, liveness, and retry-record cleanup tests.
+
+Actions:
+
+- Extracted one fail-closed runtime handoff browser selector shared by guarded
+  publication and retained-browser preparation.
+- Made a known prepared browser PID authoritative over leftover CDP service
+  text and retained the exact live-PID bridge-alias recovery case.
+- Added exact, idempotent durable retry-record cleanup that preserves changed
+  records for investigation.
+
+Validation:
+
+- runtime handoff selection and local convergence fixtures
+- retained-browser live, discovery, and guard fixtures
+- publisher smoke policy, lifecycle, orchestration, journal, and operation
+  fixtures
+- route-confusion gates, lint, release-asset verification, CodeGraph sync,
+  validation selection, and diff hygiene
+
+Result:
+
+- Exact session and bridge-alias recovery behavior now has executable coverage.
+  Known stale PIDs, identity mismatches, and ambiguous matches fail closed.
+- Exact retry records are removed idempotently after already-resumed proof;
+  changed records remain available for investigation.
+- No browser or installed runtime was mutated. An unrelated `cli/src/mcp.rs`
+  edit that appeared during the turn remains untouched and outside this slice.
+
+## Turn 180 | 2026-08-27
+
+Scope: repair split daemon namespaces and deterministic managed one-time profile
+admission without disturbing retained browsers.
+
+Actions:
+
+- Added secure Linux runtime-directory inference shared by the Rust CLI,
+  convergence, dashboard publication, retained-browser verification, and
+  executable-handoff smoke discovery.
+- Preserved explicit socket and XDG overrides and rejected unsafe inferred
+  runtime directories before the existing home fallback.
+- Registered only the exact deterministic managed one-time profile recommended
+  by remote-view acquisition while retaining arbitrary-profile warnings.
+- Updated README, sessions docs, and repository plus installed skill guidance.
+
+Validation:
+
+- focused Rust connection, remote-view, close, and CDP stream tests
+- local convergence and dashboard publication fixture suites
+- route-confusion gates, release verifier fixture, lint, docs build, strict
+  Clippy, optimized build, CodeGraph sync, direct plan audit, and diff hygiene
+
+Result:
+
+- Source validation passes. Guarded publication found three legacy migration
+  defects and rolled back safely each time: unbounded old-daemon shutdown,
+  deleted proc-executable reuse, and broker ownership hidden behind a
+  differently named bridge service record. Each now has a source fix and
+  focused regression.
+- Guarded publication and explicit recovery reached terminal
+  `recovered_ready`. The source-free workstation payload is installed, compact
+  install and remote-view doctors report zero issues, remote control and
+  many-to-many readiness are ready, and runtime convergence reports five
+  runtimes with zero stale entries.
+- Installed and live dashboard executable SHA is
+  `96e141a23e3da440d7757e0ff994e6eca0caf672f8b22df3a23c42cd675b4c42`.
+  AuraCall, NYSE, both retained route viewers, and the default browser preserved
+  their PIDs; exact retained CDP and target checks pass. No ChatGPT prompt or
+  page interaction was sent.
+
+## Turn 179 | 2026-08-24
+
+Scope: add bounded doctor JSON for agent consumption without weakening the
+authoritative no-launch probes or retained-browser publication guard.
+
+Actions:
+
+- Added command-specific `--compact --json` projections for install doctor and
+  remote-view doctor with versioned schemas, total and omitted issue counts,
+  at most 20 issue details, readiness fields, and actionable remedies.
+- Updated CLI help, README, installation and command docs, and repository plus
+  installed agent-browser skill guidance.
+- Aligned native retained-browser verification with the publisher by requiring
+  the named daemon PID to exist and be live before persisted browser or CDP
+  evidence can verify an authority record.
+- Preserved the dirty worktree and all pre-existing live browser processes
+  during implementation validation.
+- After explicit operator authorization, restored `chatgpt-pro` on the exact
+  retained Workshop URL, archived the obsolete dead-target authority, and
+  marker-first pinned the unique replacement target without page interaction.
+- Guarded publication handed four active browser sessions to the replacement
+  executable. Recovered the old dashboard manifest through the explicit
+  recovery-only path with the user bus and canonical daemon socket directory.
+- Refreshed the source-free workstation payload without interactive sudo.
+
+Validation:
+
+- 8 compact-focused Rust tests and 14 retained-requirement tests
+- full install-doctor and remote-view-doctor focused suites
+- Rust formatting and strict Clippy
+- docs lint and production build
+- optimized Rust build and native payload copy
+- CodeGraph sync, installed-skill parity, direct plan audit, and diff hygiene
+
+Result:
+
+- Compact release output is approximately 78 percent smaller for install
+  doctor and 95 percent smaller for remote-view doctor than full JSON.
+- Guarded installation and recovery are complete. The publication journal is
+  terminal `recovered_ready`; installed, release, and workspace-native binary
+  SHA-256 are
+  `143fc1f682c9c1ef7d7fd1d51175d1a66330e58eeb146803481721d8be0bb4f1`.
+- Installed compact install and remote-view doctors report zero issues,
+  runtime convergence and remote control are ready, and the exact Workshop
+  target remains verified. No ChatGPT prompt or page interaction was sent.
+
+## Turn 178 | 2026-08-24
+
+Scope: reconcile the installed 0.28.0 workstation payload and repair
+convergence dry-run visibility.
+
+Actions:
+
+- Refreshed the source-free workstation payload manifest to the installed
+  `ff85f1f9` binary without interactive sudo.
+- Handed `figurelabs-saber` from the deleted executable to the current binary
+  while preserving its browser PID and exact CDP endpoint.
+- Made convergence dry-run parse repairable nonzero doctor JSON so it can
+  report `safeRemedies` without applying them.
+- Added a fixture for the nonzero stale-daemon preview path and aligned README,
+  installation docs, skill guidance, and roadmap evidence.
+
+Validation:
+
+- `pnpm test:local-runtime-convergence`
+- JavaScript syntax checks for the controller and fixture
+- targeted diff hygiene
+- installed no-launch retained-browser status
+- installed install doctor and remote-view doctor
+
+Result:
+
+- Retained-browser authority remains configured and verified without launch.
+- Install doctor reports the payload installed, runtime convergence complete,
+  zero stale runtimes, and no issues.
+- Remote-view doctor reports remote control and many-to-many readiness.
+- One optional source-checkout Guacamole schema ensure still looks for the old
+  unversioned compose path, but route readiness and both final doctors pass.
+
+## Turn 177 | 2026-08-15
+
+Scope: remove the manual managed-browser navigation handoff that blocks exact
+P121 retained-lane enrollment.
+
+Actions:
+
+- Opened P122 without weakening P121's read-only discovery contract.
+- Added exact-URL and required-profile selectors to retained-browser discovery.
+- Added a guarded preparation command that composes only route-bound
+  `remote-view open` and digest-bound retained requirement pinning.
+- Required exact rendered URL, profile, target, browser, session, and
+  operator-visible route agreement before unique discovery.
+- Added contract and isolated command fixtures that reject drift and prove no
+  page-interaction or prompt-submission action is invoked.
+
+Validation:
+
+- `pnpm test:local-dashboard-retained-browser-discovery`
+- `pnpm test:local-dashboard-retained-browser-preparation`
+- `pnpm test:local-dashboard-retained-browser-preparation-command`
+- JavaScript syntax checks for the new command and libraries
+- retained guard, requirement, watchdog, publisher operations, and publisher
+  orchestration fixtures
+- service-client typecheck
+- dashboard and docs production builds
+- runtime convergence contract and isolated fixture
+- package JSON parsing, installed skill SHA-256 parity, and full diff hygiene
+
+Result:
+
+- Focused fixtures pass. The live Workshop command remains intentionally
+  unexecuted under the active no-navigation and no-submission boundary.
+- Full docs lint remains red only on the pre-existing synchronous state update
+  in `docs/src/components/theme-toggle.tsx`; production compilation passes.
+- Next, finish widened validation and then run live exact-URL preparation only
+  after that navigation boundary is explicitly lifted.
+
+Follow-up:
+
+- Replaced the preparation command's repository publisher dependency with a
+  bounded live discovery, reverification, and marker-first writer module.
+- Embedded the controller and five dependencies in the versioned workstation
+  support payload and exposed
+  `agent-browser install workstation prepare-retained-browser`.
+- Repaired the docs lint baseline; full docs lint and build now pass.
+- The source-free workstation fixture, 20 native workstation tests, strict
+  Clippy, Rust formatting, preparation fixtures, and optimized build pass.
+- Candidate SHA-256 is
+  `954a01d3783912a129a1a23f6dc6c606dc455ce1991d380a64b0a898d2f29389`;
+  installed runtime remains unchanged pending exact retained-lane enrollment.
+- Added a disposable localhost live preparation smoke. It failed closed before
+  browser launch because Route A belongs to `away-auth-handoff` and Route B to
+  `nyse-developer-route`; both allocations are live.
+- Preserved both retained browsers and routes. No fixture authority file or
+  browser survived. The wrapper now returns the bounded structured child error
+  so route-capacity failures are actionable.
+- Relinked the optimized candidate after that embedded controller change.
+  Current SHA-256 is
+  `fc4fd837feeadbe9da3ffa9c2bab903a4af64005ad2504330e4e46498675bf0e`;
+  the installed binary remains unchanged.
+- A third live audit found both routes unchanged and zero apply-safe display
+  allocations. P122 is now blocked rather than repeatedly requesting manual
+  work. Unblock by freeing a route or approving a reviewed parking policy and
+  lifting only the exact-Workshop navigation prohibition; prompt submission
+  remains unauthorized.
+- After explicit delegation, parked only Route A's viewer binding and preserved
+  the `away-auth-handoff` and NYSE browser processes and targets.
+- Added stable route-specific display allocation ids, exact pending-acquisition
+  ownership checks, and runtime-profile-bound preparation daemon sessions.
+- The disposable localhost preparation then passed and cleaned up. The exact
+  Workshop navigation reached ChatGPT but redirected to `/project`, so exact
+  verification failed closed and neither authority file was created.
+- No prompt, click, type, fill, evaluate, upload, send, or submit action ran.
+  The optimized candidate is
+  `2bbfe6d53e7553424e88773d67f222f0105d2dc791fe67d5098b2022bd8a3e88`;
+  installation remains blocked on a real exact Workshop conversation URL.
+- After explicit authorization for exactly one short Workshop prompt, attached
+  directly to the surviving `chatgpt-pro` Chrome DevTools endpoint, submitted
+  one concise user turn, and captured canonical conversation
+  `6a80e64e-e830-83ea-b21f-9079abf27a1d`. No retry or second prompt ran.
+- Preserved the existing default NYSE retained requirement and committed a
+  separate mode-0600 Workshop requirement for session/profile `chatgpt-pro`,
+  target `91DBB20C67DFB0398978722D6B6FA85A`, and the exact new URL.
+- Guarded release publication completed at `final_readiness`; installed and
+  release SHA-256 both equal
+  `7704b89a579e6bb1678d43cbe3d3ea402197a411525cab83e9f6a641228755bb`.
+  Five daemon sessions are converged, the live dashboard manifest is ready,
+  remote-view doctor is ready, and the retained Workshop PID and target remain
+  exact. P122 is closed with no GitHub write.
+
+## Turn 176 | 2026-08-15
+
+Scope: remove error-prone retained-lane identity copying from the final P121
+operator handoff.
+
+Actions:
+
+- added a read-only discovery mode for requirement pinning that accepts one
+  reviewed origin and path prefix, scans live retained daemon and CDP evidence,
+  and derives the exact session, profile, target, PID, endpoint, and canonical
+  URL;
+- required exactly one ready page target and failed closed on zero or multiple
+  matches, service or CDP read failure, session mismatch, degraded health,
+  incomplete identity, and origin or path-prefix spoofing;
+- aligned the repository Node guard with the installed native verifier by
+  requiring `health=ready` before pinning;
+- isolated the convergence fixture's socket directory after widened validation
+  caught it reading a live unrelated `etf-paper-dashboard` token through the
+  inherited WSL runtime directory;
+- preserved the no-prompt boundary and inspected only no-launch service state.
+
+Validation:
+
+- the focused discovery, durable requirement, and JavaScript syntax checks
+  pass, and the widened publisher, publication-operations, watchdog,
+  source-free workstation, and isolated convergence fixtures pass;
+- current live discovery state contains zero ChatGPT targets, so no private
+  requirement or enforcement record was written;
+- the optimized source build and docs production build pass. The release
+  candidate SHA-256 is
+  `0e2186376c0795d6df684797f779ce94400f99fb8d582c68b03741918f306acf`;
+- live drift reconciliation found a separate terminal publisher transaction at
+  13:58 that installed an earlier unguarded candidate with SHA-256
+  `758c9f4d4e89941799dbe053357e50597e13b633e3e6013f8a5e7259d39b2984`.
+  No retained browser existed during that transaction.
+
+Outcome: after the operator opens the intended Workshop page, one reviewed
+project URL prefix is sufficient for exact fail-closed enrollment. P121 remains
+open for that operator-established lane, guarded installation, and installed
+no-prompt readback.
+
+## Turn 175 | 2026-08-15
+
+Scope: finish the post-relogin workstation reconciliation and make its
+disposable remote-view live gate deterministic.
+
+Actions:
+
+- completed the source-free workstation reconciliation after the required WSL
+  relogin and restored distinct route-specific XRDP desktops on `:10` and
+  `:11`;
+- made workstation reconciliation bind Guacamole viewer daemons to the
+  installed Linux Chrome instead of inheriting an ambient Windows StealthCDP
+  executable that cannot render on an XRDP display;
+- moved the local remote-view fixture server to a worker so synchronous CLI
+  probes cannot starve its HTTP event loop;
+- added a blocking-parent regression and made OCR require the unique stable
+  marker prefix while exact CDP URL and title checks retain full fixture
+  identity;
+- preserved the existing Workshop no-prompt boundary and used only disposable
+  local fixture profiles.
+
+Validation:
+
+- install doctor and remote-view doctor report ready with no issues; dashboard,
+  runtime interlock, and PostgreSQL backup timers are active;
+- 20 workstation Rust tests, the blocking-safe fixture regression, the
+  source-free workstation fixture, Rust formatting, strict Clippy, syntax, and
+  diff hygiene pass;
+- the optimized remote-view fixture gate passes with exact URL/title readback,
+  matching X11 PID, `route_bound_ready`, visible-window and OCR proof, one
+  active target after repeated opens, and automatic cleanup;
+- release candidate SHA-256 is
+  `a886febac4a3794bd0b20387e603406b319e9419c2047cd2b1b15cd404450eec`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: workstation remote control is operational and the release candidate's
+rendered route gate is deterministic. P121 remains open for an
+operator-established Workshop lane, durable pinning, guarded installation, and
+exact no-prompt retained-target readback. No ChatGPT prompt or GitHub write
+occurred.
+
+## Turn 174 | 2026-08-15
+
+Scope: bind the marker-first retained-browser enforcement record to exactly one
+stable-identity requirement.
+
+Actions:
+
+- added `requirementSha256` to the private v1 enforcement contract;
+- made crash retry reuse the marker's original timestamp and exact digest;
+- made Node and native readers reject a stale marker paired with changed
+  requirement bytes before service-state access;
+- preserved legacy markerless requirement reads and digest-bound those records
+  on the next idempotent pin;
+- added changed-evidence, replaced-bytes, native pre-state, and source-free
+  release-binary regressions;
+- updated README, installation docs, contract guidance, repository and
+  installed skills, P121, roadmap, and implementation evidence.
+
+Validation:
+
+- all 1,874 non-ignored Rust tests pass with 57 ignored; Rust formatting and
+  production-binary strict Clippy pass;
+- retained requirement/watchdog, publication operations/orchestration,
+  source-free workstation, dashboard, docs, schema, skill-parity, and diff
+  gates pass;
+- live optimized status remains `not_configured` and leaves service state plus
+  publication journal byte-identical;
+- release candidate SHA-256 is
+  `f129a45f9e7b70506808723637432038c6b9e94ccf9327ab24cb8c858f6b88b3`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: marker and requirement can no longer be mixed across enrollment
+attempts. P121 remains open until an operator-established Workshop lane can be
+pinned, safely published, and read back without a prompt. No browser or GitHub
+write occurred.
+
+## Turn 173 | 2026-08-15
+
+Scope: prevent a crashed or partially lost retained-browser pin from silently
+disabling the publication and workstation interlock.
+
+Actions:
+
+- added a private marker-first `.required` enforcement record with a bounded v1
+  contract and durable atomic commit;
+- made repository publication, read-only watchdog, native status, workstation
+  apply, and recurring reconcile fail closed when enforcement exists but the
+  identity requirement is missing;
+- rejected unsafe enforcement permissions, ownership, size, schema, and
+  symlink shape in both Node and native readers;
+- added simulated crash-after-marker, idempotent retry, deletion, unsafe-file,
+  no-build, no-state, and no-service-command regressions;
+- updated CLI help, README, installation docs, repository and installed skill
+  guidance, P121, roadmap, and implementation evidence.
+
+Validation:
+
+- all 1,873 non-ignored Rust tests pass with 57 ignored; Rust formatting and
+  production-binary strict Clippy pass;
+- focused retained-browser, watchdog, publisher operations/orchestration,
+  source-free workstation, dashboard, docs, schema, skill-parity, and diff
+  gates pass;
+- live optimized status reports unconfigured enforcement and leaves service
+  state plus publication journal byte-identical;
+- release candidate SHA-256 is
+  `ab15748e93330c2c4d61d1bc6b0ff2de18b86be3852869a2f83b657424b13165`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: a single missing requirement can no longer disable an enforced lane.
+P121 remains open because the retained Workshop lane and durable requirement
+are absent. No browser launch, prompt, navigation, typing, click, install, or
+GitHub write occurred.
+
+## Turn 172 | 2026-08-15
+
+Scope: make the source-free retained-lane watchdog independently auditable and
+configuration-equivalent to repository tooling.
+
+Actions:
+
+- added `install workstation retained-browser-status --json` as a native,
+  no-lock, no-daemon, no-launch, identity-redacted audit surface;
+- made native status, apply, and reconcile honor the configured durable
+  requirement path;
+- added the retained-requirement path to the normal dotenv allowlist so
+  `AGENT_BROWSER_ENV_FILE` and `~/.agent-browser/.env` work without exports;
+- added default, direct environment, dotenv, override, no-state, and invalid
+  configured-path regressions;
+- updated help, README, installation/configuration docs, repository and
+  installed skill guidance, P121, roadmap, and implementation evidence.
+
+Validation:
+
+- all 1,871 non-ignored Rust tests pass with 57 ignored; formatting and strict
+  Clippy pass;
+- source-free workstation fixture, dashboard and docs builds, installed skill
+  parity, and diff hygiene pass;
+- live optimized status reports `not_configured` and leaves service state plus
+  publication journal byte-identical;
+- release candidate SHA-256 is
+  `ce5a783994a8744de27e6f59c0be145ee64de78a4379248c50868b3dcddd7835`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: source-free retention status and configuration parity are ready. P121
+remains open because the retained Workshop lane and durable requirement are
+absent, so safe installation and exact no-prompt readback remain unproven. No
+browser launch, prompt, navigation, typing, click, install, or GitHub write
+occurred.
+
+## Turn 171 | 2026-08-15
+
+Scope: close the source-free workstation retention-watchdog bypass.
+
+Actions:
+
+- added a native bounded verifier for the private durable retained-browser
+  requirement, persisted service identity, live PID, and loopback DevTools
+  target inventory;
+- made workstation apply check before lock, sudo, staging, or quiescence and
+  made recurring binary-owned reconcile recheck before its first mutation;
+- required one exact ready browser, active session, valid service-tab handle,
+  profile, target, and canonical URL while keeping output identity-redacted;
+- added isolated exact-match, drift, ambiguity, unsafe-file, no-mutation, and
+  source-order regressions;
+- updated CLI help, README, docs, repository and installed skill guidance, P121,
+  and the implementation note.
+
+Validation:
+
+- all 1,870 non-ignored Rust tests pass with 57 ignored; formatting and strict
+  Clippy pass;
+- focused retained-browser, publication, convergence, source-free workstation,
+  host-provision, fresh-install, Guacamole, PostgreSQL, route-user, release,
+  service-client, dashboard, and docs gates pass;
+- installed skill parity and diff hygiene pass. Targeted MDX lint reports only
+  that the MDX file has no matching ESLint configuration;
+- release candidate SHA-256 is
+  `b8eaac13578f3380aca701e4ea127d2653b4d2a22fdbb73a1172e8738fc474dc`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: the binary-owned watchdog bypass is closed in source. P121 remains
+open because the retained Workshop lane and durable requirement are absent, so
+safe installation and exact no-prompt readback cannot yet be proven. No browser
+launch, prompt, navigation, typing, click, install, or GitHub write occurred.
+
+## Turn 170 | 2026-08-15
+
+Scope: make the exact retained-browser publication gate durable and recurring
+instead of dependent on repeated command-line flags.
+
+Actions:
+
+- added a private, bounded, owner-only, non-symlink requirement containing only
+  stable session, profile, target, and canonical URL identity;
+- made normal publication load and enforce that requirement before any build;
+- added verified idempotent pinning that excludes browser PID, browser ID, and
+  DevTools endpoint from durable state;
+- made the read-only check report `not_configured` when no critical lane exists
+  and fail closed on malformed or mismatched configured state;
+- added the same read-only gate before source-checkout user-service interlock
+  convergence.
+
+Validation:
+
+- retained requirement, guard, watchdog, publication operation,
+  orchestration, and local convergence fixtures pass;
+- a durable missing-lane fixture blocks publication before dashboard or Rust
+  build and changes no retained runtime state;
+- JSON schema parsing and script syntax pass.
+- all 1,861 non-ignored Rust tests pass with 57 ignored; formatting, strict
+  Clippy, client typecheck, dashboard and docs builds, workflow parsing,
+  installed skill parity, and diff hygiene pass;
+- release candidate SHA-256 is
+  `68303e1b9c89aa7e8a1f81cf7e646ac0f570208cf5c2559635cb186f95f40381`;
+  installed SHA-256 remains
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`.
+
+Outcome: the flag-memory and recurring-watchdog gap is closed in source. P121
+remains open because the Workshop lane is absent, so the durable requirement
+cannot be safely pinned and installed acceptance cannot yet be proven. No
+browser launch, prompt, navigation, typing, click, install, or GitHub write
+occurred.
+
+## Turn 169 | 2026-08-15
+
+Scope: isolate the missing Workshop browser and make exact retained identity a
+fail-closed publication and recovery gate.
+
+Actions:
+
+- established that the browser process exited about eight minutes before the
+  P121 publication transaction; host and Chrome logs do not identify the
+  terminating actor;
+- added exact retained session, profile, target, URL, PID, and CDP pinning
+  before publication mutation, after handoff, at final readiness, and during
+  recovery;
+- added a read-only no-lock, no-build preflight that refuses an absent daemon
+  without auto-launching a replacement;
+- added a serial Rust validation wrapper with disposable home, agent root,
+  sockets, and runtime state;
+- projected only required, verified, and stage guard fields to installed status
+  and added a distinct terminal unverified classification.
+
+Validation:
+
+- retained guard, orchestration, recovery, journal, operations, lifecycle,
+  smoke policy, publication status, doctor, client, contract, parity, dashboard,
+  docs build, formatting, and strict Clippy gates pass;
+- the isolated full Rust suite passes 1,861 tests with 57 ignored and does not
+  change live publication or Workshop inventory hashes;
+- the exact Workshop read-only preflight returns `retained_daemon_missing` and
+  changes no service state, journal bytes, session inventory, or lock state;
+- release binary SHA-256 is
+  `03efdddf4bf80cdeb377e549f2d1ad818e493e6248a92aa661a32afdda9d39e9`.
+
+Outcome: P121 remains open only for live acceptance criterion 8. The release
+candidate is built but not installed because no retained Workshop lane exists
+to satisfy the new guard. No replacement browser, prompt, navigation, typing,
+click, recovery, installation, or GitHub write occurred.
+
+## Turn 168 | 2026-08-15
+
+Scope: expose durable dashboard publication status to installed operators while
+preserving the recovery-only authority boundary.
+
+Actions:
+
+- added a source-free Rust journal, lock, transaction, and installed-artifact
+  inspector with bounded reads and fail-closed validation;
+- projected status into install doctor, authenticated HTTP, MCP, service
+  contract metadata, generated client types, and the Service dashboard;
+- added a versioned JSON schema and isolated no-launch endpoint coverage;
+- kept recovery out of HTTP, MCP tools, and dashboard controls and marked the
+  exact recovery-only command as requiring explicit operator confirmation.
+
+Validation:
+
+- focused and widened Rust, doctor, HTTP, MCP, contract, client, dashboard,
+  publisher lifecycle, orchestration, journal, operations, parity, typecheck,
+  production build, documentation build, JSON, YAML, skill-parity, plan, lock,
+  and diff gates pass;
+- guarded publication completed terminal phase `ready`; installed and release
+  binary SHA-256 is
+  `2e855070b644a28370a07ec0b4a45d26ad277d25a19b92452989c558832646c1`;
+- repository status, install doctor, authenticated HTTP, and MCP agree on a
+  verified replacement with no lock, no recoverable state, and action `none`;
+- no recovery, prompt submission, navigation, typing, click, or replacement
+  browser launch occurred.
+
+Outcome: installed publication projection is verified, but P121 remains open.
+The prior Workshop Chrome PID and CDP endpoint are gone and service state has no
+matching retained browser, session, or target. Exact retained-target readback is
+therefore blocked until the disappearance is isolated and a retained lane is
+available for no-prompt verification.
+
+## Turn 167 | 2026-08-15
+
+Scope: separate read-only publication inspection from explicit recovery
+authority and prevent recovery-only from authorizing a new build.
+
+Actions:
+
+- added read-only journal, lock, transaction, and installed-artifact status;
+- classified active publisher, recoverable transaction, absent journal, and
+  unknown installed artifact into exact next actions;
+- added recovery-only no-op before build and reused P119 recovery for incomplete
+  transactions;
+- rejected combined inspection and recovery flags;
+- added package commands plus isolated command and CI coverage.
+
+Validation:
+
+- focused status, recovery-only, journal, orchestration, lifecycle,
+  smoke-policy, and syntax checks pass;
+- disposable status creates no runtime directory, and recovery-only leaves no
+  binary, journal, or lock;
+- no live status, recovery, build, install, listener, daemon, or browser action
+  has occurred yet.
+
+Outcome: P120 is closed. Focused and widened status, recovery-only, journal,
+publisher, convergence, capability, parity, dashboard, client-type, syntax,
+production-build, package, YAML, skill-parity, plan-audit, cleanup, and diff
+gates pass. Docs-wide ESLint retains one existing effect error and one warning
+in untouched files. Live status returned no journal, no lock, and action `none`
+without creating state. Retained browser and installed runtime identity remain
+unchanged. No GitHub write, prompt, browser interaction, lifecycle, handoff,
+install, recovery, or live dashboard action occurred.
+
+## Turn 166 | 2026-08-15
+
+Scope: make dashboard publication artifact evidence durable and recover an
+interrupted transaction before any new build or mutation.
+
+Actions:
+
+- added a mode-0600, fsynced, atomically replaced, revision-checked journal and
+  exact PID publication lock;
+- checkpointed quiescence, handoff, replacement, resume, restart, readiness,
+  failure, and rollback phases;
+- recovered exact handoff descriptors and reconciled already-resumed browser
+  PID/CDP identity without replay;
+- recognized crash-after-replacement from durable built SHA evidence and repeated
+  reference sync from the verified installed binary;
+- added isolated journal, recovery, stale-lock, revision-conflict, corruption,
+  and fail-closed fixtures to fast Dashboard CI.
+
+Validation:
+
+- focused journal, orchestration, lifecycle, smoke-policy, and syntax checks
+  pass;
+- no live runtime, listener, daemon, browser, profile, or external service was
+  touched.
+
+Outcome: P119 is closed. Focused and widened journal, recovery, publisher,
+convergence, capability, parity, dashboard, client-type, syntax,
+production-build, package, YAML, skill-parity, plan-audit, cleanup, and diff
+gates pass. Docs-wide ESLint retains one existing effect error and one warning
+in untouched files. Read-only evidence shows the retained browser identity,
+dashboard manifest, and installed SHA unchanged; no production journal or lock
+was created. No GitHub write, prompt, browser interaction, lifecycle, handoff,
+install, recovery, or live dashboard action occurred.
+
+## Turn 165 | 2026-08-15
+
+Scope: bind publisher replacement and rollback to cryptographic artifact
+evidence and preserve the initiating error across restore failure.
+
+Actions:
+
+- added structured built, source, backup, replacement, restoration, and safe
+  restart SHA-256 evidence to the publisher report;
+- made backup mismatch fail before quiescence and replacement mismatch enter
+  verified rollback;
+- retained the original publication failure across missing-backup, restore-copy,
+  and restore-hash failures;
+- prohibited restart when the installed artifact matches neither the verified
+  backup nor verified replacement;
+- extended the existing isolated real-file and fast smoke-policy fixtures.
+
+Validation:
+
+- focused orchestration, publisher policy, convergence, and syntax checks pass;
+- no live runtime, listener, daemon, browser, profile, or external service was
+  touched.
+
+Outcome: P118 is closed. Focused and widened publisher, convergence,
+capability, parity, dashboard, client-type, syntax, production-build, package,
+YAML, skill-parity, plan-audit, cleanup, and diff gates pass. Docs-wide ESLint
+retains one existing effect error and one warning in untouched files. Read-only
+evidence shows the retained browser identity, dashboard manifest, and installed
+binary SHA unchanged. No GitHub write, prompt, browser interaction, lifecycle,
+handoff, install, or live dashboard action occurred.
+
+## Turn 164 | 2026-08-15
+
+Scope: make full dashboard publication sequencing and rollback fault-testable
+without a live build, install, service restart, or browser handoff.
+
+Actions:
+
+- extracted build, backup, quiesce, replacement, handoff, restart, readiness,
+  and rollback ordering into an injected production orchestration module;
+- added a real-file fixture for success, pre-handoff restore,
+  committed-handoff preservation, rollback restart failure, and pre-mutation
+  failure;
+- added `pnpm test:local-dashboard-publisher-orchestration` after lifecycle
+  coverage in the fast Linux Dashboard CI job.
+
+Validation:
+
+- focused orchestration, lifecycle, smoke-policy, and syntax checks pass;
+- temporary test artifacts are isolated and removed by exact root;
+- no live runtime, dashboard listener, daemon, retained browser, or external
+  service was touched.
+
+Outcome: P117 is closed. Focused publisher, convergence, capability, parity,
+dashboard, client-type, syntax, production-build, package, YAML, skill-parity,
+plan-audit, cleanup, and diff gates pass. Docs-wide ESLint retains one existing
+effect error and one existing warning in untouched files. Read-only evidence
+shows the retained browser identity, ready live dashboard manifest, and
+installed binary SHA unchanged. No GitHub write, prompt, click, typing,
+navigation, browser lifecycle, credential, attach, detach, daemon handoff,
+install, or live dashboard action occurred.
+
+## Turn 163 | 2026-08-14
+
+Scope: make standalone dashboard publisher restart and rollback transitions
+repeatably testable without a live release build or runtime handoff.
+
+Actions:
+
+- extracted exact standalone process inspection, quiescence, and restart
+  selection into a production lifecycle module;
+- added a Linux real-process fixture with isolated PID metadata and exact
+  executable, UID, environment, and signal evidence;
+- covered normal restart, rollback restart, absent dashboard, stale PID, and
+  wrong-command rejection paths;
+- exposed `pnpm test:local-dashboard-publisher-lifecycle` as the focused gate.
+- added both publisher policy and lifecycle fixtures to the fast Linux
+  Dashboard CI job before its build.
+
+Validation:
+
+- the lifecycle fixture, existing dashboard smoke policy, and JavaScript syntax
+  checks pass;
+- fixture cleanup uses only recorded exact PIDs and leaves no temporary process;
+- no live runtime, installed binary, dashboard listener, or browser was touched.
+
+Outcome: P116 is closed. The exact real-process lifecycle fixture and fast CI
+ordering pass; post-test inspection reports zero process or directory leaks.
+Convergence, capability, parity, dashboard, docs, syntax, YAML, package JSON,
+skill parity, plan audit, and diff gates pass. Read-only evidence shows the
+retained browser and live dashboard manifest unchanged. No GitHub write,
+browser interaction, credential action, live runtime action, or external
+mutation occurred.
+
+## Turn 162 | 2026-08-14
+
+Scope: resolve a verified disposable browser for strict dashboard rendered-page
+QA under WSL without weakening the general browser sandbox posture.
+
+Actions:
+
+- consumed installed `launchConfig` manifest, executable, artifact-smoke, and
+  WSL profile-smoke evidence before launch;
+- selected the first-class patched Chromium build and created an isolated
+  Windows-mounted temporary profile;
+- closed the exact disposable session and removed only its generated profile;
+- rejected stale or mismatched configured capability evidence before launch.
+- repaired the exact standalone-listener transition so a listener quiesced by
+  the publisher is resumed after handoff or rollback without widening
+  `--start-if-missing` authority.
+
+Validation:
+
+- focused resolver, cleanup-contract, unsafe-argument, syntax, and existing
+  dashboard smoke-policy tests passed;
+- one disposable live session rendered the dashboard app chrome and Workspaces
+  pane at `http://127.0.0.1:4848/` and left no generated profile;
+- retained PID 1046742, CDP endpoint, URL, and title remained unchanged.
+
+Outcome: P115 is closed. Required release publication rendered the dashboard,
+resumed the exact standalone listener without `--start-if-missing`, and left no
+disposable profile. Installed, release, and reference binary SHA-256 is
+`07f2b9c0a85d4d30e1b4cb5bb9a077ca58539a4cfc863d15f77e495a7fe013e4`.
+The retained browser PID and CDP endpoint remained unchanged and healthy.
+Doctor reports the live dashboard ready with zero stale runtimes; convergence
+remains partial only for the expected standalone diagnostic runtime. No GitHub
+write, prompt, typing, click, retained-page navigation, or credential action
+occurred.
+
+## Turn 161 | 2026-08-14
+
+Scope: separate authoritative dashboard publication readiness from disposable
+browser launch diagnostics without weakening rendered-page validation.
+
+Actions:
+
+- split required HTTP, marker, and runtime-manifest readiness from browser QA;
+- classified known pre-render launch unavailability as advisory by default and
+  retained explicit required-browser and post-launch fatal behavior;
+- added exact standalone dashboard PID, user, command, and mode verification
+  before a non-systemd listener can be retired.
+
+Validation:
+
+- focused policy, existing convergence, workspace inspector, syntax, parity,
+  formatting, production clippy, dashboard, docs, skill, and diff gates passed;
+- live publication served the required marker and exact runtime manifest, then
+  returned advisory `browser_launch_unavailable` for WSL Chrome exit 21;
+- installed/release SHA-256 is
+  `8afeb3a270ce54c85cc25a14292e75e6299eee4c5dcc087c9aaf2342e992929e`;
+- exact retained browser PID, CDP endpoint, URL, and title survived handoff.
+
+Outcome: P114 is closed. Runtime inventory is converged with zero stale
+runtimes and the live dashboard is ready. Doctor retains the pre-existing
+workstation payload drift and expected standalone-dashboard diagnostic state.
+No GitHub write, prompt, click, typing, navigation, credential operation, or
+retained-page mutation occurred.
+
+## Turn 160 | 2026-08-14
+
+Scope: checkpoint exact retired confirmation membership, expose cleanup review
+in the dashboard, and remove shared-state test races.
+
+Actions:
+
+- implemented a bounded active manifest with fixed-capacity immutable
+  hash-linked segments and fail-closed exact-membership integrity checks;
+- added authenticated dashboard retention preview and explicit exact-digest
+  apply with requester, candidate, and ledger proof;
+- serialized ambient HOME access in Chrome tests and isolated remote-view
+  handoff registries in unique per-test directories.
+
+Validation:
+
+- focused authority, integrity, dashboard, generated-client, contract, parity,
+  schema, formatting, build, and production-target strict-clippy gates passed;
+- the normal parallel Rust suite passed 1,852 tests with 57 ignored;
+- installed/release SHA-256 is
+  `efc8a0dba40989a757fd5660e93221ae3e92cd41c967feb0b0bbcdf87fa2506f`;
+- authenticated live HTTP and MCP previews verified schema v2 integrity without
+  applying cleanup, and the retained target was read without page mutation.
+
+Outcome: P113 is closed. Runtime inventory is converged with zero stale
+runtimes. The optional disposable-Chrome marker smoke remains blocked by WSL
+sandbox launch behavior, while direct authenticated dashboard checks pass.
+Strict all-target lint retains 12 pre-existing test warnings, and doctor retains
+the pre-existing workstation payload drift finding. No GitHub write, prompt,
+typing, click, navigation, or external mutation occurred.
+
+## Turn 159 | 2026-08-14
+
+Scope: bind durable task-authority actors to authenticated transports and add
+bounded terminal confirmation receipt cleanup.
+
+Actions:
+
+- required dashboard superuser authentication for HTTP issue, reconcile,
+  revoke, and confirmation mutations and injected the authenticated username;
+- derived MCP actors from the OS-owned stdio transport and rejected conflicting
+  structured caller identity claims;
+- added deterministic cleanup preview and exact review-digest apply, writing
+  retired confirmation IDs before receipt removal;
+- preserved pending and confirmed/dispatched indeterminate receipts and kept
+  retired confirmation IDs single-use.
+
+Validation:
+
+- focused authority, HTTP, MCP, generated-client, and dashboard tests passed;
+- one widened Rust suite passed 1,850 tests with 57 ignored;
+- a final parallel run exposed three unrelated shared-temp-state flakes, and
+  every affected test passed in isolation with one test thread;
+- formatting, production-target strict clippy, release, dashboard and docs
+  builds, contract parity, schema parse, install, and diff checks passed;
+- installed authenticated HTTP and MCP cleanup previews passed without apply;
+- the retained ChatGPT session identity was read back without page mutation.
+
+Outcome: P112 is closed. Installed and release binary SHA-256 are
+`b8416f50b572a9c4a7e9640e5cdae7b97eb226b06961b9a6630cc425bd9e9774`.
+Strict all-target clippy remains blocked by 11 pre-existing warnings in
+unrelated cumulative dirty test code. Install doctor remains nonzero only for
+the pre-existing `workstation_payload_partial_or_drifted` condition. No GitHub
+write, prompt submission, typing, click, navigation, or page mutation occurred.
+
+## Turn 158 | 2026-08-14
+
+Scope: preserve exact task-authority confirmation intent and single-use
+decisions across daemon restart.
+
+Actions:
+
+- added private durable pending and terminal confirmation records only for
+  task-authority issue, reconcile, and revoke controls;
+- bound each record to requester, session, action, target, URL, request digest,
+  creation time, and expiry, and required the exact requester as `decidedBy`;
+- archived decisions before dispatch, projected crash-after-commit as
+  indeterminate, and prevented decision replay, automatic confirmation, and
+  automatic restaging;
+- exposed redacted receipt status through HTTP, MCP, generated client types,
+  and the selected-session Authorities workspace.
+
+Validation:
+
+- restart, crash boundary, actor/session/action/target/URL/digest/expiry drift,
+  redaction, and terminal finalization regressions passed;
+- 1,849 Rust tests passed with 57 ignored; formatting, strict Clippy, release,
+  client, parity, dashboard, docs, contract, direct plan, and diff gates passed;
+- debug and installed disposable public smokes proved pending restart
+  preservation, zero restart execution, one exact decision, and replay
+  rejection with no authenticated profile, prompt, or page mutation;
+- installed and retained-lane readback preserved browser PID, target, URL, and
+  title. The known unmanaged dashboard listener required an exact detached
+  restart after publication, then manifest and bundle-marker checks passed.
+
+Outcome: P111 closed. The next boundary is authenticated transport-principal
+binding plus bounded terminal-receipt retention.
+
+## Turn 157 | 2026-08-14
+
+Scope: make durable task-authority state and indeterminate recovery operable
+from the selected-session Service dashboard.
+
+Actions:
+
+- added an Authorities workspace for state, target, plan progress, outcomes,
+  pending/completed reconciliation, and predecessor/replacement lineage;
+- derived replacement previews only from unconsumed steps and required exactly
+  one indeterminate receipt plus one exact live target before staging;
+- added exact-session HTTP, MCP, contract, and generated-client confirmation
+  decisions with an expected-action interlock and deny-on-close behavior;
+- colocated generated bootstrap credentials with an explicitly relocated
+  dashboard auth store so disposable tests do not touch real user credentials.
+
+Validation:
+
+- focused authority UI, client, HTTP, MCP, contract, and isolated-auth tests
+  passed; the serial Rust suite passed 1,846 tests with 57 ignored;
+- Rust formatting, strict Clippy, optimized release build, service API/MCP
+  parity, generated client checks, docs/dashboard production builds,
+  JavaScript syntax, validation selection, direct plan audit, installed-skill
+  parity, and diff hygiene passed;
+- debug and installed disposable public smokes rendered exact authority
+  lineage after local isolated login, denied a staged revoke without changing
+  authority, and cleaned up with no authenticated profile, prompt, or page
+  mutation.
+
+Result:
+
+- P110 is closed. Installed/reference executable SHA-256 is
+  `66fcca318e238ee6bf027ffd8ad8a38676c2e237acf59dad23465ee764b6f258`;
+  the live dashboard bundle SHA-256 is
+  `61465d64813a55daf57701fc214a73abcc6df57d386f4cf16d9fbab3a7622534`;
+- retained ChatGPT browser PID `1046742`, CDP port `39377`, target
+  `B0EC77F279E5434E33FEA97AB1742B1A`, URL, and title remained exact. No prompt
+  was sent and no GitHub write occurred;
+- install doctor has zero stale runtimes/listeners and retains only the
+  pre-existing `workstation_payload_partial_or_drifted` issue.
+
+## Turn 156 | 2026-08-14
+
+Scope: replace manual recovery of one indeterminate task receipt with a durable
+broker reconciliation transaction.
+
+Actions:
+
+- added stable reconciliation IDs, deterministic replacement authority IDs,
+  complete predecessor lineage, pending/completed revocation evidence, and
+  crash-resumable idempotency;
+- required exactly one matching indeterminate receipt and fresh exact-target
+  confirmation, while rejecting terminal, ambiguous, changed, tampered, or
+  replayed evidence;
+- exposed reconciliation through HTTP, MCP, generated clients, contracts,
+  help, README, docs, and repository plus installed skill guidance;
+- added an isolated public smoke that strands a bounded read after admission,
+  reconciles it, rejects predecessor replay, and executes one fresh read.
+
+Validation:
+
+- focused and serial Rust tests passed, with 1,844 passed and 57 ignored in the
+  widened suite; formatting, strict Clippy, release build, service API/MCP and
+  generated-client gates, docs/dashboard builds, direct plan audit, installed
+  smoke, retained-lane proof, and diff hygiene passed;
+- the live smoke used no authenticated profile, prompt, or page mutation.
+
+Result:
+
+- P109 is closed. The predecessor is durably revoked before replacement
+  publication, interrupted reconciliation resumes to one deterministic
+  replacement, and a consumed command is never replayable;
+- installed/reference executable SHA-256 is
+  `e03bd1ca76409476fcfb9afa1c875118756c5b115e7a58b5414d019adbf6ec36`;
+  the live dashboard bundle SHA-256 is
+  `3336d77c1a00965371f65389eff9c6d41d9687c2935d213b2f73da5aad6fb4df`;
+- retained ChatGPT browser PID `1046742`, CDP port `39377`, target
+  `B0EC77F279E5434E33FEA97AB1742B1A`, URL, and title remained exact. No prompt
+  was sent and no GitHub write occurred.
+
+## Turn 155 | 2026-08-14
+
+Scope: add durable terminal outcomes to ordered broker task receipts.
+
+Actions:
+
+- added one idempotent terminal finalizer across every post-admission command
+  exit, before result broadcast or response publication;
+- persisted completed/failed state, exact response SHA-256 and byte count,
+  post-action target/URL evidence, and finalization time;
+- projected admitted-only receipts as indeterminate without moving the cursor
+  backward or permitting replay, and added fail-closed receipt validation;
+- expanded status, docs, plan/roadmap evidence, repository/installed skill, and
+  the disposable public live smoke.
+
+Validation:
+
+- focused terminal-outcome regressions and the serial Rust suite passed 1,841
+  tests with 57 ignored; formatting, strict Clippy, optimized release build,
+  service contracts, API/MCP parity, generated client checks, docs/dashboard
+  builds, JavaScript syntax, direct plan audit, and diff hygiene passed;
+- debug and installed disposable public proofs passed completed/failed outcome
+  persistence, real handoff, replay rejection, response digests, revocation,
+  and cleanup without authentication or mutation;
+- the generic dashboard browser smoke reproduced its existing WSL Windows
+  Chromium/Linux-profile exit 21. The browser-free manifest/marker smoke and
+  the P108 Windows-profile live fixture passed.
+
+Result:
+
+- P108 is closed. Installed/reference executable SHA-256 is
+  `58023942b0c1de84b2c38aef23b9dbc440796ab76576f0b67669fa585193e130`;
+  live dashboard bundle SHA-256 is
+  `881e5a5203d9971063caa278eba2d32103b4db4ce8cce7f0a95584e98599b634`;
+- retained ChatGPT browser PID `1046742`, CDP port `39377`, target
+  `B0EC77F279E5434E33FEA97AB1742B1A`, URL, and title remain exact; no prompt was
+  sent;
+- doctor still reports the pre-existing workstation payload, Guacamole route,
+  route-display, group/helper/membership/sudoers gaps. No GitHub write or
+  unrelated dirty-worktree reconciliation occurred.
+
+## Turn 154 | 2026-08-14
+
+Scope: bind broker-issued authority to an ordered, crash-safe execution plan.
+
+Actions:
+
+- added v2 issuance with broker-assigned step IDs, exact pre-action/requested
+  URL bindings, fixed step evidence, and an envelope-bound plan hash;
+- added a validated durable cursor and per-command admission receipts written
+  before dispatch, with fail-closed missing/repeated/out-of-order/action/URL/
+  evidence/hash/ledger checks;
+- propagated `taskAuthority`, `taskStepId`, and `taskEvidenceBytes` through
+  HTTP, MCP `service_request`, generated clients, schemas, README, user docs,
+  and the repository plus installed skill;
+- documented immutable replanning as revoke plus newly confirmed issue;
+- expanded the public smoke to `title -> url -> title` and a real daemon
+  handoff after step 1, proving restart replay rejection without page mutation.
+
+Validation:
+
+- focused authority, HTTP, MCP, generated client, contract, and API/MCP parity
+  tests passed;
+- the serial Rust suite passed 1,837 tests with 57 ignored; formatting, strict
+  production Clippy, release build, service-contract smoke, docs/dashboard
+  production builds, JavaScript syntax, direct plan audit, and diff hygiene
+  passed;
+- debug and installed P107 disposable live proofs passed with exact cleanup,
+  no authentication, page mutation, prompt, or retained-profile use;
+- generic `test:service-request-live` remains blocked before page work by its
+  pre-existing disposable Chrome exit 21 despite configured `--no-sandbox`.
+
+Result:
+
+- P107 is closed. Installed/reference/live-dashboard executable SHA-256 is
+  `e760f6ad07012d9fc083a77b790f5f2aa2ee4d320e8b38f9c47815cf74311220`;
+  dashboard bundle SHA-256 is
+  `b4322cfab3888e1ce9f32aecc37229674641b644f7217d38398ed247df84eb82`;
+- the exact retained ChatGPT browser PID `1046742`, profile, CDP endpoint,
+  target `B0EC77F279E5434E33FEA97AB1742B1A`, canonical conversation URL, and
+  `Architecture Review Boundaries` title were preserved; no prompt was sent;
+- doctor has zero stale runtime listeners and a ready live dashboard, while
+  remaining partial state is limited to the existing workstation-payload and
+  interactive-sudo remote-view installation boundaries;
+- no GitHub write or unrelated dirty-worktree reconciliation occurred.
+
+## Turn 153 | 2026-08-14
+
+Scope: replace caller-constructed authority with a broker-issued, revocable,
+inspectable exact-target capability.
+
+Actions:
+
+- added confirmation-gated HTTP and MCP issue/revoke operations and no-launch
+  collection/exact status operations;
+- derived action/origin scope and action/evidence budgets from explicit bounded
+  plan steps, persisted issuer/approval/plan/hash/revocation evidence privately
+  and atomically, and required that record in fail-closed mode;
+- added generated client helpers, schema/contract metadata, caller-label and
+  profile-lease interlocks, allowed-action admission, docs, and installed skill;
+- added a disposable public retained-target smoke covering issue, status,
+  budget debit, exhaustion, and revoke without page mutation or prompt work.
+
+Validation:
+
+- focused authority, HTTP, MCP, service contract, generated client, and
+  profile-lease regressions passed;
+- the serial Rust suite passed 1,834 tests with 57 ignored; formatting, strict
+  production Clippy, client types/examples, API/MCP parity, docs/dashboard
+  production builds, release build, validation selection, targeted MDX lint,
+  JavaScript syntax, and diff hygiene passed;
+- all-target Clippy additionally reports ten unrelated pre-existing test-style
+  warnings in the preserved dirty worktree; no unrelated test churn was made;
+- debug and installed disposable public proofs passed with exact cleanup, no
+  authentication, prompt, composer work, or page mutation.
+
+Result:
+
+- P106 is closed. Installed, reference, and live-dashboard executable SHA-256
+  is `86380304f45f9d8c6affc3c9caaffe85bbae26aaa18dbf260eae0d8b05cf7868`;
+- handoff preserved browser PID `1046742`, CDP endpoint `127.0.0.1:39377`,
+  target `B0EC77F279E5434E33FEA97AB1742B1A`, canonical conversation URL, and
+  `Architecture Review Boundaries` title;
+- unavailable user systemd left the old 4848 process serving the prior binary.
+  Replacing only that exact deleted-executable listener produced a ready live
+  manifest with the installed hash;
+- install doctor has zero stale runtimes and a ready dashboard, but remains
+  partial for older workstation-payload provenance and the separate privileged
+  remote-view helper/group/sudoers installation requiring operator action;
+- no ChatGPT prompt, authenticated-site mutation, GitHub write, or unrelated
+  dirty-worktree reconciliation occurred.
+
+## Turn 152 | 2026-08-14
+
+Scope: add a durable task-level authority boundary above individual browser
+actions and P104 confirmation.
+
+Actions:
+
+- added a strict immutable `taskAuthority` contract for caller labels, allowed
+  origins, retained target and initial URL, action/evidence budgets,
+  consequence ceiling, and RFC 3339 expiry;
+- added an atomic per-session ledger keyed by authority identity and full
+  envelope hash so restart cannot reset budgets or accept envelope drift;
+- enforced authority before dispatch at the common daemon boundary and routed
+  above-ceiling actions through fresh exact-target confirmation;
+- propagated authority and evidence reservations through service HTTP and the
+  generated client contract, with required-mode and ledger-directory settings;
+- documented the contract and synchronized the repository and installed skill.
+
+Validation:
+
+- four authority regressions, HTTP propagation, P104 confirmation, client
+  contract/type/example, and API/MCP parity tests passed;
+- the serial Rust suite passed 1,828 tests with 57 ignored; formatting, strict
+  Clippy, docs production build/TypeScript, dashboard build, release build,
+  validation selection, and diff hygiene passed;
+- targeted MDX lint returned no errors and three no-matching-configuration
+  warnings; this checkout has no `plans:audit` package script;
+- debug and installed disposable public-page proofs passed with no login,
+  mutation, prompt, or cleanup residue.
+
+Result:
+
+- P105 is closed. Release, installed, reference, and live-dashboard executable
+  SHA-256 is
+  `9fe62980912e20c0e5c1db2c2b5538edcadba9adf106ab9a0d1ef3da6133c9df`;
+- executable handoff preserved retained browser PID `1046742`, CDP endpoint
+  `127.0.0.1:39377`, target `B0EC77F279E5434E33FEA97AB1742B1A`, canonical
+  conversation URL, and `Architecture Review Boundaries` title;
+- the unavailable user systemd bus left the prior dashboard listener active;
+  replacing only that exact listener reconciled the live runtime manifest;
+- install doctor reports zero stale runtimes and a ready live dashboard, but
+  remains partial for separate workstation-payload provenance and privileged
+  remote-view installation requiring operator action and interactive sudo;
+- no ChatGPT prompt, authenticated-site mutation, or GitHub write occurred.
+
+## Turn 151 | 2026-08-14
+
+Scope: replace the confirmation stub with a target-bound human approval
+boundary for retained-target agentic work.
+
+Actions:
+
+- classified browser actions into stable read-only, navigation, mutation,
+  credential, script, lifecycle, and control-plane consequence classes;
+- bound every pending approval to an exact confirmation ID, active target ID,
+  active URL, and 60-second lifetime;
+- rejected missing, wrong, expired, overwritten, and target-mismatched
+  approvals while preserving single execution for a matching approval;
+- added a disposable public-page smoke that proves read-only collection works,
+  denial mutates nothing, and a later target change invalidates approval;
+- documented category configuration and the fail-closed contract across CLI,
+  README, user docs, and the installed skill.
+
+Validation:
+
+- five focused confirmation regressions and thirteen policy tests passed;
+- the serial Rust suite passed 1,824 tests with 57 ignored; formatting, strict
+  Clippy, docs TypeScript/build, JavaScript syntax, validation selection, and
+  diff hygiene passed;
+- debug and installed public-page live proofs returned success with no
+  authenticated profile, mutation, prompt, or cleanup residue;
+- optimized publish handed the retained session to the replacement daemon with
+  browser PID `1046742`, the same CDP endpoint, and one reattached target;
+- the publisher's first final check found the old standalone dashboard listener
+  after the unavailable user systemd bus prevented restart. Terminating only
+  that exact deleted-executable listener and starting the installed dashboard
+  produced matching manifest and installed hashes.
+
+Result:
+
+- P104 is closed. Release, installed, and reference executable SHA-256 is
+  `0f57a4b060d68473d13b07155cd6fc502393124244d18def9340c5e7f083b468`;
+- install doctor confirms the current/workspace hash and ready live dashboard
+  with zero stale runtimes, while the separate workstation payload and
+  remote-view privileged helper remain partial pending interactive sudo;
+- the retained target still resolves to `Architecture Review Boundaries` at
+  `https://chatgpt.com/c/6a7f6bfc-61a8-83ea-82fc-59504c5f1bf2`;
+- two pre-build disposable public smoke attempts exposed a stale debug binary
+  and followed the Example Domain link. They used no authenticated state and
+  were cleaned exactly; rebuilt debug and installed proofs stopped mutation;
+- no ChatGPT prompt, authenticated-site action, or GitHub write occurred.
+
+## Turn 150 | 2026-08-14
+
+Scope: close the WSL Windows launch gap in the isolated CDP tab-streaming live
+fixture.
+
+Actions:
+
+- preserved explicit browser executable selection ahead of the fixture's
+  `/usr/bin/google-chrome` fallback;
+- placed Windows Chromium fixture profiles under Windows Temp and passed the
+  exact profile as top-level service-request authority;
+- added a no-browser precedence and profile-placement regression;
+- kept all three live runs limited to disposable data-URL tabs and exact
+  cleanup.
+
+Validation:
+
+- `pnpm test:service-cdp-tab-streaming-fixture` passed;
+- the live streaming smoke passed through the debug executable and through the
+  exact caller shape with only the Windows executable environment configured;
+- syntax, package metadata, validation selection, and diff hygiene passed;
+- no fixture profile or session remained after any run.
+
+Result:
+
+- P102 is closed and the previously failing WSL Windows streaming fixture now
+  completes end to end;
+- retained PID 184301 had already exited at `2026-08-14T20:48:18Z`, before the
+  first P102 file change at `2026-08-14T20:59:17Z`; P102 did not relaunch that
+  profile or send a prompt;
+- no GitHub write occurred.
+
+## Turn 149 | 2026-08-14
+
+Scope: close P99-F1 with a bounded evidence reader that remains usable when a
+monolithic page renderer stalls.
+
+Actions:
+
+- added `get page` with HTTP(S), domain-policy, byte, timeout, and explicit
+  credential controls;
+- implemented the fetch through one temporary background target using
+  `Network.loadNetworkResource` and bounded `IO.read`, with verified stream and
+  exact-target cleanup and no `Runtime.*` command;
+- preserved active-target identity and returned source, status, MIME, byte,
+  truncation, credential, and target metadata;
+- routed the frozen WHATWG mission deterministically through the reader and
+  retained the same reader as the single fallback after renderer evidence
+  failure on other missions;
+- documented, installed, and synchronized the repo and installed skill.
+
+Validation:
+
+- focused parser and mock-CDP tests passed, including success, truncation, read
+  failure, timeout, cleanup, no-Runtime, credential default, and original-target
+  checks;
+- the isolated WHATWG run and frozen ten-mission run passed; the full score was
+  10/10 in 48.468 seconds with zero retries and exact cleanup;
+- the deterministic serial Rust suite passed 1,816 tests with 57 ignored;
+  strict Clippy, formatting, docs TypeScript/build, route-confusion gates,
+  JavaScript syntax, validation selection, and diff hygiene passed;
+- targeted MDX lint had no errors and one no-matching-config warning. No package
+  plan-audit command exists in this checkout.
+- the generic CDP-tab-streaming live smoke remains blocked before navigation by
+  its isolated WSL Chrome launch and did not exercise this reader.
+
+Result:
+
+- P101 and P99-F1 are closed. Installed/debug/reference executable SHA-256 is
+  `739201f613f5b5cf987347618908528cd05a57ca8fe2c064b1699d2728f7552b`;
+- exact executable handoff preserved retained browser PID 184301, its CDP
+  endpoint, profile, target inventory, and `Architecture Review Boundaries`
+  conversation identity;
+- the installed public read returned HTTP 200 and 559 bytes with credentials
+  disabled, then exact before/after inventory remained unchanged;
+- no prompt, composer action, login, form submission, or GitHub write occurred.
+
+## Turn 148 | 2026-08-14
+
+Scope: close the delayed browser-health cascade exposed by the P99 public-web
+research benchmark.
+
+Actions:
+
+- added a no-replay post-timeout circuit that separates browser-level CDP loss
+  from active-renderer damage;
+- prepared a ready blank target before closing exactly one affected ordinary
+  owned target while preserving unrelated tabs and the browser process;
+- preserved service-tab handles and externally attached browser lifecycle
+  authority;
+- skipped polite CDP close only after browser-level disconnection, then
+  terminated the exact locally owned process and performed one blank relaunch;
+- documented, built, installed, and synchronized the behavior into the repo and
+  installed agent-browser skill.
+
+Validation:
+
+- focused tests, 1,811 Rust tests, formatting, strict Clippy, docs build and
+  TypeScript, route-confusion gates, release build, validation selection, diff
+  checks, and installed dashboard runtime smoke passed;
+- the full frozen benchmark improved from 8/10 with delayed CDP refusal to 9/10
+  with only the bounded WHATWG extraction failure;
+- Python, Rust, Git, and Node passed after WHATWG in the same session, and the
+  installed critical pair repeated that result;
+- the generic CDP-tab-streaming smoke remains blocked before navigation by its
+  disposable Linux Chrome launch configuration under WSL and did not exercise
+  this change.
+
+Result:
+
+- P99-F2 is closed and installed binary SHA-256 is
+  `6c6bcd338465639a3937b6a9c4c6f4a787b7e2847396cde451965603174968a8`;
+- handoff preserved retained browser PID 184301 and one current ChatGPT target;
+  read-only checks found `Architecture Review Boundaries` at its current URL and
+  no prompt was sent;
+- the next priority is P99-F1: a bounded precise-section or non-Runtime reader
+  for monolithic standards pages.
+
+## Turn 147 | 2026-08-14
+
+Scope: establish a public, no-login Browser Research Concierge benchmark before
+allowing authenticated or consequential agentic-browser missions.
+
+Actions:
+
+- added a ten-mission installed-runtime harness covering official IANA, RFC
+  Editor, W3C, WHATWG, Python, Rust, Git, and Node.js sources;
+- used one disposable Windows Chromium profile and named agent-browser session
+  with canonical URL, page identity, evidence, duration, zero-retry, and exact
+  cleanup checks;
+- replaced title-only identity with title, heading, or bounded body evidence so
+  valid RFC pages with empty HTML titles remain verifiable;
+- added focused mission selection, source-drift diagnostics, post-navigation
+  outcome verification, and one absolute mission deadline.
+
+Validation:
+
+- syntax, package JSON, and patch checks passed;
+- the initial real run scored 6/10 and exposed one stale evidence phrase, two
+  titleless RFC pages, and the monolithic WHATWG renderer stall;
+- the strengthened pre-budget run scored 9/10;
+- the final budgeted full run scored 8/10 with eight canonical evidence passes,
+  one bounded WHATWG service-job timeout, and one delayed Node.js CDP refusal;
+- the Node.js mission passed alone in 1.3 seconds, attributing its full-suite
+  failure to delayed session damage rather than source availability;
+- every run reported cleanup complete and no authenticated profile, prompt,
+  form submission, download, or other mutation was used.
+
+Result:
+
+- the evaluation harness is complete and intentionally exits nonzero when any
+  mission fails;
+- agent-browser is reliable for ordinary public documentation but not yet safe
+  for long-horizon agency after a renderer-stall timeout;
+- the next repair is a post-timeout health circuit breaker plus a bounded
+  non-Runtime or precise-section evidence reader.
+
+## Turn 146 | 2026-08-14
+
+Scope: retain WSL NAT and the home-network Bastion jump route while making
+Windows Chromium DevTools privately reachable from agent-browser without SSH,
+mirrored networking, a firewall rule, or a persistent terminal.
+
+Actions:
+
+- added an internal WSL-loopback relay that forwards each connection to
+  Windows loopback through a bounded PowerShell/.NET binary pump;
+- tied relay admission, health, handoff, and cleanup to one exact Windows
+  browser PID and translated profile identity, failing closed on zero or
+  multiple main-process matches;
+- generalized the executable-handoff smoke for Windows Chromium and documented
+  the NAT relay in CLI output, README, configuration docs, and the installed
+  agent-browser skill;
+- removed the active `srv1635328` SSH host block, its four authorized keys, and
+  its host-key records while preserving the Tailscale Bastion and desktop jump
+  routes.
+
+Validation:
+
+- disposable headed Windows Chromium launch/close passed under WSL NAT;
+- executable handoff preserved browser/relay PID 255174 and CDP endpoint
+  `127.0.0.1:37943`, then exact close removed both;
+- 1,866 Rust tests, formatting, strict Clippy, dashboard build/typecheck, docs
+  build, release build, focused path and handoff smokes, patch checks, and
+  installed dashboard runtime smoke passed;
+- retained LitScout target `F203CCD6CC8B212B3B55D16368150AEB` remained ready
+  at its exact conversation URL and no prompt was sent.
+
+Result:
+
+- installed executable, reference, and live dashboard manifest SHA-256 are
+  `0d1b1a771d57e2a084d10bcf5e74a47194dcf206af3b7f2c6dc8c428475f66bc`;
+- the no-prompt broker attach request stopped with HTTP 502 before admission;
+  zero matching `cdp_attach` jobs were committed, so there was no detach
+  obligation and the request was not retried;
+- install doctor is ready for launch configuration and live dashboard parity;
+  its remaining failure is the older source-free workstation payload hash plus
+  optional privileged RDP-helper prerequisites, outside this relay change.
+
 ## Turn 145 | 2026-08-09
 
 Scope: repair the upstream renderer and command-delivery boundaries exposed by
@@ -6320,3 +8520,432 @@ Result:
   browser, released one physical target, preserved the browser/session route,
   and successfully evaluated the surviving tab handle.
 - Remaining P69 work starts at Slice C route-bound handoff deepening.
+# Turn 127 | 2026-09-02
+
+Scope: bind retained-browser reuse to durable browser-build and executable
+proof.
+
+Current evidence:
+
+- The installed service default and ready manifest select
+  `stealthcdp_chromium`.
+- The healthy retained `session:default` process is bundled Linux Chromium and
+  its browser record has no build or launch proof.
+- Access-plan reuse and daemon auto-attach currently accept that browser by
+  profile and host alone.
+
+Safety boundary:
+
+- Do not navigate or close the retained FigureLabs target.
+- Do not launch a duplicate profile lane.
+- Treat missing or mismatched retained build proof as incompatible whenever the
+  resolved request requires a browser build.
+- When `stealthcdp_chromium` is required for a fresh launch, require
+  `browserCapabilityLaunch.applied=true`; otherwise stop before browser start
+  and repair the preflight binding, compatibility, or validation evidence.
+- Keep ordinary non-service direct attachment behavior when no governed build
+  is selected.
+
+Plan: `docs/dev/plans/0127-2026-09-02-build-bound-retained-browser-reuse-plan.md`.
+
+# Turn 128 | 2026-09-02
+
+Scope: close the live Plan 0127 build-bound reuse blockers and clean the
+worktree without replacing the authenticated browser.
+
+Completed:
+
+- Validated the exact `stealthcdp-win-150` executable binding and retired stale
+  daemon listeners while preserving the retained browser.
+- Allowed explicit `attached_existing` retained browsers without a local PID
+  only after exact live daemon, CDP, browser, session, profile, target, URL, and
+  handle verification; locally owned browsers remain PID-bound.
+- Persisted publisher browser-smoke policy through recover-only handoff.
+- Derived service-tab profile identity from the access-plan command before the
+  manager fallback, with no ambient-environment fallback.
+- Installed SHA-256
+  `2dff309146ce62e2383ceaf6c2fe9169d92093049b5b29b9e3cb6260a5e2c9fe`;
+  the publish journal reached `recovered_ready` and workstation doctor reported
+  converged state with no issues.
+- Proved a no-prompt broker acquisition returned the retained
+  `session:default`, profile `chatgpt-pro`, exact target URL, and target-bound
+  handle, then released the test tab without closing the browser.
+
+Validation:
+
+- Rust: 1,906 passed and 57 ignored; strict Clippy and formatting passed.
+- Focused attached-existing, service-tab profile, retained-browser requirement,
+  and publisher-recovery tests passed.
+- ESLint, service-client checks, HTTP/MCP parity, route-confusion gates, docs and
+  dashboard builds, native release build, plan audit, CodeGraph sync, and diff
+  hygiene passed.
+
+Remaining review boundary:
+
+- AuraCall response `resp_f08eb21d87c84f1db2756f646beb7ec8` was created once,
+  but its API restarted while waiting and the durable lease expired. Recovery
+  then failed with `runner_execution_failed` because its submitted WebSocket was
+  closed, explicitly refusing prompt replay. Read-only retained-page inspection
+  found no matching nonce-bound user message. Preserve the response identity and
+  do not resubmit or launch a substitute browser.
+
+# Turn 129 | 2026-09-07
+
+Scope: Plan 0128 autonomous headless execution, first checkpoint.
+
+- Verified the initial clean worktree at `8e1ca4bb` and queried current broker
+  access planning for bwkuehl.com.
+- The disposable session `bwkuehl-headless-qa-20260907`, profile
+  `bwkuehl-public-qa-20260907`, launched Linux Chromium headlessly but failed
+  before navigation: capability metadata omitted the proven stock build when
+  no preference binding matched. Preserve this exact probe for the routing fix.
+- CLI chat now bounds gateway and tool work by the remaining turn deadline,
+  reports exhausted steps as unfinished, rejects incomplete streamed tool calls,
+  and stops on unknown tool outcomes.
+- Three Rust local-HTTP stream tests and the real CLI fixture
+  `node scripts/test-cli-chat-completion.js` passed. The fixture verifies 50-round
+  exhaustion, truncated stream rejection, and normal completion without browser
+  launch or an external model request.
+- The full headless objective remains active. Dashboard parity, fresh-launch
+  proof, task recovery, authentication, and live task outcomes are unverified.
+
+# Turn 130 | 2026-09-07
+
+Scope: Plan 0128 bounded blocker repair and clean-worktree checkpoint.
+
+- Started clean at `8f4acea3`. Added exact fresh-owned installer Chrome
+  provenance in `native/cdp/chrome.rs`, exposed it through `native/browser.rs`,
+  and persisted it in both successful fresh-launch paths in `native/actions.rs`.
+  Two focused regressions pass, including repository roundtrip and exclusion of
+  custom, attached/no-process, stealth, missing-installer, and invalid-registry
+  proof. No existing browser is relabeled.
+- Dashboard Chat now errors on incomplete streams, 50-round exhaustion, tool
+  timeout, and client disconnect. The whole turn, including compaction, has one
+  deadline. Seven isolated socket regressions pass; the existing actual-CLI
+  local gateway fixture passes all three scenarios.
+- Delegated only the disjoint dashboard Rust file to
+  `/root/dashboard_completion`, which completed its seven tests and returned no
+  blocking findings on a closed-world review of the launch patch. Primary
+  inspected the dashboard diff and owns combined validation.
+- Native build, strict Clippy, formatting, targeted ESLint, dashboard TypeScript
+  check, and diff check passed. CodeGraph synchronized with no pending changes;
+  direct source reads filled unsupported graph queries. Planning audit reports
+  `ok: true`, `applicable: false`, not independent plan acceptance.
+- A first full isolated Rust run had 1916 passes, 57 ignored, and one child
+  executable spawn failure in the large-output doctor fixture during concurrent
+  Rust validation. The noncompeting full rerun passed: 1918 passed, zero failed,
+  57 ignored. A final focused rerun covers the platform-canonical path assertion.
+- Read-only deployment preflight fails `retained_daemon_missing` for the required
+  `nyse-developer` lane. No pin removal, replacement browser, runtime installation,
+  service restart, ChatGPT submission, or GitHub write was performed. Publication
+  journal is already terminal `recovered_ready`; recovery is not the remedy.
+- Local public tunnel unit is disabled/inactive; its loopback origin still
+  listens on 8787. No public ingress change was authorized or attempted.
+
+Next: restore the exact required retained lane, or explicitly approve retiring
+its obsolete requirement, before guarded installation and fresh-launch live QA.
+Durable task recovery and full autonomous/authenticated task coverage remain
+separate unverified Plan 0128 work.
+
+# Turn 131 | 2026-09-07
+
+Scope: Plan 0128 CLI interactive compaction deadline closure.
+
+- Started clean at `6ed97936`; classified the prior goal turn as verified
+  implementation progress. Inspected current source and confirmed interactive
+  CLI compaction ran outside the turn deadline.
+- Moved compaction into `run_chat_turn`, using its existing absolute deadline.
+  A timeout preserves history and returns before gateway tool work; success
+  preserves system instructions and recent messages. No automatic retry occurs.
+- Five CLI Rust tests pass, including two new socket regressions for stalled
+  summary/history preservation and successful compaction. The actual built CLI
+  completion fixture passes its three scenarios without external model calls.
+- Full isolated Rust suite: 1920 passed, zero failed, 57 ignored. Native build,
+  strict Clippy, formatting, targeted ESLint, dashboard TypeScript, and diff
+  checks passed. Plan audit reports no problems but is not applicable to this
+  repository's adopted planning contracts.
+- `/root/dashboard_completion` performed a read-only closed-world review and
+  returned no blocking findings; primary owns implementation and validation.
+- Updated README, CLI help, skill, docs page, and Plan 0128 in the same slice.
+  CodeGraph was synchronized; direct source reads covered exact control flow.
+- Repeated read-only installation preflight still fails
+  `retained_daemon_missing` for `nyse-developer`. No installation, pin changes,
+  service restarts, account access, ChatGPT submission, or GitHub writes occurred.
+
+This closes another bounded-wait gap, not the full autonomous-browser objective.
+Durable task recovery and representative live task verification remain open.
+
+# Turn 132 | 2026-09-07
+
+Scope: user-authorized retirement of the obsolete NYSE installation requirement
+and guarded local installation of commits through `2164f6d8`.
+
+- Verified the exact NYSE requirement digest, then moved only its requirement
+  and enforcement files into the private recoverable directory
+  `~/.agent-browser/publications/retired-nyse-requirement-20260907/`.
+  Profile/login data and the separate Workshop requirement were not changed.
+- Publisher completed transaction
+  `local-dashboard-d5a0771c-0bd8-4b8d-a0e2-9118711be673` as terminal `ready`.
+  Installed and live dashboard executable SHA-256:
+  `d2183f7679e4261f45305e5d1a3e9541f911a643b064169b3d4e1603d9b8fe09`.
+  Previous executable is recoverable from the publisher's verified backup.
+  Dashboard HTTP/bundle/manifest checks and three installed-CLI fixture scenarios
+  passed. Browser smoke was deliberately skipped; no live autonomy claim.
+- Workstation apply refreshed payload provenance, then failed opening the
+  canonical Guacamole displays. The route viewer inherited a stealth build
+  requirement without a matching binding. Source shows the installer pins a
+  Linux viewer executable but the helper does not pin the matching browser build.
+  The report-only helper still attempts route opening; it failed before launch.
+- Install doctor subsequently returned exit zero with no issues and payload
+  ready. Remote-view doctor still lists missing X11 displays 10 and 11 despite
+  returning exit zero: full workstation reconciliation is not complete.
+- Restored the previously serving dashboard after installer quiescence; repeated
+  HTTP/manifest smoke passed. Restored the PostgreSQL backup timer. Runtime
+  interlock remains paused pending route-launcher repair to avoid retry churn.
+  No public tunnel changes, account login, ChatGPT prompt, or GitHub writes.
+
+Next: bind the installed Guacamole viewer's executable and browser-build identity
+together, add regression coverage, rerun workstation reconciliation, and then
+perform the pending headless rendered-page verification.
+
+# Turn 133 | 2026-09-07
+
+Scope: fix the workstation viewer blocker and finish live reconciliation.
+
+- `21d8ec18` binds the installer-selected stock Chrome executable and build
+  identity on viewer launch, header setup, and navigation. The global browser
+  preference and private authentication data are unchanged. The real command
+  builders pass `scripts/test-route-viewer-build.js`; invalid build names reject
+  before execution. Installer selection and update behavior have Rust coverage.
+- Closed the failed Route A service attachment, then verified and gracefully
+  terminated its remaining legacy installer-owned Chrome PID by UID, executable,
+  and exact profile path. Profile data was preserved. Both route desktops then
+  reached ready. The initial identity check deliberately stopped when the
+  executable differed; inspection identified managed Chrome 149, not 152.
+- `285538b5` fixes the subsequent final-doctor startup failure: at most three
+  attempts for a sole unreadable dashboard manifest, with no service restart or
+  relaxation of hash/other failure checks. The 22 installer tests, packaged
+  source-free fixture, strict Clippy, formatting, targeted ESLint, TypeScript,
+  build, and diff checks passed. CodeGraph was synchronized. Planning audit is
+  clean but not applicable. Independent bounded reviews returned no blockers.
+- Installed runtime SHA-256:
+  `09288ffad7a132b888eea6e79d47d49d6302599bb39310b6204eea058d64afda`.
+  Publisher transaction `local-dashboard-d2df51c6-1c1a-457f-9a6e-6f429ed924f2`
+  finished ready and preserved both new viewer browser PIDs/CDP endpoints.
+- Final `agent-browser install workstation --apply --json` exited zero with
+  `success: true`, `complete: true`, `state: ready`, and `ready: true`.
+  Durable local receipt: `~/.agent-browser/convergence/workstation-latest.json`.
+  This supersedes Turn 132's incomplete reconciliation and paused watchdog.
+- No GitHub writes, public tunnel changes, ChatGPT prompts, or user-profile
+  deletion. This resolves the workstation blocker, not the entire autonomous
+  browser objective; representative headless task verification remains next.
+
+### Session continuation checkpoint | 2026-09-07
+
+- Plan 0128 follow-through preserves the proven active build when only the global
+  launch default differs. Explicit/site/profile/registry constraints still bind;
+  this is not a new launch fallback or an exemption for missing build proof.
+- MCP missing/refused retained routes return `retained_daemon_unavailable` and
+  recovery guidance. No daemon startup or additional replay is added.
+- Validation: 1928 isolated Rust tests passed, 57 ignored; format, strict Clippy,
+  debug build, API/MCP parity, client contract/types, docs build, targeted ESLint,
+  actual no-launch MCP fixture, and diff check passed. Planning audit is clean but
+  not applicable. Independent scoped review returned no blocking findings.
+- Reproduce the no-launch fixture with
+  `AGENT_BROWSER_SMOKE_AGENT_BROWSER_CMD=/absolute/path/to/built/agent-browser node scripts/test-mcp-retained-route-unavailable.js`.
+- Concurrent installer-recovery work is preserved. This slice is source-verified,
+  not installed or published; reconcile that work before the next runtime update.
+
+### Private credential broker checkpoint | 2026-09-08
+
+- Plan 0130 implements only internal encrypted staging and durable per-reference
+  admission in `cli/src/native/private_secret_store.rs`, registered by
+  `cli/src/native/mod.rs`. No private browser command or public contract is
+  exposed. The installed runtime and retained SAM/Workshop targets are untouched.
+- Primary validation: nine focused tests; final full isolated Rust run 1937
+  passed, 57 ignored; formatting, strict Clippy, debug build, ESLint, service
+  client typecheck and diff checks passed. Planning audit has no problems but is
+  not applicable. CodeGraph is synchronized. Exact source/build digests and
+  independent delegation/review receipts are in Plan 0130.
+- Independent review caught directory-enumeration errors being treated as EOF;
+  fixed with explicit errno handling and unsupported-platform rejection.
+  Concurrent independent-open and subprocess-exit tests reject reference replay.
+  This is not browser at-most-once proof or cross-reference backup-code dedup.
+- Live execution remains blocked: raw inspect children survive listener shutdown;
+  background stream/replay paths bypass command guards; cancellation and recovery
+  need a persistent shared privacy lock; existing handle validation is not full
+  live identity proof. These are accepted B1-B4 in Plan 0130, not new permission
+  requests. Do not use ordinary fill/evaluate/password-stdin for this SAM test.
+- Next engineering slice: shared identity-bound observer/input barrier with
+  cancellation/restart protection and exact-handle/origin enforcement, then
+  synthetic sentinel tests before enabling private transport and installing.
+  No Slack secrets, backup codes, API-key renewal, ChatGPT prompts, GitHub writes,
+  or runtime installation occurred. Unrelated dirty RDP-route work is preserved.
+
+### Private credential barrier continuation | 2026-09-08
+
+- Plan 0130 now implements a cooperative endpoint-scoped OS privacy barrier,
+  integrated into CDP command/observer paths, viewer replay/input, dispatcher
+  admission and attached-browser recovery. Pending command receipts are durable
+  before dispatch and survive cancellation/process death. Private locks have no
+  automatic reset. Untracked raw traffic blocks private admission as uncertain.
+- Inspect proxy connections are owned, aborted and joined during awaited
+  shutdown. A rejected close/handoff cannot exit the daemon. Pure exact-target
+  checks reject a healthy same-profile handle at a different requested URL.
+- Final isolated suite: 1964 passed, 57 ignored; formatting, strict Clippy,
+  ESLint, client typecheck, native debug and docs builds, and diff checks passed.
+  Planning audit is clean but not applicable; CodeGraph is current. Synthetic
+  viewer/CDP tests prove cached/live frame and event silence, input rejection,
+  reconnect refusal and restart-persistent locks. Plan 0130 records exact source
+  hashes, file ownership and independent review receipts.
+- Not installed or live accepted: aliases/tunnels/external clients are not
+  unified; no sanitized unlock/reconciliation or private secret transport exists;
+  the identity helper still needs fresh execution-time observations. Matching
+  CDP responses do not prove deferred page work stopped. Do not delete receipts
+  to bypass these gates. Runtime-path and userinfo-URL compatibility constraints
+  are documented in help, README, skill and security docs.
+- Next: verified retained-browser authority across alternate routes and safe
+  recovery, then private execution integration. No real Slack credential,
+  backup code, SAM renewal, ChatGPT submission, install or GitHub write. Existing
+  RDP work and retained browser sessions were preserved.
+
+### 2026-09-08: private recovery transport checkpoint, not live acceptance
+
+- Added permit-bound reconnect using the already locked store, authenticated
+  recovery epochs, fixed-label private CDP errors and isolated-world page cleanup.
+  Cleanup keeps observation locked even when the retained page is empty.
+- Independent review identified delayed private messages after unlock and
+  incomplete mutation-target binding. Both block live enablement. Alternate CDP
+  routes also still need trusted broker identity mapping. Do not delete locks,
+  replay submissions or freeze unrelated browser lanes to bypass these gaps.
+- Primary validation: 6 focused CDP tests and 1971 full Rust tests passed,
+  57 ignored; formatting, strict Clippy, ESLint, client typecheck and docs build
+  passed. Planning audit reports no problems but is not applicable. CodeGraph
+  refreshed with 482 files. Plan 0130 retains source hashes and review evidence.
+- No installation, live browser mutation, credential retrieval, SAM renewal,
+  LitScout credential update, ChatGPT prompt or GitHub write. Existing dirty
+  worktrees and retained sessions remain preserved.
+
+### 2026-09-08: private transport R1/R2 remediated, live integration pending
+
+- Old CDP observer generations now remain revoked after private cleanup,
+  including delayed responses/events not read during the private interval.
+  Recovery sockets never gain public observation. Reader, command and inspect
+  paths share the captured observer; new post-clean sockets capture a new epoch.
+- Private admission requires a validated target token and persists its target
+  and authorization digest. Recovery preserves scope. Private dispatch rejects
+  unscoped permits and probes the actual session target before mutation; a
+  sibling target cannot receive the command or authorize cleanup.
+- Independent closed-world review passed R1/R2 by source inspection. Primary
+  ran 9 CDP tests and the full suite: 1982 passed, 57 ignored. Formatting, strict
+  Clippy, ESLint and service-client typecheck passed. See Plan 0130 for receipts.
+- Live alternate-route broker binding and private executor integration remain
+  unfinished. No runtime install, live credential use, SAM renewal, LitScout key
+  change, ChatGPT prompt or GitHub write. Dirty worktrees and browsers preserved.
+
+### 2026-09-08: daemon-owned private authority preflight
+
+- `private_broker.rs` now rebuilds authority from broker records and probes the
+  already-owned CDP page session. It rejects caller-provided authority, mismatched
+  profile/session/browser/endpoint/target/URL, unhealthy or ambiguous targets,
+  and expired or malformed configured leases. Cached embedded handles are ignored.
+- This is preflight, not an enabled private executor. Revalidate under the private
+  barrier before admission; alternate-route binding, private ingress/egress and
+  replay-safe workflow coordination still gate installation and live credentials.
+- No-launch checks retained the original LitScout login.gov tab. Its URL includes
+  a request query; do not substitute the bare origin. The session has no expiry,
+  so expiry does not explain differing lease counters. No browser changes or
+  real credential operations occurred. See Plan 0130 for checkpoint evidence.
+
+### 2026-09-08: locked admission and backup-code replay reservation
+
+- Internal broker admission now composes daemon-owned preflight, scoped privacy
+  lock and private-transport revalidation. Fresh identity must still match the
+  original saved scope. Errors/cancellation keep the durable lock closed.
+- Private storage now reserves a backup code and its exact reviewed source slot
+  across restaging, new consent IDs and restart, using keyed fingerprints rather
+  than raw values or plain code hashes. Canonical account/source provenance is
+  still the future trusted operation parser's responsibility.
+- These are integration components, not an enabled authentication executor.
+  Alternate-route authority, private ingress/egress and cleanup coordination
+  still gate runtime installation and the SAM.gov/LitScout end-to-end test.
+  No real credentials or live browser/runtime state changed in this checkpoint.
+
+### 2026-09-08: typed private single-operation execution
+
+- New internal parser/executor connects encrypted staging to private isolated DOM
+  execution and encrypted results. Login, backup, renewal and key-read operations
+  have strict account/origin binding; durable admission precedes mutation.
+- Effective form action/method/target checks prevent submitter overrides or base
+  targets from leaking credentials into GET URLs or another window. Independent
+  closed-world review accepted this fix by source inspection.
+- Synthetic DOM and mock-CDP coverage is not live acceptance. Public entrypoints
+  remain disabled pending trusted Slack ingress, consent-bound navigation across
+  stages, alternate-route authority, cleanup and guarded LitScout egress.
+- Do not use the old Slack search helper as a credential adapter: its desktop
+  credential extraction and ordinary error/write paths are outside this private
+  transport. No real Slack credential or SAM key was retrieved or changed.
+
+### 2026-09-09: operator-approved local Slack bootstrap
+
+- The approved private SABER channel is in Cochran Group (`polycy.slack.com`),
+  workspace `TEG3AC109`, channel `C07CA08AKUH`, verified from Slack metadata only.
+- Source helper `python3 scripts/setup-private-slack.py` uses hidden operator
+  terminal input, probes only authentication identity/scopes, and creates an
+  owner-only plaintext bootstrap file without replacing existing credentials.
+  `groups:history` is required; the operator additionally approved canvas
+  read/write. No other token scope is approved by this setup.
+- This is not private executor installation or an end-to-end SAM login. Never
+  print the connection file or ask for the token in chat. Use `--status` for local
+  metadata and preserve the existing browser and terminal sessions.
+
+- Follow-up live verification: the saved token passed a fresh constrained
+  `auth.test` and matched the saved bot/workspace/scopes. No messages were read,
+  no credential was printed and no config was rewritten. Twelve offline helper
+  tests passed again. This verifies local Slack authentication only, not channel
+  access, SAM login, renewal or LitScout activation; Plan 0130 retains evidence.
+
+### 2026-09-09: bounded autonomous source discovery, not runtime activation
+
+- The operator approved discovering relevant messages in the existing private
+  SABER channel instead of manually supplying links. LitScout now supports a
+  digest-bound discovery consent alternative with explicit account, browser,
+  workspace/channel, timestamp window and page/message limits.
+- `scripts/private-slack-discovery.py` is an internal, non-CLI library. It uses
+  the approved dedicated bot, verifies fresh identity/scopes and walks bounded
+  history without printing bodies. It returns exact candidate references/counts
+  only after unambiguous explicit account-matched text and complete pagination.
+- Missing completion metadata, changed scopes, ambiguous accounts/candidates,
+  uninspected thread replies, retention limits and exhausted budgets fail closed.
+  It does not fetch files/canvases, retry rate limits, widen scope, or use a model
+  to interpret secret-bearing messages. Free-form text recognition remains limited.
+- This helper is not wired into the installed daemon. Trusted consent-to-adapter
+  integration, private extraction/staging, browser transitions/cleanup, renewal,
+  guarded installation and a fresh consumer probe remain required. Do not run
+  live credential discovery through ad hoc imports to bypass those gates.
+
+### 2026-09-09: consent-to-private-discovery connection
+
+Follow-up: the approved extraction and exact-navigation checkpoint is recorded
+in Plan 0130. It adds an atomic broker-only approval claim, genuine in-process
+extraction continuity and durable ordered destination advancement. Primary
+validation passed 2,010 native tests (57 ignored), 140 LitScout tests, 6 private
+adapter tests, 17 extraction tests and 12 bootstrap tests. These are source and
+synthetic runtime receipts, not live renewal evidence. The installed executor,
+private transport, cleanup and guarded consumer handoff remain unconnected;
+renewal stays disabled and no live credential was used.
+
+- Internal `scripts/private-sam-discovery.py` now connects an embedding service's
+  authoritative LitScout context and approved digest to private Slack discovery.
+  It opens the protected connection only after durable admission; it does not
+  supply an operator-facing command, choose a DB, or approve a plan itself.
+- LitScout's source schema adds `CredentialDiscovery`. Started/failed attempts
+  are not retried; only in-scope refs/counts may be published, and publication
+  atomically checks current approval. No live schema migration occurred.
+- Private exact-source extraction now rejects edits after discovery and returns
+  opaque in-memory material. It cannot serialize credentials into normal results
+  or select/try a backup code. Password punctuation is literal; ambiguous
+  boundary whitespace is rejected. Process-local extraction capabilities are
+  consumed before I/O and cannot be rebuilt from saved public references.
+- No renewal runtime is enabled. Encrypted staging, retained-browser transitions,
+  verified privacy cleanup and the guarded key/consumer handoff remain required.

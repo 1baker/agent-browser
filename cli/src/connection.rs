@@ -90,7 +90,8 @@ impl Connection {
 }
 
 /// Get the base directory for socket/pid files.
-/// Priority: AGENT_BROWSER_SOCKET_DIR > XDG_RUNTIME_DIR > ~/.agent-browser > tmpdir
+/// Priority: AGENT_BROWSER_SOCKET_DIR > XDG_RUNTIME_DIR > inferred secure Linux
+/// user runtime directory > ~/.agent-browser > tmpdir.
 pub fn get_socket_dir() -> PathBuf {
     // 1. Explicit override (ignore empty string)
     if let Ok(dir) = env::var("AGENT_BROWSER_SOCKET_DIR") {
@@ -106,13 +107,35 @@ pub fn get_socket_dir() -> PathBuf {
         }
     }
 
-    // 3. Home directory fallback (like Docker Desktop's ~/.docker/run/)
+    // 3. Noninteractive Linux shells do not always inherit XDG_RUNTIME_DIR,
+    // even though user services use the standard /run/user/<uid> namespace.
+    // Reuse that namespace only when the directory already exists, belongs to
+    // the effective user, is not a symlink, and has private permissions.
+    #[cfg(target_os = "linux")]
+    if let Some(runtime_dir) = inferred_linux_user_runtime_dir() {
+        return runtime_dir.join("agent-browser");
+    }
+
+    // 4. Home directory fallback (like Docker Desktop's ~/.docker/run/)
     if let Some(home) = dirs::home_dir() {
         return home.join(".agent-browser");
     }
 
-    // 4. Last resort: temp dir
+    // 5. Last resort: temp dir
     env::temp_dir().join("agent-browser")
+}
+
+#[cfg(target_os = "linux")]
+fn inferred_linux_user_runtime_dir() -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    let uid = unsafe { libc::geteuid() };
+    let runtime_dir = PathBuf::from(format!("/run/user/{uid}"));
+    let metadata = fs::symlink_metadata(&runtime_dir).ok()?;
+    if !metadata.file_type().is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+        return None;
+    }
+    Some(runtime_dir)
 }
 
 #[cfg(unix)]
@@ -1005,6 +1028,15 @@ mod tests {
     use super::*;
     use crate::test_utils::EnvGuard;
 
+    fn assert_inferred_runtime_or_home_socket_dir(result: PathBuf) {
+        #[cfg(target_os = "linux")]
+        if let Some(runtime_dir) = inferred_linux_user_runtime_dir() {
+            assert_eq!(result, runtime_dir.join("agent-browser"));
+            return;
+        }
+        assert!(result.to_string_lossy().ends_with(".agent-browser"));
+    }
+
     #[test]
     fn test_get_socket_dir_explicit_override() {
         let _guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "XDG_RUNTIME_DIR"]);
@@ -1022,9 +1054,7 @@ mod tests {
         _guard.set("AGENT_BROWSER_SOCKET_DIR", "");
         _guard.remove("XDG_RUNTIME_DIR");
 
-        assert!(get_socket_dir()
-            .to_string_lossy()
-            .ends_with(".agent-browser"));
+        assert_inferred_runtime_or_home_socket_dir(get_socket_dir());
     }
 
     #[test]
@@ -1047,9 +1077,7 @@ mod tests {
         _guard.set("AGENT_BROWSER_SOCKET_DIR", "");
         _guard.set("XDG_RUNTIME_DIR", "");
 
-        assert!(get_socket_dir()
-            .to_string_lossy()
-            .ends_with(".agent-browser"));
+        assert_inferred_runtime_or_home_socket_dir(get_socket_dir());
     }
 
     #[test]
@@ -1060,10 +1088,30 @@ mod tests {
         _guard.remove("XDG_RUNTIME_DIR");
 
         let result = get_socket_dir();
+        #[cfg(target_os = "linux")]
+        if let Some(runtime_dir) = inferred_linux_user_runtime_dir() {
+            assert_eq!(result, runtime_dir.join("agent-browser"));
+            return;
+        }
         assert!(result.to_string_lossy().ends_with(".agent-browser"));
         assert!(
             result.to_string_lossy().contains("home") || result.to_string_lossy().contains("Users")
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_get_socket_dir_infers_secure_linux_user_runtime_without_xdg() {
+        let _guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "XDG_RUNTIME_DIR"]);
+
+        _guard.remove("AGENT_BROWSER_SOCKET_DIR");
+        _guard.remove("XDG_RUNTIME_DIR");
+
+        let uid = unsafe { libc::geteuid() };
+        let runtime_dir = PathBuf::from(format!("/run/user/{uid}"));
+        if runtime_dir.is_dir() {
+            assert_eq!(get_socket_dir(), runtime_dir.join("agent-browser"));
+        }
     }
 
     // === Transient Error Detection Tests ===
