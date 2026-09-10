@@ -150,6 +150,8 @@
     "test:service-shutdown-faulted-live": "node scripts/smoke-service-shutdown-faulted.js",
     "test:service-health-live": "node scripts/smoke-service-health.js",
     "setup:rdp-guac-route-pool": "bash scripts/setup-rdp-guac-route-pool.sh",
+    "setup:rdp-guac-temporary-route": "node scripts/setup-rdp-guac-temporary-route.js",
+    "test:temporary-rdp-route": "node scripts/test-temporary-rdp-route.js && node scripts/test-temporary-rdp-route-fixture.js",
     "ensure:rdp-guac-postgres": "bash scripts/ensure-rdp-guac-postgres.sh",
     "backup:rdp-guac-postgres": "bash scripts/guacamole-postgres-durability.sh backup",
     "status:rdp-guac-postgres": "bash scripts/guacamole-postgres-durability.sh status",

@@ -2345,6 +2345,14 @@ fn persist_current_browser_health(
         })
         .unwrap_or((None, None, None));
     let metadata = metadata.map(|mut metadata| {
+        if let Some(runtime_profile) = state.attached_runtime_profile.as_deref() {
+            super::runtime_attach_proof::apply_managed_runtime_attach_proof(
+                &mut metadata,
+                runtime_profile,
+                pid,
+                cdp_endpoint.as_deref(),
+            );
+        }
         metadata.browser_stderr_log_path = browser_stderr_log_path;
         if metadata.display_name.is_none() {
             metadata.display_name = state

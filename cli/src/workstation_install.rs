@@ -298,9 +298,11 @@ fn run_workstation_prepare_retained_browser(args: &[String], json: bool) {
         .arg("--agent-browser-bin")
         .arg(&paths.binary)
         .current_dir(&paths.support_dir);
-    for (key, value) in workstation_command_env(&paths) {
-        command.env(key, value);
+    let mut command_env = workstation_command_env(&paths);
+    if let Err(error) = bind_route_viewer_executable(&mut command_env) {
+        fail(&error, json);
     }
+    apply_command_environment(&mut command, &command_env);
     let status = command.status().unwrap_or_else(|error| {
         fail(
             &format!("Unable to run retained-browser preparation controller: {error}"),
@@ -1185,7 +1187,68 @@ fn bind_route_viewer_executable(command_env: &mut Vec<(String, String)>) -> Resu
             "installed Linux Chrome is missing after workstation browser installation".to_string()
         })?;
     upsert_route_viewer_executable(command_env, &installed_chrome);
+    bind_remote_headed_executable(
+        command_env,
+        &installed_chrome,
+        &crate::install::get_browsers_dir(),
+        env::var("AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH")
+            .ok()
+            .as_deref(),
+    );
     Ok(())
+}
+
+/// Refresh installer-owned Chrome pins without changing intentional custom
+/// executables. This is a subprocess environment binding, not a persistent
+/// profile or dotenv rewrite; explicit launch executable flags still win.
+fn bind_remote_headed_executable(
+    command_env: &mut Vec<(String, String)>,
+    installed_chrome: &Path,
+    browsers_dir: &Path,
+    configured: Option<&str>,
+) {
+    let key = "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH";
+    let configured = command_env
+        .iter()
+        .find(|(candidate, _)| candidate == key)
+        .map(|(_, value)| value.as_str())
+        .or(configured)
+        .filter(|value| !value.trim().is_empty());
+    let managed = configured.is_none_or(|value| {
+        let Ok(relative) = Path::new(value).strip_prefix(browsers_dir) else {
+            return false;
+        };
+        let parts = relative.components().collect::<Vec<_>>();
+        let Some(std::path::Component::Normal(version)) = parts.first() else {
+            return false;
+        };
+        let version = version
+            .to_str()
+            .and_then(|value| value.strip_prefix("chrome-"));
+        let valid_version = version.is_some_and(|value| {
+            !value.is_empty()
+                && value
+                    .split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        });
+        valid_version
+            && ((parts.len() == 2 && parts[1].as_os_str() == "chrome")
+                || (parts.len() == 3
+                    && parts[1].as_os_str() == "chrome-linux64"
+                    && parts[2].as_os_str() == "chrome"))
+    });
+    if !managed {
+        return;
+    }
+    let executable = installed_chrome.display().to_string();
+    if let Some((_, value)) = command_env
+        .iter_mut()
+        .find(|(candidate, _)| candidate == key)
+    {
+        *value = executable;
+    } else {
+        command_env.push((key.to_string(), executable));
+    }
 }
 
 fn upsert_route_viewer_executable(
@@ -2835,6 +2898,55 @@ mod tests {
             .map(|(_, value)| value.as_str())
             .collect::<Vec<_>>();
         assert_eq!(builds, vec!["stock_chrome"]);
+    }
+
+    #[test]
+    fn remote_headed_refreshes_only_installer_managed_chrome_pins() {
+        let cache = Path::new("/home/test/.agent-browser/browsers");
+        let current = cache.join("chrome-152.0.7977.82/chrome-linux64/chrome");
+        for configured in [
+            None,
+            Some(""),
+            Some("/home/test/.agent-browser/browsers/chrome-149.0.0.0/chrome"),
+            Some("/home/test/.agent-browser/browsers/chrome-149.0.0.0/chrome-linux64/chrome"),
+        ] {
+            let mut command_env = Vec::new();
+            bind_remote_headed_executable(&mut command_env, &current, cache, configured);
+            assert_eq!(
+                command_env,
+                vec![(
+                    "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH".to_string(),
+                    current.display().to_string(),
+                )]
+            );
+            // Rebinding updates, rather than duplicates, the existing command key.
+            bind_remote_headed_executable(&mut command_env, &current, cache, configured);
+            assert_eq!(command_env.len(), 1);
+        }
+    }
+
+    #[test]
+    fn remote_headed_preserves_custom_executables_and_rejects_cache_lookalikes() {
+        let cache = Path::new("/home/test/.agent-browser/browsers");
+        let current = cache.join("chrome-152/chrome");
+        for configured in [
+            "/opt/custom/chrome",
+            "/home/test/.agent-browser/browsers-other/chrome-149/chrome",
+            "/home/test/.agent-browser/browsers/chrome-custom/chrome",
+            "/home/test/.agent-browser/browsers/chrome-149/../custom/chrome",
+            "/home/test/.agent-browser/browsers/chrome-149/custom/chrome",
+            "/home/test/.agent-browser/browsers/chrome-/chrome",
+        ] {
+            let mut command_env = Vec::new();
+            bind_remote_headed_executable(&mut command_env, &current, cache, Some(configured));
+            assert!(command_env.is_empty(), "must preserve ambient {configured}");
+            command_env.push((
+                "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH".to_string(),
+                configured.to_string(),
+            ));
+            bind_remote_headed_executable(&mut command_env, &current, cache, None);
+            assert_eq!(command_env[0].1, configured);
+        }
     }
 
     #[test]

@@ -99,6 +99,19 @@ pub(crate) struct PrivateStagedHandoff {
 }
 
 impl PrivateStagedHandoff {
+    pub(crate) fn operation_store(&self) -> &SecretStore {
+        &self.store
+    }
+
+    pub(crate) fn binding_operations(&self) -> Result<Vec<PrivateOperation>, &'static str> {
+        self.references
+            .iter()
+            .map(|reference| {
+                PrivateOperation::parse(&self.store.load(reference)?).map_err(|_| FAILED)
+            })
+            .collect()
+    }
+
     pub(crate) fn expires_at(&self) -> SystemTime {
         self.expires_at
     }

@@ -5119,6 +5119,7 @@ inventory. Locally launched browsers also require a live browser PID; an
 explicit attached-existing browser may omit that local PID only while its live
 daemon and exact loopback DevTools identity still verify. It never launches a
 daemon or browser.
+ChatGPT project slug changes preserve identity only when project/conversation IDs match.
 Use workstation retained-browser-status for the same source-free, no-lock,
 no-launch check before apply or reconcile. It honors
 AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT from the normal agent-browser env
@@ -5141,6 +5142,10 @@ submission action. If retained-browser-status proves the old daemon is gone,
 --rotate-stale-requirement-sha256 performs an explicit digest-bound replacement.
 It refuses live or unreadable old authority, journals the two private-file
 updates, fails closed during a partial commit, and resumes safely after a crash.
+Same-session replacement requires the same profile and URL, a verified new
+target, and fresh readable CDP proof that the old exact target is absent.
+Managed remote-headed Chrome cache paths follow the installer-selected Chrome;
+custom executable paths remain unchanged.
 
 Workstation apply reruns stop the managed dashboard, runtime interlock, and
 backup timer during reconciliation, then reactivate them after final readiness.
@@ -5154,6 +5159,14 @@ helper and fails closed instead of prompting. Compatible installed helper
 versions are retained across byte-only bundle drift.
 Routine workstation reconciliation preserves live XRDP desktops and applies
 route-user or credential changes at the next login without restarting sesman.
+For an additional temporary C-Z slot without reconciling A/B, the source checkout
+provides: pnpm setup:rdp-guac-temporary-route -- --label C --dry-run --json
+Replace --dry-run with --apply after review. This provisions only a new account
+and Guacamole connection; it does not open a desktop/browser or prove readiness.
+Existing identities fail closed. Keep its private recovery journal confidential.
+Source opener/inspector/readiness scripts accept --route-label C to select only
+the supplemental slot; the opener requires an explicit matching route pool JSON.
+The default installed workstation contract remains canonical A/B.
 Host preparation includes display inspection, visual-proof tools, and a
 path-scoped AppArmor userns policy for managed Chrome on Ubuntu 24.04. It does
 not require that policy when the kernel disables AppArmor or does not restrict
@@ -6148,6 +6161,14 @@ Commands:
   login [url]           Launch a detached headed browser for manual sign-in
   attach [name]         Bind the current automation session to a runtime profile
 
+Attachment build evidence:
+  Linux managed attach verifies installed stock Chrome against the live PID,
+  executable, profile directory, exact browser WebSocket and process-owned
+  DevTools listener. Missing or mismatched evidence leaves build-sensitive
+  broker reuse blocked. This is not sign-in or renewal readiness. Custom builds
+  and other platforms do not gain installer proof through this check.
+  Use --leave-open to preserve the browser when detaching the session.
+
 Locked profiles:
   If the default runtime profile is locked by a live browser PID and the task
   needs existing login state, inspect `service status` or `runtime status`,
@@ -6260,6 +6281,11 @@ pub fn print_help() {
 agent-browser - fast browser automation CLI for AI agents
 
 Usage: agent-browser <command> [args] [options]
+
+Local controller (Linux, no browser actions or renewal):
+  private-controller setup <absolute-root>  Create/validate private authentication key
+  private-controller serve <absolute-root>  Serve authenticated probe/binding socket
+  Keys never belong in arguments or logs; existing sockets fail closed.
 
 Core Commands:
   open <url>                 Navigate to URL

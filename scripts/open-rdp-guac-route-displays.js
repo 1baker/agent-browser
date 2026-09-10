@@ -3,6 +3,9 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { selectedTemporaryLabel, selectTemporaryEntry } from './lib/temporary-rdp-route.js';
+
+const temporaryLabel = selectedTemporaryLabel(process.argv);
 
 const reportOnly = process.argv.includes('--report-only');
 const dryRun = process.argv.includes('--dry-run');
@@ -190,7 +193,7 @@ function routeUrl(route) {
 }
 
 function routeLabel(index) {
-  return index === 0 ? 'A' : 'B';
+  return temporaryLabel || (index === 0 ? 'A' : 'B');
 }
 
 function loadGuacamoleCredentials() {
@@ -347,8 +350,7 @@ function openRoute(route, index) {
     '--profile',
     profile,
     ...(executable ? ['--executable-path', executable] : []),
-    '--args',
-    '--no-sandbox',
+    ...(temporaryLabel ? [] : ['--args', '--no-sandbox']),
     'open',
     'about:blank',
   ];
@@ -424,7 +426,8 @@ function waitForRouteDisplay(label) {
 
 function inspectRouteDisplays() {
   const scriptRoot = process.env.AGENT_BROWSER_REMOTE_VIEW_SCRIPT_ROOT || 'scripts';
-  const result = commandResult(process.execPath, [join(scriptRoot, 'inspect-rdp-route-displays.js'), '--display-content']);
+  const result = commandResult(process.execPath, [join(scriptRoot, 'inspect-rdp-route-displays.js'), '--display-content',
+    ...(temporaryLabel ? ['--route-label', temporaryLabel] : [])]);
   const parsed = parseJson(result.stdout, 'route display inspector');
   return {
     exitCode: result.status,
@@ -440,8 +443,11 @@ function sleep(ms) {
 
 let output;
 try {
-  const routes = (routePoolFromEnv() || routePoolFromDatabase() || routePoolFromDoctor()).slice(0, 2);
-  if (routes.length < 2) {
+  // A supplemental slot must be explicit and never fall back to canonical A/B.
+  const routes = temporaryLabel
+    ? selectTemporaryEntry(routePoolFromEnv() || [], temporaryLabel)
+    : (routePoolFromEnv() || routePoolFromDatabase() || routePoolFromDoctor()).slice(0, 2);
+  if (routes.length < (temporaryLabel ? 1 : 2)) {
     throw new Error(`route_pool_missing: expected at least two route-pool entries, got ${routes.length}`);
   }
   const selectedRoutes = routes.map((route, index) => ({
@@ -458,7 +464,9 @@ try {
       success: true,
       status: 'dry_run',
       selectedRoutes,
-      nextStep: 'Run node scripts/open-rdp-guac-route-displays.js to open both Guacamole route clients and inspect XRDP display allocation.',
+      nextStep: temporaryLabel
+        ? `Rerun with --route-label ${temporaryLabel} and the same explicit pool to open only that desktop.`
+        : 'Run node scripts/open-rdp-guac-route-displays.js to open both Guacamole route clients and inspect XRDP display allocation.',
     };
   } else {
     const openedRoutes = routes.map((route, index) => openRoute(route, index));
@@ -471,7 +479,7 @@ try {
       openedRoutes,
       routeDisplays,
       nextStep: routeDisplays.success
-        ? 'Route displays are distinct. Run the reviewed many-to-many live gate.'
+        ? (temporaryLabel ? 'Selected desktop exists. Verify its display access and service route preflight.' : 'Route displays are distinct. Run the reviewed many-to-many live gate.')
         : routeDisplays.data?.nextStep || 'Repair route display allocation, then rerun node scripts/open-rdp-guac-route-displays.js.',
     };
   }

@@ -4,6 +4,23 @@ Monitor agent-browser sessions in real time with a local web dashboard showing a
 
 ## Usage
 
+### Temporary extra remote-control slot
+
+When the canonical A/B desktops are occupied, the source checkout provides
+`pnpm setup:rdp-guac-temporary-route -- --label C --dry-run --json` (C through Z).
+After review, `--apply` backs up PostgreSQL and creates only that new desktop
+account and Guacamole connection, with READ permission for the current operator.
+It does not restart shared services or open a browser. Provisioned is not ready:
+the new desktop still needs an isolated-display check and service-owned browser
+handoff. Do not use the full workstation installer to add this supplemental slot.
+Existing identities and interrupted attempts fail closed. Private recovery journals
+under `~/.agent-browser/temporary-routes/` contain secrets; never share them.
+Removal is a separate reviewed operation after verifying that the slot is idle.
+The source opener, inspector and readiness scripts accept `--route-label C` for
+the supplemental slot. The opener requires explicit matching route-pool JSON;
+omitting the selector retains A/B behavior. Manual first-login browsers appear
+under Detected; Control requires their verified display to have a governed route.
+
 The dashboard is bundled into the binary and requires no separate install. Start the server and open any session:
 
 ```bash
@@ -128,6 +145,12 @@ preparation command. This is an explicit compare-and-swap operation: it refuses
 healthy or uncertain old authority, rechecks the replacement, journals the two
 private authority-file updates, and keeps dashboard publication fail closed
 until the new pair is fully committed.
+
+Same-session recovery requires the same profile and exact URL, a freshly
+verified replacement target, and readable live CDP evidence that the old target
+is absent. A live old target still blocks rotation. Installed preparation uses
+the current installer-selected Chrome for managed cache paths and preserves
+custom remote-headed executable paths.
 
 The command builds <code>packages/dashboard/out</code>, rebuilds the local CLI,
 backs up and replaces <code>~/.local/bin/agent-browser</code>, restarts

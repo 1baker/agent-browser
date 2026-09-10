@@ -284,7 +284,7 @@ async fn observe_private_target(
     )
 }
 
-fn validate_broker_snapshot(
+pub(crate) fn validate_broker_snapshot(
     persisted: &ServiceState,
     staged: &Value,
     live: &LivePrivateIdentity<'_>,

@@ -986,6 +986,14 @@ agent-browser --runtime-profile work runtime status      # Inspect a named runti
 
 When runtime-profile config marks a service with <code>manualLoginPreferred</code>,
 navigation to known login hosts for that service returns an advisory warning.
+Linux managed runtime attachment records installed stock-Chrome build evidence
+only when the live executable, profile directory, exact browser WebSocket and
+process-owned DevTools listener match. Missing or conflicting evidence keeps
+build-sensitive broker reuse blocked without replacing the browser. This is
+not proof of sign-in or renewal readiness. Custom builds and other platforms
+do not gain installer proof from attachment. Use <code>--leave-open</code> to
+retain the browser when detaching the automation session.
+
 Use that warning as the signal to run <code>runtime login</code>, or
 for ordinary sites, <code>runtime login --attachable</code> followed by
 <code>runtime attach</code>. For Google, Gmail, and similar SSO flows, sign in

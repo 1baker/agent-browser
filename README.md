@@ -100,6 +100,26 @@ effective, apply starts the pinned stack, creates the two route users and
 canonical Guacamole rows, opens distinct XRDP displays selected by readiness,
 projects `guacamole:1` and `guacamole:2` into service state, and activates the
 user services only after the final doctors pass.
+
+For a supplemental temporary desktop while A/B are occupied, the checkout-only
+`pnpm setup:rdp-guac-temporary-route -- --label C --dry-run --json` previews one
+isolated slot (labels C through Z). Replace `--dry-run` with `--apply` only after
+review. It backs up PostgreSQL, adds a new route account and Guacamole connection,
+and grants READ only to the current operator. It never restarts services, changes
+A/B, opens a browser, or marks the new desktop ready. Duplicate identities and
+interrupted attempts fail closed; inspect the mode-0600 journal under
+`~/.agent-browser/temporary-routes/` before any recovery. Journals contain secrets
+and must not be shared. Do not rerun the full installer to add a temporary slot.
+Establish the new RDP desktop, verify its distinct display, grant only that display
+through the installed helper, and project only its readiness-verified entry through
+the service before requesting a managed browser handoff. Removal is a separate
+reviewed operation after proving the temporary desktop and browser are no longer used.
+The source opener and inspector accept `--route-label C`; the opener requires an
+explicit matching `AGENT_BROWSER_RDP_ROUTE_POOL_JSON` and never falls back to A/B.
+`pnpm test:rdp-guac-route-pool-readiness -- --route-label C --report-only` checks
+only that supplemental connection, its isolated display and the configured operator's
+READ permission. Without a selector, the canonical A/B behavior is unchanged.
+
 The pinned Guacamole web app loads an agent-browser defaults extension. It
 migrates each browser origin once to the `text` input method so existing and
 new connections default to text input, then preserves later user-selected
@@ -133,6 +153,10 @@ convergence controller without reinstalling the payload. Before its first
 mutation, the native controller reads any private durable retained-browser
 requirement and requires one exact ready browser, active session, valid
 service-tab handle, profile, loopback DevTools target, and canonical URL match.
+For recognized HTTPS ChatGPT project-conversation URLs, only the optional
+human-readable project slug is ignored; the lowercase project ID and conversation
+UUID must match. Other URLs remain byte-exact. All browser/target checks remain
+mandatory; this does not rotate authority or change the private requirement.
 Locally launched browsers also require a live browser PID; an explicit
 `attached_existing` browser may omit the local PID only while the live daemon
 and exact loopback DevTools identity still verify. It does not call a service
@@ -1100,6 +1124,14 @@ agent-browser runtime list
 agent-browser --runtime-profile work runtime status
 ```
 
+On Linux, managed runtime attachment records installed stock-Chrome build proof
+only when the live process executable, profile directory, browser WebSocket,
+and process-owned DevTools listener agree. This does not launch a replacement
+browser or establish sign-in readiness. Missing or conflicting evidence leaves
+build-sensitive broker reuse blocked; custom builds and other platforms do not
+gain installer proof from attachment. Use `--leave-open` to retain the browser
+when detaching its automation session.
+
 This resolves to a persistent profile directory under `~/.agent-browser/runtime-profiles/<name>/user-data`, unless `runtimeProfiles.<name>.userDataDir` overrides it in config. Use `agent-browser runtime list` to inspect the merged view from config plus on-disk managed profiles.
 
 Use this for ordinary authenticated sites, multi-account setups, and headed/manual bootstrap flows.
@@ -1546,6 +1578,12 @@ exact route and uses a private crash-recovery journal while the requirement and
 `.required` digest are replaced. Ordinary status, apply, and reconcile checks
 remain fail closed during a partial rotation. Do not delete either authority
 file as a recovery shortcut.
+
+When preparation recreates the same session, rotation requires the same profile
+and exact conversation URL, a freshly verified replacement target, and readable
+live CDP evidence that the old target is absent. A live old target still blocks
+rotation. Installed remote-headed preparation refreshes managed Chrome cache
+paths to the installer-selected Chrome while preserving custom executable paths.
 
 The pin command verifies the rendered target before writing
 `~/.agent-browser/publications/local-dashboard-retained-browser.json` as a
@@ -4085,6 +4123,23 @@ with a matching live CDP session. Alias/tunnel authority binding,
 fresh target validation at execution and private secret ingress/egress remain
 required before live credential automation. External RDP/OS viewers are outside
 this cooperative boundary. See `docs/dev/plans/0130-2026-09-08-private-credential-broker.md`.
+
+### Local private controller (Linux)
+
+`agent-browser private-controller setup /absolute/private/root` creates a
+separate random authentication key under an owner-only directory. Existing keys
+are validated and never rotated automatically. `agent-browser private-controller
+serve /absolute/private/root` serves only authenticated probes and immutable
+approved-plan bindings on `controller.sock`; it cannot execute browser actions,
+accept passwords or enable renewal. An existing socket fails closed rather than
+being unlinked. Keep this service separate from the browser daemon.
+
+The trusted LitScout adapter claims a current approved plan before connecting.
+Binding consumes that plan even if the reply is lost; never retry or represent
+binding success as authentication, recovery, key delivery or renewal. The Python
+client defaults to `~/.agent-browser/private-controller`. Protect its
+`authentication.key` as a credential; never print or export it. Same-user/root
+processes are outside this protection boundary.
 
 ### Local Slack token bootstrap (source checkout)
 

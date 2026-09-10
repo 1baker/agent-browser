@@ -110,6 +110,44 @@ try {
   assert.equal(rotated.requirement.rotated, true);
   assert.equal(rotated.requirement.previousSha256, oldRequirement.sha256);
 
+  // Preparation recreated the same session but not the old exact target.
+  for (const mode of ['replaced', 'old-target-live', 'unreadable', 'wrong-url', 'duplicate-target', 'pid-changed']) {
+    const path = join(root, `same-session-${mode}`, 'retained.json');
+    const previous = writeRetainedBrowserRequirement({
+      path,
+      evidence: {
+        ...evidenceFor({ ...opened, targetId: 'old-target' }),
+        observed: { ...opened, targetId: 'old-target', browserPid: process.pid,
+          cdpUrl: browser.cdpEndpoint },
+      },
+    });
+    let reads = 0;
+    let browserReads = 0;
+    const attempt = discoverVerifyAndPinRetainedBrowser({
+      agentBrowserBin: '/fixture/agent-browser', exactUrl,
+      profileId: 'chatgpt-pro', requirementPath: path,
+      expectedOpenedIdentity: opened, rotateExpectedSha256: previous.sha256,
+      adapters: { ...adapters, readBrowser: async () => {
+        browserReads += 1;
+        return { success: true, browser: mode === 'pid-changed' && browserReads === 3
+          ? { ...browser, pid: process.pid + 1 } : browser };
+      }, readCdpTargets: async () => {
+        reads += 1;
+        if (reads < 3 || mode === 'replaced' || mode === 'pid-changed') return [target];
+        if (mode === 'unreadable') throw new Error('fixture unreadable CDP');
+        if (mode === 'wrong-url') return [{ ...target, url: 'https://example.org/' }];
+        if (mode === 'duplicate-target') return [target, target];
+        return [target, { id: 'old-target', type: 'page', url: 'https://example.org/' }];
+      } },
+    });
+    if (mode === 'replaced') {
+      assert.equal((await attempt).requirement.rotated, true);
+    } else {
+      await assert.rejects(attempt, /old_authority_live|unreadable CDP/);
+      assert.equal(JSON.parse(readFileSync(path, 'utf8')).expectation.targetId, 'old-target');
+    }
+  }
+
   const recoveryPath = join(root, 'rotation-recovery', 'retained.json');
   const recoveryOld = writeRetainedBrowserRequirement({
     path: recoveryPath,

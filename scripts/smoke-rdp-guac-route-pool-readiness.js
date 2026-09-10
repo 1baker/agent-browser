@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { selectedTemporaryLabel, temporaryRoute, quote } from './lib/temporary-rdp-route.js';
 import {
   routeDisplayInspectorPath,
   selectRouteDisplayName,
@@ -12,6 +13,7 @@ import {
 const reportOnly = process.argv.includes('--report-only');
 const allowSharedTarget = process.argv.includes('--allow-shared-target');
 const shellOutput = process.argv.includes('--shell');
+const temporaryLabel = selectedTemporaryLabel(process.argv);
 
 loadAgentBrowserEnv();
 
@@ -401,6 +403,10 @@ where table_schema = 'public'
 }
 
 function queryGuacamoleConnectionPermissions(connectionIds) {
+  const operator = process.env.AGENT_BROWSER_GUACAMOLE_HEADER_USER || process.env.USER;
+  if (temporaryLabel && !/^[a-z_][a-z0-9_-]{0,31}$/.test(operator || '')) {
+    throw new Error('temporary route requires an explicit valid operator identity');
+  }
   const ids = connectionIds
     .map((id) => Number.parseInt(String(id), 10))
     .filter((id) => Number.isInteger(id) && id > 0);
@@ -437,6 +443,7 @@ permission_counts as (
     on entity.entity_id = permission.entity_id
    and entity.type = 'USER'
   where required_user.type = 'USER'
+    ${temporaryLabel ? `and required_user.name = ${quote(operator)}` : ''}
   group by selected.connection_id
 )
 select coalesce(json_agg(row_to_json(permission_counts) order by "connectionId"), '[]'::json)
@@ -465,6 +472,10 @@ from permission_counts;
   }
   try {
     const connectionPermissions = JSON.parse(result.stdout.trim() || '[]');
+    if (temporaryLabel && (connectionPermissions.length !== ids.length ||
+        connectionPermissions.some(entry => entry.requiredUserCount !== 1))) {
+      throw new Error('temporary route operator identity missing or ambiguous');
+    }
     const missingReadConnectionIds = connectionPermissions
       .filter((entry) => Number(entry.readGrantCount || 0) < Number(entry.requiredUserCount || 0))
       .map((entry) => entry.connectionId);
@@ -561,7 +572,8 @@ function targetIdentityKey(connection) {
 }
 
 function inspectRouteDisplays() {
-  const result = commandResult(process.execPath, [routeDisplayInspectorPath(import.meta.url)]);
+  const result = commandResult(process.execPath, [routeDisplayInspectorPath(import.meta.url),
+    ...(temporaryLabel ? ['--route-label', temporaryLabel] : [])]);
   if (result.status !== 0) return {};
   try {
     const parsed = JSON.parse(result.stdout.trim());
@@ -589,7 +601,7 @@ function redactConnection(connection) {
 const inferredRouteDisplays = inspectRouteDisplays();
 
 function routeTargetDisplayName(index) {
-  const label = index === 0 ? 'A' : 'B';
+  const label = temporaryLabel || (index === 0 ? 'A' : 'B');
   return selectRouteDisplayName({
     configuredDisplayName: process.env[`AGENT_BROWSER_RDP_ROUTE_${label}_DISPLAY_NAME`],
     inferredDisplayName: inferredRouteDisplays[`AGENT_BROWSER_RDP_ROUTE_${label}_DISPLAY_NAME`],
@@ -597,6 +609,7 @@ function routeTargetDisplayName(index) {
 }
 
 function routeTargetUser(connection, index) {
+  if (temporaryLabel) return temporaryRoute(temporaryLabel).user;
   const label = index === 0 ? 'A' : 'B';
   const configured = process.env[`AGENT_BROWSER_RDP_ROUTE_${label}_USERNAME`] ||
     inferredRouteDisplays[`AGENT_BROWSER_RDP_ROUTE_${label}_USERNAME`];
@@ -613,6 +626,14 @@ function routeTargetUser(connection, index) {
 }
 
 function routePoolCandidates(connections) {
+  if (temporaryLabel) {
+    const expected = temporaryRoute(temporaryLabel);
+    const matches = connections.filter(connection => connection.connectionName === expected.name);
+    if (matches.length !== 1 || matches[0].username !== expected.user) {
+      throw new Error('temporary route connection missing, ambiguous or user mismatched');
+    }
+    return matches;
+  }
   const routeSpecific = connections.filter((connection) =>
     /^Agent Browser RDP Route [AB]$/.test(connection.connectionName || ''),
   );
@@ -630,7 +651,7 @@ function routePoolCandidates(connections) {
 }
 
 function routePoolEntry(connection, index, routeBases, routeReadiness) {
-  const label = index === 0 ? 'a' : 'b';
+  const label = temporaryLabel?.toLowerCase() || (index === 0 ? 'a' : 'b');
   const displayName = routeTargetDisplayName(index);
   const routeUser = routeTargetUser(connection, index);
   const clientId = guacamoleClientId(connection.connectionId);
@@ -746,8 +767,9 @@ const selectedTargetIdentities = selectedConnections.map(targetIdentity);
 const distinctTargetIdentities = new Set(targetIdentities);
 const distinctSelectedTargetIdentities = new Set(selectedTargetIdentities);
 const hasTwoConnections = connections.length >= 2;
-const hasTwoSelectedConnections = selectedConnections.length >= 2;
-const hasTwoDistinctTargets = distinctSelectedTargetIdentities.size >= 2;
+const requiredSelectedCount = temporaryLabel ? 1 : 2;
+const hasTwoSelectedConnections = selectedConnections.length >= requiredSelectedCount;
+const hasTwoDistinctTargets = distinctSelectedTargetIdentities.size >= requiredSelectedCount;
 const selectedRdpTargetsReady = selectedConnections.length > 0 &&
   selectedConnections.every((connection) => rdpTcpProbes.get(connection.connectionId)?.ok === true);
 const selectedRouteDisplaysReady = selectedConnections.length > 0 &&
@@ -770,7 +792,7 @@ const routePoolJson = ready || hasTwoSelectedConnections
   ? selectedConnections.map((connection, index) => {
       const rdpProbe = rdpTcpProbes.get(connection.connectionId);
       const displayProbe = routeDisplayProbes.get(connection.connectionId);
-      const routeReady = guacamoleWebProbe.ok &&
+      const routeReady = permissions.ok && guacamoleWebProbe.ok &&
         guacamoleLoginProbe.ok &&
         rdpProbe?.ok === true &&
         displayProbe?.ok === true;

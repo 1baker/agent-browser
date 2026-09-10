@@ -1,5 +1,17 @@
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+// ChatGPT may remove a human-readable project slug without changing identity.
+// All other URL spellings remain exact; target/profile/session checks still apply.
+export function retainedTargetUrlsMatch(expected, observed) {
+  if (typeof expected !== 'string' || typeof observed !== 'string') return false;
+  if (expected === observed) return true;
+  const pattern = /^https:\/\/chatgpt\.com\/g\/g-p-([0-9a-f]{32})(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?\/c\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+  const left = expected.match(pattern);
+  const right = observed.match(pattern);
+  return !!left && !!right && left[0] === expected && right[0] === observed
+    && left[1] === right[1] && left[2] === right[2];
+}
+
 export function normalizeRetainedBrowserExpectation(value) {
   if (value == null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -110,7 +122,7 @@ export function evaluateRetainedBrowserExpectation({
     }
     [target] = matches;
   }
-  if (expectation.url && target?.url !== expectation.url) {
+  if (expectation.url && !retainedTargetUrlsMatch(expectation.url, target?.url)) {
     return failure(
       'retained_target_url_changed',
       `Required retained target URL changed: ${expectation.url} -> ${target?.url || 'missing'}`,

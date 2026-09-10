@@ -1,6 +1,25 @@
 # Security
 
+Retained-browser verification treats the optional human-readable slug in a
+strict HTTPS ChatGPT project-conversation URL as non-authoritative. Project ID,
+conversation UUID, browser session, profile, and target must still agree.
+Credentials, ports, query strings, fragments, or other URL variants are not
+normalized. Other URLs use exact equality. Private requirement digests and
+authority-rotation safeguards are unchanged.
+
 agent-browser includes security features to protect against credential exposure, prompt injection via untrusted page content, and unauthorized browser actions.
+
+The Linux-only <code>private-controller setup /absolute/private/root</code> and
+<code>private-controller serve /absolute/private/root</code> commands create a
+separate owner-only authentication key and Unix socket service. The authenticated
+protocol accepts only probes and immutable approved-plan bindings; it cannot
+accept credentials, run browser actions or enable renewal. Fresh challenges bind
+both request and response authentication. LitScout commits one-shot approval
+before connecting, so lost replies never authorize retries. Existing sockets
+and unsafe key files fail closed; no automatic key rotation or stale-socket
+deletion occurs. The Python client defaults to
+<code>~/.agent-browser/private-controller</code>. Never print the key. Account
+owner and root access are outside this protection boundary.
 
 Navigation, action-policy and output-boundary controls below are opt-in. The
 Linux/macOS cooperative CDP privacy gate also validates its runtime filesystem

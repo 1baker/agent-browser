@@ -6,6 +6,31 @@ allowed-tools: Bash(npx agent-browser:*), Bash(agent-browser:*)
 
 # Browser Automation with agent-browser
 
+Retained-browser URL verification recognizes optional human-readable slugs only
+in strict HTTPS ChatGPT project-conversation URLs with identical project ID and
+conversation UUID. This does not authorize another target, profile, or session.
+All other URLs remain exact; never use slug normalization to rotate authority.
+
+For a supplemental temporary remote-control slot while A/B are occupied, use the
+checkout-only `pnpm setup:rdp-guac-temporary-route -- --label C --dry-run --json`.
+Labels C through Z are allowed. Review before replacing `--dry-run` with `--apply`.
+This operation backs up PostgreSQL, adds only the new route account/connection,
+and grants only the current operator READ permission. It does not restart shared
+services, open a desktop/browser, or claim remote-control readiness. Existing
+identities or interrupted journals fail closed rather than rotating passwords.
+Private journals under `~/.agent-browser/temporary-routes/` contain credentials;
+never print or publish them. Establish and verify only the new isolated display,
+then project only its readiness-verified route entry through the service. Keep
+the canonical A/B installer/readiness contract unchanged. Removal needs a separate
+reviewed operation with exact ownership and no-active-use proof.
+The source opener, inspector and route-pool readiness scripts accept
+`--route-label C`; the opener requires matching explicit route-pool JSON and
+never falls back to A/B. Single-slot readiness checks the configured operator's
+READ permission, not grants to unrelated Guacamole users. Default A/B readiness
+is unchanged. For first Google sign-in use detached manual login without CDP on
+the verified supplemental display; do not equate a manual browser window or
+Terms of Service screen with completed site authentication.
+
 On the `v0.28.0` release-candidate branch,
 `agent-browser install workstation --dry-run --json` previews the source-free
 installed payload and `--apply --json` installs and reconciles the binary,
@@ -110,6 +135,12 @@ authority, freshly verifies the replacement, journals both private-file
 updates, fails closed during a partial commit, and resumes the same digest-bound
 operation after interruption. Never delete or rename the requirement or its
 `.required` enforcement record to recover a stale lane.
+
+Same-session recovery may replace a missing old target only after fresh CDP
+inventory proves its absence and verifies the replacement at the same exact
+URL and profile. An existing old target or unreadable inventory still blocks.
+Installed preparation refreshes managed remote-headed Chrome cache paths to
+the installer-selected Chrome; intentional custom paths remain unchanged.
 
 After apply, use `agent-browser install doctor --compact --json` for bounded
 readiness and remedy output. Use full `agent-browser install doctor --json`
@@ -768,6 +799,14 @@ agent-browser runtime attach work
 agent-browser runtime list
 agent-browser --runtime-profile work open https://app.example.com
 ```
+
+Linux managed runtime attachment verifies installed stock-Chrome provenance
+against the live PID, executable inode/path, profile arguments, exact browser
+WebSocket and process-owned DevTools listener. Missing or conflicting evidence
+leaves build-sensitive broker reuse blocked. This never proves authentication
+or authorizes renewal. Do not broaden bindings, fabricate proof, or replace a
+retained browser to clear that refusal; use `--leave-open` for detach cleanup.
+Other platforms and custom builds do not gain installer proof from this path.
 
 `runtime list` merges config-declared runtime profiles with on-disk managed
 profiles. If `runtimeProfiles.<name>.userDataDir` is set in config, both
@@ -2099,6 +2138,17 @@ session. Broker alias mapping and the live coordinator remain unfinished.
 Ordinary fill/evaluate/password-stdin are not trace-private credential ingress.
 
 ## Ready-to-Use Templates
+
+The Linux-only `private-controller setup /absolute/private/root` and
+`private-controller serve /absolute/private/root` commands provision and serve
+a dedicated authenticated local socket. They never enter browser daemon routing.
+The default Python client root is `~/.agent-browser/private-controller`; its
+random `authentication.key` is owner-only and must never enter arguments, chat,
+logs or exports. Only probes and immutable approved-plan bindings are accepted.
+Bindings consume one-shot LitScout approval and do not enable renewal, private
+browser execution or recovery. Do not delete a pre-existing socket to force
+startup; diagnose its ownership first. Live binding requires a separately
+approved exact plan, not merely permission to create the socket service.
 
 For the explicitly approved local SAM Slack connection, an operator may run
 `python3 scripts/setup-private-slack.py` from the source checkout in an existing

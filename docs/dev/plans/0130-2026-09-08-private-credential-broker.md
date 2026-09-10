@@ -2,12 +2,271 @@
 
 Status: private handoff and cooperative CDP execution implemented internally; installed private execution and live acceptance remain disabled.
 
-## Next bounded slice: post-cleanup reconciliation
+## 2026-09-10: SAM browser recovered, protected execution still incomplete
 
-Recommendation after the private-handoff publication checkpoint: consume
-`PrivateJourneyPendingReconciliation` into an internal reconciliation capability.
-This is planned, not implemented. Keep privacy release, key delivery and live
-renewal disabled while establishing these acceptance checks:
+After explicit approval, paused the runtime-interlock timer. The separate
+pinned-browser requirement still blocks workstation dry-run, so no installation
+or guard bypass was performed. Broker plan and scoped executable preflight
+authorized one new browser using saved `litscout-sam-linux`, with no live lease
+conflict. New owner is `session:default`, PID 467915, DevTools port 33729.
+
+Fresh broker planning now recommends reuse of that one compatible stock-Chrome
+browser. Bounded readback verified SAM's public home page and the restored
+Login.gov tab with email/password field presence, without reading field values.
+These are browser-control readiness receipts, not authentication success.
+RUNBOOK records exact handles/targets, diagnostics and rejected parameter-only
+attempts. The old private binding identities cannot authorize this new runtime.
+
+Next boundary remains the protected production credential handoff and guarded
+LitScout delivery path. No Slack credential retrieval, backup-code consumption,
+sign-in, SAM renewal or key installation has occurred. Keep the browser open;
+the maintenance timer remains paused pending the separate retained-requirement
+recovery. Full end-to-end acceptance remains unproven.
+
+## 2026-09-10: recovery prerequisite changed, full acceptance remains unmet
+
+Fresh installed diagnostics now report `retained_daemon_missing`; supported
+SAM runtime status reports no live browser, no reachable DevTools and no page
+targets. The prior PID and WebSocket are stale records, not current handles.
+Recover broker authority before reusing or replacing any recorded target.
+Do not fabricate missing host-ingress/ownership metadata or force legacy close.
+The unanswered coordinated-maintenance approval remains a stop boundary.
+
+Acceptance still requires the actual protected Slack-to-Login.gov/MFA-to-SAM
+renewal-to-LitScout sequence, including consumer validation of the installed
+key. Current source still keeps private renewal disabled and LitScout's
+authentication-executor installation gate closed. No secret retrieval, login,
+backup-code use, renewal or key installation occurred. Runtime recovery alone
+will not establish the full requested end-to-end result. RUNBOOK records the
+current diagnostics, source gates and continuation classification.
+
+## 2026-09-09: activation blocked by shared maintenance state
+
+Controlled activation preflight found six stale daemon generations and shared
+workstation-payload drift. The existing runtime-interlock timer's scheduled
+cycle failed final doctor readiness during inspection. Retained-browser guard
+verification still passes and the original SAM PID, endpoint and page targets
+remain present, but replacing the shared binary would affect more than SAM.
+
+Stop before installation pending a coordinated maintenance window that covers
+the timer, shared payload and retained connection handoffs. No full publisher,
+workstation apply, handoff prepare, browser close, login or renewal was run.
+Seven focused provenance tests passed again. RUNBOOK records the live refusal,
+reviewed handoff semantics and independent activation review receipt.
+
+## 2026-09-09: attachment build identity repaired in source
+
+Implemented Linux existing-process installer provenance in the shared managed
+attachment persistence path, independently of caller preference attribution.
+Exact process executable/inode, profile arguments, runtime PID, browser
+WebSocket, DevToolsActivePort and process-owned listener must agree. Missing or
+conflicting evidence stays unproven; this does not expand registry authority or
+establish authentication readiness. User help, README, bundled skill and command
+docs describe this boundary.
+
+Seven focused tests and 1,235 widened isolated native tests passed (70 ignored).
+Format, Clippy, client typecheck, ESLint, native development build and docs build
+passed. Final focused and widened reruns also passed after preserving existing
+non-Linux and non-stock authority. Independent
+read-only review completed without critical findings; primary reconciled its
+requirements and added selected-executable mismatch coverage. RUNBOOK records
+exact validation scope and retained PID evidence.
+
+Staged, not activated: the installed daemon has not been replaced. Safely
+activate the bounded repair with explicit treatment of unrelated dirty source,
+then verify exact retained broker reuse after leave-open connection refresh.
+Do not equate source tests with live acceptance. Private execution and renewal
+remain disabled; no login or ChatGPT prompt was sent.
+
+## 2026-09-09: retained SAM connection restored, reuse still blocked
+
+Supported runtime attach registered `session:litscout-sam-recovery` against the
+same PID 2774558 and original Login.gov target, with detach cleanup. No browser
+or page was replaced. Access-plan now sees the browser but refuses reuse because
+the attachment lacks executable/build proof and scoped caller attribution.
+This is partial recovery, not browser-automation readiness. Repair verified
+existing-process build attribution in runtime attach before proceeding; do not
+broaden routing rules or synthesize authority to clear the blocker. RUNBOOK
+contains the before/after identity and refusal evidence. Live renewal stays off.
+
+## 2026-09-09: scoped SAM routing verification
+
+Installed registry configuration now binds the exact SAM read-only inspection
+task to the observed Linux Chrome 152.0.7977.82 executable and the existing
+`litscout-sam-linux` profile compatibility record. Positive and changed-task /
+unregistered-profile negative preflights verified that narrow rule. This is not
+a global routing repair or credential-executor activation.
+
+The authorized open refused a live profile lock. Runtime-status metadata proves
+a reachable existing browser with a Login.gov sign-in tab, while access-plan
+had omitted that owner. Do not repeat launch, create another profile, remove the
+lock, or reconstruct a service handle. Next browser prerequisite is exact
+retained-owner reconciliation; sign-in remains human-gated and no rendered page
+recipe has been approved. RUNBOOK records exact identities and validation limits.
+
+## 2026-09-09: production handoff assessment
+
+Production activation remains blocked, not merely waiting for a feature flag.
+Only synthetic tests call the bound worker. The current approval manifest lacks
+the four-stage page recipe needed by independently supplied handoff authority,
+and LitScout still refuses installation for this authentication executor.
+Keep that refusal until protected result delivery has a verified completion
+contract; browser-binding success is not proof of credential installation.
+
+Next packet: review the exact account/page/action recipe without renewal, bind
+it to approval, carry the consumed approval through protected dispatch once,
+and verify guarded result delivery and consumer activation separately. Never
+manufacture production page selectors from synthetic fixtures or reclaim an
+already consumed approval. RUNBOOK records the independent source review and
+five passing synthetic socket tests. No production executor was enabled.
+
+## 2026-09-09: stored binding to private worker gate
+
+`private_bound_execution.rs` adds an internal identity and single-use constraint,
+not a replacement for independent consent/account/origin/action approval. Its
+claim loads the exact immutable plan bookmark, checks stored schema, digest,
+profile/browser/session/target and endpoint, compares all four authenticated
+staged operations, enforces the binding expiry ceiling and rejects aliased
+binding/operation stores. Durable admission precedes a non-cloneable queue token.
+Repeated or reopened claims fail; queue failure does not undo consumption.
+
+`submit_bound_private` is the production internal worker entrypoint. The previous
+unbound submission helper is compiled only for baseline test fixtures. Dequeue
+revalidates the binding against the actual worker endpoint and session before
+controller scope checks, private journey checks or any browser dispatch. Existing
+independently supplied `PrivateHandoffAuthority` remains mandatory; possession of
+a stored binding alone cannot construct account, page or action authority.
+
+The new Linux synthetic fixture passes through the authenticated ABPC1 socket
+handler, persisted binding, single-use claim, private handoff and worker, then
+the existing ordered synthetic journey, sanitation, detach and reconciliation.
+Queue-full/closed, cancellation and expiry tests now use consumed bindings;
+negative binding tests cover operation mismatch, digest/endpoint/session drift,
+expiration, expiry ceiling and identical stores. The retained synthetic target
+uses a 32-character uppercase ID matching the real stored schema.
+
+This is source-only integration. No new public socket execution operation,
+credential transport route, independent approval producer or installed runtime
+activation is introduced. The running binding-only service is not restarted.
+Next gate: connect a protected production caller that supplies independently
+approved account/page/action authority and authenticated private material to this
+bound entry, then prove guarded consumer delivery before enabling renewal.
+
+## 2026-09-09: authorized local controller transport
+
+The user authorized creation of a dedicated same-user Unix socket and separate
+authentication key. The Linux `private-controller setup ROOT` and
+`private-controller serve ROOT` entrypoints bypass ordinary browser daemon and
+environment credential loading. This slice accepts only authenticated probes and
+immutable controller binding metadata, never credential payloads or browser actions.
+
+ABPC1 uses a fresh 32-byte server challenge and separate request/response HMAC
+domains. Frames have a 16 KiB limit, strict JSON shape, mandatory request EOF,
+same-UID peer verification and a five-second exchange deadline. The root must
+be owner-only 0700; the random 32-byte key is create-new 0600 with file/directory
+sync. Existing keys are validated without rotation. Exclusive root locking and
+refusal of every pre-existing socket prevent duplicate takeover. Abnormal service
+termination may leave a socket requiring explicit ownership diagnosis; it is not
+automatically deleted or retried.
+
+`private-sam-discovery.py:bind_approved_controller` uses LitScout's existing
+resolved-discovery/current-plan one-shot claim before invoking the authenticated
+Python client. It compares retained profile/browser/session/target and ready
+status with the exact approved manifest digest. The endpoint comes from the
+trusted caller's broker lookup, not browser rediscovery. The server durably stores
+encrypted immutable plan ID/digest/identity/endpoint/expiry bindings. Possession of
+the local key authenticates this caller; it is not proof of browser health or
+approval independently of that adapter. Account-owner/root attacks are excluded.
+
+Binding-only success consumes the plan and is not private execution, offline
+reconciliation recovery, authentication, key delivery or renewal. The socket has
+no operation that invokes those paths. Tests use synthetic plans and temporary
+keys; live acceptance is limited to a signed probe, without consuming a live plan.
+The installed binding must still be connected to the typed journey/recovery
+coordinator under its existing independent authority gates before any live renewal.
+Exact tests, installation evidence and review dispositions are in RUNBOOK.
+
+## 2026-09-09: durable controller authority and offline dispatch
+
+Bounded objective: connect the internal journey producer to durable controller
+authority before reconciliation admission, then recover from that saved authority
+without browser dispatch. This is source-only plumbing, not an installed trusted
+approval producer. No new listener, public request, credential collection, browser
+reattachment, privacy release, key delivery, installation or live renewal is in scope.
+
+`private_controller.rs` supplies a nonserializable `RecoveryController` with an
+independently configured endpoint, session and separate encrypted authority store.
+The private worker requires that capability and checks its scope before the first
+journey action. Reconciliation repeats the check, stages the exact intent and
+bookmark, and requires immutable controller retention of the producer digest,
+reference and epoch before admitting the intent or changing broker records.
+The two stores must have different anchored directory identities, including when
+opened through separate handles. Missing authority, duplicate bindings, malformed
+records and attempts to retain an already-admitted intent fail closed.
+
+The controller's typed offline `recover` dispatcher loads only its encrypted
+saved authority, checks pinned routing, and invokes the existing recovery API.
+It accepts no daemon, browser or CDP client and returns no public receipt. It does
+not calculate a replacement authority digest from the intent being recovered.
+Existing receipt-chain, exact-identity and closed-gate checks remain mandatory.
+
+The isolated SIGKILL fixture now uses this controller journal for successful
+recovery. Its test-only handoff contains only endpoint and epoch lookup metadata,
+not the authority digest. Crashes at prepared intent and retained authority are
+added to the four admitted/committed phases; pre-admission recovery must refuse
+without changing broker state. Synthetic browser action counts remain single-use.
+Validation and independent review evidence are recorded in the current RUNBOOK entry.
+
+Remaining deployment blocker: no installed service currently produces the
+independently approved controller binding or invokes restart lookup. Its provisioned
+identity and lifecycle must be connected to the approved LitScout plan before a
+live service can use these APIs. Do not infer this authority from incoming JSON,
+current broker discovery, or persisted operation payloads. Fresh private browser
+verification and guarded consumer delivery remain subsequent gates.
+
+## 2026-09-09: offline reconciliation restart recovery
+
+`private_recovery.rs` implements an internal, synchronous recovery API with no
+browser or CDP transport. A trusted controller supplies the independently retained
+intent digest, endpoint, epoch and session. An immutable encrypted epoch bookmark
+locates the one admitted v2 reconciliation intent. Its digest, original scope,
+stage-3 gate, final encrypted result and full attachment/detach receipt chain
+must agree before broker metadata changes. Unknown schemas, missing evidence,
+foreign identity, expired leases and mixed/rolled-back states fail closed.
+
+Recovery accepts exact original pre-reconciliation records or exact already-
+sanitized disconnected records; repeated completion does not rewrite the
+encrypted result. Derived tab handles may be rebuilt by normal repository
+loading, but must remain invalid. Recovery holds the private permit throughout
+and returns only a private historical reconciliation capability. It does not
+prove current browser health or sanitation after restart, restore a live manager,
+install a key, release observation or connect to the browser.
+
+The new v2 producer persists the verified detach reference and an encrypted
+immutable epoch bookmark before intent admission. Older v1 intents cannot be
+upgraded into recovery authority. Crashes before a complete admitted v2 intent
+remain locked and require separately proven recovery; they never authorize retry.
+
+An isolated test kills its own synthetic child with SIGKILL after intent
+admission, broker commit, daemon update and completion commit. A fresh process
+recovers each case twice, verifies the private lock and original retained target
+record, compares fixed action counts and rejects changed authority/identity/URL
+or lease. The synthetic CDP peer is not a surviving real Chrome process; this is
+actual process-death and persisted-state evidence, not installed browser recovery.
+Skip `reconciliation_crash_child` when running ignored journey tests directly;
+only its parent fixture supplies the guarded child environment.
+
+Next: connect the trusted controller's durable authority handoff and restart
+dispatch to this internal recovery API. The test handoff file is not production
+authority delivery. Fresh private browser verification, consumer delivery and
+live renewal remain later deployment gates. No installed runtime is enabled.
+
+## 2026-09-09: internal post-cleanup reconciliation
+
+The private-handoff worker now consumes `PrivateJourneyPendingReconciliation`
+into `ReconciledPrivateJourney`, an internal nonserializable capability. Privacy
+release, key delivery and live renewal remain disabled. The slice implements
+these bounded acceptance checks:
 
 - Bind the original profile, browser, session, target, tab, lease and epoch to
   matching transport-closure and completed-owned-detach evidence. Missing,
@@ -21,14 +280,32 @@ renewal disabled while establishing these acceptance checks:
 - Extend synthetic worker coverage through reconciliation, including wrong
   epoch, stale identity and interrupted persistence boundaries.
 
-The existing live attachment validator refuses a sealed transport. Add a
-bounded completed-detach proof valid after closure, not a second detach call.
-General restart recovery needs durable receipts and cannot depend on the
+`verify_closed_detach` validates completed owned-detach evidence after transport
+closure without invoking the live validator or sending another detach. Exact
+encrypted acknowledgment, client, target, epoch and transport proof must agree.
+Reconciliation writes an encrypted admitted intent before changing broker state;
+the private repository path uses nonblocking process/file locks and synchronizes
+both JSON files and their directory before reporting success. The sealed manager
+and retained browser ownership remain in place. Broker health becomes
+`CdpDisconnected`, the cleaned target becomes `about:blank` with unknown readiness,
+stale handle/snapshot/screenshot references are removed, and local metadata is
+sanitized. Only then is the private completion record committed.
+
+Failure at any boundary leaves observation closed. In-process injected errors
+cover admitted intent, persisted broker state and local daemon metadata; these
+are not subprocess crash/restart tests. General restart recovery needs durable
+receipts and cannot depend on the
 in-memory pending object; implement and validate that separately before enabling
 renewal. Trusted consent production, private consumer delivery and a fresh real
 consumer probe remain deployment gates. The read-only next-slice assessment
 from `/root/next_renewal_slice` was checked against current source by primary;
-it is planning evidence, not implementation or runtime validation.
+it was planning evidence. Current implementation and independent review receipts
+are recorded in the Runbook; neither establishes live renewal acceptance.
+
+The subsequent slice above consumes durable reconciliation intents after process death;
+resolve committed versus uncertain state without credential or detach replay,
+and prove stale identity remains closed in subprocess restart fixtures. Do not
+enable result delivery or privacy release as part of that recovery work.
 
 ## 2026-09-09: authenticated private handoff and typed worker queue
 

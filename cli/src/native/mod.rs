@@ -36,8 +36,15 @@ pub mod policy;
 pub mod privacy_gate;
 #[allow(dead_code)]
 pub mod private_attachment;
+#[cfg(unix)]
+#[allow(dead_code)]
+pub mod private_bound_execution;
 #[allow(dead_code)]
 pub mod private_broker;
+#[allow(dead_code)]
+pub mod private_controller;
+#[allow(dead_code)]
+pub mod private_controller_socket;
 #[allow(dead_code)]
 pub mod private_execution;
 #[cfg(unix)]
@@ -49,6 +56,8 @@ pub mod private_identity;
 pub mod private_journey;
 #[allow(dead_code)]
 pub mod private_operation;
+#[allow(dead_code)]
+pub mod private_recovery;
 #[allow(dead_code)]
 pub mod private_secret_store;
 #[allow(dead_code)]
@@ -71,6 +80,7 @@ pub mod remote_view_lease;
 pub mod remote_view_proof;
 #[allow(dead_code)]
 pub mod retained_browser_requirement;
+mod runtime_attach_proof;
 #[allow(dead_code)]
 pub mod screenshot;
 #[allow(dead_code)]
