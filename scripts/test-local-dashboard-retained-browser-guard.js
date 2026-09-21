@@ -88,6 +88,62 @@ const reattachedChangedPid = evaluateRetainedBrowserExpectation({
 assert.equal(reattachedChangedPid.verified, false);
 assert.equal(reattachedChangedPid.reason, 'retained_browser_pid_changed');
 
+const projectionDrift = evaluateRetainedBrowserExpectation({
+  browser: {
+    ...browser,
+    pid: null,
+    host: 'attached_existing',
+    browserBuild: 'stock_chrome',
+    executablePath: '/opt/agent-browser/chrome',
+    profileId: 'default',
+    browserBuildProof: {
+      applied: true,
+      browserBuild: 'stock_chrome',
+      executablePath: '/opt/agent-browser/chrome',
+      cdpEndpoint: browser.cdpEndpoint,
+      browserPid: browser.pid,
+      profileId: 'fixture-profile',
+    },
+  },
+  cdpTargets: targets,
+  expectation: { ...expectation, profileId: 'fixture-profile' },
+  stage: 'pre_mutation',
+});
+assert.equal(projectionDrift.verified, true);
+assert.equal(projectionDrift.reason, 'retained_browser_verified_attach_profile_match');
+assert.equal(projectionDrift.observed.profileId, 'fixture-profile');
+for (const changedProof of [
+  { executablePath: '/opt/agent-browser/other' },
+  { cdpEndpoint: 'ws://127.0.0.1:9555/devtools/browser/other' },
+  { browserBuild: 'stealthcdp_chromium' },
+  { applied: false },
+]) {
+  const result = evaluateRetainedBrowserExpectation({
+    browser: {
+      ...projectionDrift.observed,
+      ...browser,
+      pid: null,
+      host: 'attached_existing',
+      browserBuild: 'stock_chrome',
+      executablePath: '/opt/agent-browser/chrome',
+      profileId: 'default',
+      browserBuildProof: { ...projectionDrift.expected, ...{
+        applied: true,
+        browserBuild: 'stock_chrome',
+        executablePath: '/opt/agent-browser/chrome',
+        cdpEndpoint: browser.cdpEndpoint,
+        browserPid: browser.pid,
+        profileId: 'fixture-profile',
+      }, ...changedProof },
+    },
+    cdpTargets: targets,
+    expectation: { ...expectation, profileId: 'fixture-profile' },
+    stage: 'pre_mutation',
+  });
+  assert.equal(result.verified, false);
+  assert.equal(result.reason, 'retained_browser_profile_changed');
+}
+
 for (const [reason, changedBrowser, changedTargets] of [
   ['retained_browser_missing', null, targets],
   ['retained_browser_pid_changed', { ...browser, pid: 4343 }, targets],

@@ -4980,6 +4980,41 @@ impl Default for BrowserProcess {
     }
 }
 
+impl BrowserProcess {
+    /// Returns the profile that is safe to use for retained-browser matching.
+    ///
+    /// An attached browser has no local process owner, so a verified runtime
+    /// attach proof may be more authoritative than a stale service projection.
+    /// Keep that exception deliberately narrow: any mismatch in the governed
+    /// build, executable, or CDP endpoint falls back to the persisted row.
+    pub(crate) fn effective_profile_id(&self) -> Option<&str> {
+        self.verified_attached_proof_profile_id()
+            .or(self.profile_id.as_deref())
+    }
+
+    pub(crate) fn verified_attached_proof_profile_id(&self) -> Option<&str> {
+        if self.host != BrowserHost::AttachedExisting {
+            return None;
+        }
+        let proof = self.browser_build_proof.as_ref()?;
+        let verified_attach = proof.get("applied").and_then(Value::as_bool) == Some(true)
+            && proof
+                .get("browserBuild")
+                .and_then(|value| serde_json::from_value::<BrowserBuild>(value.clone()).ok())
+                == self.browser_build
+            && proof.get("executablePath").and_then(Value::as_str)
+                == self.executable_path.as_deref()
+            && proof.get("cdpEndpoint").and_then(Value::as_str) == self.cdp_endpoint.as_deref()
+            && (self.pid.is_none()
+                || proof.get("browserPid").and_then(Value::as_u64) == self.pid.map(u64::from));
+        if verified_attach {
+            proof.get("profileId").and_then(Value::as_str)
+        } else {
+            None
+        }
+    }
+}
+
 /// Returns true only when a retained browser proves the exact governed build.
 /// Unconstrained callers preserve legacy direct-attachment behavior.
 pub(crate) fn browser_matches_required_build(

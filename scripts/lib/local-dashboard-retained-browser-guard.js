@@ -88,10 +88,11 @@ export function evaluateRetainedBrowserExpectation({
       `Required retained browser CDP endpoint changed: ${expectation.cdpUrl} -> ${browser.cdpEndpoint || 'missing'}`,
     );
   }
-  if (expectation.profileId && browser.profileId !== expectation.profileId) {
+  const profileId = effectiveRetainedProfileId(browser);
+  if (expectation.profileId && profileId !== expectation.profileId) {
     return failure(
       'retained_browser_profile_changed',
-      `Required retained browser profile changed: ${expectation.profileId} -> ${browser.profileId || 'missing'}`,
+      `Required retained browser profile changed: ${expectation.profileId} -> ${profileId || 'missing'}`,
     );
   }
   if (!browser.cdpEndpoint) {
@@ -133,7 +134,9 @@ export function evaluateRetainedBrowserExpectation({
     required: true,
     verified: true,
     stage,
-    reason: 'retained_browser_exact_match',
+    reason: profileId === browser.profileId
+      ? 'retained_browser_exact_match'
+      : 'retained_browser_verified_attach_profile_match',
     expected: expectation,
     observed: publicBrowserEvidence(browser, cdpTargets, expectation),
   };
@@ -179,7 +182,7 @@ function publicBrowserEvidence(browser, cdpTargets, expectation) {
     browserId: browser?.id ?? null,
     browserPid: observedBrowserPid(browser),
     cdpUrl: browser?.cdpEndpoint ?? null,
-    profileId: browser?.profileId ?? null,
+    profileId: effectiveRetainedProfileId(browser),
     health: browser?.health ?? null,
     targetId: target?.id ?? expectation?.targetId ?? null,
     url: target?.url ?? null,
@@ -194,6 +197,23 @@ function observedBrowserPid(browser) {
   if (Number.isInteger(browser?.pid) && browser.pid > 0) return browser.pid;
   const proofPid = browser?.browserBuildProof?.browserPid;
   return Number.isInteger(proofPid) && proofPid > 0 ? proofPid : null;
+}
+
+// A retained attached browser may leave its mutable service projection behind
+// during daemon handoff. Accept the immutable proof only when it binds the
+// same governed browser build, executable, CDP endpoint, and process identity.
+function effectiveRetainedProfileId(browser) {
+  const proof = browser?.browserBuildProof;
+  const proofPid = proof?.browserPid;
+  const proofMatches = browser?.host === 'attached_existing'
+    && proof?.applied === true
+    && proof?.browserBuild === browser?.browserBuild
+    && proof?.executablePath === browser?.executablePath
+    && proof?.cdpEndpoint === browser?.cdpEndpoint
+    && (browser?.pid == null || proofPid === browser.pid);
+  return proofMatches && typeof proof?.profileId === 'string' && proof.profileId
+    ? proof.profileId
+    : browser?.profileId ?? null;
 }
 
 function optionalString(value) {

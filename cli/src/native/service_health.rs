@@ -667,7 +667,7 @@ pub(super) fn persist_service_browser_record_with_refresh(
     repository.mutate(|service_state| {
         let id = service_browser_id_for_session(session_id);
         let previous = service_state.browsers.get(&id).cloned();
-        let profile_id = metadata
+        let projected_profile_id = metadata
             .as_ref()
             .and_then(|metadata| metadata.profile_id.clone())
             .or_else(|| {
@@ -741,7 +741,7 @@ pub(super) fn persist_service_browser_record_with_refresh(
             };
         let mut browser = BrowserProcess {
             id: id.clone(),
-            profile_id: profile_id.clone(),
+            profile_id: projected_profile_id.clone(),
             browser_build,
             executable_path,
             browser_build_proof,
@@ -764,6 +764,14 @@ pub(super) fn persist_service_browser_record_with_refresh(
             last_health_observation: None,
             attachability: None,
         };
+        // A verified attached-runtime proof is stronger custody evidence than
+        // an incoming stale metadata projection. Align the browser and session
+        // only when the proof exactly matches this retained endpoint.
+        let profile_id = browser
+            .effective_profile_id()
+            .map(str::to_string)
+            .or(projected_profile_id);
+        browser.profile_id = profile_id.clone();
         upsert_browser_display_allocation(
             service_state,
             session_id,
@@ -800,6 +808,26 @@ pub(super) fn persist_service_browser_record_with_refresh(
                 &browser,
                 metadata.as_ref(),
             );
+        }
+        let verified_attached_profile = browser
+            .verified_attached_proof_profile_id()
+            .map(str::to_string);
+        if let Some(profile_id) = verified_attached_profile {
+            if let Some(session) = service_state.sessions.get_mut(session_id) {
+                session.profile_id = Some(profile_id.clone());
+            }
+            for tab in service_state.tabs.values_mut().filter(|tab| {
+                tab.browser_id == id && tab.owner_session_id.as_deref() == Some(session_id)
+            }) {
+                if let Some(handle) = tab.service_tab_handle.as_mut() {
+                    handle.profile_id = Some(profile_id.clone());
+                }
+            }
+            for handle in &mut browser.tab_handles {
+                if handle.owner_session_id.as_deref() == Some(session_id) {
+                    handle.profile_id = Some(profile_id.clone());
+                }
+            }
         }
         service_state.browsers.insert(id, browser);
         refresh(service_state);
@@ -4317,6 +4345,78 @@ mod tests {
         );
         assert_eq!(
             browser.browser_build_proof.as_ref().unwrap()["applied"],
+            true
+        );
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn retained_attached_profile_stays_bound_to_verified_runtime_proof() {
+        let home = temp_home("service-health-retained-attached-profile");
+        let store = JsonServiceStateStore::new(home.join("state.json"));
+        let repository = LockedServiceStateRepository::new(store.clone());
+        let endpoint = "ws://127.0.0.1:9222/devtools/browser/exact".to_string();
+
+        persist_service_browser_record_in_repository(
+            &repository,
+            "retained-session",
+            BrowserHost::AttachedExisting,
+            BrowserHealth::Ready,
+            None,
+            Some(endpoint.clone()),
+            None,
+            Some(ServiceLaunchMetadata {
+                profile_id: Some("chatgpt-pro".to_string()),
+                browser_capability_launch: Some(serde_json::json!({
+                    "applied": true,
+                    "browserBuild": "stock_chrome",
+                    "profileId": "chatgpt-pro",
+                    "executablePath": "/opt/agent-browser/chrome",
+                    "cdpEndpoint": endpoint,
+                    "browserPid": 1234,
+                })),
+                ..ServiceLaunchMetadata::default()
+            }),
+        )
+        .unwrap();
+
+        persist_service_browser_record_in_repository(
+            &repository,
+            "retained-session",
+            BrowserHost::AttachedExisting,
+            BrowserHealth::Ready,
+            None,
+            Some(endpoint),
+            None,
+            Some(ServiceLaunchMetadata {
+                profile_id: Some("default".to_string()),
+                browser_capability_launch: Some(serde_json::json!({
+                    "applied": false,
+                    "browserBuild": "stock_chrome",
+                    "profileId": "default",
+                })),
+                ..ServiceLaunchMetadata::default()
+            }),
+        )
+        .unwrap();
+
+        let state = store.load().unwrap();
+        assert_eq!(
+            state.browsers["session:retained-session"]
+                .profile_id
+                .as_deref(),
+            Some("chatgpt-pro")
+        );
+        assert_eq!(
+            state.sessions["retained-session"].profile_id.as_deref(),
+            Some("chatgpt-pro")
+        );
+        assert_eq!(
+            state.browsers["session:retained-session"]
+                .browser_build_proof
+                .as_ref()
+                .unwrap()["applied"],
             true
         );
 

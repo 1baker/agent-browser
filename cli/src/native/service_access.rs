@@ -1251,7 +1251,7 @@ fn profile_reuse_decision(
             .browsers
             .iter()
             .filter(|(_id, browser)| {
-                browser.profile_id.as_deref() == Some(profile.id.as_str())
+                browser.effective_profile_id() == Some(profile.id.as_str())
                     && browser_has_live_health(browser)
             })
             .map(|(id, _browser)| id.clone())
@@ -1303,7 +1303,7 @@ fn profile_reuse_decision(
         .browsers
         .iter()
         .filter(|(_id, browser)| {
-            browser.profile_id.as_deref() == Some(profile.id.as_str())
+            browser.effective_profile_id() == Some(profile.id.as_str())
                 && browser_matches_required_build(browser, required_browser_build)
                 && browser_is_reusable_for_posture(
                     browser,
@@ -1322,7 +1322,7 @@ fn profile_reuse_decision(
         .browsers
         .iter()
         .filter(|(_id, browser)| {
-            browser.profile_id.as_deref() == Some(profile.id.as_str())
+            browser.effective_profile_id() == Some(profile.id.as_str())
                 && browser_has_live_health(browser)
         })
         .map(|(id, _browser)| id.clone())
@@ -4543,10 +4543,22 @@ mod tests {
                 "session:auracall-chatgpt-broker-v7".to_string(),
                 BrowserProcess {
                     id: "session:auracall-chatgpt-broker-v7".to_string(),
-                    profile_id: Some("chatgpt-pro".to_string()),
+                    // The stored projection is stale, but the exact retained
+                    // attach proof binds the live browser to chatgpt-pro.
+                    profile_id: Some("default".to_string()),
                     browser_build: Some(BrowserBuild::StockChrome),
+                    executable_path: Some("/opt/agent-browser/chrome".to_string()),
+                    browser_build_proof: Some(serde_json::json!({
+                        "applied": true,
+                        "browserBuild": "stock_chrome",
+                        "profileId": "chatgpt-pro",
+                        "executablePath": "/opt/agent-browser/chrome",
+                        "cdpEndpoint": "ws://127.0.0.1:9222/devtools/browser/exact",
+                        "browserPid": 1234,
+                    })),
                     host: BrowserHost::AttachedExisting,
                     health: BrowserHealth::Ready,
+                    cdp_endpoint: Some("ws://127.0.0.1:9222/devtools/browser/exact".to_string()),
                     view_streams: vec![ViewStream {
                         provider: ViewStreamProvider::CdpScreencast,
                         control_input: Some(ControlInputProvider::CdpInput),
