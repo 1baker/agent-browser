@@ -7245,6 +7245,14 @@ fn broker_binding_value(attachment: &BrokerAttachment) -> Value {
     })
 }
 
+fn broker_attachment_is_current(
+    attachment: &BrokerAttachment,
+    target_is_present: bool,
+    page_session_id: Option<&str>,
+) -> bool {
+    target_is_present && page_session_id == Some(attachment.page_session_id.as_str())
+}
+
 async fn handle_broker_transport(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let request = cmd
         .get("brokerRequest")
@@ -7346,9 +7354,11 @@ async fn handle_broker_transport(cmd: &Value, state: &mut DaemonState) -> Result
                 .browser
                 .as_ref()
                 .ok_or("broker browser is unavailable")?;
-            if manager.active_target_id().ok() != Some(attachment.target_id.as_str())
-                || manager.active_page_url() != Some(attachment.expected_url.as_str())
-            {
+            if !broker_attachment_is_current(
+                &attachment,
+                manager.has_target(&attachment.target_id),
+                manager.page_session_for_target(&attachment.target_id),
+            ) {
                 return Err("broker target changed".to_string());
             }
             let result = manager
@@ -40666,6 +40676,35 @@ mod tests {
         let mut changed = binding;
         changed["targetId"] = json!("different-target");
         assert!(!broker_binding_matches(&attachment, &changed));
+    }
+
+    #[test]
+    fn broker_attachment_stays_current_when_another_tab_becomes_active_or_it_navigates() {
+        let attachment = BrokerAttachment {
+            attachment_id: "attachment-current".to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: "pinned-target".to_string(),
+            generation: "generation-current".to_string(),
+            page_session_id: "pinned-session".to_string(),
+            expected_url: "https://chatgpt.com/".to_string(),
+            service_tab_handle: json!({"valid": true}),
+            event_rx: Arc::new(Mutex::new(broadcast::channel(1).1)),
+            event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+        };
+
+        assert!(broker_attachment_is_current(
+            &attachment,
+            true,
+            Some("pinned-session")
+        ));
+        assert!(!broker_attachment_is_current(
+            &attachment,
+            true,
+            Some("replacement-session")
+        ));
+        assert!(!broker_attachment_is_current(&attachment, false, None));
     }
 
     #[test]
