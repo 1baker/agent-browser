@@ -100,7 +100,7 @@ pub fn action_consequence(action: &str) -> ActionConsequence {
         | "request_detail" | "cookies_get" | "storage_get" | "tab_list" | "browser_pid"
         | "wait" | "cdp_url" | "diagnostics" | "probe" | "stream_status" | "state_list"
         | "state_show" => ActionConsequence::ReadOnly,
-        "task_authority_status" => ActionConsequence::ReadOnly,
+        "task_authority_status" | "broker_attach" => ActionConsequence::ReadOnly,
         "task_authority_reconcile" => ActionConsequence::ControlPlane,
         "navigate" | "back" | "forward" | "reload" | "tab_new" | "tab_switch" => {
             ActionConsequence::Navigation

@@ -25,6 +25,9 @@ try {
   for (const route of [
     { sessionName: 'absent-retained-session' },
     { browserId: 'session:absent-retained-session' },
+    { serviceTabHandle: { sessionName: 'absent-retained-session' } },
+    { serviceTabHandle: { browserId: 'session:absent-retained-session' } },
+    { serviceTabHandle: { sessionName: 'absent-retained-session', browserId: 'session:absent-retained-session' } },
   ]) {
     await assert.rejects(
       mcp.send('tools/call', {
@@ -45,6 +48,20 @@ try {
         return true;
       },
     );
+  }
+  for (const serviceTabHandle of [
+    {}, { browserId: 'opaque-browser' },
+    { sessionName: 'one', browserId: 'session:two' },
+  ]) {
+    await assert.rejects(mcp.send('tools/call', {
+      name: 'service_request',
+      arguments: { action: 'url', serviceTabHandle,
+        serviceName: 'ColdRouteTest', agentName: 'fixture', taskName: 'reject-invalid-route' },
+    }), error => {
+      const response = JSON.parse(error.message.slice('tools/call failed: '.length));
+      assert.equal(response.code, -32602);
+      return true;
+    });
   }
   assert.deepEqual(readdirSync(context.socketDir), [], 'must not create daemon socket or PID files');
   const statePath = join(context.agentHome, 'service', 'state.json');

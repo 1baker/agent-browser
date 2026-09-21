@@ -17,10 +17,14 @@ let cleanupComplete = false;
 try {
   const browserExecutable = resolveBrowserExecutable();
   profilePath = createDisposableSmokeProfile({ browserExecutable, defaultRoot: context.tempHome, windowsTempRoot: resolveWindowsTempRoot(browserExecutable), prefix: 'broker-task-authority-profile-' });
-  context.env.AGENT_BROWSER_EXECUTABLE_PATH = browserExecutable;
   context.env.AGENT_BROWSER_PROFILE = profilePath;
   const browserArgs = String(process.env.AGENT_BROWSER_BROKER_AUTHORITY_BROWSER_ARGS || '').trim();
-  const opened = await command(['--json', '--session', context.session, '--profile', profilePath, ...(browserArgs ? ['--args', browserArgs] : []), 'open', 'https://example.com/', '--headed', '--timeout', '20000'], 'open retained public target');
+  // This is an isolated authority harness, not a stealth-fidelity test. Use
+  // the selected disposable executable unless the caller explicitly requests
+  // a build with its own managed executable contract.
+  const browserBuild = String(process.env.AGENT_BROWSER_BROKER_AUTHORITY_BROWSER_BUILD || 'stock_chrome').trim();
+  if (browserBuild !== 'stealthcdp_chromium') context.env.AGENT_BROWSER_EXECUTABLE_PATH = browserExecutable;
+  const opened = await command(['--json', '--session', context.session, '--profile', profilePath, '--browser-build', browserBuild, ...(browserArgs ? ['--args', browserArgs] : []), 'open', 'https://example.com/', '--headed', '--timeout', '20000'], 'open retained public target');
   assert(opened.success === true, `open failed: ${JSON.stringify(opened)}`);
   let streamPort = await ensureStreamPort(context);
   const tabs = await httpJson(streamPort, 'POST', '/api/command', { action: 'tab_list', verbose: true });

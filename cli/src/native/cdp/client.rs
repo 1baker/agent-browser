@@ -206,6 +206,15 @@ impl CdpClient {
         );
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let privacy_gate: Option<Arc<PrivacyGate>> = None;
+        Self::connect_with_gate_inner(url, headers, recovery, privacy_gate).await
+    }
+
+    async fn connect_with_gate_inner(
+        url: &str,
+        headers: Option<Vec<(String, String)>>,
+        recovery: Option<&PrivatePermit>,
+        privacy_gate: Option<Arc<PrivacyGate>>,
+    ) -> Result<Self, String> {
         let _connection_lease = if let Some(permit) = recovery {
             if !privacy_gate
                 .as_ref()
@@ -1052,6 +1061,48 @@ fn enable_tcp_keepalive(stream: &tokio_tungstenite::MaybeTlsStream<tokio::net::T
     let _ = sock.set_tcp_keepalive(&keepalive);
 }
 
+/// Isolated synthetic endpoint. Keep this owner alive until its clients,
+/// permits, and peer tasks have ended. Sibling connections share its real gate;
+/// distinct fixtures never share durable state, even if the OS reuses a port.
+#[cfg(test)]
+pub(crate) struct TestCdpEndpoint {
+    endpoint: String,
+    root: std::path::PathBuf,
+    gate: Option<Arc<PrivacyGate>>,
+}
+
+#[cfg(test)]
+impl TestCdpEndpoint {
+    pub(crate) fn new(endpoint: &str) -> Result<Self, String> {
+        let root = std::env::temp_dir().join(format!("ab-cdp-gate-{}", uuid::Uuid::new_v4()));
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let gate = Some(PrivacyGate::open_test_endpoint(&root, endpoint).map_err(str::to_string)?);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let gate = None;
+        Ok(Self {
+            endpoint: endpoint.to_owned(),
+            root,
+            gate,
+        })
+    }
+
+    pub(crate) async fn connect(&self) -> Result<CdpClient, String> {
+        CdpClient::connect_with_gate_inner(&self.endpoint, None, None, self.gate.clone()).await
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn gate(&self) -> &Arc<PrivacyGate> {
+        self.gate.as_ref().expect("private gate supported")
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestCdpEndpoint {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1062,12 +1113,52 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::Message;
 
-    use super::{CdpClient, CdpCommandError};
+    use super::{CdpClient, CdpCommandError, TestCdpEndpoint};
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    async fn idle_private_peer() -> (CdpClient, tokio::task::JoinHandle<usize>) {
+    #[tokio::test]
+    async fn synthetic_endpoint_gates_isolate_reused_urls_but_share_sibling_state() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let first_fixture = TestCdpEndpoint::new(&endpoint).unwrap();
+        let isolated_fixture = TestCdpEndpoint::new(&endpoint).unwrap();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            for _ in 0..3 {
+                let (socket, _) = listener.accept().await.unwrap();
+                sockets.push(tokio_tungstenite::accept_async(socket).await.unwrap());
+            }
+            done_rx.await.unwrap();
+            drop(sockets);
+        });
+        let first = first_fixture.connect().await.unwrap();
+        let sibling = first_fixture.connect().await.unwrap();
+        let permit = first.begin_private_interval(&approved_target()).unwrap();
+        assert!(sibling.public_lease().is_err());
+        drop(permit);
+        assert!(
+            matches!(first_fixture.connect().await, Err(reason) if reason == "privacy_gate_locked")
+        );
+        let isolated = isolated_fixture.connect().await.unwrap();
+        assert!(isolated.public_lease().is_ok());
+        let isolated_permit = isolated.begin_private_interval(&approved_target()).unwrap();
+        drop(isolated_permit);
+        assert!(
+            matches!(isolated_fixture.connect().await, Err(reason) if reason == "privacy_gate_locked")
+        );
+        drop(first);
+        drop(sibling);
+        drop(isolated);
+        done_tx.send(()).unwrap();
+        peer.await.unwrap();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    async fn idle_private_peer() -> (TestCdpEndpoint, CdpClient, tokio::task::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = TestCdpEndpoint::new(&endpoint).unwrap();
         let peer = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
@@ -1079,13 +1170,14 @@ mod tests {
             }
             commands
         });
-        (CdpClient::connect(&endpoint).await.unwrap(), peer)
+        let client = fixture.connect().await.unwrap();
+        (fixture, client, peer)
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn private_quiescence_closes_socket_despite_retained_inspector_and_is_idempotent() {
-        let (client, peer) = idle_private_peer().await;
+        let (_fixture, client, peer) = idle_private_peer().await;
         let inspect = client.inspect_handle();
         let permit = client.begin_private_interval(&approved_target()).unwrap();
         let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
@@ -1126,7 +1218,7 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn private_quiescence_cancellation_seals_queued_writer_and_can_finish_cleanup() {
-        let (client, peer) = idle_private_peer().await;
+        let (_fixture, client, peer) = idle_private_peer().await;
         let permit = client.begin_private_interval(&approved_target()).unwrap();
         let mut inspect = client.inspect_handle();
         // Isolate transport sealing from the independent observer-epoch guard.
@@ -1169,8 +1261,8 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn private_quiescence_wrong_permit_cannot_seal_another_client() {
-        let (client, peer) = idle_private_peer().await;
-        let (other, other_peer) = idle_private_peer().await;
+        let (_fixture, client, peer) = idle_private_peer().await;
+        let (_other_fixture, other, other_peer) = idle_private_peer().await;
         let permit = client.begin_private_interval(&approved_target()).unwrap();
         assert!(matches!(
             other.quiesce_private_transport(&permit).await,
@@ -1201,7 +1293,7 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn private_quiescence_old_proof_cannot_authorize_new_epoch() {
-        let (client, peer) = idle_private_peer().await;
+        let (_fixture, client, peer) = idle_private_peer().await;
         let mut permit = client.begin_private_interval(&approved_target()).unwrap();
         let proof = client.quiesce_private_transport(&permit).await.unwrap();
         // Storage-only test transition, not a production cleanup authorization.
@@ -1229,7 +1321,7 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn private_quiescence_cancellation_during_join_retains_completion_evidence() {
-        let (client, peer) = idle_private_peer().await;
+        let (_fixture, client, peer) = idle_private_peer().await;
         let permit = client.begin_private_interval(&approved_target()).unwrap();
         let old = client.shutdown.lock().await.keepalive.take().unwrap();
         old.abort();
@@ -1271,7 +1363,7 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn private_quiescence_worker_panic_never_becomes_success_on_retry() {
-        let (client, peer) = idle_private_peer().await;
+        let (_fixture, client, peer) = idle_private_peer().await;
         let permit = client.begin_private_interval(&approved_target()).unwrap();
         let old = client.shutdown.lock().await.keepalive.take().unwrap();
         old.abort();
@@ -1311,6 +1403,7 @@ mod tests {
     async fn private_quiescence_cancels_live_pending_reply_without_publication() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = TestCdpEndpoint::new(&endpoint).unwrap();
         let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
         let (late_tx, late_rx) = tokio::sync::oneshot::channel();
         let peer = tokio::spawn(async move {
@@ -1330,7 +1423,7 @@ mod tests {
                 ))
                 .await;
         });
-        let client = Arc::new(CdpClient::connect(&endpoint).await.unwrap());
+        let client = Arc::new(fixture.connect().await.unwrap());
         let permit = Arc::new(client.begin_private_interval(&approved_target()).unwrap());
         let mut raw = client.subscribe_raw();
         let waiting = {
@@ -1391,6 +1484,7 @@ mod tests {
     async fn short_deadline_times_out_without_blocking_the_next_command() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let fixture = TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
@@ -1414,9 +1508,7 @@ mod tests {
                 .unwrap();
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let client = fixture.connect().await.unwrap();
         let error = client
             .send_command_with_timeout(
                 "Runtime.evaluate",
@@ -1452,6 +1544,7 @@ mod tests {
     async fn externally_cancelled_command_removes_its_pending_registration() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let fixture = TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
         let (received_tx, received_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
@@ -1463,11 +1556,7 @@ mod tests {
             futures_util::future::pending::<()>().await;
         });
 
-        let client = Arc::new(
-            CdpClient::connect(&format!("ws://{address}"))
-                .await
-                .unwrap(),
-        );
+        let client = Arc::new(fixture.connect().await.unwrap());
         let command_client = client.clone();
         let command = tokio::spawn(async move {
             command_client
@@ -1501,15 +1590,14 @@ mod tests {
     async fn dropping_client_closes_background_websocket_tasks() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let fixture = TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
             websocket.next().await
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let client = fixture.connect().await.unwrap();
         drop(client);
 
         let closed = tokio::time::timeout(Duration::from_millis(250), server).await;
@@ -1524,6 +1612,7 @@ mod tests {
     async fn private_scope_rejects_sibling_target_before_mutation() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = TestCdpEndpoint::new(&endpoint).unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
@@ -1540,7 +1629,7 @@ mod tests {
                 "no mutation or second target attach may reach Chrome"
             );
         });
-        let client = CdpClient::connect(&endpoint).await.unwrap();
+        let client = fixture.connect().await.unwrap();
         let mut permit = client.begin_private_interval(&approved_target()).unwrap();
         assert_eq!(
             client
@@ -1584,6 +1673,7 @@ mod tests {
     async fn timed_out_private_reply_never_becomes_public_after_cleanup() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = TestCdpEndpoint::new(&endpoint).unwrap();
         let (late_tx, late_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
@@ -1602,7 +1692,7 @@ mod tests {
             .await
             .unwrap();
         });
-        let client = CdpClient::connect(&endpoint).await.unwrap();
+        let client = fixture.connect().await.unwrap();
         let mut raw = client.subscribe_raw();
         let mut permit = client.begin_private_interval(&approved_target()).unwrap();
         assert_eq!(
@@ -1638,6 +1728,7 @@ mod tests {
     async fn old_and_private_sockets_stay_quarantined_after_epoch_cleanup() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = TestCdpEndpoint::new(&endpoint).unwrap();
         let (emit_tx, emit_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let mut sockets = Vec::new();
@@ -1668,8 +1759,8 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let first = CdpClient::connect(&endpoint).await.unwrap();
-        let second = CdpClient::connect(&endpoint).await.unwrap();
+        let first = fixture.connect().await.unwrap();
+        let second = fixture.connect().await.unwrap();
         let inspect = second.inspect_handle();
         let mut raw = first.subscribe_raw();
         let mut events = second.subscribe();
@@ -1694,7 +1785,7 @@ mod tests {
                 .is_err());
         }
         assert!(inspect.send_raw("{}".into()).await.is_err());
-        let fresh = CdpClient::connect(&endpoint).await.unwrap();
+        let fresh = fixture.connect().await.unwrap();
         assert_eq!(
             fresh
                 .send_command_no_params("Target.getTargets", None)
@@ -1714,6 +1805,7 @@ mod tests {
     async fn private_recovery_reconnects_only_to_bound_endpoint_without_public_output() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = TestCdpEndpoint::new(&endpoint).unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let first = tokio_tungstenite::accept_async(stream).await.unwrap();
@@ -1741,7 +1833,7 @@ mod tests {
             }
             drop(first);
         });
-        let client = CdpClient::connect(&endpoint).await.unwrap();
+        let client = fixture.connect().await.unwrap();
         let permit = client.begin_private_interval(&approved_target()).unwrap();
         assert!(
             CdpClient::connect_private_recovery("ws://127.0.0.1:1", &permit)
@@ -1782,7 +1874,7 @@ mod tests {
         assert!(events.try_recv().is_err());
         assert!(recovered.public_lease().is_err());
         drop(permit);
-        assert!(CdpClient::connect(&endpoint).await.is_err());
+        assert!(fixture.connect().await.is_err());
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1791,6 +1883,7 @@ mod tests {
         for failure in ["none", "target", "dom", "final_url"] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+            let fixture = TestCdpEndpoint::new(&endpoint).unwrap();
             let server = tokio::spawn(async move {
                 let (stream, _) = listener.accept().await.unwrap();
                 let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
@@ -1844,7 +1937,7 @@ mod tests {
                     }
                 }
             });
-            let client = CdpClient::connect(&endpoint).await.unwrap();
+            let client = fixture.connect().await.unwrap();
             let mut permit = client.begin_private_interval(&approved_target()).unwrap();
             let result = client
                 .sanitize_private_page(&mut permit, "retained", "retained-session")
@@ -1875,6 +1968,7 @@ mod tests {
     async fn private_interval_suppresses_raw_events_and_refuses_commands_and_reconnect() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let fixture = TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
         let (go_tx, go_rx) = tokio::sync::oneshot::channel();
         let (sent_tx, sent_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
@@ -1899,8 +1993,7 @@ mod tests {
                     .is_err()
             );
         });
-        let endpoint = format!("ws://{address}");
-        let client = CdpClient::connect(&endpoint).await.unwrap();
+        let client = fixture.connect().await.unwrap();
         let mut raw = client.subscribe_raw();
         let mut events = client.subscribe();
         let permit = client.begin_private_interval(&approved_target()).unwrap();
@@ -1919,7 +2012,7 @@ mod tests {
             .send_raw("SYNTHETIC_PRIVATE_SENTINEL".into())
             .await
             .is_err());
-        assert!(CdpClient::connect(&endpoint).await.is_err());
+        assert!(fixture.connect().await.is_err());
         assert!(tokio::time::timeout(Duration::from_millis(20), raw.recv())
             .await
             .is_err());
@@ -1930,7 +2023,7 @@ mod tests {
         );
         drop(permit);
         assert!(client.public_lease().is_err());
-        assert!(CdpClient::connect(&endpoint).await.is_err());
+        assert!(fixture.connect().await.is_err());
         server.await.unwrap();
     }
 }

@@ -42,6 +42,15 @@ try {
   ]);
   assert.equal(live.has(prepared.browserPid), true);
 
+  assert.equal(retirePreparedDaemon(prepared, {
+    isProcessLive: (pid) => pid === prepared.browserPid,
+    signalProcess: () => assert.fail('already-exited original must not be signaled'),
+  }), 'already_exited');
+  assert.throws(() => retirePreparedDaemon(prepared, {
+    isProcessLive: () => false,
+    signalProcess: () => assert.fail('lost browser must not permit signaling'),
+  }), /mismatched durable descriptor/);
+
   writeFileSync(handoffPath, JSON.stringify({
     schemaVersion: 1,
     sessionName: 'wrong-session',

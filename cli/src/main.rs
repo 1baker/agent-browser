@@ -660,6 +660,76 @@ fn daemon_profile_for_launch<'a>(
     }
 }
 
+/// Bootstrap only an admitted cold MCP lane, using the ordinary configured
+/// daemon options. Attaching an existing runtime is never cold admission.
+fn start_cold_mcp_daemon(flags: &Flags) -> Result<(), String> {
+    if flags.cdp.is_some()
+        || flags.auto_connect
+        || flags.provider.is_some()
+        || live_runtime_status_for_flags(flags).is_some()
+    {
+        return Err(
+            "Cold MCP startup cannot attach or acquire an existing runtime/provider".to_string(),
+        );
+    }
+    let proxy = flags.proxy.as_deref().map(parse_proxy);
+    let keychain_password = env::var("AGENT_BROWSER_KEYCHAIN_PASSWORD").ok();
+    let use_real_keychain = env::var("AGENT_BROWSER_USE_REAL_KEYCHAIN")
+        .is_ok_and(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | ""))
+        || keychain_password.is_some();
+    let runtime_profile = runtime_profile_name_for_launch(flags);
+    let opts = DaemonOptions {
+        headed: flags.headed,
+        debug: flags.debug,
+        leave_open: flags.leave_open,
+        executable_path: flags.executable_path.as_deref(),
+        executable_path_source: flags.executable_path_source.as_deref(),
+        extensions: &flags.extensions,
+        args: flags.args.as_deref(),
+        user_agent: flags.user_agent.as_deref(),
+        runtime_profile: runtime_profile.as_deref(),
+        proxy: proxy.as_ref().map(|value| value.server.as_str()),
+        proxy_bypass: flags.proxy_bypass.as_deref(),
+        proxy_username: proxy.as_ref().and_then(|value| value.username.as_deref()),
+        proxy_password: proxy.as_ref().and_then(|value| value.password.as_deref()),
+        ignore_https_errors: flags.ignore_https_errors,
+        allow_file_access: flags.allow_file_access,
+        profile: flags.profile.as_deref(),
+        state: flags.state.as_deref(),
+        provider: flags.provider.as_deref(),
+        device: flags.device.as_deref(),
+        session_name: flags.session_name.as_deref(),
+        download_path: flags.download_path.as_deref(),
+        allowed_domains: flags.allowed_domains.as_deref(),
+        action_policy: flags.action_policy.as_deref(),
+        confirm_actions: flags.confirm_actions.as_deref(),
+        engine: flags.engine.as_deref(),
+        use_real_keychain,
+        keychain_password: keychain_password.as_deref(),
+        auto_connect: flags.auto_connect,
+        idle_timeout: flags.idle_timeout.as_deref(),
+        service_reconcile_interval_ms: flags.service_reconcile_interval_ms,
+        service_job_timeout_ms: flags.service_job_timeout_ms,
+        service_monitor_interval_ms: flags.service_monitor_interval_ms,
+        service_recovery_retry_budget: flags.service_recovery_retry_budget,
+        service_recovery_base_backoff_ms: flags.service_recovery_base_backoff_ms,
+        service_recovery_max_backoff_ms: flags.service_recovery_max_backoff_ms,
+        service_recovery_retry_budget_source: flags.service_recovery_retry_budget_source.as_str(),
+        service_recovery_base_backoff_ms_source: flags
+            .service_recovery_base_backoff_ms_source
+            .as_str(),
+        service_recovery_max_backoff_ms_source: flags
+            .service_recovery_max_backoff_ms_source
+            .as_str(),
+        default_timeout: flags.default_timeout,
+        cdp: None,
+        runtime_attach_managed: false,
+        no_auto_dialog: flags.no_auto_dialog,
+        allow_stale_daemon_handoff: false,
+    };
+    connection::ensure_cold_daemon(&flags.session, &opts).map(|_| ())
+}
+
 fn run_runtime_command(clean: &[String], flags: &Flags) {
     match clean.get(1).map(|s| s.as_str()) {
         Some("create") => {
@@ -1773,6 +1843,7 @@ fn main() {
             flags.json,
             &flags.session,
             &flags.configured_service_state,
+            &flags,
         ));
     }
 
@@ -2487,7 +2558,15 @@ fn main() {
     let should_send_prestart_launch = launch_config_requested
         && (!daemon_result.already_running
             || explicit_cli_launch_config_requested
-            || live_runtime_status.is_some());
+            || live_runtime_status.is_some())
+        && !read_uses_daemon_acquisition(
+            &cmd,
+            explicit_cli_launch_config_requested
+                || flags.cli_browser_build
+                || flags.cli_proxy_bypass
+                || flags.cli_leave_open,
+            live_runtime_status.is_some(),
+        );
 
     // Launch headed browser or configure browser options (without CDP or provider).
     if !command_skips_browser_launch_for_prestart(&cmd)
@@ -3009,6 +3088,22 @@ fn run_dependent_batch(flags: &Flags, bail: bool, commands: &[Vec<String>]) {
     }
 }
 
+// Implicit read commands must reach the daemon's retained-session acquisition
+// before any launch request. DaemonOptions already carry configured defaults.
+// Explicit launch choices and managed-runtime attachment retain their old path.
+fn read_uses_daemon_acquisition(
+    cmd: &serde_json::Value,
+    explicit_launch: bool,
+    managed_attach: bool,
+) -> bool {
+    !explicit_launch
+        && !managed_attach
+        && matches!(
+            cmd.get("action").and_then(serde_json::Value::as_str),
+            Some("tab_list" | "browser_pid" | "cdp_url")
+        )
+}
+
 fn command_skips_browser_launch_for_prestart(cmd: &serde_json::Value) -> bool {
     crate::native::actions::action_skips_browser_launch(
         cmd.get("action").and_then(|v| v.as_str()).unwrap_or(""),
@@ -3043,6 +3138,24 @@ fn command_targets_existing_daemon_before_prestart(cmd: &serde_json::Value) -> b
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn implicit_reads_preserve_daemon_acquisition() {
+        for action in ["tab_list", "browser_pid", "cdp_url"] {
+            let cmd = serde_json::json!({"action": action});
+            assert!(super::read_uses_daemon_acquisition(&cmd, false, false));
+            assert!(!super::read_uses_daemon_acquisition(&cmd, true, false));
+            assert!(!super::read_uses_daemon_acquisition(&cmd, false, true));
+        }
+        for action in [
+            "launch", "navigate", "click", "fill", "evaluate", "batch", "tab_new",
+        ] {
+            assert!(!super::read_uses_daemon_acquisition(
+                &serde_json::json!({"action": action}),
+                false,
+                false
+            ));
+        }
+    }
     use super::*;
     use crate::test_utils::EnvGuard;
 

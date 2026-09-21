@@ -540,6 +540,14 @@ mod tests {
         let path = unique_state_path("round-trip-service-state");
         let store = JsonServiceStateStore::new(&path);
         let state = ServiceState {
+            runtime_custody_receipts: BTreeMap::from([(
+                "retained-session".to_string(),
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "phase": "committed",
+                    "descriptorSha256": "fixture"
+                }),
+            )]),
             browsers: BTreeMap::from([(
                 "browser-1".to_string(),
                 BrowserProcess {
@@ -565,6 +573,10 @@ mod tests {
         let loaded = store.load().expect("state should load");
 
         assert_eq!(loaded.browsers, state.browsers);
+        assert_eq!(
+            loaded.runtime_custody_receipts,
+            state.runtime_custody_receipts
+        );
         assert_eq!(
             loaded.site_policies["google"].origin_pattern,
             "https://accounts.google.com"

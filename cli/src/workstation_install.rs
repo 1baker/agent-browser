@@ -56,6 +56,7 @@ const OPEN_ROUTE_DISPLAYS_SCRIPT: &str =
     include_str!("../../scripts/open-rdp-guac-route-displays.js");
 const ROUTE_DISPLAY_SELECTION_SCRIPT: &str =
     include_str!("../../scripts/lib/rdp-route-display-selection.js");
+const TEMPORARY_RDP_ROUTE_SCRIPT: &str = include_str!("../../scripts/lib/temporary-rdp-route.js");
 const ENSURE_POSTGRES_SCRIPT: &str = include_str!("../../scripts/ensure-rdp-guac-postgres.sh");
 const POSTGRES_DURABILITY_SCRIPT: &str =
     include_str!("../../scripts/guacamole-postgres-durability.sh");
@@ -81,7 +82,7 @@ const RETAINED_BROWSER_PREPARATION_SCRIPT: &str =
 const RETAINED_BROWSER_REQUIREMENT_SCRIPT: &str =
     include_str!("../../scripts/lib/local-dashboard-retained-browser-requirement.js");
 const CONTROLLER_PACKAGE_JSON: &str = "{\n  \"private\": true,\n  \"type\": \"module\"\n}\n";
-const CONTROLLER_ASSETS: [(&str, &str, bool); 19] = [
+const CONTROLLER_ASSETS: [(&str, &str, bool); 20] = [
     (
         "scripts/smoke-rdp-guac-route-pool-readiness.js",
         ROUTE_POOL_READINESS_SCRIPT,
@@ -125,6 +126,11 @@ const CONTROLLER_ASSETS: [(&str, &str, bool); 19] = [
     (
         "scripts/lib/rdp-route-display-selection.js",
         ROUTE_DISPLAY_SELECTION_SCRIPT,
+        false,
+    ),
+    (
+        "scripts/lib/temporary-rdp-route.js",
+        TEMPORARY_RDP_ROUTE_SCRIPT,
         false,
     ),
     (
@@ -298,9 +304,11 @@ fn run_workstation_prepare_retained_browser(args: &[String], json: bool) {
         .arg("--agent-browser-bin")
         .arg(&paths.binary)
         .current_dir(&paths.support_dir);
-    for (key, value) in workstation_command_env(&paths) {
-        command.env(key, value);
+    let mut command_env = workstation_command_env(&paths);
+    if let Err(error) = bind_route_viewer_executable(&mut command_env) {
+        fail(&error, json);
     }
+    apply_command_environment(&mut command, &command_env);
     let status = command.status().unwrap_or_else(|error| {
         fail(
             &format!("Unable to run retained-browser preparation controller: {error}"),
@@ -444,7 +452,7 @@ fn run_workstation_install(args: &[String]) {
         next_action = if session_refresh_required {
             "log out and back in or reboot, then rerun workstation installation".to_string()
         } else {
-            let reconcile = match reconcile_workstation_locked(&root, &paths) {
+            let reconcile = match reconcile_workstation_locked(&root, &paths, false) {
                 Ok(reconcile) => reconcile,
                 Err(error) => fail(&error, parsed.json),
             };
@@ -552,12 +560,13 @@ fn reconcile_workstation() -> Result<WorkstationReconcileReport, String> {
     let root = workstation_root()?;
     let paths = install_paths(&root);
     let _lock = WorkstationLock::acquire(&root)?;
-    reconcile_workstation_locked(&root, &paths)
+    reconcile_workstation_locked(&root, &paths, true)
 }
 
 fn reconcile_workstation_locked(
     root: &Path,
     paths: &InstallPaths,
+    inspect_existing_runtime: bool,
 ) -> Result<WorkstationReconcileReport, String> {
     require_installed_payload(paths)?;
     require_effective_groups()?;
@@ -582,6 +591,31 @@ fn reconcile_workstation_locked(
         name: "retained-browser-requirement-checked",
         success: true,
     });
+
+    if let Some(route_pool) = if inspect_existing_runtime {
+        healthy_workstation_preflight(root, paths, &command_env)?
+    } else {
+        None
+    } {
+        steps.push(ReconcileStep {
+            name: "healthy-runtime-preserved",
+            success: true,
+        });
+        // Authentication probes may issue ephemeral Guacamole tokens. This
+        // path does not provision, stop, start, or reconfigure any runtime.
+        let receipt_path = root.join(".agent-browser/convergence/workstation-latest.json");
+        let report = WorkstationReconcileReport {
+            schema_version: "agent-browser.workstation-reconcile.v1",
+            success: true,
+            version: env!("CARGO_PKG_VERSION"),
+            retained_browser_requirement,
+            steps,
+            route_pool,
+            receipt_path: receipt_path.display().to_string(),
+        };
+        write_private_json(&receipt_path, &report)?;
+        return Ok(report);
+    }
 
     quiesce_existing_user_units(paths)?;
     steps.push(ReconcileStep {
@@ -801,6 +835,273 @@ fn reconcile_workstation_locked(
     };
     write_private_json(&receipt_path, &report)?;
     Ok(report)
+}
+
+/// Inspect current evidence before permitting the legacy repair transaction.
+/// Unknown failures are not authorization to disrupt a retained runtime.
+fn healthy_workstation_preflight(
+    root: &Path,
+    paths: &InstallPaths,
+    command_env: &[(String, String)],
+) -> Result<Option<Vec<Value>>, String> {
+    let binary = paths
+        .binary
+        .to_str()
+        .ok_or("Invalid installed binary path")?;
+    let install = preflight_json(binary, &["install", "doctor", "--json"], paths, command_env)?;
+    let mut repair = classify_install_preflight(&install)?;
+    let remote = preflight_json(
+        binary,
+        &["doctor", "remote-view", "--json"],
+        paths,
+        command_env,
+    )?;
+    if remote.get("success").and_then(Value::as_bool) != Some(true) {
+        return Err("Remote doctor did not return a complete report; refusing repair".into());
+    }
+    // Its independent install observation must also pass the provenance and
+    // publication gate; the first doctor is not a cached authority for it.
+    repair |= classify_install_preflight(
+        remote
+            .pointer("/data/install/data")
+            .ok_or("Remote doctor omitted its install evidence")?,
+    )?;
+    let issues = remote
+        .pointer("/data/issues")
+        .and_then(Value::as_array)
+        .ok_or("Remote doctor preflight is missing issues")?;
+    for issue in issues {
+        match issue.get("code").and_then(Value::as_str) {
+            Some(
+                "route_displays_missing_or_collapsed"
+                | "route_display_access_missing"
+                | "guacamole_connection_permission_missing"
+                | "guacamole_login_failed"
+                | "install_service_status_not_ready",
+            ) => repair = true,
+            _ => {
+                return Err(
+                    "Remote doctor preflight requires explicit investigation before repair".into(),
+                )
+            }
+        }
+    }
+    let remote_ready = remote
+        .pointer("/data/remoteControl/ready")
+        .and_then(Value::as_bool)
+        .ok_or("Remote doctor preflight is missing readiness")?;
+    if !remote_ready && issues.is_empty() {
+        return Err("Remote doctor failed without a classified repair reason".into());
+    }
+    // Each unit is checked separately: systemctl with several names succeeds
+    // when any one is active. The currently executing oneshot is not a target.
+    for unit in WORKSTATION_RECONCILE_QUIESCE_UNITS {
+        for (operation, healthy, repairable) in [
+            ("is-active", "active", &["inactive", "failed"][..]),
+            ("is-enabled", "enabled", &["disabled"][..]),
+        ] {
+            let output = preflight_observed(
+                "systemctl",
+                &["--user", operation, unit],
+                paths,
+                command_env,
+            )?;
+            let state = String::from_utf8_lossy(&output.stdout);
+            if state.trim() == healthy && output.status.success() {
+                continue;
+            }
+            if repairable.contains(&state.trim()) {
+                repair = true;
+            } else {
+                return Err(format!(
+                    "Unknown workstation unit state for {unit}; refusing automatic repair"
+                ));
+            }
+        }
+    }
+    // A classified readiness failure is not permission to bypass route custody.
+    // Incomplete route evidence cannot establish a safe repair and fails closed.
+    let routes = remote
+        .pointer("/data/guacamole/routePool/data/routePoolJson")
+        .and_then(Value::as_array)
+        .ok_or("Remote doctor is missing authoritative routes")?;
+    let state = bounded_service_snapshot(root)?;
+    if preflight_route_repair_required(&state, routes, remote_ready)?
+        || !preflight_environment_matches(root, routes)?
+    {
+        repair = true;
+    }
+    Ok((!repair).then(|| routes.clone()))
+}
+
+fn classify_install_preflight(payload: &Value) -> Result<bool, String> {
+    if payload
+        .pointer("/data/workstationPayload/ready")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(
+            "Installed workstation provenance is not verified; refusing runtime repair".into(),
+        );
+    }
+    let issues = payload
+        .pointer("/data/issues")
+        .and_then(Value::as_array)
+        .ok_or("Install doctor preflight is missing issues")?;
+    let success = payload
+        .get("success")
+        .and_then(Value::as_bool)
+        .ok_or("Install doctor preflight is missing success")?;
+    if success != issues.is_empty() {
+        return Err("Install doctor preflight has inconsistent readiness".into());
+    }
+    for issue in issues {
+        if issue.get("code").and_then(Value::as_str) != Some("service_status_not_ready") {
+            return Err("Install doctor found unclassified, provenance, or publication drift; refusing runtime repair".into());
+        }
+    }
+    Ok(!issues.is_empty())
+}
+
+fn preflight_observed(
+    command: &str,
+    args: &[&str],
+    paths: &InstallPaths,
+    command_env: &[(String, String)],
+) -> Result<Output, String> {
+    // GNU timeout bounds the subprocess group, including doctor descendants.
+    // Absence of timeout is an observation failure, never repair permission.
+    let mut bounded_args = vec!["--signal=TERM", "--kill-after=5s", "120s", command];
+    bounded_args.extend_from_slice(args);
+    let output = run_observed("timeout", &bounded_args, &paths.support_dir, command_env)?;
+    if matches!(output.status.code(), Some(124 | 137)) {
+        return Err("Workstation health preflight timed out; refusing runtime repair".into());
+    }
+    Ok(output)
+}
+
+fn preflight_json(
+    command: &str,
+    args: &[&str],
+    paths: &InstallPaths,
+    command_env: &[(String, String)],
+) -> Result<Value, String> {
+    let output = preflight_observed(command, args, paths, command_env)?;
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        return Err("Workstation doctor process failed; refusing runtime repair".into());
+    }
+    let payload: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "Workstation doctor returned malformed health evidence; refusing repair")?;
+    if payload.get("success").and_then(Value::as_bool) == Some(true) && !output.status.success() {
+        return Err("Workstation doctor exit status contradicts readiness".into());
+    }
+    Ok(payload)
+}
+
+fn bounded_service_snapshot(
+    root: &Path,
+) -> Result<crate::native::service_model::ServiceState, String> {
+    let path = root.join(".agent-browser/service/state.json");
+    let lock = fs::File::open(path.with_file_name("state.json.lock"))
+        .map_err(|_| "Service state lock is unavailable; refusing runtime repair")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match lock.try_lock_shared() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25))
+            }
+            Err(_) => {
+                return Err("Service state snapshot is unavailable; refusing runtime repair".into())
+            }
+        }
+    }
+    let contents = fs::read(&path).map_err(|_| "Service state snapshot is unreadable")?;
+    let payload: Value =
+        serde_json::from_slice(&contents).map_err(|_| "Service state snapshot is malformed")?;
+    if !payload.get("routePool").is_some_and(Value::is_object) {
+        return Err("Service state snapshot is missing its route authority".into());
+    }
+    serde_json::from_value(payload).map_err(|_| "Service state snapshot is malformed".into())
+}
+
+fn preflight_route_repair_required(
+    state: &crate::native::service_model::ServiceState,
+    routes: &[Value],
+    remote_ready: bool,
+) -> Result<bool, String> {
+    validate_canonical_route_pool(routes)?;
+    // Evaluate the safety check even when readiness is already false.
+    let routes_match = preflight_routes_match(state, routes)?;
+    Ok(!remote_ready || !routes_match)
+}
+
+fn preflight_routes_match(
+    state: &crate::native::service_model::ServiceState,
+    routes: &[Value],
+) -> Result<bool, String> {
+    let mut matches = true;
+    for route in routes {
+        let mut expected: crate::native::service_model::RoutePoolEntry =
+            serde_json::from_value(route.clone())
+                .map_err(|_| "Authoritative route entry is malformed")?;
+        let Some(existing) = state.route_pool.get(&expected.id) else {
+            matches = false;
+            continue;
+        };
+        if matches!(existing.state.as_str(), "checked_out" | "pending") {
+            expected.state.clone_from(&existing.state);
+            expected
+                .current_route_allocation_id
+                .clone_from(&existing.current_route_allocation_id);
+            if existing != &expected {
+                return Err(
+                    "Active authoritative route conflict requires explicit recovery".into(),
+                );
+            }
+        } else {
+            expected.state = "available".into();
+            expected.current_route_allocation_id = None;
+        }
+        matches &= existing == &expected;
+    }
+    Ok(matches)
+}
+
+fn preflight_environment_matches(root: &Path, routes: &[Value]) -> Result<bool, String> {
+    let route_a = routes
+        .iter()
+        .find(|r| r["id"] == "guacamole-rdp-a")
+        .ok_or("Missing route A")?;
+    let route_b = routes
+        .iter()
+        .find(|r| r["id"] == "guacamole-rdp-b")
+        .ok_or("Missing route B")?;
+    let url = route_a
+        .pointer("/routeDescriptor/localEmbedUrl")
+        .or_else(|| route_a.get("frameUrl"))
+        .and_then(Value::as_str)
+        .ok_or("Missing route A URL")?;
+    let display_a = route_a
+        .pointer("/target/displayName")
+        .and_then(Value::as_str)
+        .ok_or("Missing route A display")?;
+    let display_b = route_b
+        .pointer("/target/displayName")
+        .and_then(Value::as_str)
+        .ok_or("Missing route B display")?;
+    let user = env::var("USER").unwrap_or_else(|_| "agent-browser".into());
+    Ok([
+        ("AGENT_BROWSER_REMOTE_VIEW_PROVIDER", "rdp_gateway"),
+        ("AGENT_BROWSER_REMOTE_VIEW_URL", url),
+        ("AGENT_BROWSER_GUACAMOLE_HEADER_USER", user.as_str()),
+        ("AGENT_BROWSER_RDP_ROUTE_A_DISPLAY_NAME", display_a),
+        ("AGENT_BROWSER_RDP_ROUTE_B_DISPLAY_NAME", display_b),
+    ]
+    .iter()
+    .all(|(key, expected)| {
+        env_file_value(&root.join(".agent-browser/.env"), key).as_deref() == Some(expected)
+    }))
 }
 
 fn ensure_guacamole_header_user(
@@ -1185,7 +1486,68 @@ fn bind_route_viewer_executable(command_env: &mut Vec<(String, String)>) -> Resu
             "installed Linux Chrome is missing after workstation browser installation".to_string()
         })?;
     upsert_route_viewer_executable(command_env, &installed_chrome);
+    bind_remote_headed_executable(
+        command_env,
+        &installed_chrome,
+        &crate::install::get_browsers_dir(),
+        env::var("AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH")
+            .ok()
+            .as_deref(),
+    );
     Ok(())
+}
+
+/// Refresh installer-owned Chrome pins without changing intentional custom
+/// executables. This is a subprocess environment binding, not a persistent
+/// profile or dotenv rewrite; explicit launch executable flags still win.
+fn bind_remote_headed_executable(
+    command_env: &mut Vec<(String, String)>,
+    installed_chrome: &Path,
+    browsers_dir: &Path,
+    configured: Option<&str>,
+) {
+    let key = "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH";
+    let configured = command_env
+        .iter()
+        .find(|(candidate, _)| candidate == key)
+        .map(|(_, value)| value.as_str())
+        .or(configured)
+        .filter(|value| !value.trim().is_empty());
+    let managed = configured.is_none_or(|value| {
+        let Ok(relative) = Path::new(value).strip_prefix(browsers_dir) else {
+            return false;
+        };
+        let parts = relative.components().collect::<Vec<_>>();
+        let Some(std::path::Component::Normal(version)) = parts.first() else {
+            return false;
+        };
+        let version = version
+            .to_str()
+            .and_then(|value| value.strip_prefix("chrome-"));
+        let valid_version = version.is_some_and(|value| {
+            !value.is_empty()
+                && value
+                    .split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        });
+        valid_version
+            && ((parts.len() == 2 && parts[1].as_os_str() == "chrome")
+                || (parts.len() == 3
+                    && parts[1].as_os_str() == "chrome-linux64"
+                    && parts[2].as_os_str() == "chrome"))
+    });
+    if !managed {
+        return;
+    }
+    let executable = installed_chrome.display().to_string();
+    if let Some((_, value)) = command_env
+        .iter_mut()
+        .find(|(candidate, _)| candidate == key)
+    {
+        *value = executable;
+    } else {
+        command_env.push((key.to_string(), executable));
+    }
 }
 
 fn upsert_route_viewer_executable(
@@ -2689,6 +3051,104 @@ mod tests {
     use super::*;
 
     #[test]
+    fn healthy_preflight_rejects_unknown_and_provenance_failures() {
+        let healthy = serde_json::json!({"success":true,"data":{
+            "workstationPayload":{"ready":true},"issues":[]}});
+        assert_eq!(classify_install_preflight(&healthy), Ok(false));
+        let mut repair = healthy.clone();
+        repair["success"] = Value::Bool(false);
+        repair["data"]["issues"] = serde_json::json!([{"code":"service_status_not_ready"}]);
+        assert_eq!(classify_install_preflight(&repair), Ok(true));
+        for code in [
+            "unknown",
+            "dashboard_publication_active",
+            "dashboard_publication_recovery_required",
+            "dashboard_publication_status_unreadable",
+            "workstation_payload_partial_or_drifted",
+            "active_runtime_stale_executable",
+            "service_duplicate_profile_pressure",
+        ] {
+            repair["data"]["issues"] = serde_json::json!([{"code":code}]);
+            assert!(classify_install_preflight(&repair).is_err(), "{code}");
+        }
+        let mut drift = healthy.clone();
+        drift["data"]["workstationPayload"]["ready"] = Value::Bool(false);
+        assert!(classify_install_preflight(&drift).is_err());
+        assert!(classify_install_preflight(&serde_json::json!({})).is_err());
+        drift = healthy;
+        drift["success"] = Value::Bool(false);
+        assert!(classify_install_preflight(&drift).is_err());
+    }
+
+    #[test]
+    fn healthy_preflight_preserves_active_routes_and_rejects_conflicts() {
+        use crate::native::service_model::{RoutePoolEntry, ServiceState};
+        let route = RoutePoolEntry {
+            id: "guacamole-rdp-a".into(),
+            route_id: "guacamole:1".into(),
+            state: "available".into(),
+            ..RoutePoolEntry::default()
+        };
+        let routes = vec![serde_json::to_value(&route).unwrap()];
+        let mut state = ServiceState::default();
+        assert!(!preflight_routes_match(&state, &routes).unwrap());
+        state.route_pool.insert(route.id.clone(), route.clone());
+        assert!(preflight_routes_match(&state, &routes).unwrap());
+        let active = state.route_pool.get_mut(&route.id).unwrap();
+        active.state = "checked_out".into();
+        active.current_route_allocation_id = Some("retained-allocation".into());
+        assert!(preflight_routes_match(&state, &routes).unwrap());
+        state.route_pool.get_mut(&route.id).unwrap().target =
+            serde_json::json!({"displayName":":99"});
+        assert!(preflight_routes_match(&state, &routes).is_err());
+        state.route_pool.get_mut(&route.id).unwrap().state = "available".into();
+        assert!(!preflight_routes_match(&state, &routes).unwrap());
+    }
+
+    #[test]
+    fn unready_remote_preflight_still_rejects_active_route_conflicts() {
+        use crate::native::service_model::{RoutePoolEntry, ServiceState};
+        let routes = vec![
+            serde_json::json!({"id":"guacamole-rdp-a", "routeId":"guacamole:1", "state":"available",
+                "target":{"displayName":":10", "displayAllocationId":"route-a"}}),
+            serde_json::json!({"id":"guacamole-rdp-b", "routeId":"guacamole:2", "state":"available",
+                "target":{"displayName":":11", "displayAllocationId":"route-b"}}),
+        ];
+        let mut state = ServiceState::default();
+        for value in &routes {
+            let entry: RoutePoolEntry = serde_json::from_value(value.clone()).unwrap();
+            state.route_pool.insert(entry.id.clone(), entry);
+        }
+        assert!(preflight_route_repair_required(&state, &routes, false).unwrap());
+        let active = state.route_pool.get_mut("guacamole-rdp-a").unwrap();
+        active.state = "checked_out".into();
+        active.current_route_allocation_id = Some("retained-allocation".into());
+        active.target = serde_json::json!({"displayName":":99"});
+        assert!(preflight_route_repair_required(&state, &routes, false).is_err());
+        assert!(preflight_route_repair_required(&state, &routes[..1], false).is_err());
+    }
+
+    #[test]
+    fn publication_marker_is_not_reclaimed_as_a_stale_pid() {
+        let root = env::temp_dir().join(format!(
+            "agent-browser-publication-lock-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = root.join(".agent-browser/convergence/workstation.lock");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let marker = "{\"publication\":\"dead-publisher-receipt\"}\n";
+        fs::write(&path, marker).unwrap();
+        for _ in 0..2 {
+            assert!(WorkstationLock::acquire(&root).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), marker);
+        }
+        fs::remove_file(&path).unwrap();
+        drop(WorkstationLock::acquire(&root).unwrap());
+        assert!(!path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn parses_explicit_dry_run() {
         let args = vec![
             "install".to_string(),
@@ -2795,6 +3255,60 @@ mod tests {
     }
 
     #[test]
+    fn controller_bundle_static_relative_imports_are_closed() {
+        // Parse embedded JavaScript without evaluating it, creating profiles,
+        // or reading the installed workstation. Node is a controller prerequisite.
+        use std::io::Write;
+        use std::process::Stdio;
+        let script = r#"
+const fs = require('node:fs');
+const path = require('node:path').posix;
+const { SourceTextModule } = require('node:vm');
+const assets = new Map(JSON.parse(fs.readFileSync(0, 'utf8'))
+  .map(([name, source]) => [name, source]));
+function missingImports(bundle) {
+  const missing = [];
+  for (const [name, source] of bundle) {
+    if (!name.endsWith('.js')) continue;
+    const module = new SourceTextModule(source, { identifier: name });
+    for (const specifier of module.dependencySpecifiers) {
+      if (!specifier.startsWith('.')) continue;
+      const target = path.normalize(path.join(path.dirname(name), specifier));
+      if (!bundle.has(target)) missing.push(`${name} -> ${target}`);
+    }
+  }
+  return missing;
+}
+const missing = missingImports(assets);
+if (missing.length) throw new Error(`Unpackaged controller imports:\n${missing.join('\n')}`);
+// Prove this guard catches the historical omission rather than only parsing.
+assets.delete('scripts/lib/temporary-rdp-route.js');
+if (!missingImports(assets).some(value => value.endsWith(' -> scripts/lib/temporary-rdp-route.js'))) {
+  throw new Error('Missing-helper negative control did not fail');
+}
+"#;
+        let mut child = Command::new("node")
+            .args(["--experimental-vm-modules", "--no-warnings", "-e", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Node must be available to parse workstation controllers");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(&CONTROLLER_ASSETS).unwrap())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "controller import closure failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn installed_command_environment_clears_ambient_route_pool() {
         let paths = install_paths(Path::new("/tmp/workstation-command-env"));
         let command_env = workstation_command_env(&paths);
@@ -2835,6 +3349,55 @@ mod tests {
             .map(|(_, value)| value.as_str())
             .collect::<Vec<_>>();
         assert_eq!(builds, vec!["stock_chrome"]);
+    }
+
+    #[test]
+    fn remote_headed_refreshes_only_installer_managed_chrome_pins() {
+        let cache = Path::new("/home/test/.agent-browser/browsers");
+        let current = cache.join("chrome-152.0.7977.82/chrome-linux64/chrome");
+        for configured in [
+            None,
+            Some(""),
+            Some("/home/test/.agent-browser/browsers/chrome-149.0.0.0/chrome"),
+            Some("/home/test/.agent-browser/browsers/chrome-149.0.0.0/chrome-linux64/chrome"),
+        ] {
+            let mut command_env = Vec::new();
+            bind_remote_headed_executable(&mut command_env, &current, cache, configured);
+            assert_eq!(
+                command_env,
+                vec![(
+                    "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH".to_string(),
+                    current.display().to_string(),
+                )]
+            );
+            // Rebinding updates, rather than duplicates, the existing command key.
+            bind_remote_headed_executable(&mut command_env, &current, cache, configured);
+            assert_eq!(command_env.len(), 1);
+        }
+    }
+
+    #[test]
+    fn remote_headed_preserves_custom_executables_and_rejects_cache_lookalikes() {
+        let cache = Path::new("/home/test/.agent-browser/browsers");
+        let current = cache.join("chrome-152/chrome");
+        for configured in [
+            "/opt/custom/chrome",
+            "/home/test/.agent-browser/browsers-other/chrome-149/chrome",
+            "/home/test/.agent-browser/browsers/chrome-custom/chrome",
+            "/home/test/.agent-browser/browsers/chrome-149/../custom/chrome",
+            "/home/test/.agent-browser/browsers/chrome-149/custom/chrome",
+            "/home/test/.agent-browser/browsers/chrome-/chrome",
+        ] {
+            let mut command_env = Vec::new();
+            bind_remote_headed_executable(&mut command_env, &current, cache, Some(configured));
+            assert!(command_env.is_empty(), "must preserve ambient {configured}");
+            command_env.push((
+                "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH".to_string(),
+                configured.to_string(),
+            ));
+            bind_remote_headed_executable(&mut command_env, &current, cache, None);
+            assert_eq!(command_env[0].1, configured);
+        }
     }
 
     #[test]

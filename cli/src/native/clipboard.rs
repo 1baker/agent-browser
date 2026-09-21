@@ -486,7 +486,6 @@ mod tests {
         capture_write_during, read_text, ClipboardFailureCode, ClipboardRecovery,
         ClipboardWriteCapture, DEFAULT_WRITE_CAPTURE_LIMIT,
     };
-    use crate::native::cdp::client::CdpClient;
 
     #[tokio::test]
     async fn empty_clipboard_text_is_a_successful_read() {
@@ -523,9 +522,9 @@ mod tests {
                 .unwrap();
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let outcome = read_text(&client, "session-1", Duration::from_millis(25))
             .await
             .unwrap();
@@ -591,9 +590,9 @@ mod tests {
                 .unwrap();
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let capture = ClipboardWriteCapture::begin(&client, "session-1")
             .await
             .unwrap();
@@ -654,9 +653,9 @@ mod tests {
                 .unwrap();
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let (action_result, outcome) = capture_write_during(
             &client,
             "session-1",
@@ -718,9 +717,9 @@ mod tests {
                 .unwrap();
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let (action_result, outcome) = capture_write_during(
             &client,
             "session-1",
@@ -780,9 +779,9 @@ mod tests {
                 .unwrap();
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let error = read_text(&client, "session-1", Duration::from_millis(25))
             .await
             .unwrap_err();
@@ -819,9 +818,9 @@ mod tests {
                 .unwrap();
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let error = read_text(&client, "session-1", Duration::from_millis(25))
             .await
             .unwrap_err();
@@ -884,9 +883,9 @@ mod tests {
                 .unwrap();
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let error = read_text(&client, "session-1", Duration::from_millis(25))
             .await
             .unwrap_err();
@@ -920,9 +919,9 @@ mod tests {
                 .unwrap();
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let error = read_text(&client, "session-1", Duration::from_millis(25))
             .await
             .unwrap_err();
@@ -962,9 +961,9 @@ mod tests {
                 .unwrap();
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let error = read_text(&client, "session-1", Duration::from_millis(25))
             .await
             .unwrap_err();

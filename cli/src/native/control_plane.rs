@@ -8,15 +8,16 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 use super::actions::{
-    execute_command, recover_owned_browser_after_timeout, service_profile_lease_gate, DaemonState,
-    ServiceProfileLeaseGate,
+    execute_command, process_exit_observation_details, recover_owned_browser_after_timeout,
+    service_profile_lease_gate, DaemonState, ServiceProfileLeaseGate,
 };
+use super::browser::ProcessExitObservation;
 use super::browser_session_authority::browser_session_authority_snapshot;
 use super::cancellation::CancellationToken as RunningJobCancel;
 use super::service_health::{
     apply_browser_health_observation, browser_health_observation_details,
     persist_reconciled_service_state_in_repository, reconcile_persisted_service_state,
-    reconcile_service_state, record_browser_health_changed_event,
+    reconcile_service_state, record_browser_health_changed_event_with_details,
     remove_browser_operational_record,
 };
 use super::service_jobs::{
@@ -617,15 +618,26 @@ fn service_browser_id(session_id: &str) -> String {
     format!("session:{}", session_id)
 }
 
-fn persist_process_exited_browser_health(state: &DaemonState) {
+fn persist_process_exited_browser_health(state: &mut DaemonState) {
+    // Capture owned-child evidence before close() can discard or alter it.
+    // Attached/external browsers have no child observation; do not invent one.
+    let exit_observation = state
+        .browser
+        .as_mut()
+        .and_then(|mgr| mgr.poll_process_exit());
     if let Ok(repository) = LockedServiceStateRepository::default_json() {
-        let _ = persist_process_exited_browser_health_in_repository(&repository, state);
+        let _ = persist_process_exited_browser_health_in_repository(
+            &repository,
+            state,
+            exit_observation.as_ref(),
+        );
     }
 }
 
 fn persist_process_exited_browser_health_in_repository(
     repository: &impl ServiceStateRepository,
     state: &DaemonState,
+    exit_observation: Option<&ProcessExitObservation>,
 ) -> Result<(), String> {
     repository.mutate(|service_state| {
         let id = service_browser_id(&state.session_id);
@@ -679,9 +691,17 @@ fn persist_process_exited_browser_health_in_repository(
             last_health_observation: None,
             attachability: None,
         };
-        let observation_details = browser_health_observation_details(&browser, None);
+        let exit_details = exit_observation.map(process_exit_observation_details);
+        let observation_details =
+            browser_health_observation_details(&browser, exit_details.clone());
         apply_browser_health_observation(&mut browser, Some(&observation_details));
-        record_browser_health_changed_event(service_state, &id, previous.as_ref(), &browser);
+        record_browser_health_changed_event_with_details(
+            service_state,
+            &id,
+            previous.as_ref(),
+            &browser,
+            exit_details,
+        );
         if let Some(display_allocation_id) = browser.display_allocation_id.as_ref() {
             if let Some(allocation) = service_state
                 .display_allocations
@@ -2756,7 +2776,7 @@ mod tests {
         let mut state = DaemonState::new();
         state.session_id = "session-1".to_string();
 
-        persist_process_exited_browser_health_in_repository(&repository, &state).unwrap();
+        persist_process_exited_browser_health_in_repository(&repository, &state, None).unwrap();
 
         let persisted = store.load().unwrap();
         assert!(!persisted.browsers.contains_key(&browser_id));
@@ -2770,6 +2790,98 @@ mod tests {
                     && event.current_health == Some(ServiceBrowserHealth::ProcessExited)
             ));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn process_exited_browser_health_preserves_owned_child_observation() {
+        for observation in [
+            Some(ProcessExitObservation {
+                pid: 4242,
+                exit_code: Some(17),
+                #[cfg(unix)]
+                signal: None,
+                poll_error: None,
+                stderr_log_path: Some(std::path::PathBuf::from("/test/browser.stderr.log")),
+            }),
+            Some(ProcessExitObservation {
+                pid: 4242,
+                exit_code: None,
+                #[cfg(unix)]
+                signal: Some(9),
+                poll_error: None,
+                stderr_log_path: None,
+            }),
+            Some(ProcessExitObservation {
+                pid: 4242,
+                exit_code: None,
+                #[cfg(unix)]
+                signal: None,
+                poll_error: Some("try_wait failed".to_string()),
+                stderr_log_path: None,
+            }),
+            None,
+        ] {
+            let home = temp_home("control-plane-exit-observation");
+            let store = JsonServiceStateStore::new(home.join("state.json"));
+            let repository = LockedServiceStateRepository::new(store.clone());
+            let browser_id = service_browser_id("exit-observation");
+            store
+                .save(&ServiceState {
+                    browsers: std::collections::BTreeMap::from([(
+                        browser_id.clone(),
+                        BrowserProcess {
+                            id: browser_id.clone(),
+                            health: ServiceBrowserHealth::Ready,
+                            ..BrowserProcess::default()
+                        },
+                    )]),
+                    ..ServiceState::default()
+                })
+                .unwrap();
+            let mut state = DaemonState::new();
+            state.session_id = "exit-observation".to_string();
+            persist_process_exited_browser_health_in_repository(
+                &repository,
+                &state,
+                observation.as_ref(),
+            )
+            .unwrap();
+            let persisted = store.load().unwrap();
+            assert!(!persisted.browsers.contains_key(&browser_id));
+            let event = persisted
+                .events
+                .iter()
+                .find(|event| event.current_health == Some(ServiceBrowserHealth::ProcessExited))
+                .unwrap();
+            let details = event.details.as_ref().unwrap();
+            if let Some(observation) = observation {
+                let expected = process_exit_observation_details(&observation);
+                for (key, value) in expected.as_object().unwrap() {
+                    assert_eq!(&details[key], value);
+                }
+                assert_eq!(
+                    details.get("processExitCode").is_some(),
+                    observation.exit_code.is_some()
+                );
+                #[cfg(unix)]
+                assert_eq!(
+                    details.get("processExitSignal").is_some(),
+                    observation.signal.is_some()
+                );
+            } else {
+                for key in [
+                    "processExitDetection",
+                    "processExitPid",
+                    "processExitCode",
+                    "processExitSignal",
+                    "processExitPollError",
+                    "browserStderrLogPath",
+                ] {
+                    assert!(details.get(key).is_none());
+                }
+            }
+            let _ = std::fs::remove_dir_all(&home);
+        }
     }
 
     #[test]
@@ -2813,7 +2925,7 @@ mod tests {
         let mut state = DaemonState::new();
         state.session_id = "session-1".to_string();
 
-        persist_process_exited_browser_health_in_repository(&repository, &state).unwrap();
+        persist_process_exited_browser_health_in_repository(&repository, &state, None).unwrap();
 
         let persisted = store.load().unwrap();
         assert!(!persisted.browsers.contains_key(&browser_id));

@@ -247,7 +247,7 @@
     "fileTransfer": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Provider-neutral upload/download recipe for action=file_transfer. Include upload and/or download recipes with explicit allowedPaths or allowedDirectories, maxFiles, timeoutMs, and optional maxBytes."
+      "description": "Provider-neutral upload/download recipe for action=file_transfer. Include upload and/or download recipes with explicit allowedPaths or allowedDirectories, maxFiles, timeoutMs, and optional maxBytes. Upload and download receipts include SHA-256. expectedFileName validates the provider-suggested name and never renames a mismatched artifact."
     },
     "repairPolicy": {
       "type": "string",

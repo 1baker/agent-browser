@@ -637,6 +637,33 @@ pub fn persist_service_browser_record_in_repository(
     last_error: Option<String>,
     metadata: Option<ServiceLaunchMetadata>,
 ) -> Result<(), String> {
+    persist_service_browser_record_with_refresh(
+        repository,
+        session_id,
+        host,
+        health,
+        pid,
+        cdp_endpoint,
+        last_error,
+        metadata,
+        |_| {},
+    )
+}
+
+/// Complete retained evidence refresh inside the same transaction as health,
+/// before deriving attachability or making the updated record visible.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn persist_service_browser_record_with_refresh(
+    repository: &impl ServiceStateRepository,
+    session_id: &str,
+    host: BrowserHost,
+    health: BrowserHealth,
+    pid: Option<u32>,
+    cdp_endpoint: Option<String>,
+    last_error: Option<String>,
+    metadata: Option<ServiceLaunchMetadata>,
+    refresh: impl FnOnce(&mut ServiceState),
+) -> Result<(), String> {
     repository.mutate(|service_state| {
         let id = service_browser_id_for_session(session_id);
         let previous = service_state.browsers.get(&id).cloned();
@@ -757,6 +784,7 @@ pub fn persist_service_browser_record_in_repository(
             );
         }
         service_state.browsers.insert(id, browser);
+        refresh(service_state);
         refresh_remote_view_attachability(service_state);
         Ok(())
     })
@@ -1274,8 +1302,39 @@ pub(crate) fn persist_closed_browser_health_in_repository(
     session_id: &str,
     outcome: Option<&BrowserShutdownOutcome>,
 ) -> Result<(), String> {
+    persist_closed_browser_health_if_unchanged(repository, session_id, outcome, None)
+}
+
+/// Terminal recovery must not erase custody replaced while CDP shutdown ran.
+pub(crate) fn persist_closed_browser_health_if_unchanged(
+    repository: &impl ServiceStateRepository,
+    session_id: &str,
+    outcome: Option<&BrowserShutdownOutcome>,
+    expected: Option<&ServiceState>,
+) -> Result<(), String> {
     repository.mutate(|service_state| {
         let id = service_browser_id_for_session(session_id);
+        if let Some(expected) = expected {
+            let profile_id = expected
+                .browsers
+                .get(&id)
+                .and_then(|b| b.profile_id.as_ref());
+            if !expected.browsers.contains_key(&id)
+                || service_state.browsers.get(&id) != expected.browsers.get(&id)
+                || service_state.sessions.get(session_id) != expected.sessions.get(session_id)
+                || profile_id.is_none()
+                || profile_id
+                    .is_some_and(|id| service_state.profiles.get(id) != expected.profiles.get(id))
+                || service_state.sessions.values().any(|other| {
+                    other.id != session_id
+                        && other.lease != LeaseState::Released
+                        && (other.profile_id.as_ref() == profile_id
+                            || other.browser_ids.contains(&id))
+                })
+            {
+                return Err("Recovered browser custody changed; terminal records preserved".into());
+            }
+        }
         let previous = service_state.browsers.get(&id).cloned();
         let host = previous
             .as_ref()
@@ -1526,7 +1585,22 @@ pub fn merge_reconciled_service_state(
         target.reconciliation = reconciled.reconciliation.clone();
     }
 
+    // Session names are reusable. An observation belongs to the PID/endpoint
+    // that was probed, not to whichever process now occupies that name.
+    let replaced_browser_ids = before
+        .browsers
+        .iter()
+        .filter_map(|(id, observed)| {
+            target.browsers.get(id).and_then(|current| {
+                (current.pid != observed.pid || current.cdp_endpoint != observed.cdp_endpoint)
+                    .then(|| id.clone())
+            })
+        })
+        .collect::<BTreeSet<_>>();
     for (id, reconciled_browser) in &reconciled.browsers {
+        if replaced_browser_ids.contains(id) {
+            continue;
+        }
         match target.browsers.get_mut(id) {
             Some(target_browser) => {
                 target_browser.health = reconciled_browser.health;
@@ -1556,9 +1630,24 @@ pub fn merge_reconciled_service_state(
     }
 
     for (id, reconciled_tab) in &reconciled.tabs {
+        if replaced_browser_ids.contains(&reconciled_tab.browser_id)
+            || target
+                .tabs
+                .get(id)
+                .is_some_and(|tab| replaced_browser_ids.contains(&tab.browser_id))
+        {
+            continue;
+        }
         target.tabs.insert(id.clone(), reconciled_tab.clone());
     }
     for id in before.tabs.keys() {
+        if before
+            .tabs
+            .get(id)
+            .is_some_and(|tab| replaced_browser_ids.contains(&tab.browser_id))
+        {
+            continue;
+        }
         if reconciled.tabs.contains_key(id) {
             continue;
         }
@@ -1572,7 +1661,22 @@ pub fn merge_reconciled_service_state(
         }
     }
 
+    let replaced_session_ids = before
+        .sessions
+        .iter()
+        .chain(target.sessions.iter())
+        .filter(|(_, session)| {
+            session
+                .browser_ids
+                .iter()
+                .any(|id| replaced_browser_ids.contains(id))
+        })
+        .map(|(id, _)| id.clone())
+        .collect::<BTreeSet<_>>();
     for (id, reconciled_session) in &reconciled.sessions {
+        if replaced_session_ids.contains(id) {
+            continue;
+        }
         let lease_changed_after_reconcile_started = before
             .sessions
             .get(id)
@@ -1608,6 +1712,9 @@ pub fn merge_reconciled_service_state(
             .retain(|session_id| !inactive_session_ids.contains(session_id));
     }
     for id in before.sessions.keys() {
+        if replaced_session_ids.contains(id) {
+            continue;
+        }
         if reconciled.sessions.contains_key(id) {
             continue;
         }
@@ -1693,6 +1800,17 @@ pub fn merge_reconciled_service_state(
         .collect::<BTreeSet<_>>();
     for event in &reconciled.events {
         if before_event_ids.contains(&event.id) || target_event_ids.contains(&event.id) {
+            continue;
+        }
+        if event
+            .browser_id
+            .as_ref()
+            .is_some_and(|id| replaced_browser_ids.contains(id))
+            || event
+                .session_id
+                .as_ref()
+                .is_some_and(|id| replaced_session_ids.contains(id))
+        {
             continue;
         }
         target_event_ids.insert(event.id.clone());
@@ -2935,6 +3053,95 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
 
+    #[test]
+    fn recovered_close_cas_preserves_replacement_and_reports_storage_failure() {
+        let home = temp_home("recovered-close-cas");
+        let store = JsonServiceStateStore::new(home.join("state.json"));
+        let repository = LockedServiceStateRepository::new(store.clone());
+        let id = service_browser_id_for_session("retained");
+        let mut expected = ServiceState::default();
+        expected.browsers.insert(
+            id.clone(),
+            BrowserProcess {
+                id: id.clone(),
+                pid: Some(123),
+                profile_id: Some("owned".into()),
+                ..Default::default()
+            },
+        );
+        expected.sessions.insert(
+            "retained".into(),
+            super::super::service_model::BrowserSession {
+                id: "retained".into(),
+                profile_id: Some("owned".into()),
+                browser_ids: vec![id.clone()],
+                ..Default::default()
+            },
+        );
+        expected.profiles.insert(
+            "owned".into(),
+            super::super::service_model::BrowserProfile {
+                id: "owned".into(),
+                ..Default::default()
+            },
+        );
+        for drift in ["pid", "session", "profile", "shared_session"] {
+            let mut replacement = expected.clone();
+            match drift {
+                "pid" => replacement.browsers.get_mut(&id).unwrap().pid = Some(124),
+                "session" => replacement
+                    .sessions
+                    .get_mut("retained")
+                    .unwrap()
+                    .browser_ids
+                    .clear(),
+                "profile" => {
+                    replacement.profiles.get_mut("owned").unwrap().user_data_dir =
+                        Some("other".into())
+                }
+                "shared_session" => {
+                    let mut other = replacement.sessions["retained"].clone();
+                    other.id = "new-controller".into();
+                    other.lease = LeaseState::Exclusive;
+                    replacement.sessions.insert(other.id.clone(), other);
+                }
+                _ => unreachable!(),
+            }
+            store.save(&replacement).unwrap();
+            let before = repository.load_snapshot().unwrap();
+            assert!(persist_closed_browser_health_if_unchanged(
+                &repository,
+                "retained",
+                None,
+                Some(&expected)
+            )
+            .is_err());
+            assert_eq!(repository.load_snapshot().unwrap(), before);
+        }
+        struct FailedRepository;
+        impl ServiceStateRepository for FailedRepository {
+            fn load_snapshot(&self) -> Result<ServiceState, String> {
+                Err("storage unavailable".into())
+            }
+            fn mutate<R>(
+                &self,
+                _: impl FnOnce(&mut ServiceState) -> Result<R, String>,
+            ) -> Result<R, String> {
+                Err("storage unavailable".into())
+            }
+        }
+        assert_eq!(
+            persist_closed_browser_health_if_unchanged(
+                &FailedRepository,
+                "retained",
+                None,
+                Some(&expected)
+            )
+            .unwrap_err(),
+            "storage unavailable"
+        );
+    }
+
     fn service_state_with_browser(browser: BrowserProcess) -> ServiceState {
         ServiceState {
             browsers: BTreeMap::from([(browser.id.clone(), browser)]),
@@ -2951,6 +3158,113 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn merge_reconciled_service_state_rejects_obsolete_process_health() {
+        for changed_field in ["pid", "endpoint"] {
+            let id = "session:default";
+            let mut before = ServiceState::default();
+            before.browsers.insert(
+                id.into(),
+                BrowserProcess {
+                    id: id.into(),
+                    pid: Some(100),
+                    cdp_endpoint: Some("ws://127.0.0.1:9222/devtools/browser/old".into()),
+                    health: BrowserHealth::Ready,
+                    ..BrowserProcess::default()
+                },
+            );
+            before.tabs.insert(
+                "target:retained".into(),
+                BrowserTab {
+                    id: "target:retained".into(),
+                    browser_id: id.into(),
+                    lifecycle: TabLifecycle::Ready,
+                    ..BrowserTab::default()
+                },
+            );
+            before.sessions.insert(
+                "default".into(),
+                BrowserSession {
+                    id: "default".into(),
+                    lease: LeaseState::Exclusive,
+                    browser_ids: vec![id.into()],
+                    tab_ids: vec!["target:retained".into()],
+                    ..BrowserSession::default()
+                },
+            );
+            before.refresh_derived_views();
+            let mut reconciled = before.clone();
+            let old = reconciled.browsers.get_mut(id).unwrap();
+            old.health = BrowserHealth::ProcessExited;
+            old.last_error = Some("Recorded browser PID 100 is no longer running".into());
+            reconciled
+                .tabs
+                .get_mut("target:retained")
+                .unwrap()
+                .lifecycle = TabLifecycle::Closed;
+            reconciled
+                .sessions
+                .get_mut("default")
+                .unwrap()
+                .tab_ids
+                .clear();
+            reconciled.events.push(ServiceEvent {
+                id: "obsolete-exit".into(),
+                kind: ServiceEventKind::BrowserHealthChanged,
+                browser_id: Some(id.into()),
+                ..ServiceEvent::default()
+            });
+            let mut target = before.clone();
+            let current = target.browsers.get_mut(id).unwrap();
+            if changed_field == "pid" {
+                current.pid = Some(200);
+            } else {
+                current.cdp_endpoint = Some("ws://127.0.0.1:9222/devtools/browser/new".into());
+            }
+            let replacement = target.clone();
+            merge_reconciled_service_state(&mut target, &before, &reconciled);
+            assert_eq!(
+                target.browsers[id].health,
+                BrowserHealth::Ready,
+                "{changed_field}"
+            );
+            assert_eq!(target.browsers[id].last_error, None, "{changed_field}");
+            assert_eq!(
+                target.tabs["target:retained"],
+                replacement.tabs["target:retained"]
+            );
+            assert_eq!(target.sessions["default"], replacement.sessions["default"]);
+            assert!(!target
+                .events
+                .iter()
+                .any(|event| event.id == "obsolete-exit"));
+
+            // The same observation must still apply to the original process.
+            let mut unchanged = before.clone();
+            merge_reconciled_service_state(&mut unchanged, &before, &reconciled);
+            assert_eq!(unchanged.browsers[id].health, BrowserHealth::ProcessExited);
+            assert!(unchanged
+                .events
+                .iter()
+                .any(|event| event.id == "obsolete-exit"));
+
+            // Production cleanup removes the old browser before the merge.
+            // Its unchanged-looking child records still belong to the replacement.
+            remove_browser_operational_record(&mut reconciled, id, None);
+            let mut after_cleanup = replacement.clone();
+            merge_reconciled_service_state(&mut after_cleanup, &before, &reconciled);
+            assert_eq!(after_cleanup.browsers[id], replacement.browsers[id]);
+            assert_eq!(
+                after_cleanup.tabs["target:retained"],
+                replacement.tabs["target:retained"]
+            );
+            assert_eq!(
+                after_cleanup.sessions["default"],
+                replacement.sessions["default"]
+            );
+        }
     }
 
     #[test]

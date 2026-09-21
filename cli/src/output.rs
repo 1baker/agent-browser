@@ -4252,6 +4252,10 @@ agent-browser close - Close the browser
 Usage: agent-browser close [options]
 
 Closes the browser instance for the current session.
+For a recovered or borrowed connection, close detaches and preserves retained
+browser identity. Explicit service_browser_close may terminate an exclusively
+owned recovered Linux Chrome only after exact process and profile verification;
+terminal cleanup requires observed process exit and profile-lock release.
 
 Aliases: quit, exit
 
@@ -4273,6 +4277,8 @@ Examples:
         "handoff" => {
             r##"
 agent-browser handoff - Transfer a live browser to a replacement daemon
+
+Prepared handoff is distinct from unplanned daemon-crash reconnection.
 
 Usage: agent-browser handoff <prepare|resume>
 
@@ -5119,6 +5125,12 @@ inventory. Locally launched browsers also require a live browser PID; an
 explicit attached-existing browser may omit that local PID only while its live
 daemon and exact loopback DevTools identity still verify. It never launches a
 daemon or browser.
+Healthy workstation reconcile reports healthy-runtime-preserved after fresh
+provenance, unit, and canonical-route checks, without restarting services or
+changing browsers/configuration. Unknown evidence and active route conflicts
+stop before repair. Guacamole probes may issue temporary authentication tokens.
+Fresh workstation apply still performs bootstrap.
+ChatGPT project slug changes preserve identity only when project/conversation IDs match.
 Use workstation retained-browser-status for the same source-free, no-lock,
 no-launch check before apply or reconcile. It honors
 AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT from the normal agent-browser env
@@ -5141,6 +5153,10 @@ submission action. If retained-browser-status proves the old daemon is gone,
 --rotate-stale-requirement-sha256 performs an explicit digest-bound replacement.
 It refuses live or unreadable old authority, journals the two private-file
 updates, fails closed during a partial commit, and resumes safely after a crash.
+Same-session replacement requires the same profile and URL, a verified new
+target, and fresh readable CDP proof that the old exact target is absent.
+Managed remote-headed Chrome cache paths follow the installer-selected Chrome;
+custom executable paths remain unchanged.
 
 Workstation apply reruns stop the managed dashboard, runtime interlock, and
 backup timer during reconciliation, then reactivate them after final readiness.
@@ -5154,6 +5170,14 @@ helper and fails closed instead of prompting. Compatible installed helper
 versions are retained across byte-only bundle drift.
 Routine workstation reconciliation preserves live XRDP desktops and applies
 route-user or credential changes at the next login without restarting sesman.
+For an additional temporary C-Z slot without reconciling A/B, the source checkout
+provides: pnpm setup:rdp-guac-temporary-route -- --label C --dry-run --json
+Replace --dry-run with --apply after review. This provisions only a new account
+and Guacamole connection; it does not open a desktop/browser or prove readiness.
+Existing identities fail closed. Keep its private recovery journal confidential.
+Source opener/inspector/readiness scripts accept --route-label C to select only
+the supplemental slot; the opener requires an explicit matching route pool JSON.
+The default installed workstation contract remains canonical A/B.
 Host preparation includes display inspection, visual-proof tools, and a
 path-scoped AppArmor userns policy for managed Chrome on Ubuntu 24.04. It does
 not require that policy when the kernel disables AppArmor or does not restrict
@@ -5686,6 +5710,7 @@ Commands:
   prune-retained        Dry-run or apply removal of inert retained browser, closed-tab, orphaned profile, and display allocation records
   repair-retained       Dry-run or apply safe repair of legacy inert retained session evidence
   access-plan           Show the no-launch profile, readiness, site-policy, provider, challenge, and browser-build routing recommendation
+                        Readiness follows the runtime profile unless --readiness-profile-id overrides it
   browser-capability    Preflight guarded executable routing for one requested browser build without launching
   browser-capability guide
                         List known executable IDs and copyable prefer commands derived from the current registry
@@ -5872,13 +5897,25 @@ Usage:
 
 Commands:
   serve                 Run the MCP stdio server
+                        Cold profile creation uses a browserless worker; stale routes stay guarded.
   resources             List read-only service resources exposed for MCP adapters
   read                  Read a service resource URI as JSON
+
+  service_request routes handle-only calls by the handle sessionName or session: browserId.
+  Conflicting or unroutable handles fail before transport; retained routes never auto-launch.
+  Cold navigate/tab_new requests need a URL, exact selected profile, an approved
+  new-browser access plan and absent daemon metadata. Reads/input never bootstrap.
+  Cold startup preserves configured options and dispatches the action only once.
+
+  For large jobs resources, the repository helper scripts/read-service-job-summary.js
+  accepts an explicit binary path and emits bounded counts without job payloads.
+  It is a no-launch snapshot, not browser authority (exit 0 idle, 2 busy, 1 unavailable).
 
 Notes:
   - The stdio server reads newline-delimited JSON-RPC messages from stdin and writes MCP messages to stdout.
   - MCP tools include service_access_plan, service_request, service_job_cancel, service_incidents, service_remedies_apply, service_trace, service_profile_upsert, service_profile_freshness_update, service_profile_seeding_handoff_update, service_profile_delete, service_session_upsert, service_session_delete, service_site_policy_upsert, service_site_policy_delete, service_monitor_upsert, service_monitor_delete, service_monitors_run_due, service_monitor_pause, service_monitor_resume, service_monitor_reset_failures, service_monitor_triage, service_provider_upsert, service_provider_delete, service_browser_capability_registry_upsert, browser_navigate, browser_requests, browser_request_detail, browser_headers, browser_offline, browser_cookies_get, browser_cookies_set, browser_cookies_clear, browser_storage_get, browser_storage_set, browser_storage_clear, browser_user_agent, browser_viewport, browser_geolocation, browser_permissions, browser_timezone, browser_locale, browser_media, browser_dialog, browser_upload, browser_download, browser_wait_for_download, browser_har_start, browser_har_stop, browser_route, browser_unroute, browser_console, browser_errors, browser_pdf, browser_response_body, browser_clipboard, browser_back, browser_forward, browser_reload, browser_tab_new, browser_tab_switch, browser_tab_close, browser_set_content, browser_command, browser_snapshot, browser_get_url, browser_get_title, browser_tabs, browser_screenshot, browser_click, browser_fill, browser_wait, browser_type, browser_press, browser_hover, browser_select, browser_get_text, browser_get_value, browser_get_attribute, browser_get_html, browser_get_styles, browser_count, browser_get_box, browser_is_visible, browser_is_enabled, browser_check, browser_is_checked, browser_uncheck, browser_scroll, browser_scroll_into_view, browser_focus, and browser_clear.
-  - service_request accepts one intent object with serviceName, agentName, taskName, siteId/loginId/accountId/url, targetServiceId, browserBuild, profile or runtimeProfile hints, top-level browserId/sessionName reuse route hints, profileLeasePolicy, profileLeaseWaitTimeoutMs, action, params, and jobTimeoutMs, then queues the browser command through the same service-owned control path. Top-level browserId/sessionName route ordinary commands to an existing daemon lane selected by access-plan profileReuse; params.browserId/params.sessionName remain action parameters. Direct launches that select a profile already backed by a live retained browser are rejected unless they use those route hints or allowDuplicateProfileLane=true for reviewed isolation or throwaway work. Use action=external_byop_adopt with a registered external_byop profile and exactly one explicit cdpUrl or cdpPort when an already-running Chrome lane should become retained attached_existing browser/session/tab state before the next access plan. Use action=probe with a valid serviceTabHandle, timeoutMs, maxReturnBytes, and a provider-neutral probe.detectors recipe for bounded identity, account, readiness, or page-state evidence; supported generic detector types are url_title, selector_text, evaluate, and client_evidence. Optional probe.recordFreshness merges target/account freshness evidence into the selected service profile. Use action=tab_handle_refresh with a current or stale serviceTabHandle, optional desiredUrl, and repairPolicy=reject_only, reuse_compatible, open_if_missing, or replace_duplicates when a client needs structured stale-tab evidence, a refreshed generic handle, or one compatible target with duplicate cleanup before follow-on work. Use action=tab_handle_release with a serviceTabHandle when a client is finished with a leased shared-profile tab; release best-effort closes that exact physical target when the routed live browser owns it, marks only that retained tab closed in service state, and preserves the browser process plus session route for other clients. Use action=ui_action with a valid serviceTabHandle, timeoutMs, optional maxTextBytes, and a bounded uiAction.steps recipe for generic find, focus, fill, type, select, menu_select, click, wait, clear, or guarded dialog steps; clients supply website-specific selectors and instructions while agent-browser owns handle validation, caps, trace, and per-step evidence. Use action=network_capture with a valid serviceTabHandle, timeoutMs, and bounded networkCapture.maxEvents for capped network evidence; metadata is default, headers are redacted unless allowlisted, and response bodies require captureBodies=true plus maxBodyBytes. Use action=file_transfer with a valid serviceTabHandle, timeoutMs, and a fileTransfer upload and/or download recipe for service-owned file input and download capture; uploads require selector or labelText, files, allowedPaths, and maxFiles, while downloads require selector, directory, allowedDirectories, and optional maxBytes. Use action=view_focus with params.targetId plus params.index when both are known, or params.index alone as the fallback, plus params.maximize before opening a dashboard remote-view iframe for a retained tab. Use action=view_takeover with params.browserId, params.sessionName, params.streamId, params.provider, and params.openMode when a single-active-viewer RDP or Guacamole connection should be taken over or reconnected while preserving the browser process and session. Use action=service_remote_view_route_preflight to get a no-launch fastPreflight response with ready, partial, stale, or blocked component evidence before route-bound launch. Use action=service_remote_view_browser_reattach to show a retained RDP browser again without launching Chrome or acquiring its profile, and action=service_remote_view_route_switch to bind that browser to another available or parkable Guacamole route; route switch returns routeSwitchParking when it parks another live browser route because no route-pool entry was available. Use service_viewer_lease_request, service_viewer_lease_heartbeat, service_viewer_lease_release, and service_controller_lease_takeover for explicit remote-view observer and controller leases. Use action=cdp_free_launch when the request should launch and track a headed browser without a DevTools port. Its response includes unsupportedCommands for service request actions that still require CDP; software clients can use summarizeServiceCdpFreeLaunchAvailability for API, MCP, or dashboard control availability.
+  - Typed browser MCP tools accept runtimeProfile, target identity hints, and access-plan browserId/sessionName route hints. Matching retained-browser evidence selects that exact existing daemon without a duplicate launch; conflicting or opaque route evidence fails before dispatch.
+  - service_request accepts one intent object with serviceName, agentName, taskName, siteId/loginId/accountId/url, targetServiceId, browserBuild, profile or runtimeProfile hints, top-level browserId/sessionName reuse route hints, profileLeasePolicy, profileLeaseWaitTimeoutMs, action, params, and jobTimeoutMs, then queues the browser command through the same service-owned control path. Top-level browserId/sessionName route ordinary commands to an existing daemon lane selected by access-plan profileReuse; params.browserId/params.sessionName remain action parameters. Direct launches that select a profile already backed by a live retained browser are rejected unless they use those route hints or allowDuplicateProfileLane=true for reviewed isolation or throwaway work. Use action=external_byop_adopt with a registered external_byop profile and exactly one explicit cdpUrl or cdpPort when an already-running Chrome lane should become retained attached_existing browser/session/tab state before the next access plan. Use action=probe with a valid serviceTabHandle, timeoutMs, maxReturnBytes, and a provider-neutral probe.detectors recipe for bounded identity, account, readiness, or page-state evidence; supported generic detector types are url_title, selector_text, evaluate, and client_evidence. Optional probe.recordFreshness merges target/account freshness evidence into the selected service profile. Use action=tab_handle_refresh with a current or stale serviceTabHandle, optional desiredUrl, and repairPolicy=reject_only, reuse_compatible, open_if_missing, or replace_duplicates when a client needs structured stale-tab evidence, a refreshed generic handle, or one compatible target with duplicate cleanup before follow-on work. Use action=tab_handle_release with a serviceTabHandle when a client is finished with a leased shared-profile tab; release best-effort closes that exact physical target when the routed live browser owns it, marks only that retained tab closed in service state, and preserves the browser process plus session route for other clients. Use action=ui_action with a valid serviceTabHandle, timeoutMs, optional maxTextBytes, and a bounded uiAction.steps recipe for generic find, focus, fill, type, select, menu_select, click, wait, clear, or guarded dialog steps; clients supply website-specific selectors and instructions while agent-browser owns handle validation, caps, trace, and per-step evidence. Use action=network_capture with a valid serviceTabHandle, timeoutMs, and bounded networkCapture.maxEvents for capped network evidence; metadata is default, headers are redacted unless allowlisted, and response bodies require captureBodies=true plus maxBodyBytes. Use action=file_transfer with a valid serviceTabHandle, timeoutMs, and a fileTransfer upload and/or download recipe for service-owned file input and download capture; uploads require selector or labelText, files, allowedPaths, and maxFiles, while downloads require selector, directory, allowedDirectories, and optional maxBytes. Transfer receipts include SHA-256, and expectedFileName validates rather than renames a provider artifact. Use action=view_focus with params.targetId plus params.index when both are known, or params.index alone as the fallback, plus params.maximize before opening a dashboard remote-view iframe for a retained tab. Use action=view_takeover with params.browserId, params.sessionName, params.streamId, params.provider, and params.openMode when a single-active-viewer RDP or Guacamole connection should be taken over or reconnected while preserving the browser process and session. Use action=service_remote_view_route_preflight to get a no-launch fastPreflight response with ready, partial, stale, or blocked component evidence before route-bound launch. Use action=service_remote_view_browser_reattach to show a retained RDP browser again without launching Chrome or acquiring its profile, and action=service_remote_view_route_switch to bind that browser to another available or parkable Guacamole route; route switch returns routeSwitchParking when it parks another live browser route because no route-pool entry was available. Use service_viewer_lease_request, service_viewer_lease_heartbeat, service_viewer_lease_release, and service_controller_lease_takeover for explicit remote-view observer and controller leases. Use action=cdp_free_launch when the request should launch and track a headed browser without a DevTools port. Its response includes unsupportedCommands for service request actions that still require CDP; software clients can use summarizeServiceCdpFreeLaunchAvailability for API, MCP, or dashboard control availability.
   - remote_view_open returns an authenticated durable /remote-view/<handoff-id> operator URL in externalUrl and handoffUrl. Software clients should use requestServiceRemoteViewHandoff(), which returns only handoffId and handoffUrl. requestServiceRemoteViewOpen() rejects a real response without a durable handoff unless allowRawProviderUrl=true is explicitly selected for provider diagnostics. providerExternalUrl and routeBinding URLs identify only the current provider connection. Use action=service_remote_view_handoff_resolve with params.handoffId to reacquire expired route state while preferring the recorded browser target and original view/control posture. Set params.allowReopenClosed=true only after explicit operator confirmation.
   - HTTP GET /api/service/contracts and MCP agent-browser://contracts expose matching service request schema IDs, contract versions, routes, MCP tool names, and supported actions for compatibility checks. Contracts include no-launch remote-view allocation collections for display allocations, remote-view routes, route pool entries, and viewer leases.
   - CLI service profiles lookup, HTTP GET /api/service/profiles/lookup, and MCP agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,browserBuild} rank the authoritative profile catalog and return match evidence plus launch, add-tab, view, seed, wait, or holder-inspection guidance. Identity searches never fall back to an unrelated generic browser-build default.
@@ -6147,6 +6184,28 @@ Commands:
   status [name]         Show PID, profile path, DevTools reachability, and targets
   login [url]           Launch a detached headed browser for manual sign-in
   attach [name]         Bind the current automation session to a runtime profile
+
+Attachment build evidence:
+  Repository legacy publisher: --prebuilt-bin <absolute-path> --expected-sha256 <sha256>
+  --expected-sessions <names|none> --skip-reference-sync --skip-browser skips builds.
+  --controller-update <scripts/path.js=absolute-source=sha256> updates an existing
+  controller with matching embedded bytes; rollback restores scripts and manifest.
+  HTTP/manifest checks remain required. The exact runtime-interlock timer is paused;
+  legacy flock and native reconcile locks are supported. Native crash custody
+  requires receipt-bound recovery; foreign locks and unproven roots are refused.
+  Same-version workstation records are journaled with the binary for recovery
+  and rollback. Exact in-transaction doctor checks precede a strict unlocked check.
+  Dashboard stop may retire only its proven idle, browser-free backend session.
+  uncertain handoffs retain custody. Recovery uses --recover-only with the exact
+  --recover-interlock-receipt <id>. These are publisher-script flags, not install flags.
+  Metadata-preserving Linux handoff rechecks exact retained build proof atomically
+  with health. Failed process verification clears stale build/path evidence only.
+  Linux managed attach verifies installed stock Chrome against the live PID,
+  executable, profile directory, exact browser WebSocket and process-owned
+  DevTools listener. Missing or mismatched evidence leaves build-sensitive
+  broker reuse blocked. This is not sign-in or renewal readiness. Custom builds
+  and other platforms do not gain installer proof through this check.
+  Use --leave-open to preserve the browser when detaching the session.
 
 Locked profiles:
   If the default runtime profile is locked by a live browser PID and the task

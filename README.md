@@ -1,8 +1,96 @@
 # agent-browser
 
+MCP profile creation works without a running default daemon. A metadata-free
+session uses one short-lived browserless worker for `service_profile_upsert`.
+Stale or live daemon metadata retains the socket path; no failed request is
+replayed and retained-browser requests keep their no-launch rules.
+
+After a daemon interruption, use the same session's `tab list` without new launch
+flags to inspect retained-browser recovery. Configured defaults no longer force
+a separate prestart launch for tab, PID or CDP endpoint reads. Verify the target
+before resuming work; this does not authorize replay of an uncertain action.
+
 Browser automation CLI for AI agents. Fast native Rust CLI.
 
+Repeated launch options preserve verified build evidence for the same live owned
+installed Chrome. Custom executables and attached browsers do not gain build
+proof merely from a requested build name.
+
+MCP `service_request` routes handle-only calls through
+`serviceTabHandle.sessionName` or its `session:` browser ID. Conflicting route
+selectors and unroutable handles fail before transport; missing retained daemons
+never trigger a replacement launch. Profile and target checks remain enforced.
+
+For bounded, no-launch job inspection from this checkout, run
+`node scripts/read-service-job-summary.js /absolute/path/to/agent-browser`.
+It reads the complete jobs resource locally and returns counts without payloads.
+Exit 0 means observed idle, 2 means nonterminal jobs, and 1 means unavailable.
+This snapshot does not grant a browser lease or prove rendered-page readiness.
+
 ## Installation
+
+An opt-in operator recovery unit is provided by
+`scripts/agent-browser-workshop-recovery.{service,timer}` and
+`scripts/workshop-boot-recovery.mjs`. It is separate from the package installer.
+Arming requires the exact retained Workshop lane to pass live verification.
+After a new kernel or WSL distribution start it may restore desktop routes and that same conversation,
+but never submits prompts. Changed installed artifacts, changed identity, or
+an uncertain previous attempt require review, not automatic retry. See RUNBOOK.
+Before starting recovery it waits up to three minutes for local desktop
+dependencies. This wait cannot consume a recovery attempt. The installed helper's
+`--check-readiness` mode verifies dependencies and pinned artifacts without opening
+a browser; it is the required pre-restart check after reviewed rearming.
+Successful recovery stays `active (exited)` so systemd retains its browser and
+viewer children. This is not a browser-health signal. Disable only the timer to
+prevent future recovery; stopping or restarting the service closes its children
+and is not a safe retry.
+Failed recovery commands report only allowlisted diagnostic categories and exit
+metadata, never raw child output. Unrecognized failures remain unclassified.
+The route-desktop opener requires explicit browser-command success. Rejected
+launch/header/navigation responses stop immediately; navigation timeout is an
+uncertain outcome, not readiness. Unsupported authentication stops before launch.
+
+For reviewed legacy-layout maintenance, the repository publisher accepts
+`--prebuilt-bin <absolute-path> --expected-sha256 <sha256> --expected-sessions <comma-separated-names|none>`
+with `--skip-reference-sync --skip-browser`. It snapshots the reviewed binary,
+skips both builds, checks the copied bytes before replacement, and retains HTTP
+and embedded-dashboard verification. This still affects every admitted session;
+the expected-name checks are not a global fence against independent clients.
+Generation-selector symlinks are rejected.
+
+For an existing controller script, add the repeatable prebuilt-only option
+`--controller-update scripts/name.js=/absolute/reviewed/name.js=sha256`.
+The candidate must embed the digest-verified bytes. Private journal snapshots
+couple controller files, binary and manifest for rollback or interrupted recovery;
+unlisted payload files and permissions are preserved. Test isolated installer
+extraction before publication, and rearm the separate Workshop helper only after
+the installed exact target and updated artifacts verify.
+
+The publisher requires the installed
+interlock timer/service, pauses only the timer, and holds their declared lock.
+Both the legacy flock wrapper and the exact installed native reconcile command
+are supported. Native custody uses a crash-persistent non-PID marker, bound to
+the receipt's file identity; foreign locks and unproven root overrides are refused.
+Busy or unverifiable interlocks refuse maintenance. Uncertain handoff failures
+keep the timer stopped with a private `.interlock.json` receipt beside the
+publication journal. Recovery requires `--recover-only --recover-interlock-receipt <id>`
+and a dead prior publisher; incomplete handoff evidence still refuses recovery.
+Never delete custody receipts or manually resume the timer to bypass that gate.
+If the pinned retained Chromium process exited but the service recovered one
+ready target at the same session, profile, and conversation URL, add
+`--recover-replaced-retained-browser <transaction-id>`. This explicit,
+transaction-bound acknowledgement records the lost process identity and the
+new exact identity; it never silently weakens the retained-browser guard.
+These source safeguards do not establish live installation or renewal readiness.
+For an existing same-version workstation installation, publication verifies the
+retained support files and journals exact before/after installation records.
+It installs the record matching the executable before restarting services;
+recovery finishes that pair and rollback restores the original record bytes.
+The in-transaction doctor verifies the exact owning publication lock; an ordinary
+strict doctor must pass after the transaction releases its locks. Dashboard stop
+may retire only its proven idle, browser-free backend session. Other session or
+process changes fail closed. A verified source rollback may report deleted-inode
+controller repair as degraded; that is not installation readiness.
 
 ### GitHub Release Binary (recommended)
 
@@ -100,6 +188,26 @@ effective, apply starts the pinned stack, creates the two route users and
 canonical Guacamole rows, opens distinct XRDP displays selected by readiness,
 projects `guacamole:1` and `guacamole:2` into service state, and activates the
 user services only after the final doctors pass.
+
+For a supplemental temporary desktop while A/B are occupied, the checkout-only
+`pnpm setup:rdp-guac-temporary-route -- --label C --dry-run --json` previews one
+isolated slot (labels C through Z). Replace `--dry-run` with `--apply` only after
+review. It backs up PostgreSQL, adds a new route account and Guacamole connection,
+and grants READ only to the current operator. It never restarts services, changes
+A/B, opens a browser, or marks the new desktop ready. Duplicate identities and
+interrupted attempts fail closed; inspect the mode-0600 journal under
+`~/.agent-browser/temporary-routes/` before any recovery. Journals contain secrets
+and must not be shared. Do not rerun the full installer to add a temporary slot.
+Establish the new RDP desktop, verify its distinct display, grant only that display
+through the installed helper, and project only its readiness-verified entry through
+the service before requesting a managed browser handoff. Removal is a separate
+reviewed operation after proving the temporary desktop and browser are no longer used.
+The source opener and inspector accept `--route-label C`; the opener requires an
+explicit matching `AGENT_BROWSER_RDP_ROUTE_POOL_JSON` and never falls back to A/B.
+`pnpm test:rdp-guac-route-pool-readiness -- --route-label C --report-only` checks
+only that supplemental connection, its isolated display and the configured operator's
+READ permission. Without a selector, the canonical A/B behavior is unchanged.
+
 The pinned Guacamole web app loads an agent-browser defaults extension. It
 migrates each browser origin once to the `text` input method so existing and
 new connections default to text input, then preserves later user-selected
@@ -133,6 +241,10 @@ convergence controller without reinstalling the payload. Before its first
 mutation, the native controller reads any private durable retained-browser
 requirement and requires one exact ready browser, active session, valid
 service-tab handle, profile, loopback DevTools target, and canonical URL match.
+For recognized HTTPS ChatGPT project-conversation URLs, only the optional
+human-readable project slug is ignored; the lowercase project ID and conversation
+UUID must match. Other URLs remain byte-exact. All browser/target checks remain
+mandatory; this does not rotate authority or change the private requirement.
 Locally launched browsers also require a live browser PID; an explicit
 `attached_existing` browser may omit the local PID only while the live daemon
 and exact loopback DevTools identity still verify. It does not call a service
@@ -332,6 +444,10 @@ active browsers, DevTools ports, profiles, and tabs remain live. If an older
 installed daemon owns an active browser but does not support handoff, publishing
 fails before replacing the executable. A normal `close` after resume retains
 the original browser shutdown behavior.
+
+Access-plan readiness follows the selected runtime profile. An explicit
+`--readiness-profile-id` remains a diagnostic override; readiness from another
+automatically ranked profile must not trigger sign-in for the selected profile.
 
 Service mode is the persistent control plane for long-lived automation. It keeps profile, session, browser, tab, monitor, job, incident, event, site-policy, provider, and challenge state aligned across CLI commands, the HTTP API, MCP resources/tools, and the dashboard. Agents should include `serviceName`, `agentName`, and `taskName` when available so multi-service work remains traceable. The normal service request is identity-first: ask for a tab or browser action, target site or login identity, and the owning service, agent, and task. agent-browser selects or reuses the managed profile and browser, serializes CDP work through the queue, and records the state needed for debugging. Service profile records and profile allocation rows include `targetReadiness`, a no-launch readiness view for target services. Google targets without authenticated evidence report `needs_manual_seeding` and recommend detached `runtime login` before attachable automation. Once a managed profile lists the target in `authenticatedServiceIds`, readiness changes to `seeded_unknown_freshness` and access-plan no longer treats first-login seeding as a required manual action. Access-plan responses also include `monitorFindings` and `decision.monitorAttentionRequired` when an active `profile_readiness` monitor is faulted for the requested target identity. When a matching active `profile_readiness` monitor is due or never checked, access-plan sets `monitorFindings.profileReadinessProbeDue`, fills `decision.monitorRunDue`, and recommends `run_due_profile_readiness_monitor` before the caller trusts the profile. Use an explicit managed runtime profile when you know where the needed login state lives; use `--profile <path>` only when bringing an external profile is part of the contract.
 
@@ -666,6 +782,21 @@ agent-browser --session-name myapp state load ./my-auth.json
 For full details on login flows, OAuth, 2FA, cookie-based auth, and the auth vault, see the [Authentication](docs/src/app/sessions/page.mdx) docs.
 
 ## Sessions
+
+Fresh MCP `service_request` calls can start a cold daemon for `navigate` or
+`tab_new` with a URL and an exact selected profile, only when the current access
+plan permits a new browser and no daemon metadata or competing lease exists.
+Retained route hints, reads and input actions never grant cold-start authority.
+Cold startup preserves configured launch options, refuses competing startup,
+and dispatches the first action once without a transport replay fallback.
+
+After crash recovery, ordinary `close` detaches without deleting retained browser
+identity. Explicit `service_request` action `service_browser_close` can terminate
+an exclusively owned recovered Linux Chrome through its verified CDP connection.
+It requires exact session, profile, process and endpoint agreement, then observes
+process exit and profile-lock release before removing records. Borrowed browsers,
+identity drift, unsupported process proof or unconfirmed shutdown fail closed;
+recovery records remain available. No PID-signal fallback is used on this path.
 
 Follow-up commands in an active session retain its proven browser build when
 only the global launch default differs. Explicit build requests, site/profile
@@ -1100,6 +1231,18 @@ agent-browser runtime list
 agent-browser --runtime-profile work runtime status
 ```
 
+Metadata-preserving Linux handoff also rechecks the exact retained build proof
+inside the health transaction, before attachability is derived. Missing process
+evidence clears stale build proof without changing profile, tab or display custody.
+
+On Linux, managed runtime attachment records installed stock-Chrome build proof
+only when the live process executable, profile directory, browser WebSocket,
+and process-owned DevTools listener agree. This does not launch a replacement
+browser or establish sign-in readiness. Missing or conflicting evidence leaves
+build-sensitive broker reuse blocked; custom builds and other platforms do not
+gain installer proof from attachment. Use `--leave-open` to retain the browser
+when detaching its automation session.
+
 This resolves to a persistent profile directory under `~/.agent-browser/runtime-profiles/<name>/user-data`, unless `runtimeProfiles.<name>.userDataDir` overrides it in config. Use `agent-browser runtime list` to inspect the merged view from config plus on-disk managed profiles.
 
 Use this for ordinary authenticated sites, multi-account setups, and headed/manual bootstrap flows.
@@ -1186,7 +1329,7 @@ agent-browser includes security features for safe AI agent deployments. All feat
 - **Domain Allowlist** restricts navigation to trusted domains. Wildcards like `*.example.com` also match the bare domain: `--allowed-domains "example.com,*.example.com"`. Sub-resource requests (scripts, images, fetch) and WebSocket/EventSource connections to non-allowed domains are also blocked. Include any CDN domains your target pages depend on, for example `*.cdn.example.com`.
 - **Action Policy** gates destructive actions with a static policy file: `--action-policy ./policy.json`
 - **Action Confirmation** requires explicit approval for exact actions or consequence categories: `--confirm-actions external_mutation,page_mutation,file_transfer,credentials,script_execution`. Receipts bind the exact ID, target ID, URL, consequence class, and 60-second lifetime; changed or expired targets fail closed.
-- **Task Authority** binds an agentic run to one broker-issued immutable `taskAuthority` envelope and ordered plan: exact caller task, retained target, broker-derived step IDs/actions/URLs/evidence, plan hash, read-only consequence ceiling, and expiry. Every v2 command names the exact next `taskStepId`; the daemon records its command-bound admission and advances the cursor atomically before dispatch, then durably finalizes the exact response as completed or failed before publication. An admission stranded by a crash is reported as indeterminate and stays consumed. `POST /api/service/task-authorities/issue` and `service_task_authority_issue` always require exact-target confirmation; status is read-only/no-launch, and revoke is confirmation-gated and durable. Reconcile is also confirmation-gated: it requires exactly one named indeterminate receipt, revokes the predecessor first, and mints one deterministic replacement whose envelope binds the predecessor authority, step, command, and indeterminate state. These three pending controls are privately persisted with their exact session, action, target, URL, requester, request digest, and expiry. HTTP requester and decider evidence comes from the authenticated dashboard superuser; MCP derives it from the OS-owned stdio transport, and conflicting caller claims fail closed. Decisions are archived before dispatch, survive daemon restart, and are single use. A crash after decision commit remains visibly indeterminate and is never replayed or restaged automatically. `POST /api/service/task-authorities/confirmations/cleanup` and `service_task_authority_confirmation_cleanup` provide review-digest-gated terminal receipt retention while preserving pending and indeterminate evidence. Retired IDs remain exactly searchable in a bounded active manifest plus fixed-capacity immutable hash-chained segments; invalid linkage, counts, active digest, or head digest fail closed. The Service dashboard Authorities workspace shows redacted receipts, cleanup policy, candidate hashes, authenticated requester, exact review digest, and verified ledger evidence before apply. It excludes consumed steps from replacement previews and requires a separate exact-session confirm or deny decision through `POST /api/service/task-authorities/confirmation` or `service_task_authority_confirmation`. Required mode rejects caller-fabricated, changed, revoked, expired, repeated, stale, or out-of-order authority before execution.
+- **Task Authority** binds an agentic run to one broker-issued immutable `taskAuthority` envelope and ordered plan: exact caller task, retained target, broker-derived step IDs/actions/URLs/evidence, plan hash, consequence ceiling, and expiry. Omitted ceilings preserve the read/navigation issuance posture; an explicitly confirmed plan may raise the ceiling only through `script_execution`, while browser-lifecycle and control-plane authority remain unavailable. Every v2 command names the exact next `taskStepId`; the daemon records its command-bound admission and advances the cursor atomically before dispatch, then durably finalizes the exact response as completed or failed before publication. An admission stranded by a crash is reported as indeterminate and stays consumed. `POST /api/service/task-authorities/issue` and `service_task_authority_issue` always require exact-target confirmation; status is read-only/no-launch, and revoke is confirmation-gated and durable. Reconcile is also confirmation-gated: it requires exactly one named indeterminate receipt, revokes the predecessor first, and mints one deterministic replacement whose envelope binds the predecessor authority, step, command, and indeterminate state. These three pending controls are privately persisted with their exact session, action, target, URL, requester, request digest, and expiry. HTTP requester and decider evidence comes from the authenticated dashboard superuser; MCP derives it from the OS-owned stdio transport, and conflicting caller claims fail closed. Decisions are archived before dispatch, survive daemon restart, and are single use. A crash after decision commit remains visibly indeterminate and is never replayed or restaged automatically. `POST /api/service/task-authorities/confirmations/cleanup` and `service_task_authority_confirmation_cleanup` provide review-digest-gated terminal receipt retention while preserving pending and indeterminate evidence. Retired IDs remain exactly searchable in a bounded active manifest plus fixed-capacity immutable hash-chained segments; invalid linkage, counts, active digest, or head digest fail closed. The Service dashboard Authorities workspace shows redacted receipts, cleanup policy, candidate hashes, authenticated requester, exact review digest, and verified ledger evidence before apply. It excludes consumed steps from replacement previews and requires a separate exact-session confirm or deny decision through `POST /api/service/task-authorities/confirmation` or `service_task_authority_confirmation`. Required mode rejects caller-fabricated, changed, revoked, expired, repeated, stale, or out-of-order authority before execution.
 - **Output Length Limits** prevent context flooding: `--max-output 50000`
 
 For unattended headed or headless runs that need the real OS credential store, agent-browser can read keychain settings from a dotenv file. Environment variables take precedence, otherwise it loads `AGENT_BROWSER_ENV_FILE`, then `~/.agent-browser/.env` if present.
@@ -1424,7 +1567,17 @@ and retains 14 dumps by default. Its helper is copied under
 startup failures, and does not depend on a mutable checkout. A paired `.keep`
 file protects a dump from automatic retention. Set
 `AGENT_BROWSER_GUACAMOLE_BACKUP_RETENTION` to a positive integer to change that
-retention. At
+retention.
+
+The source-free workstation reconciler first checks fresh installation,
+retained-browser, unit, and canonical-route evidence. Healthy passes report
+`healthy-runtime-preserved` without restarting services, provisioning browsers,
+or rewriting configuration. Unknown evidence, provenance drift, and active
+route conflicts stop before repair. Fresh installation still performs its
+bootstrap. Health probes can acquire temporary Guacamole authentication tokens;
+they are not a promise of zero authentication writes.
+
+At
 boot and five minutes after each completed pass, the interlock runs bounded local convergence without
 replacing installed artifacts: it hands doctor-confirmed stale daemon sessions
 to the current executable without closing their browsers, reconciles retained
@@ -1546,6 +1699,12 @@ exact route and uses a private crash-recovery journal while the requirement and
 `.required` digest are replaced. Ordinary status, apply, and reconcile checks
 remain fail closed during a partial rotation. Do not delete either authority
 file as a recovery shortcut.
+
+When preparation recreates the same session, rotation requires the same profile
+and exact conversation URL, a freshly verified replacement target, and readable
+live CDP evidence that the old target is absent. A live old target still blocks
+rotation. Installed remote-headed preparation refreshes managed Chrome cache
+paths to the installer-selected Chrome while preserving custom executable paths.
 
 The pin command verifies the rendered target before writing
 `~/.agent-browser/publications/local-dashboard-retained-browser.json` as a
@@ -2989,9 +3148,12 @@ handle instead of direct `DOM.setFileInputFiles`,
 can include an `upload` block with a selector or visible `labelText`, explicit
 `files`, `allowedPaths`, and `maxFiles`, and/or a `download` block with a click
 selector, `directory`, `allowedDirectories`, optional expected file name, and
-optional `maxBytes`. agent-browser owns path allowlist checks, selected file
-name verification where available, download event capture, compact file
-metadata, trace linkage, and optional diagnostics on failure; clients own
+optional `maxBytes`. The expected name is a validation constraint, not rename
+authority. Upload and download receipts include SHA-256; download receipts also
+preserve the provider-suggested name, local path, source URL, MIME type, size,
+and download GUID when available. agent-browser owns path allowlist checks,
+selected file name verification where available, download event capture, trace
+linkage, and optional diagnostics on failure; clients own
 website-specific selectors, labels, and business interpretation.
 Use
 `refreshServiceTabHandle()` or `requestServiceTabHandleRefresh()` when a
@@ -3626,6 +3788,12 @@ handoff; it verifies an access-plan response can be passed into
 `requestServiceTab()` against an isolated daemon and real browser session. Run
 `pnpm test:service-client-example-live` to validate the main trace
 example against a real isolated daemon and browser session.
+
+Typed MCP browser tools accept `runtimeProfile`, target identity hints, and
+the access plan's `browserId` and `sessionName` route hints. When those hints
+identify a compatible retained browser, the MCP adapter relays the typed tool
+to that exact existing daemon without launching or borrowing a duplicate
+profile lane. Conflicting or opaque route evidence fails before dispatch.
 
 For MCP clients, use `mcp serve` to run a stdio server that exposes service resources without launching a browser. The server supports `initialize`, `ping`, `resources/list`, `resources/templates/list`, `resources/read`, `tools/list`, and `tools/call`. MCP tools include `service_request`, which queues one intent-based browser action with caller context and site/login hints, `service_job_cancel`, which cancels queued service jobs or requests cancellation for running jobs, `service_browser_retry`, which enables a new recovery attempt for a faulted browser, `service_incidents`, which reads grouped retained incidents with the same state, severity, escalation, handling, kind, browser, profile, session, service, agent, task, since, and summary filters as CLI and HTTP, `service_trace`, which reads related events, jobs, incidents, and activity from persisted service state, `service_profile_upsert`, `service_profile_delete`, `service_session_upsert`, `service_session_delete`, `service_site_policy_upsert`, `service_site_policy_delete`, `service_provider_upsert`, `service_provider_delete`, and `service_browser_capability_registry_upsert`, which mutate persisted service config through the service worker queue with the same ID checks as HTTP, `browser_navigate`, which queues typed navigation for the active browser session, `browser_requests`, which enables and filters request inspection, `browser_request_detail`, which reads one tracked request by ID, `browser_headers`, which sets extra HTTP headers for the active browser session, `browser_offline`, which toggles network offline emulation, `browser_cookies_get`, which reads cookies, `browser_cookies_set`, which sets cookies, `browser_cookies_clear`, which clears cookies, `browser_storage_get`, which reads localStorage or sessionStorage, `browser_storage_set`, which sets localStorage or sessionStorage, `browser_storage_clear`, which clears localStorage or sessionStorage, `browser_user_agent`, which sets the user agent, `browser_viewport`, which sets the viewport, `browser_geolocation`, which sets geolocation emulation, `browser_permissions`, which grants browser permissions, `browser_timezone`, which sets timezone emulation, `browser_locale`, which sets locale emulation, `browser_media`, which sets media emulation, `browser_dialog`, which handles dialog status or response, `browser_upload`, which uploads files, `browser_download`, which clicks and saves downloads, `browser_wait_for_download`, which waits for downloads, `browser_har_start` and `browser_har_stop`, which capture HAR files, `browser_route`, which routes matching requests, `browser_unroute`, which removes routes, `browser_console`, which reads or clears console messages, `browser_errors`, which reads page errors, `browser_pdf`, which saves PDFs, `browser_response_body`, which reads matching response bodies, `browser_clipboard`, which controls clipboard operations, `browser_command`, which queues any supported browser-control action for HTTP parity, `browser_snapshot`, which queues the existing snapshot command for the active browser session, `browser_get_url`, which reads the active browser URL, `browser_get_title`, which reads the active browser title, `browser_tabs`, which lists open tabs, `browser_screenshot`, which saves a screenshot for visual inspection, `browser_click`, which clicks a selector or cached ref through the queued control plane, `browser_fill`, which fills a field through the queued control plane, `browser_wait`, which waits for selector, text, URL, function, load-state, or fixed-duration conditions through the queued control plane, `browser_type`, which types text through the queued control plane, `browser_press`, which presses keys and key chords through the queued control plane, `browser_hover`, which hovers elements through the queued control plane, `browser_select`, which selects dropdown values through the queued control plane, `browser_get_text`, which reads element text through the queued control plane, `browser_get_value`, which reads field values through the queued control plane, `browser_get_attribute`, which reads element attributes through the queued control plane, `browser_get_html`, which reads element inner HTML through the queued control plane, `browser_get_styles`, which reads computed styles through the queued control plane, `browser_count`, which counts matching elements through the queued control plane, `browser_get_box`, which reads element geometry through the queued control plane, `browser_is_visible`, which reads element visibility through the queued control plane, `browser_is_enabled`, which reads element enabled state through the queued control plane, `browser_check`, which checks checkbox or radio controls through the queued control plane, `browser_is_checked`, which reads checkbox, radio, or ARIA checked state through the queued control plane, `browser_uncheck`, which unchecks checkbox controls through the queued control plane, `browser_scroll`, which scrolls pages or containers through the queued control plane, `browser_scroll_into_view`, which scrolls a target element into view through the queued control plane, `browser_focus`, which focuses a target element through the queued control plane, and `browser_clear`, which clears a target field through the queued control plane. MCP tool callers should include `serviceName`, `agentName`, and `taskName` when available so multi-service and multi-agent behavior remains traceable. Service jobs persist these caller context fields when commands provide them and persist advisory `namingWarnings` when any caller label is missing. Access-plan responses echo the same caller labels and report the same naming warnings in `query` and `decision`. Current warning values are `missing_service_name`, `missing_agent_name`, and `missing_task_name`; `hasNamingWarning` is `true` when `namingWarnings` is non-empty. The `agent-browser://contracts` resource mirrors HTTP `GET /api/service/contracts` with service request schema IDs, contract versions, route names, MCP tool names, and supported actions. The `agent-browser://browser-capability-registry` resource mirrors HTTP `GET /api/service/browser-capability-registry` and returns the advisory no-launch browser registry. `POST /api/service/browser-capability-registry/<collection>/<id>`, MCP `service_browser_capability_registry_upsert`, and `upsertServiceBrowserCapabilityRegistryRecord()` add or replace one advisory registry record and return the updated registry counts. The `agent-browser://access-plan{?serviceName,agentName,taskName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,sitePolicyId,challengeId,readinessProfileId,runtimeProfile,browserBuild,browserHost,viewStreamProvider,controlInputProvider,displayIsolation}` template mirrors HTTP `GET /api/service/access-plan` and returns the no-launch service-owned profile, policy, provider, challenge, readiness, and recommendation payload. The `agent-browser://jobs` resource returns the same service job record schema as HTTP: `docs/dev/contracts/service-job-record.v1.schema.json`; CLI and HTTP `service_jobs` response envelopes follow `docs/dev/contracts/service-jobs-response.v1.schema.json`. The `agent-browser://incidents` resource and `service_incidents` tool return the same service incident record schema as HTTP: `docs/dev/contracts/service-incident-record.v1.schema.json`; `service_incidents` response envelopes follow `docs/dev/contracts/service-incidents-response.v1.schema.json`. Run `pnpm test:mcp-live` to validate the live daemon, browser, MCP tool call, and retained job metadata path. Run `pnpm test:service-reconcile-live` to validate that `service reconcile` and MCP browser/tab resources agree on live service-owned state. Run `pnpm test:service-profile-live` to validate that runtime-profile launches populate MCP profile and session resources with caller metadata. Run `pnpm test:service-profile-http-live` to validate the same profile and session metadata through the HTTP service API. Run `pnpm test:service-request-live` to validate HTTP `/api/service/request` and MCP `service_request` over one isolated live browser session. Run `pnpm test:service-recovery-http-live` to validate the HTTP trace contract for crash detection, recovery start, and ready-after-relaunch events. Run `pnpm test:service-recovery-mcp-live` to validate the same recovery trace contract through MCP `service_trace`. Run `pnpm test:service-api-mcp-parity` to statically check that named browser-control HTTP endpoints, typed MCP tools, README, skill, and docs site stay aligned. For shell inspection, use `mcp resources` to list service resource contracts and `mcp read <uri>` to read one resource from persisted service state. Implemented resources are `agent-browser://contracts`, `agent-browser://browser-capability-registry`, `agent-browser://access-plan`, `agent-browser://profiles/lookup{?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,browserBuild}`, `agent-browser://profiles/{profile_id}/readiness`, `agent-browser://profiles/{profile_id}/allocation`, `agent-browser://profiles/{profile_id}/seeding-handoff{?targetServiceId,siteId,loginId}`, `agent-browser://incidents`, `agent-browser://profiles`, `agent-browser://sessions`, `agent-browser://browsers`, `agent-browser://tabs`, `agent-browser://site-policies`, `agent-browser://providers`, `agent-browser://challenges`, `agent-browser://jobs`, `agent-browser://events`, `agent-browser://access-plan{?serviceName,agentName,taskName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,sitePolicyId,challengeId,readinessProfileId,runtimeProfile,browserBuild,browserHost,viewStreamProvider,controlInputProvider,displayIsolation}`, and `agent-browser://incidents/{incident_id}/activity`.
 

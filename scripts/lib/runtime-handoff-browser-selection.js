@@ -93,7 +93,7 @@ export function removeVerifiedRuntimeHandoffRecord(
     runtimeProfile: descriptor.runtimeProfile ?? descriptor.runtime_profile ?? null,
   };
   if (
-    identity.schemaVersion !== 1
+    ![1, 2].includes(identity.schemaVersion)
     || identity.sessionName !== expectedBrowser.sessionName
     || identity.browserPid !== (expectedBrowser.browserPid ?? null)
     || identity.cdpUrl !== (expectedBrowser.cdpUrl ?? null)

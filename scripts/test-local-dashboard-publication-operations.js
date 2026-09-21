@@ -17,6 +17,9 @@ import { join, resolve } from 'node:path';
 const root = mkdtempSync(join(tmpdir(), 'agent-browser-dashboard-publication-operations-'));
 const script = resolve('scripts/publish-local-dashboard-runtime.js');
 const installBin = join(root, '.local', 'bin', 'agent-browser');
+const fixtureBin = join(root, 'fixture-bin');
+mkdirSync(fixtureBin);
+writeFileSync(join(fixtureBin, 'systemctl'), '#!/bin/sh\necho "Unexpected systemctl invocation in no-effect fixture" >&2\nexit 97\n', { mode: 0o700 });
 
 try {
   const status = runPublisher(['--journal-status', '--json']);
@@ -161,6 +164,9 @@ function runPublisher(args, { parse = true } = {}) {
     env: {
       ...process.env,
       HOME: root,
+      PATH: `${fixtureBin}:${process.env.PATH}`,
+      XDG_RUNTIME_DIR: join(root, 'runtime'),
+      DBUS_SESSION_BUS_ADDRESS: `unix:path=${root}/unavailable-bus`,
     },
     encoding: 'utf8',
     timeout: 10_000,

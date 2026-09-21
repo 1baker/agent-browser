@@ -1,5 +1,17 @@
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+// ChatGPT may remove a human-readable project slug without changing identity.
+// All other URL spellings remain exact; target/profile/session checks still apply.
+export function retainedTargetUrlsMatch(expected, observed) {
+  if (typeof expected !== 'string' || typeof observed !== 'string') return false;
+  if (expected === observed) return true;
+  const pattern = /^https:\/\/chatgpt\.com\/g\/g-p-([0-9a-f]{32})(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?\/c\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+  const left = expected.match(pattern);
+  const right = observed.match(pattern);
+  return !!left && !!right && left[0] === expected && right[0] === observed
+    && left[1] === right[1] && left[2] === right[2];
+}
+
 export function normalizeRetainedBrowserExpectation(value) {
   if (value == null) return null;
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -63,10 +75,11 @@ export function evaluateRetainedBrowserExpectation({
       `Required retained browser is not ready: ${browser.health || 'missing'}`,
     );
   }
-  if (expectation.browserPid != null && browser.pid !== expectation.browserPid) {
+  const browserPid = observedBrowserPid(browser);
+  if (expectation.browserPid != null && browserPid !== expectation.browserPid) {
     return failure(
       'retained_browser_pid_changed',
-      `Required retained browser PID changed: ${expectation.browserPid} -> ${browser.pid ?? 'missing'}`,
+      `Required retained browser PID changed: ${expectation.browserPid} -> ${browserPid ?? 'missing'}`,
     );
   }
   if (expectation.cdpUrl && browser.cdpEndpoint !== expectation.cdpUrl) {
@@ -110,7 +123,7 @@ export function evaluateRetainedBrowserExpectation({
     }
     [target] = matches;
   }
-  if (expectation.url && target?.url !== expectation.url) {
+  if (expectation.url && !retainedTargetUrlsMatch(expectation.url, target?.url)) {
     return failure(
       'retained_target_url_changed',
       `Required retained target URL changed: ${expectation.url} -> ${target?.url || 'missing'}`,
@@ -164,7 +177,7 @@ function publicBrowserEvidence(browser, cdpTargets, expectation) {
   return {
     sessionName: expectation?.sessionName ?? null,
     browserId: browser?.id ?? null,
-    browserPid: Number.isInteger(browser?.pid) ? browser.pid : null,
+    browserPid: observedBrowserPid(browser),
     cdpUrl: browser?.cdpEndpoint ?? null,
     profileId: browser?.profileId ?? null,
     health: browser?.health ?? null,
@@ -173,6 +186,14 @@ function publicBrowserEvidence(browser, cdpTargets, expectation) {
     title: target?.title ?? null,
     cdpTargetCount: Array.isArray(cdpTargets) ? cdpTargets.length : null,
   };
+}
+
+// Attached-existing handoffs intentionally retain the process identity in the
+// immutable launch proof while leaving the mutable browser row PID empty.
+function observedBrowserPid(browser) {
+  if (Number.isInteger(browser?.pid) && browser.pid > 0) return browser.pid;
+  const proofPid = browser?.browserBuildProof?.browserPid;
+  return Number.isInteger(proofPid) && proofPid > 0 ? proofPid : null;
 }
 
 function optionalString(value) {

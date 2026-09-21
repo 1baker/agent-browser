@@ -3127,9 +3127,9 @@ mod tests {
                 .unwrap();
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let manager = BrowserManager {
             client: Arc::new(client),
             browser_process: None,
@@ -3204,9 +3204,9 @@ mod tests {
             }
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let manager = BrowserManager {
             client: Arc::new(client),
             browser_process: None,
@@ -3315,9 +3315,9 @@ mod tests {
             }
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let manager = BrowserManager {
             client: Arc::new(client),
             browser_process: None,
@@ -3398,9 +3398,9 @@ mod tests {
             }
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let manager = BrowserManager {
             client: Arc::new(client),
             browser_process: None,
@@ -3469,9 +3469,9 @@ mod tests {
             }
         });
 
-        let client = CdpClient::connect(&format!("ws://{address}"))
-            .await
-            .unwrap();
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{address}")).unwrap();
+        let client = endpoint_fixture.connect().await.unwrap();
         let mut manager = BrowserManager {
             client: Arc::new(client),
             browser_process: None,

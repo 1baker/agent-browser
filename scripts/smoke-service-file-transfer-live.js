@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { createServer, request as httpRequest } from 'node:http';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 
 import {
   assert,
@@ -29,6 +30,16 @@ const uploadDir = join(context.tempHome, 'upload');
 const downloadDir = join(context.tempHome, 'downloads');
 const uploadPath = join(uploadDir, 'upload-fixture.txt');
 const downloadText = 'generated-download-fixture\n';
+const smokeChromePath = process.env.AGENT_BROWSER_SMOKE_CHROME_PATH;
+if (smokeChromePath) {
+  const browserRoot = join(context.agentHome, 'browsers');
+  mkdirSync(browserRoot, { recursive: true });
+  symlinkSync(
+    dirname(smokeChromePath),
+    join(browserRoot, basename(dirname(smokeChromePath))),
+    'dir',
+  );
+}
 const timeout = setTimeout(() => {
   fail('Timed out waiting for service file transfer live smoke to complete');
 }, 180000);
@@ -78,7 +89,11 @@ async function cleanup() {
     await new Promise((resolve) => server.close(resolve));
   }
   await closeSession(context);
-  context.cleanupTempHome();
+  if (process.env.AGENT_BROWSER_SMOKE_KEEP_TEMP === '1') {
+    console.error(`Preserved smoke directory: ${context.tempHome}`);
+  } else {
+    context.cleanupTempHome();
+  }
 }
 
 async function fail(message) {
@@ -186,6 +201,8 @@ try {
     {
       action: 'tab_new',
       params: {
+        args: ['--no-sandbox'],
+        ...(smokeChromePath ? { executablePath: smokeChromePath } : {}),
         headless: true,
         url: `${serverUrl}/`,
         waitUntil: 'load',
@@ -226,13 +243,23 @@ try {
   assert(transfer?.ok === true, `file transfer was not ok: ${JSON.stringify(transferResponse)}`);
   assert(transfer.upload?.uploaded === 1, `upload count mismatch: ${JSON.stringify(transfer.upload)}`);
   assert(
+    transfer.upload?.files?.[0]?.sha256 === createHash('sha256').update('upload fixture\n').digest('hex'),
+    `upload digest mismatch: ${JSON.stringify(transfer.upload)}`,
+  );
+  assert(
     transfer.upload?.selectedFileNames?.includes('upload-fixture.txt'),
     `selected file names mismatch: ${JSON.stringify(transfer.upload)}`,
   );
   assert(transfer.download?.fileName === 'generated.txt', `download filename mismatch: ${JSON.stringify(transfer.download)}`);
+  assert(transfer.download?.expectedFileName === 'generated.txt', `download expected filename mismatch: ${JSON.stringify(transfer.download)}`);
+  assert(transfer.download?.providerSuggestedFileName === 'generated.txt', `download provider filename mismatch: ${JSON.stringify(transfer.download)}`);
   assert(transfer.download?.mimeType === 'text/plain', `download MIME mismatch: ${JSON.stringify(transfer.download)}`);
   assert(transfer.download?.sourceUrl?.includes('/download/generated.txt'), `download source URL mismatch: ${JSON.stringify(transfer.download)}`);
   assert(transfer.download?.size === Buffer.byteLength(downloadText), `download size mismatch: ${JSON.stringify(transfer.download)}`);
+  assert(
+    transfer.download?.sha256 === createHash('sha256').update(downloadText).digest('hex'),
+    `download digest mismatch: ${JSON.stringify(transfer.download)}`,
+  );
   assert(readFileSync(transfer.download.localPath, 'utf8') === downloadText, 'download content mismatch');
   assert(statSync(transfer.download.localPath).size <= 1024, 'download exceeded maxBytes');
 

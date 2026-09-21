@@ -6,7 +6,22 @@ import {
   evaluateRetainedBrowserExpectation,
   normalizeRetainedBrowserExpectation,
   pinRetainedBrowserExpectation,
+  retainedTargetUrlsMatch,
 } from './lib/local-dashboard-retained-browser-guard.js';
+
+const canonicalChat = 'https://chatgpt.com/g/g-p-6a7e016622e48191a60c4bc34366b537/c/6a80e64e-e830-83ea-b21f-9079abf27a1d';
+const sluggedChat = canonicalChat.replace('/c/', '-codex-chatgpt-workshop/c/');
+assert.equal(retainedTargetUrlsMatch(sluggedChat, canonicalChat), true);
+assert.equal(retainedTargetUrlsMatch(canonicalChat, sluggedChat), true);
+for (const changed of [
+  canonicalChat.replace('6a7e0166', '7a7e0166'),
+  canonicalChat.replace('6a80e64e', '7a80e64e'),
+  `${canonicalChat}?x=1`, `${canonicalChat}#x`, `${canonicalChat}/`,
+  canonicalChat.replace('chatgpt.com', 'chatgpt.com.evil.test'),
+  canonicalChat.replace('chatgpt.com', 'user@chatgpt.com'),
+  canonicalChat.replace('chatgpt.com', 'chatgpt.com:443'),
+  canonicalChat.replace('https:', 'http:'), `${canonicalChat}\n`,
+]) assert.equal(retainedTargetUrlsMatch(sluggedChat, changed), false, changed);
 
 const expectation = {
   sessionName: 'retained-fixture',
@@ -27,6 +42,18 @@ const targets = [{
   url: 'https://example.test/conversation',
 }];
 
+const chatExpectation = { ...expectation, profileId: browser.profileId, url: sluggedChat };
+const chatTargets = [{ ...targets[0], url: canonicalChat }];
+assert.equal(evaluateRetainedBrowserExpectation({ browser, cdpTargets: chatTargets, expectation: chatExpectation }).verified, true);
+for (const [changedBrowser, changedTargets] of [
+  [{ ...browser, profileId: 'another-profile' }, chatTargets],
+  [{ ...browser, id: 'session:another-session' }, chatTargets],
+  [browser, [{ ...chatTargets[0], id: 'another-target' }]],
+  [browser, [{ ...chatTargets[0], url: canonicalChat.replace('6a80e64e', '7a80e64e') }]],
+]) {
+  assert.equal(evaluateRetainedBrowserExpectation({ browser: changedBrowser, cdpTargets: changedTargets, expectation: chatExpectation }).verified, false);
+}
+
 const before = evaluateRetainedBrowserExpectation({
   browser,
   cdpTargets: targets,
@@ -43,6 +70,23 @@ assert.deepEqual(pinRetainedBrowserExpectation(before), {
   targetId: 'target-fixture',
   url: 'https://example.test/conversation',
 });
+
+const reattached = evaluateRetainedBrowserExpectation({
+  browser: { ...browser, pid: null, browserBuildProof: { browserPid: browser.pid } },
+  cdpTargets: targets,
+  expectation: pinRetainedBrowserExpectation(before),
+  stage: 'post_handoff',
+});
+assert.equal(reattached.verified, true);
+assert.equal(reattached.observed.browserPid, browser.pid);
+const reattachedChangedPid = evaluateRetainedBrowserExpectation({
+  browser: { ...browser, pid: null, browserBuildProof: { browserPid: 4343 } },
+  cdpTargets: targets,
+  expectation: pinRetainedBrowserExpectation(before),
+  stage: 'post_handoff',
+});
+assert.equal(reattachedChangedPid.verified, false);
+assert.equal(reattachedChangedPid.reason, 'retained_browser_pid_changed');
 
 for (const [reason, changedBrowser, changedTargets] of [
   ['retained_browser_missing', null, targets],

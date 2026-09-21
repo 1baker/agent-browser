@@ -382,7 +382,11 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
-    async fn synthetic_proxy() -> (CdpClient, JoinHandle<()>) {
+    async fn synthetic_proxy() -> (
+        crate::native::cdp::client::TestCdpEndpoint,
+        CdpClient,
+        JoinHandle<()>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let peer = tokio::spawn(async move {
@@ -404,13 +408,15 @@ mod tests {
                 }
             }
         });
-        let client = CdpClient::connect(&format!("ws://{addr}")).await.unwrap();
-        (client, peer)
+        let fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{addr}")).unwrap();
+        let client = fixture.connect().await.unwrap();
+        (fixture, client, peer)
     }
 
     #[tokio::test]
     async fn shutdown_joins_connected_websocket_and_preserves_upstream() {
-        let (client, peer) = synthetic_proxy().await;
+        let (_endpoint_fixture, client, peer) = synthetic_proxy().await;
         let mut server = InspectServer::start(
             client.inspect_handle(),
             "synthetic-target".into(),
@@ -458,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn websocket_disconnect_finishes_forwarding_and_detaches_session() {
-        let (client, peer) = synthetic_proxy().await;
+        let (_endpoint_fixture, client, peer) = synthetic_proxy().await;
         let mut server = InspectServer::start(
             client.inspect_handle(),
             "synthetic-target".into(),
@@ -490,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_joins_incomplete_http_connections() {
-        let (client, peer) = synthetic_proxy().await;
+        let (_endpoint_fixture, client, peer) = synthetic_proxy().await;
         let mut server = InspectServer::start(
             client.inspect_handle(),
             "synthetic-target".into(),

@@ -118,12 +118,33 @@ mod linux {
         Ok(directory)
     }
 
-    fn lock(directory: &File) -> Result<()> {
-        // Descriptor lifetime owns the lock; no stale lock file can be unlinked.
+    #[must_use = "retain the controller lock guard for the entire protected operation"]
+    struct DirectoryLock<'a> {
+        directory: &'a File,
+        owner_pid: u32,
+    }
+
+    impl Drop for DirectoryLock<'_> {
+        fn drop(&mut self) {
+            // A forked child's destructor cannot release its parent's lock.
+            if self.owner_pid == std::process::id() {
+                // SAFETY: the borrow keeps the descriptor open through Drop.
+                // No key, socket or durable authority record is removed here.
+                unsafe { libc::flock(self.directory.as_raw_fd(), libc::LOCK_UN) };
+            }
+        }
+    }
+
+    fn lock(directory: &File) -> Result<DirectoryLock<'_>> {
+        // Explicit owner lifetime prevents inherited descriptors extending the
+        // lock after return. Never unlink a supposed stale lock to acquire it.
         if unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(ERROR);
         }
-        Ok(())
+        Ok(DirectoryLock {
+            directory,
+            owner_pid: std::process::id(),
+        })
     }
 
     fn key(directory: &File, setup: bool) -> Result<Key> {
@@ -477,7 +498,7 @@ mod linux {
             return Err(ERROR);
         }
         let directory = root_directory(root)?;
-        lock(&directory)?;
+        let _lock = lock(&directory)?;
         let key = key(&directory, mode == "setup")?;
         if mode == "setup" {
             return Ok(());
@@ -632,12 +653,45 @@ mod linux {
             assert_eq!(exchange(b"\xff", true, false), REJECTED);
         }
         #[test]
+        fn controller_lock_drop_releases_inherited_descriptor() {
+            let fixture = Fixture::new();
+            let inherited = {
+                let directory = root_directory(&fixture.0).unwrap();
+                let _lease = lock(&directory).unwrap();
+                directory.try_clone().unwrap()
+            };
+            let directory = root_directory(&fixture.0).unwrap();
+            let _lease = lock(&directory).unwrap();
+            drop(inherited);
+            let competitor = root_directory(&fixture.0).unwrap();
+            assert!(lock(&competitor).is_err());
+        }
+
+        #[test]
+        fn controller_lock_child_drop_preserves_parent() {
+            let fixture = Fixture::new();
+            let directory = root_directory(&fixture.0).unwrap();
+            let lease = lock(&directory).unwrap();
+            let inherited = directory.try_clone().unwrap();
+            let child = DirectoryLock {
+                directory: &inherited,
+                owner_pid: std::process::id().wrapping_add(1),
+            };
+            drop(child);
+            let competitor = root_directory(&fixture.0).unwrap();
+            assert!(lock(&competitor).is_err());
+            drop(lease);
+            assert!(lock(&competitor).is_ok());
+        }
+
+        #[test]
         fn duplicate_lock_and_existing_socket_fail_closed() {
             let fixture = Fixture::new();
             run(&fixture.0, "setup").unwrap();
             let directory = root_directory(&fixture.0).unwrap();
-            lock(&directory).unwrap();
+            let lease = lock(&directory).unwrap();
             assert!(run(&fixture.0, "serve").is_err());
+            drop(lease);
             drop(directory);
             let path = fixture.0.join("controller.sock");
             let existing = UnixListener::bind(&path).unwrap();

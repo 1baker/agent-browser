@@ -403,6 +403,36 @@ export interface ServiceNetworkCaptureData {
   [key: string]: unknown;
 }
 
+export interface ServiceFileTransferFileReceipt {
+  name?: string;
+  path?: string;
+  size: number;
+  sha256: string;
+  [key: string]: unknown;
+}
+
+export interface ServiceFileTransferUploadReceipt {
+  ok: boolean;
+  uploaded: number;
+  files: ServiceFileTransferFileReceipt[];
+  selectedFileNames?: string[] | null;
+  [key: string]: unknown;
+}
+
+export interface ServiceFileTransferDownloadReceipt {
+  ok: boolean;
+  localPath: string;
+  fileName: string;
+  providerSuggestedFileName: string;
+  expectedFileName?: string | null;
+  downloadGuid?: string | null;
+  size: number;
+  sha256: string;
+  mimeType?: string | null;
+  sourceUrl?: string | null;
+  [key: string]: unknown;
+}
+
 export interface ServiceFileTransferData {
   ok: boolean;
   action: "file_transfer";
@@ -415,8 +445,8 @@ export interface ServiceFileTransferData {
   fileTransfer: Record<string, unknown>;
   before?: Record<string, unknown>;
   after?: Record<string, unknown>;
-  upload?: Record<string, unknown> | null;
-  download?: Record<string, unknown> | null;
+  upload?: ServiceFileTransferUploadReceipt | null;
+  download?: ServiceFileTransferDownloadReceipt | null;
   failedPhase?: string;
   error?: string;
   diagnostics?: Record<string, unknown> | null;

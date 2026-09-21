@@ -12,6 +12,7 @@ export async function discoverRetainedBrowserExpectation({
   urlPrefix,
   exactUrl,
   profileId,
+  expectedOpenedIdentity,
   sessionNames,
   readDaemonPid,
   isProcessLive,
@@ -94,15 +95,22 @@ export async function discoverRetainedBrowserExpectation({
     }
   }
 
-  if (candidates.length !== 1) {
+  // A verified acquisition handle may select its exact lane among unrelated
+  // same-URL tabs. Never choose by URL alone or relax any identity component.
+  const matches = expectedOpenedIdentity ? candidates.filter((candidate) =>
+    ['sessionName', 'browserId', 'profileId', 'targetId', 'url'].every(
+      (field) => candidate[field] === expectedOpenedIdentity[field],
+    )) : candidates;
+  if (matches.length !== 1) {
     throw discoveryError(
-      candidates.length === 0
+      matches.length === 0
         ? 'retained_browser_discovery_no_match'
         : 'retained_browser_discovery_ambiguous',
-      `Retained browser discovery matched ${candidates.length} ready targets for the reviewed URL selector`,
-      { matchedCandidateCount: candidates.length, inspectedSessionCount },
+      `Retained browser discovery matched ${matches.length} ready targets for the reviewed selector`,
+      { matchedCandidateCount: matches.length, inspectedSessionCount },
     );
   }
+  candidates.splice(0, candidates.length, ...matches);
   if (expectedProfileId && candidates[0].profileId !== expectedProfileId) {
     throw discoveryError(
       'retained_browser_discovery_profile_mismatch',

@@ -1,5 +1,46 @@
 # Security
 
+Legacy publisher maintenance can consume a reviewed embedded-dashboard binary
+with <code>--prebuilt-bin</code>, <code>--expected-sha256</code> and an exact
+<code>--expected-sessions</code> list. It requires
+<code>--skip-reference-sync --skip-browser</code>; builds are skipped, but HTTP
+and manifest validation are not. Copied bytes are hashed before replacement.
+Generation-selector symlinks are refused. Session-name checks are bounded
+observations, not an admission fence against independent clients.
+
+Publication pauses the exact runtime-interlock timer and holds its configured
+filesystem lock without stopping a running oneshot. Timer restoration is verified.
+Legacy flock and exact native reconcile commands are supported. Native custody
+uses a crash-persistent non-PID marker with receipt-bound file identity. Unknown
+root overrides and foreign lock files are refused, never reclaimed by PID.
+Uncertain handoff outcomes keep the timer stopped and retain a private custody
+receipt beside the journal. Exact-ID recovery requires a dead prior publisher;
+incomplete handoff evidence remains blocked. Do not delete that receipt or rearm
+the timer as a workaround. This legacy mechanism is not a generation-based upgrade
+transaction and does not authorize credentials or renewal.
+For same-version workstation installs, the publisher verifies retained support
+assets and journals exact original and candidate installation-record snapshots.
+The executable and matching record are recovered together before service restart.
+Rollback restores the original record bytes. The transaction-scoped doctor checks
+the exact owning journal and lock, followed by a strict doctor after custody is
+released. Only a proven idle, browser-free dashboard backend may disappear during
+service stop; unrelated session or PID changes refuse handoff. A source rollback
+may report verified deleted-inode controllers as degraded, never ready. Unknown
+binary, record, asset changes or unrelated doctor issues refuse recovery.
+
+Metadata-preserving Linux handoff rechecks the retained browser's build proof
+inside the health transaction, before deriving attachability. The exact session,
+profile, PID and endpoint must agree before process verification can update proof.
+Failed process verification clears stale build and executable projections without
+changing profile, tab or display custody. This is not authentication readiness.
+
+Retained-browser verification treats the optional human-readable slug in a
+strict HTTPS ChatGPT project-conversation URL as non-authoritative. Project ID,
+conversation UUID, browser session, profile, and target must still agree.
+Credentials, ports, query strings, fragments, or other URL variants are not
+normalized. Other URLs use exact equality. Private requirement digests and
+authority-rotation safeguards are unchanged.
+
 agent-browser includes security features to protect against credential exposure, prompt injection via untrusted page content, and unauthorized browser actions.
 
 The Linux-only <code>private-controller setup /absolute/private/root</code> and

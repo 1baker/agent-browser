@@ -161,7 +161,7 @@ assert.match(
 
 assert.match(
   publisherOrchestration,
-  /adapters\.prepareRuntimeHandoffs\(builtBin, installBin\)[\s\S]*adapters\.installBinaryAtomically\([\s\S]*builtBin,[\s\S]*installBin,[\s\S]*adapters\.resumeRuntimeHandoffs\(installBin\)/,
+  /adapters\.prepareRuntimeHandoffs\(builtBin, installBin, prebuilt \? handoffSessions : null\)[\s\S]*adapters\.verifyRuntimeSessionsRetired\?\.\(\)[\s\S]*adapters\.installBinaryAtomically\([\s\S]*builtBin,[\s\S]*installBin,[\s\S]*adapters\.resumeRuntimeHandoffs\(installBin\)/,
   'local publishing must bracket executable replacement with daemon handoff',
 );
 

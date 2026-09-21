@@ -26,6 +26,27 @@ import {
 const roots = new Set();
 
 try {
+  const reacquired = createFixture({ prepareHandoff: true });
+  reacquired.input.adapters.verifyRuntimeSessionsRetired = () => {
+    throw new Error('fixture session reacquired before replacement');
+  };
+  await assert.rejects(runLocalDashboardPublisherOrchestration(reacquired.input), /session reacquired/);
+  assert.equal(reacquired.actions.includes('install-replacement'), false);
+  assert.equal(reacquired.actions.includes('resume-handoffs'), true);
+  assert.ok(reacquired.actions.indexOf('resume-handoffs') < reacquired.actions.indexOf('restart:rollback'));
+  const failedResume = createFixture({ prepareHandoff: true, faultAt: 'resume-handoffs' });
+  failedResume.input.adapters.verifyRuntimeSessionsRetired = () => {
+    throw new Error('fixture session reacquired before replacement');
+  };
+  await assert.rejects(runLocalDashboardPublisherOrchestration(failedResume.input), /handoff recovery failed/);
+  assert.equal(failedResume.actions.includes('install-replacement'), false);
+  assert.equal(failedResume.actions.some((action) => action.startsWith('restart:')), false);
+  assert.equal(failedResume.publicationJournal.read().phase, 'recovery_blocked');
+
+  await runQuiesceAndKnownRollbackScenarios();
+  await runWorkstationProvenanceScenarios();
+  await runMaintenanceScenarios();
+  await runPrebuiltScenarios();
   await runSuccessScenario();
   await runRetainedGuardSuccessScenario();
   await runRetainedGuardPreMutationFailureScenario();
@@ -47,6 +68,7 @@ try {
   await runAlreadyResumedRecoveryScenario();
   await runRecoveryPreservesOriginalSkipBrowserPolicyScenario();
   await runRetainedGuardRecoveryFailureScenario();
+  await runRetainedGuardReplacementRecoveryScenario();
   await runUnverifiedRecoveryScenario();
   await runRecoverOnlyNoopScenario();
 } finally {
@@ -54,6 +76,245 @@ try {
 }
 
 console.log('Local dashboard publisher orchestration fixture passed');
+
+async function runQuiesceAndKnownRollbackScenarios() {
+  {
+    const f = createFixture();
+    const originalInode = statSync(f.installBin).ino;
+    f.input.adapters.prepareQuiesceSessions = () => { throw new Error('backend still busy'); };
+    await assert.rejects(runLocalDashboardPublisherOrchestration(f.input), /backend still busy/);
+    assert.equal(statSync(f.installBin).ino, originalInode);
+    for (const action of ['quiesce', 'prepare-handoffs', 'install-replacement', 'restore-backup', 'restart:rollback', 'restart:normal']) {
+      assert.ok(!f.actions.includes(action), `pre-stop refusal must not perform ${action}`);
+    }
+    const record = f.publicationJournal.read();
+    assert.equal(record.failedAtPhase, 'prepared');
+    assert.equal(record.handoffOutcomeUncertain, false);
+    assert.notEqual(record.dashboardQuiesceAdmitted, true);
+    assert.equal(record.phase, 'rolled_back');
+  }
+  for (const phase of ['prepared', 'quiesce_admitted', 'quiesced', 'handoff_admitted']) {
+    const f = createFixture();
+    const originalInode = statSync(f.installBin).ino;
+    seedIncompleteJournal(f, { installed: 'source', phase, candidateSessions: ['retained-fixture'] });
+    f.publicationJournal.acquire();
+    try {
+      f.publicationJournal.commit(f.publicationJournal.read(), 'recovery_blocked', {
+        failedAtPhase: phase, handoffOutcomeUncertain: false, workstationProvenance: { fixture: true },
+      });
+    } finally { f.publicationJournal.release(); }
+    f.input.adapters.applyWorkstationProvenance = (_record, context) => assert.equal(context.selection, 'source');
+    f.input.adapters.verifyWorkstationProvenance = (_record, context) => assert.equal(context.selection, 'source');
+    let doctorCalls = 0;
+    f.input.adapters.verifyInstalledDoctor = (_binary, context) => {
+      doctorCalls++;
+      assert.equal(context.allowSourceRollbackDegraded, true, phase);
+      assert.ok(!context.strict, 'degraded source rollback must not claim a strict final doctor');
+      return { success: false, rawSuccess: false, degraded: true, repairRequired: true };
+    };
+    await runLocalDashboardPublisherOrchestration(f.input);
+    assert.equal(doctorCalls, 1);
+    assert.equal(f.publicationJournal.read().phase, 'recovered_rolled_back');
+    assert.equal(f.publicationJournal.read().installDoctor.degraded, true);
+    assert.equal(statSync(f.installBin).ino, originalInode);
+    assert.ok(!f.actions.includes('prepare-handoffs'));
+    assert.ok(!f.actions.includes('resume-handoffs'));
+    assert.ok(!f.actions.includes('restore-backup'));
+    assert.equal(f.actions.includes('restart:rollback'), phase !== 'prepared', `${phase}: restart only after quiesce admission`);
+  }
+  {
+    const f = createFixture();
+    const originalInode = statSync(f.installBin).ino;
+    f.input.adapters.verifyQuiesceSessions = () => { throw new Error('quiesce drift'); };
+    f.input.adapters.prepareQuiesceSessions = () => ({ fixture: true });
+    await assert.rejects(runLocalDashboardPublisherOrchestration(f.input), /quiesce drift/);
+    assert.equal(statSync(f.installBin).ino, originalInode, 'unchanged source must keep its executable inode');
+    assert.ok(!f.actions.includes('prepare-handoffs'));
+    assert.ok(f.actions.includes('restart:rollback'));
+    assert.equal(f.publicationJournal.read().phase, 'rolled_back');
+  }
+  {
+    const f = createFixture();
+    let stopped = false;
+    f.input.options.prebuiltBin = f.builtBin;
+    f.input.options.expectedSha256 = f.replacementSha256;
+    f.input.options.expectedSessions = ['default', 'dashboard-service-backend'];
+    f.input.options.syncReferenceBinaries = false;
+    f.input.options.smokeBrowser = false;
+    f.input.adapters.stagePrebuiltCandidate = () => f.builtBin;
+    f.input.adapters.runtimeSessionNames = () => stopped ? ['default'] : ['default', 'dashboard-service-backend'];
+    f.input.adapters.prepareQuiesceSessions = () => ({ fixture: true });
+    f.input.adapters.quiesceDashboardForRuntimeHandoff = () => { stopped = true; };
+    f.input.adapters.verifyQuiesceSessions = () => ['default'];
+    f.input.adapters.prepareRuntimeHandoffs = (_built, _installed, expected) => assert.deepEqual(expected, ['default']);
+    await runLocalDashboardPublisherOrchestration(f.input);
+    assert.deepEqual(f.publicationJournal.read().handoffSessions, ['default']);
+  }
+  for (const uncertainty of [false, true, undefined]) {
+    const f = createFixture();
+    seedIncompleteJournal(f, { installed: 'source', phase: 'handoff_admitted', candidateSessions: ['retained-fixture'] });
+    f.publicationJournal.acquire();
+    try {
+      f.publicationJournal.commit(f.publicationJournal.read(), 'recovery_blocked', {
+        failedAtPhase: 'handoff_admitted', handoffOutcomeUncertain: uncertainty,
+      });
+    } finally { f.publicationJournal.release(); }
+    if (uncertainty === false) {
+      await runLocalDashboardPublisherOrchestration(f.input);
+      assert.equal(f.publicationJournal.read().phase, 'recovered_rolled_back');
+      assert.ok(!f.actions.includes('prepare-handoffs'));
+    } else {
+      await assert.rejects(runLocalDashboardPublisherOrchestration(f.input), /handoff outcome is uncertain/);
+      assert.ok(!f.actions.includes('restart:rollback'));
+    }
+  }
+}
+
+async function runWorkstationProvenanceScenarios() {
+  const configure = fixture => {
+    let selection = 'source';
+    const record = { fixture: true };
+    fixture.input.adapters.prepareWorkstationProvenance = () => record;
+    fixture.input.adapters.applyWorkstationProvenance = (_record, options) => {
+      assert.deepEqual(fixture.publicationJournal.read().workstationProvenance, record,
+        'both manifest snapshots must be journaled before pair mutation');
+      selection = options.selection;
+      fixture.actions.push(`provenance:${selection}`);
+    };
+    fixture.input.adapters.verifyWorkstationProvenance = (_record, options) => {
+      assert.equal(selection, options.selection);
+      fixture.actions.push(`provenance-verified:${selection}`);
+    };
+    fixture.input.adapters.verifyInstalledDoctor = (_binary, context) => {
+      assert.equal(fixture.publicationJournal.lockStatus().live, !context.strict,
+        'strict doctor runs only after publication lock release');
+      fixture.actions.push('install-doctor');
+      return { success: true };
+    };
+    return record;
+  };
+  for (const faultAt of [null, 'http-readiness']) {
+    const f = createFixture({ faultAt });
+    configure(f);
+    if (faultAt) await assert.rejects(runLocalDashboardPublisherOrchestration(f.input), /http-readiness/);
+    else await runLocalDashboardPublisherOrchestration(f.input);
+    assert.ok(f.actions.indexOf('provenance:candidate') > f.actions.indexOf('install-replacement'));
+    assert.ok(f.actions.indexOf('provenance:candidate') < f.actions.indexOf('resume-handoffs'));
+    assert.ok(f.actions.includes('install-doctor'));
+    if (faultAt) {
+      assert.ok(f.actions.indexOf('provenance:source') < f.actions.indexOf('restart:rollback'));
+      assert.equal(f.publicationJournal.read().phase, 'rolled_back');
+    }
+  }
+  for (const installed of ['source', 'replacement']) {
+    const f = createFixture();
+    const record = configure(f);
+    seedIncompleteJournal(f, { installed, phase: 'replacement_admitted', replacementEvidence: false });
+    f.publicationJournal.acquire();
+    try { f.publicationJournal.commit(f.publicationJournal.read(), 'replacement_admitted', { workstationProvenance: record }); }
+    finally { f.publicationJournal.release(); }
+    await runLocalDashboardPublisherOrchestration(f.input);
+    const selected = installed === 'source' ? 'source' : 'candidate';
+    const restart = installed === 'source' ? 'restart:rollback' : 'restart:normal';
+    assert.ok(f.actions.indexOf(`provenance:${selected}`) < f.actions.indexOf(restart));
+    assert.ok(!f.actions.includes('prepare-handoffs'), 'recovery must not replay handoff preparation');
+    assert.ok(f.actions.includes('install-doctor'));
+  }
+  {
+    const f = createFixture({ prepareHandoff: true });
+    configure(f);
+    f.input.adapters.applyWorkstationProvenance = () => { throw new Error('manifest write failed'); };
+    await assert.rejects(runLocalDashboardPublisherOrchestration(f.input), /manifest write failed/);
+    assert.ok(!f.actions.includes('resume-handoffs'));
+    assert.ok(!f.actions.includes('restart:normal'));
+    assert.ok(!f.actions.includes('restart:rollback'), 'do not restart a mismatched binary/manifest pair');
+    assert.equal(f.publicationJournal.read().phase, 'recovery_blocked');
+  }
+}
+
+async function runMaintenanceScenarios() {
+  const crashed = createFixture();
+  seedIncompleteJournal(crashed, { phase: 'handoff_admitted', installed: 'source', candidateSessions: ['retained-fixture'] });
+  crashed.publicationJournal.acquire();
+  try {
+    crashed.publicationJournal.commit(crashed.publicationJournal.read(), 'publication_failed', { failedAtPhase: 'handoff_admitted' });
+  } finally { crashed.publicationJournal.release(); }
+  await assert.rejects(runLocalDashboardPublisherOrchestration(crashed.input), /handoff outcome is uncertain/);
+  assert.ok(!crashed.actions.includes('restart:rollback'));
+  for (const failure of [null, 'prepare-handoffs', 'resume-handoffs']) {
+    const fixture = createFixture({ prepareHandoff: true, faultAt: failure });
+    const maintenance = [];
+    fixture.input.adapters.acquireMaintenance = () => {
+      maintenance.push('acquire');
+      return { receipt: { id: 'fixture' }, release: () => maintenance.push('release'), retainForRecovery: () => maintenance.push('retain') };
+    };
+    if (failure) await assert.rejects(runLocalDashboardPublisherOrchestration(fixture.input));
+    else await runLocalDashboardPublisherOrchestration(fixture.input);
+    assert.deepEqual(maintenance, ['acquire', failure ? 'retain' : 'release']);
+    if (failure === 'prepare-handoffs') {
+      assert.equal(fixture.publicationJournal.read().handoffOutcomeUncertain, true);
+      assert.ok(!fixture.actions.includes('restore-backup'));
+      const priorPrepares = fixture.actions.filter(action => action === 'prepare-handoffs').length;
+      await assert.rejects(runLocalDashboardPublisherOrchestration(fixture.input), /handoff outcome is uncertain/);
+      assert.equal(fixture.actions.filter(action => action === 'prepare-handoffs').length, priorPrepares);
+    }
+    assert.equal(fixture.publicationJournal.lockStatus().present, false);
+  }
+  const refusal = createFixture();
+  refusal.input.adapters.acquireMaintenance = () => { throw new Error('busy interlock'); };
+  await assert.rejects(runLocalDashboardPublisherOrchestration(refusal.input), /busy interlock/);
+  assert.ok(!refusal.actions.includes('quiesce'));
+  assert.ok(!refusal.actions.includes('backup'));
+  const failedRelease = createFixture();
+  failedRelease.input.adapters.acquireMaintenance = () => ({ release: () => { throw new Error('restore timer failed'); } });
+  await assert.rejects(runLocalDashboardPublisherOrchestration(failedRelease.input), /restore timer failed/);
+  assert.equal(failedRelease.publicationJournal.lockStatus().present, false);
+}
+
+async function runPrebuiltScenarios() {
+  const configure = fixture => {
+    Object.assign(fixture.input.options, {
+      prebuiltBin: fixture.builtBin,
+      expectedSha256: fixture.replacementSha256,
+      expectedSessions: [],
+      syncReferenceBinaries: false,
+      smokeBrowser: false,
+    });
+    fixture.input.adapters.stagePrebuiltCandidate = () => fixture.builtBin;
+  };
+  const success = createFixture();
+  configure(success);
+  await runLocalDashboardPublisherOrchestration(success.input);
+  for (const forbidden of ['build-dashboard', 'build-runtime:debug', 'sync-references', 'browser-smoke']) {
+    assert.ok(!success.actions.includes(forbidden), forbidden);
+  }
+  assert.ok(success.actions.includes('http-readiness'));
+  assert.equal(success.report.artifactEvidence.replacement.actualSha256, success.replacementSha256);
+  assert.equal(success.publicationJournal.read().syncReferenceBinaries, false);
+
+  for (const fault of ['hash', 'sessions', 'late-sessions', 'candidate-drift']) {
+    const fixture = createFixture();
+    configure(fixture);
+    if (fault === 'hash') fixture.input.options.expectedSha256 = '0'.repeat(64);
+    if (fault === 'sessions') fixture.input.adapters.runtimeSessionNames = () => ['unreviewed'];
+    if (fault === 'late-sessions') {
+      let reads = 0;
+      fixture.input.adapters.runtimeSessionNames = () => ++reads > 2 ? ['unreviewed'] : [];
+    }
+    if (fault === 'candidate-drift') {
+      const backup = fixture.input.adapters.backupInstalledBinary;
+      fixture.input.adapters.backupInstalledBinary = () => {
+        const result = backup();
+        writeFileSync(fixture.builtBin, 'changed after admission');
+        return result;
+      };
+    }
+    await assert.rejects(runLocalDashboardPublisherOrchestration(fixture.input), /SHA-256 mismatch|inventory changed|candidate changed/);
+    assert.ok(!fixture.actions.includes('quiesce'), fault);
+    assert.ok(!fixture.actions.includes('install-replacement'), fault);
+    assert.equal(readFileSync(fixture.installBin, 'utf8'), 'original-runtime\n');
+  }
+}
 
 async function runSuccessScenario() {
   const fixture = createFixture();
@@ -491,6 +752,47 @@ async function runRetainedGuardRecoveryFailureScenario() {
     fixture.publicationJournal.read().recoveryError,
     'retained_browser_expectation_failed',
   );
+}
+
+async function runRetainedGuardReplacementRecoveryScenario() {
+  const handoff = fixtureHandoff();
+  const fixture = createFixture({ retainedGuardFaultAt: 'recovery_post_handoff' });
+  const record = seedIncompleteJournal(fixture, {
+    phase: 'publication_failed_replacement_retained',
+    installed: 'replacement',
+    handoffs: [handoff],
+    retainedBrowserExpectation: fixtureRetainedExpectationRecord(),
+  });
+  fixture.input.options.recoverOnly = true;
+  fixture.input.options.recoverReplacedRetainedBrowser = record.transactionId;
+  fixture.input.adapters.verifyRecoveredRetainedBrowserExpectation = (_path, { expectation, stage }) => ({
+    required: true,
+    verified: true,
+    stage,
+    reason: 'retained_browser_exact_match',
+    expected: expectation,
+    observed: {
+      sessionName: expectation.sessionName,
+      browserId: expectation.browserId,
+      browserPid: 8765,
+      cdpUrl: 'ws://127.0.0.1:9333/devtools/browser/recovered',
+      profileId: expectation.profileId,
+      health: 'ready',
+      targetId: 'target-recovered',
+      url: expectation.url,
+      title: 'Recovered fixture conversation',
+      cdpTargetCount: 1,
+    },
+  });
+  fixture.actions.length = 0;
+
+  await runLocalDashboardPublisherOrchestration(fixture.input);
+
+  const recovered = fixture.publicationJournal.read();
+  assert.equal(recovered.phase, 'recovered_ready');
+  assert.equal(recovered.retainedBrowserRecovery.acknowledgedTransactionId, record.transactionId);
+  assert.equal(recovered.retainedBrowserRecovery.replacement.observed.browserPid, 8765);
+  assert.equal(recovered.retainedBrowserExpectation.final.verified, true);
 }
 
 async function runUnverifiedRecoveryScenario() {

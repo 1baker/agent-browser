@@ -241,7 +241,13 @@ mod tests {
         (Fixture(root), store)
     }
 
-    async fn peer(detach_mode: u8) -> (Arc<CdpClient>, tokio::task::JoinHandle<Vec<String>>) {
+    async fn peer(
+        detach_mode: u8,
+    ) -> (
+        crate::native::cdp::client::TestCdpEndpoint,
+        Arc<CdpClient>,
+        tokio::task::JoinHandle<Vec<String>>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("ws://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move {
@@ -286,13 +292,15 @@ mod tests {
             }
             methods
         });
-        (Arc::new(CdpClient::connect(&endpoint).await.unwrap()), task)
+        let fixture = crate::native::cdp::client::TestCdpEndpoint::new(&endpoint).unwrap();
+        let client = Arc::new(fixture.connect().await.unwrap());
+        (fixture, client, task)
     }
 
     #[tokio::test]
     async fn exact_attachment_detaches_once_and_preserves_private_gate() {
         let (_fixture, store) = store();
-        let (client, peer) = peer(0).await;
+        let (_endpoint_fixture, client, peer) = peer(0).await;
         let permit = client.begin_private_interval(&target()).unwrap();
         let mut attachment = PrivateAttachment::acquire(Arc::clone(&client), &store, &permit)
             .await
@@ -335,7 +343,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_detach_ack_is_consumed_and_never_replayed() {
         let (_fixture, store) = store();
-        let (client, peer) = peer(1).await;
+        let (_endpoint_fixture, client, peer) = peer(1).await;
         let permit = client.begin_private_interval(&target()).unwrap();
         let mut attachment = PrivateAttachment::acquire(Arc::clone(&client), &store, &permit)
             .await
@@ -370,8 +378,8 @@ mod tests {
     #[tokio::test]
     async fn foreign_client_and_permit_never_borrow_or_detach_session() {
         let (_fixture, store) = store();
-        let (client, peer) = peer(0).await;
-        let (other, other_peer) = self::peer(0).await;
+        let (_endpoint_fixture, client, peer) = peer(0).await;
+        let (_other_endpoint_fixture, other, other_peer) = self::peer(0).await;
         let permit = client.begin_private_interval(&target()).unwrap();
         let other_permit = other.begin_private_interval(&target()).unwrap();
         let mut attachment = PrivateAttachment::acquire(Arc::clone(&client), &store, &permit)
@@ -424,7 +432,7 @@ mod tests {
     async fn closed_detach_requires_exact_identity_and_durable_receipts() {
         let (_fixture, store) = store();
         let (_other_fixture, other_store) = self::store();
-        let (client, peer) = peer(0).await;
+        let (_endpoint_fixture, client, peer) = peer(0).await;
         let permit = client.begin_private_interval(&target()).unwrap();
         let mut attachment = PrivateAttachment::acquire(Arc::clone(&client), &store, &permit)
             .await
@@ -488,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn closed_transport_without_detach_is_not_completion() {
         let (_fixture, store) = store();
-        let (client, peer) = peer(0).await;
+        let (_endpoint_fixture, client, peer) = peer(0).await;
         let permit = client.begin_private_interval(&target()).unwrap();
         let attachment = PrivateAttachment::acquire(Arc::clone(&client), &store, &permit)
             .await
@@ -510,7 +518,7 @@ mod tests {
     #[tokio::test]
     async fn cancelled_detach_retains_consumption_and_never_replays() {
         let (_fixture, store) = store();
-        let (client, peer) = peer(2).await;
+        let (_endpoint_fixture, client, peer) = peer(2).await;
         let permit = client.begin_private_interval(&target()).unwrap();
         let mut attachment = PrivateAttachment::acquire(Arc::clone(&client), &store, &permit)
             .await

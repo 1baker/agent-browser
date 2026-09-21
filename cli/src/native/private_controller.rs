@@ -167,6 +167,7 @@ impl RecoveryController {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::os::unix::fs::DirBuilderExt;
     use std::path::PathBuf;
 
     struct Fixture(PathBuf);
@@ -174,7 +175,10 @@ mod tests {
         fn new() -> Self {
             let root = std::env::temp_dir()
                 .join(format!("ab-private-controller-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir(&root).unwrap();
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&root)
+                .unwrap();
             Self(root)
         }
         fn store(&self, name: &str) -> SecretStore {

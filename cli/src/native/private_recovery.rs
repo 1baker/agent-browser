@@ -279,6 +279,7 @@ fn recover(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::os::unix::fs::DirBuilderExt;
 
     struct Fixture(std::path::PathBuf);
 
@@ -286,7 +287,10 @@ mod tests {
         fn new() -> Self {
             let path =
                 std::env::temp_dir().join(format!("ab-private-recovery-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir(&path).unwrap();
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&path)
+                .unwrap();
             Self(path)
         }
     }

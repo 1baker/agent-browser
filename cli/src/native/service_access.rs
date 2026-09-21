@@ -179,11 +179,12 @@ pub(crate) fn service_access_plan_for_state(
                 .and_then(|selection| service_state.profiles.get(&selection.profile_id))
                 .cloned()
         });
-    let readiness_id = request.readiness_profile_id.clone().or_else(|| {
-        selection
-            .as_ref()
-            .map(|selection| selection.profile_id.clone())
-    });
+    // Readiness must follow the effective runtime profile, not a different
+    // automatically ranked profile. An explicit diagnostic override still wins.
+    let readiness_id = request
+        .readiness_profile_id
+        .clone()
+        .or_else(|| selected_profile.as_ref().map(|profile| profile.id.clone()));
     let readiness_profile = readiness_id
         .as_deref()
         .and_then(|profile_id| service_state.profiles.get(profile_id));
@@ -4014,6 +4015,53 @@ mod tests {
             request.display_isolation.as_deref(),
             Some("private_virtual_display")
         );
+    }
+
+    #[test]
+    fn service_access_plan_runtime_override_uses_its_own_readiness() {
+        let state = ServiceState {
+            profiles: BTreeMap::from([
+                (
+                    "automatic".to_string(),
+                    BrowserProfile {
+                        id: "automatic".to_string(),
+                        shared_service_ids: vec!["AuraCall".to_string()],
+                        target_service_ids: vec!["chatgpt".to_string()],
+                        manual_login_preferred: true,
+                        ..BrowserProfile::default()
+                    },
+                ),
+                (
+                    "retained".to_string(),
+                    BrowserProfile {
+                        id: "retained".to_string(),
+                        target_service_ids: vec!["chatgpt".to_string()],
+                        authenticated_service_ids: vec!["chatgpt".to_string()],
+                        ..BrowserProfile::default()
+                    },
+                ),
+            ]),
+            ..ServiceState::default()
+        };
+        let request = ServiceAccessPlanRequest {
+            service_name: Some("AuraCall".to_string()),
+            runtime_profile: Some("retained".to_string()),
+            ..ServiceAccessPlanRequest::default()
+        };
+        let plan = service_access_plan_for_state(&state, request.clone());
+        assert_eq!(plan["selectedProfile"]["id"], "retained");
+        assert_eq!(plan["readiness"]["profileId"], "retained");
+        assert_eq!(plan["decision"]["manualActionRequired"], false);
+
+        let diagnostic = service_access_plan_for_state(
+            &state,
+            ServiceAccessPlanRequest {
+                readiness_profile_id: Some("automatic".to_string()),
+                ..request
+            },
+        );
+        assert_eq!(diagnostic["readiness"]["profileId"], "automatic");
+        assert_eq!(diagnostic["decision"]["manualActionRequired"], true);
     }
 
     #[test]

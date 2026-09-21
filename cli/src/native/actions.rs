@@ -3,18 +3,18 @@ use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
 use std::future::Future;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::{broadcast, oneshot, RwLock};
+use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
 
 use crate::connection::get_socket_dir;
 use crate::runtime_profile::{
@@ -209,6 +209,10 @@ struct RuntimeHandoffDescriptor {
     close_browser_on_close: bool,
     #[serde(default)]
     active_target_id: Option<String>,
+    /// Opaque custody evidence written by the custody-aware Linux generation.
+    /// The compatibility verifier validates it before a schema-v2 resume.
+    #[serde(default)]
+    custody: Option<Value>,
     prepared_at: String,
 }
 
@@ -596,6 +600,17 @@ fn launch_profile_from_sources(cmd: &Value, include_env_profile: bool) -> Option
         .flatten()
 }
 
+fn launch_profile_for_browser_command(
+    cmd: &Value,
+    runtime_attach_managed: bool,
+    has_cdp: bool,
+) -> Option<String> {
+    if runtime_attach_managed && has_cdp {
+        return None;
+    }
+    launch_profile_from_sources(cmd, true)
+}
+
 fn launch_args_from_sources(cmd: &Value) -> Vec<String> {
     if let Some(args) = cmd.get("args").and_then(|v| v.as_array()) {
         return args
@@ -902,7 +917,7 @@ fn apply_service_profile_selection(
             options.profile = Some(user_data_dir.to_string());
         }
         if profile.browser_build == Some(BrowserBuild::StockChrome)
-            && cmd.get("executablePath").is_none()
+            && command_or_params_value(cmd, "executablePath").is_none()
         {
             options.executable_path = None;
         }
@@ -942,7 +957,7 @@ fn apply_service_profile_selection(
         options.profile = Some(user_data_dir.to_string());
     }
     if profile.browser_build == Some(BrowserBuild::StockChrome)
-        && cmd.get("executablePath").is_none()
+        && command_or_params_value(cmd, "executablePath").is_none()
     {
         options.executable_path = None;
     }
@@ -1081,7 +1096,7 @@ fn required_stealth_launch_proof_error(
     ))
 }
 
-/// Record native installer provenance only after a fresh owned launch succeeds.
+/// Record native installer provenance for a live owned Chrome launch.
 /// Registry validation failures and unknown/custom binaries remain unproven.
 fn apply_fresh_installed_chrome_proof(
     metadata: &mut ServiceLaunchMetadata,
@@ -2345,6 +2360,14 @@ fn persist_current_browser_health(
         })
         .unwrap_or((None, None, None));
     let metadata = metadata.map(|mut metadata| {
+        if let Some(runtime_profile) = state.attached_runtime_profile.as_deref() {
+            super::runtime_attach_proof::apply_managed_runtime_attach_proof(
+                &mut metadata,
+                runtime_profile,
+                pid,
+                cdp_endpoint.as_deref(),
+            );
+        }
         metadata.browser_stderr_log_path = browser_stderr_log_path;
         if metadata.display_name.is_none() {
             metadata.display_name = state
@@ -2362,22 +2385,32 @@ fn persist_current_browser_health(
         );
         metadata
     });
-    persist_service_browser_record(
-        &state.session_id,
-        host,
-        health,
-        pid,
-        cdp_endpoint,
-        None,
-        metadata,
-    );
-    if preserves_existing_metadata {
-        if let Ok(repository) = LockedServiceStateRepository::default_json() {
-            let _ = repository.mutate(|service_state| {
+    if let Ok(repository) = LockedServiceStateRepository::default_json() {
+        let _ = super::service_health::persist_service_browser_record_with_refresh(
+            &repository,
+            &state.session_id,
+            host,
+            health,
+            pid,
+            cdp_endpoint.clone(),
+            None,
+            metadata,
+            |service_state| {
+                if !preserves_existing_metadata {
+                    return;
+                }
+                if let Some(runtime_profile) = state.attached_runtime_profile.as_deref() {
+                    super::runtime_attach_proof::refresh_retained_attach_proof(
+                        service_state,
+                        &state.session_id,
+                        runtime_profile,
+                        pid,
+                        cdp_endpoint.as_deref(),
+                    );
+                }
                 refresh_cdp_screencast_view_streams(service_state);
-                Ok(())
-            });
-        }
+            },
+        );
     }
 }
 
@@ -2504,6 +2537,9 @@ fn service_profile_lease_metadata_for_command(command: &Value) -> Option<Service
 }
 
 fn apply_explicit_launch_identity_from_command(options: &mut LaunchOptions, command: &Value) {
+    if let Some(executable_path) = optional_command_or_params_string(command, "executablePath") {
+        options.executable_path = Some(executable_path);
+    }
     if let Some(profile) = optional_command_string(command, "profile") {
         options.profile = Some(profile);
     }
@@ -2871,7 +2907,7 @@ async fn detect_browser_stale_state(state: &mut DaemonState) -> BrowserStaleStat
     }
 }
 
-fn process_exit_observation_details(exit: &ProcessExitObservation) -> Value {
+pub(super) fn process_exit_observation_details(exit: &ProcessExitObservation) -> Value {
     let mut details = json!({
         "processExitDetection": "local_child_try_wait",
         "processExitPid": exit.pid,
@@ -3020,6 +3056,37 @@ pub struct DaemonState {
     /// Storage mutations made through agent-browser storage commands, keyed by origin.
     /// This preserves cross-origin storage for state saves even after navigation.
     tracked_origin_storage: HashMap<String, state::OriginStorage>,
+    /// Opaque, daemon-owned CDP attachments used by the authenticated broker
+    /// transport. They deliberately contain no WebSocket endpoint.
+    broker_attachments: HashMap<String, BrokerAttachment>,
+    /// Completed broker attachments retain only their opaque binding so a
+    /// cleanup retry can prove detachment without reopening CDP authority.
+    broker_detachments: HashMap<String, BrokerAttachment>,
+}
+
+#[derive(Clone)]
+struct BrokerAttachment {
+    attachment_id: String,
+    browser_id: String,
+    profile_id: String,
+    session_name: String,
+    target_id: String,
+    generation: String,
+    page_session_id: String,
+    expected_url: String,
+    service_tab_handle: Value,
+    /// A dedicated subscription means passive broker polling cannot consume the
+    /// daemon's own event receiver or observe another attached target.
+    event_rx: Arc<Mutex<broadcast::Receiver<CdpEvent>>>,
+    event_state: Arc<Mutex<BrokerEventState>>,
+}
+
+#[derive(Default)]
+struct BrokerEventState {
+    next_sequence: u64,
+    events: VecDeque<Value>,
+    buffered_bytes: usize,
+    overflowed: bool,
 }
 
 impl DaemonState {
@@ -3098,6 +3165,8 @@ impl DaemonState {
             current_cancellation: None,
             pending_shared_profile_acquisition: None,
             tracked_origin_storage: HashMap::new(),
+            broker_attachments: HashMap::new(),
+            broker_detachments: HashMap::new(),
         }
     }
 
@@ -4575,10 +4644,22 @@ fn task_authority_decision(
         return Ok(TaskAuthorityDecision::NotPresent);
     }
     let binding = confirmation_target_binding(cmd, state);
+    // A native broker attachment is a read-only custody acquisition. Its
+    // subsequent commands are separately admitted by __broker_transport.
+    let authority_action = if action == "cdp_attach"
+        && cmd
+            .pointer("/params/brokerTransport")
+            .and_then(Value::as_bool)
+            == Some(true)
+    {
+        "broker_attach"
+    } else {
+        action
+    };
     admit_task_authority(
         cmd,
-        action,
-        action_consequence(action),
+        authority_action,
+        action_consequence(authority_action),
         &TaskAuthorityContext {
             session_id: &state.session_id,
             target_id: binding.target_id.as_deref(),
@@ -4625,8 +4706,11 @@ fn task_authority_control_requires_confirmation(action: &str) -> bool {
     )
 }
 
-fn task_authority_active_target(state: &DaemonState) -> Result<(String, String), String> {
-    let binding = confirmation_target_binding(&json!({}), state);
+fn task_authority_active_target(cmd: &Value, state: &DaemonState) -> Result<(String, String), String> {
+    // A broker has already acquired and pinned its service tab. Authority issue,
+    // reconciliation, and revocation must bind that same tab, not whichever
+    // unrelated tab happened to become active in the shared retained browser.
+    let binding = confirmation_target_binding(cmd, state);
     Ok((
         binding
             .target_id
@@ -4653,7 +4737,7 @@ async fn handle_task_authority_issue(cmd: &Value, state: &DaemonState) -> Result
             ));
         }
     }
-    let (target_id, url) = task_authority_active_target(state)?;
+    let (target_id, url) = task_authority_active_target(cmd, state)?;
     issue_task_authority(
         request,
         &state.session_id,
@@ -4671,7 +4755,7 @@ async fn handle_task_authority_revoke(cmd: &Value, state: &DaemonState) -> Resul
         .ok_or("Task authority revoke requires authorityId")?;
     let revoked_by = cmd.get("revokedBy").and_then(Value::as_str).unwrap_or("");
     let reason = cmd.get("reason").and_then(Value::as_str).unwrap_or("");
-    let (target_id, url) = task_authority_active_target(state)?;
+    let (target_id, url) = task_authority_active_target(cmd, state)?;
     revoke_task_authority(
         &state.task_authority_ledger_root,
         &state.session_id,
@@ -4707,7 +4791,7 @@ async fn handle_task_authority_reconcile(
             ));
         }
     }
-    let (target_id, url) = task_authority_active_target(state)?;
+    let (target_id, url) = task_authority_active_target(cmd, state)?;
     reconcile_task_authority(
         &state.task_authority_ledger_root,
         &state.session_id,
@@ -5023,6 +5107,17 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
 
     let cmd_start = std::time::Instant::now();
 
+    // This is intentionally not a public CDP endpoint. The daemon socket has
+    // already authenticated the caller; this handler additionally requires an
+    // opaque attachment issued by broker-form cdp_attach and a fresh authority
+    // step for every command.
+    if action == "__broker_transport" {
+        return match handle_broker_transport(cmd, state).await {
+            Ok(data) => success_response(&id, data),
+            Err(error) => error_response(&id, &error),
+        };
+    }
+
     // Hold the cooperative browser barrier through dispatch and publication.
     // Refuse before tracing, authority staging, event draining or auto-recovery.
     let _privacy_lease = match state.public_browser_lease() {
@@ -5251,11 +5346,11 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "network_capture" => handle_service_network_capture(cmd, state).await,
         "file_transfer" => handle_service_file_transfer(cmd, state).await,
         "navigate" => handle_navigate(cmd, state).await,
-        "url" => handle_url(state).await,
+        "url" => handle_url(cmd, state).await,
         "browser_pid" => handle_browser_pid(state),
         "cdp_url" => handle_cdp_url(state),
         "inspect" => handle_inspect(state).await,
-        "title" => handle_title(state).await,
+        "title" => handle_title(cmd, state).await,
         "content" => handle_content(state).await,
         "read_page" => handle_read_page(cmd, state).await,
         "evaluate" => handle_evaluate(cmd, state).await,
@@ -6039,7 +6134,7 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
             .and_then(|v| v.as_str())
             .map(String::from)
             .or_else(|| env::var("AGENT_BROWSER_PROXY_PASSWORD").ok()),
-        profile: launch_profile_from_sources(cmd, !(runtime_attach_managed && has_cdp)),
+        profile: launch_profile_for_browser_command(cmd, runtime_attach_managed, has_cdp),
         runtime_profile: runtime_profile_from_sources(cmd, true),
         expected_browser_family: cmd
             .get("runtimeProfileBrowserFamily")
@@ -6155,6 +6250,18 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
             state.update_stream_client().await;
         }
     } else {
+        // Repeated launch options reuse this live manager, but construct new
+        // request metadata. Re-prove its owned executable before persistence so
+        // an explicit path does not erase the previous verified build. Attached
+        // managers supply no owned executable and remain subject to attach proof.
+        apply_fresh_installed_chrome_proof(
+            &mut metadata,
+            state
+                .browser
+                .as_ref()
+                .and_then(BrowserManager::launched_chrome_executable),
+            crate::install::find_installed_chrome().as_deref(),
+        );
         if runtime_attach_managed {
             state.attached_runtime_profile = launch_options.runtime_profile.clone();
             state.attached_browser_pid =
@@ -6958,6 +7065,66 @@ async fn handle_cdp_attach(cmd: &Value, state: &mut DaemonState) -> Result<Value
         .cloned()
         .unwrap_or_else(|| json!(format!("target:{target_id}")));
 
+    let broker_transport = cmd
+        .pointer("/params/brokerTransport")
+        .and_then(Value::as_bool)
+        == Some(true);
+    if broker_transport {
+        let expected_url = cmd
+            .pointer("/params/expectedUrl")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or("broker cdp_attach requires params.expectedUrl")?;
+        if handle.get("url").and_then(Value::as_str) != Some(expected_url)
+            || mgr.active_page_url() != Some(expected_url)
+        {
+            return Err("broker cdp_attach target URL changed".to_string());
+        }
+        let profile_id = profile_id
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or("broker cdp_attach requires serviceTabHandle.profileId")?;
+        let attachment_id = format!("broker-{}", uuid::Uuid::new_v4());
+        let generation = uuid::Uuid::new_v4().to_string();
+        let binding = json!({
+            "attachmentId": attachment_id,
+            "browserId": browser_id,
+            "profileId": profile_id,
+            "sessionName": state.session_id,
+            "targetId": target_id,
+            "generation": generation,
+        });
+        state.broker_attachments.insert(
+            attachment_id.clone(),
+            BrokerAttachment {
+                attachment_id,
+                browser_id: service_browser_id(&state.session_id),
+                profile_id: profile_id.to_owned(),
+                session_name: state.session_id.clone(),
+                target_id: target_id.to_owned(),
+                generation,
+                page_session_id,
+                expected_url: expected_url.to_owned(),
+                service_tab_handle: cmd.get("serviceTabHandle").cloned().unwrap_or(Value::Null),
+                event_rx: Arc::new(Mutex::new(mgr.client.subscribe())),
+                event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+            },
+        );
+        return Ok(json!({
+            "attached": true,
+            "controlPlaneMode": "broker",
+            "transportAction": "__broker_transport",
+            "binding": binding,
+            "cdpAttachmentAllowed": true,
+            "detachAction": "__broker_transport",
+            "detachRequired": true,
+            "closeBrowserOnDetach": false,
+            "browserProcessPreserved": true,
+            "serviceTabHandle": cmd.get("serviceTabHandle").cloned().unwrap_or(Value::Null),
+            "attachedAt": attached_at,
+        }));
+    }
+
     Ok(json!({
         "attached": true,
         "controlPlaneMode": "cdp",
@@ -7011,6 +7178,348 @@ async fn handle_cdp_detach(cmd: &Value, state: &mut DaemonState) -> Result<Value
         "serviceTabHandle": cmd.get("serviceTabHandle").cloned().unwrap_or(Value::Null),
         "detachedAt": detached_at,
     }))
+}
+
+fn broker_method_action(method: &str, params: &Value) -> Result<&'static str, String> {
+    match method {
+        "Runtime.evaluate"
+            if params.get("expression").and_then(Value::as_str) == Some("location.href") =>
+        {
+            Ok("url")
+        }
+        "Runtime.evaluate"
+            if params.get("expression").and_then(Value::as_str) == Some("document.title") =>
+        {
+            Ok("title")
+        }
+        "Runtime.evaluate" | "Runtime.callFunctionOn" => Ok("evaluate"),
+        "Page.navigate" => Ok("navigate"),
+        "Page.reload" => Ok("reload"),
+        "Runtime.enable"
+        | "Runtime.disable"
+        | "Runtime.getProperties"
+        | "Runtime.releaseObject"
+        | "Runtime.releaseObjectGroup"
+        | "Page.enable"
+        | "Page.disable"
+        | "Page.getFrameTree"
+        | "DOM.enable"
+        | "DOM.disable"
+        | "DOM.getDocument"
+        | "DOM.querySelector"
+        | "DOM.querySelectorAll"
+        | "DOM.describeNode"
+        | "DOM.resolveNode"
+        | "Network.enable"
+        | "Network.disable"
+        | "Network.getResponseBody" => Ok("diagnostics"),
+        "Page.captureScreenshot" => Ok("screenshot"),
+        "Page.bringToFront"
+        | "Page.handleJavaScriptDialog"
+        | "Input.dispatchKeyEvent"
+        | "Input.dispatchMouseEvent" => Ok("ui_action"),
+        "Input.insertText" => Ok("type"),
+        "DOM.setFileInputFiles" => Ok("upload"),
+        _ => Err("broker CDP method is not admitted".to_string()),
+    }
+}
+
+fn broker_binding_matches(attachment: &BrokerAttachment, binding: &Value) -> bool {
+    binding.get("attachmentId").and_then(Value::as_str) == Some(attachment.attachment_id.as_str())
+        && binding.get("browserId").and_then(Value::as_str) == Some(attachment.browser_id.as_str())
+        && binding.get("profileId").and_then(Value::as_str) == Some(attachment.profile_id.as_str())
+        && binding.get("sessionName").and_then(Value::as_str)
+            == Some(attachment.session_name.as_str())
+        && binding.get("targetId").and_then(Value::as_str) == Some(attachment.target_id.as_str())
+        && binding.get("generation").and_then(Value::as_str) == Some(attachment.generation.as_str())
+}
+
+fn broker_binding_value(attachment: &BrokerAttachment) -> Value {
+    json!({
+        "attachmentId": attachment.attachment_id,
+        "browserId": attachment.browser_id,
+        "profileId": attachment.profile_id,
+        "sessionName": attachment.session_name,
+        "targetId": attachment.target_id,
+        "generation": attachment.generation,
+    })
+}
+
+async fn handle_broker_transport(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    let request = cmd
+        .get("brokerRequest")
+        .and_then(Value::as_object)
+        .ok_or("broker transport request is required")?;
+    let request_id = request
+        .get("requestId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .ok_or("broker transport requestId is required")?;
+    let binding = request
+        .get("binding")
+        .ok_or("broker transport binding is required")?;
+    let attachment_id = binding
+        .get("attachmentId")
+        .and_then(Value::as_str)
+        .ok_or("broker transport attachmentId is required")?;
+    let attachment = state
+        .broker_attachments
+        .get(attachment_id)
+        .or_else(|| state.broker_detachments.get(attachment_id))
+        .cloned()
+        .ok_or("broker attachment is not active")?;
+    if !broker_binding_matches(&attachment, binding) {
+        return Err("broker attachment binding mismatch".to_string());
+    }
+    match request.get("operation").and_then(Value::as_str) {
+        Some("detach") => {
+            if let Some(active) = state.broker_attachments.remove(attachment_id) {
+                state
+                    .broker_detachments
+                    .insert(attachment_id.to_owned(), active);
+            }
+            Ok(
+                json!({ "binding": broker_binding_value(&attachment), "requestId": request_id,
+                "detached": true, "browserPreserved": true }),
+            )
+        }
+        Some("events") => {
+            if state.broker_detachments.contains_key(attachment_id) {
+                return Err("broker attachment is detached".to_string());
+            }
+            let cursor = request.get("cursor").and_then(Value::as_u64).unwrap_or(0);
+            let (cursor, overflow, events) = broker_attachment_events(&attachment, cursor).await?;
+            Ok(
+                json!({ "binding": broker_binding_value(&attachment), "requestId": request_id,
+                "cursor": cursor, "overflow": overflow, "events": events }),
+            )
+        }
+        Some("command") => {
+            if state.broker_detachments.contains_key(attachment_id) {
+                return Err("broker attachment is detached".to_string());
+            }
+            let method = request
+                .get("method")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty() && value.len() <= 256)
+                .ok_or("broker command method is required")?;
+            let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+            if !params.is_object()
+                || params.get("sessionId").is_some()
+                || params.get("targetId").is_some()
+            {
+                return Err("broker command params are invalid".to_string());
+            }
+            let context = request
+                .get("taskContext")
+                .and_then(Value::as_object)
+                .ok_or("broker command task context is required")?;
+            let authority = context
+                .get("taskAuthority")
+                .cloned()
+                .ok_or("broker command task authority is required")?;
+            let action = broker_method_action(method, &params)?;
+            let labels = authority
+                .as_object()
+                .ok_or("broker command task authority is invalid")?;
+            let authority_command = json!({
+                "id": request_id,
+                "action": action,
+                "url": if action == "navigate" {
+                    params.get("url").cloned().unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                },
+                "serviceTabHandle": attachment.service_tab_handle,
+                "taskAuthority": authority,
+                "taskStepId": context.get("taskStepId").cloned().unwrap_or(Value::Null),
+                "taskEvidenceBytes": context.get("taskEvidenceBytes").cloned().unwrap_or(Value::Null),
+                "taskName": labels.get("taskName").cloned().unwrap_or(Value::Null),
+                "serviceName": labels.get("serviceName").cloned().unwrap_or(Value::Null),
+                "agentName": labels.get("agentName").cloned().unwrap_or(Value::Null),
+            });
+            let admitted = task_authority_decision(&authority_command, state, action, true)?;
+            if !matches!(admitted, TaskAuthorityDecision::Admitted(_)) {
+                return Err("broker command authority was not admitted".to_string());
+            }
+            let manager = state
+                .browser
+                .as_ref()
+                .ok_or("broker browser is unavailable")?;
+            if manager.active_target_id().ok() != Some(attachment.target_id.as_str())
+                || manager.active_page_url() != Some(attachment.expected_url.as_str())
+            {
+                return Err("broker target changed".to_string());
+            }
+            let result = manager
+                .client
+                .send_command_with_timeout(
+                    method,
+                    Some(params),
+                    Some(&attachment.page_session_id),
+                    Duration::from_secs(30),
+                )
+                .await
+                .map_err(|error| format!("broker command failed: {error}"));
+            let response = match result {
+                Ok(value) => success_response(request_id, json!({ "result": value })),
+                Err(error) => error_response(request_id, &error),
+            };
+            let binding_context = confirmation_target_binding(&authority_command, state);
+            let context = TaskAuthorityContext {
+                session_id: &state.session_id,
+                target_id: binding_context.target_id.as_deref(),
+                url: binding_context.url.as_deref(),
+                confirmed_authority_id: state.confirmed_task_authority_id.as_deref(),
+                require_authority: state.require_task_authority,
+                ledger_root: state.task_authority_ledger_root.clone(),
+            };
+            finalize_task_authority_step(&authority_command, &context, &response)?;
+            if response.get("success").and_then(Value::as_bool) != Some(true) {
+                return Err(response
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("broker command failed")
+                    .to_string());
+            }
+            Ok(
+                json!({ "binding": broker_binding_value(&attachment), "requestId": request_id,
+                "result": response["data"]["result"].clone() }),
+            )
+        }
+        _ => Err("broker transport operation is invalid".to_string()),
+    }
+}
+
+const BROKER_EVENT_BATCH_CAPACITY: usize = 256;
+const BROKER_EVENT_BATCH_BYTES: usize = 786_432;
+const BROKER_EVENT_BUFFER_CAPACITY: usize = 4096;
+const BROKER_EVENT_BUFFER_BYTES: usize = 16_777_216;
+
+fn broker_event_is_allowed(method: &str) -> bool {
+    matches!(
+        method,
+        "Page.javascriptDialogOpening"
+            | "Page.javascriptDialogClosed"
+            | "Page.loadEventFired"
+            | "Page.domContentEventFired"
+            | "Page.frameNavigated"
+            | "Page.frameDetached"
+            | "Network.responseReceived"
+            | "Network.loadingFinished"
+            | "Network.loadingFailed"
+            | "Network.requestWillBeSent"
+            | "Runtime.executionContextCreated"
+            | "Runtime.executionContextDestroyed"
+            | "Runtime.executionContextsCleared"
+            | "Runtime.consoleAPICalled"
+            | "Runtime.exceptionThrown"
+    )
+}
+
+/// Drain only events issued for this attachment's page session. The broker
+/// retains a small sequence-addressed history so a short client poll race does
+/// not silently lose readiness evidence. Any subscriber lag is surfaced as an
+/// overflow rather than fabricating a continuous event stream.
+async fn broker_attachment_events(
+    attachment: &BrokerAttachment,
+    requested_cursor: u64,
+) -> Result<(u64, bool, Vec<Value>), String> {
+    let mut receiver = attachment.event_rx.lock().await;
+    let mut state = attachment.event_state.lock().await;
+    while state.events.front().is_some_and(|event| {
+        event.get("sequence").and_then(Value::as_u64).unwrap_or(0) <= requested_cursor
+    }) {
+        if let Some(event) = state.events.pop_front() {
+            state.buffered_bytes = state.buffered_bytes.saturating_sub(
+                serde_json::to_vec(&event)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(0),
+            );
+        }
+    }
+    loop {
+        match receiver.try_recv() {
+            Ok(event) => {
+                if event.session_id.as_deref() != Some(attachment.page_session_id.as_str())
+                    || !broker_event_is_allowed(&event.method)
+                {
+                    continue;
+                }
+                state.next_sequence = state.next_sequence.saturating_add(1);
+                let sequence = state.next_sequence;
+                let buffered = json!({
+                    "sequence": sequence,
+                    "method": event.method,
+                    "params": event.params,
+                });
+                let buffered_bytes = serde_json::to_vec(&buffered)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(BROKER_EVENT_BUFFER_BYTES.saturating_add(1));
+                if buffered_bytes > BROKER_EVENT_BATCH_BYTES {
+                    state.events.clear();
+                    state.buffered_bytes = 0;
+                    state.overflowed = true;
+                    continue;
+                }
+                state.events.push_back(buffered);
+                state.buffered_bytes = state.buffered_bytes.saturating_add(buffered_bytes);
+                while state.events.len() > BROKER_EVENT_BUFFER_CAPACITY
+                    || state.buffered_bytes > BROKER_EVENT_BUFFER_BYTES
+                {
+                    if let Some(event) = state.events.pop_front() {
+                        state.buffered_bytes = state.buffered_bytes.saturating_sub(
+                            serde_json::to_vec(&event)
+                                .map(|bytes| bytes.len())
+                                .unwrap_or(0),
+                        );
+                    }
+                    state.overflowed = true;
+                }
+            }
+            Err(broadcast::error::TryRecvError::Empty) => break,
+            Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                state.events.clear();
+                state.buffered_bytes = 0;
+                state.overflowed = true;
+            }
+            Err(broadcast::error::TryRecvError::Closed) => {
+                return Err("broker event source closed".to_string());
+            }
+        }
+    }
+    let oldest = state
+        .events
+        .front()
+        .and_then(|event| event.get("sequence"))
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| state.next_sequence.saturating_add(1));
+    if state.overflowed || requested_cursor.saturating_add(1) < oldest {
+        return Ok((state.next_sequence, true, Vec::new()));
+    }
+    let mut events = Vec::new();
+    let mut batch_bytes = 0usize;
+    for event in state.events.iter().filter(|event| {
+        event.get("sequence").and_then(Value::as_u64).unwrap_or(0) > requested_cursor
+    }) {
+        let event_bytes = serde_json::to_vec(event)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+        if events.len() >= BROKER_EVENT_BATCH_CAPACITY
+            || (!events.is_empty()
+                && batch_bytes.saturating_add(event_bytes) > BROKER_EVENT_BATCH_BYTES)
+        {
+            break;
+        }
+        batch_bytes = batch_bytes.saturating_add(event_bytes);
+        events.push(event.clone());
+    }
+    let cursor = events
+        .last()
+        .and_then(|event| event.get("sequence"))
+        .and_then(Value::as_u64)
+        .unwrap_or(requested_cursor);
+    Ok((cursor, false, events))
 }
 
 fn validate_cdp_attach_request(cmd: &Value, session_id: &str) -> Result<(), String> {
@@ -7357,7 +7866,33 @@ fn take_response_warning(data: &mut Value) -> Option<String> {
         .and_then(|v| v.as_str().map(str::to_string))
 }
 
-async fn handle_url(state: &mut DaemonState) -> Result<Value, String> {
+async fn select_service_tab_handle_target(
+    cmd: &Value,
+    state: &mut DaemonState,
+) -> Result<(), String> {
+    let Some(handle) = cmd.get("serviceTabHandle").and_then(Value::as_object) else {
+        return Ok(());
+    };
+    validate_service_tab_handle_for_current_session(handle, &state.session_id)?;
+    let target_id = handle
+        .get("targetId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "serviceTabHandle.targetId is required".to_string())?;
+    let manager = state
+        .browser
+        .as_mut()
+        .ok_or_else(|| "target browser session is not running".to_string())?;
+    if manager.active_target_id().ok() != Some(target_id) {
+        manager.tab_switch_target_id(target_id).await?;
+    }
+    if manager.active_target_id().ok() != Some(target_id) {
+        return Err("service tab handle target changed".to_string());
+    }
+    Ok(())
+}
+
+async fn handle_url(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    select_service_tab_handle_target(cmd, state).await?;
     if let Some(ref wb) = state.webdriver_backend {
         if state.browser.is_none() {
             let url = wb.get_url().await?;
@@ -7439,7 +7974,8 @@ fn open_url_in_browser(url: &str) {
     }
 }
 
-async fn handle_title(state: &mut DaemonState) -> Result<Value, String> {
+async fn handle_title(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    select_service_tab_handle_target(cmd, state).await?;
     if let Some(ref wb) = state.webdriver_backend {
         if state.browser.is_none() {
             let title = wb.get_title().await?;
@@ -9336,11 +9872,13 @@ async fn run_service_file_upload(
         service_require_allowed_path(&path, &allowed_paths, "upload file")?;
         let metadata = fs::metadata(&path)
             .map_err(|err| format!("Failed to read upload file metadata: {err}"))?;
+        let sha256 = service_file_sha256(&path)?;
         resolved_files.push(path.to_string_lossy().to_string());
         file_items.push(json!({
             "name": path.file_name().and_then(|value| value.to_str()).unwrap_or(""),
             "path": path.to_string_lossy().to_string(),
             "size": metadata.len(),
+            "sha256": sha256,
         }));
     }
 
@@ -9501,11 +10039,17 @@ async fn run_service_download_capture(
     let mut downloaded_guid: Option<String> = None;
     let mut source_url: Option<String> = None;
     let mut canceled_event = false;
-    let mut suggested_filename = download
+    let expected_filename = download
         .get("expectedFileName")
         .or_else(|| download.get("expectedFilename"))
         .and_then(Value::as_str)
-        .map(ToString::to_string);
+        .map(|value| {
+            service_safe_file_name(value).ok_or_else(|| {
+                "file_transfer expectedFileName must be a safe file name".to_string()
+            })
+        })
+        .transpose()?;
+    let mut suggested_filename: Option<String> = None;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
@@ -9565,6 +10109,7 @@ async fn run_service_download_capture(
         .as_deref()
         .and_then(service_safe_file_name)
         .ok_or_else(|| "file_transfer download could not determine safe file name".to_string())?;
+    service_validate_expected_download_name(expected_filename.as_deref(), &file_name)?;
     let dest = download_dir.join(&file_name);
     if let Some(guid) = downloaded_guid.as_deref() {
         let guid_path = download_dir.join(guid);
@@ -9587,6 +10132,7 @@ async fn run_service_download_capture(
     }
     let metadata = fs::metadata(&dest)
         .map_err(|err| format!("Failed to read downloaded file metadata: {err}"))?;
+    let sha256 = service_file_sha256(&dest)?;
     if let Some(max_bytes) = max_bytes {
         if metadata.len() > max_bytes {
             return Err(format!(
@@ -9602,7 +10148,11 @@ async fn run_service_download_capture(
         "selector": selector,
         "localPath": dest.to_string_lossy().to_string(),
         "fileName": file_name,
+        "providerSuggestedFileName": suggested_filename,
+        "expectedFileName": expected_filename,
+        "downloadGuid": downloaded_guid,
         "size": metadata.len(),
+        "sha256": sha256,
         "mimeType": service_guess_mime_type(&dest),
         "sourceUrl": source_url,
         "timedOut": false,
@@ -9687,6 +10237,37 @@ fn service_safe_file_name(value: &str) -> Option<String> {
     }
 }
 
+fn service_validate_expected_download_name(
+    expected: Option<&str>,
+    provider_suggested: &str,
+) -> Result<(), String> {
+    if let Some(expected) = expected {
+        if expected != provider_suggested {
+            return Err(format!(
+                "provider suggested file name '{provider_suggested}' does not match expectedFileName '{expected}'"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn service_file_sha256(path: &Path) -> Result<String, String> {
+    let mut file =
+        fs::File::open(path).map_err(|err| format!("Failed to open file for SHA-256: {err}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|err| format!("Failed to read file for SHA-256: {err}"))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 async fn run_service_download_fetch_capture(
     download: &Map<String, Value>,
     state: &DaemonState,
@@ -9704,8 +10285,6 @@ async fn run_service_download_fetch_capture(
         .and_then(Value::as_str);
     let selector_json =
         serde_json::to_string(selector).map_err(|err| format!("Invalid selector: {err}"))?;
-    let expected_json = serde_json::to_string(&expected_file_name)
-        .map_err(|err| format!("Invalid file name: {err}"))?;
     let script = format!(
         r#"(async () => {{
 const node = document.querySelector({selector_json});
@@ -9722,14 +10301,13 @@ const chunkSize = 0x8000;
 for (let i = 0; i < bytes.length; i += chunkSize) {{
   binary += String.fromCharCode(...bytes.slice(i, i + chunkSize));
 }}
-const expected = {expected_json};
 const attrName = node.getAttribute('download');
 const pathName = new URL(response.url || url).pathname.split('/').filter(Boolean).pop();
 return {{
   sourceUrl: response.url || url,
   status: response.status,
   ok: response.ok,
-  fileName: expected || attrName || pathName || 'download',
+  fileName: attrName || pathName || 'download',
   mimeType: response.headers.get('content-type'),
   size: buffer.byteLength,
   bodyBase64: btoa(binary),
@@ -9756,6 +10334,14 @@ return {{
         .and_then(Value::as_str)
         .and_then(service_safe_file_name)
         .ok_or_else(|| "file_transfer download could not determine safe file name".to_string())?;
+    let expected_file_name = expected_file_name
+        .map(|value| {
+            service_safe_file_name(value).ok_or_else(|| {
+                "file_transfer expectedFileName must be a safe file name".to_string()
+            })
+        })
+        .transpose()?;
+    service_validate_expected_download_name(expected_file_name.as_deref(), &file_name)?;
     let body = payload
         .get("bodyBase64")
         .and_then(Value::as_str)
@@ -9774,13 +10360,17 @@ return {{
     }
     let dest = download_dir.join(&file_name);
     fs::write(&dest, &bytes).map_err(|err| format!("Failed to write downloaded file: {err}"))?;
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
     Ok(json!({
         "ok": true,
         "selector": selector,
         "captureMode": "fetch",
         "localPath": dest.to_string_lossy().to_string(),
         "fileName": file_name,
+        "providerSuggestedFileName": file_name,
+        "expectedFileName": expected_file_name,
         "size": bytes.len(),
+        "sha256": sha256,
         "mimeType": payload.get("mimeType").cloned().unwrap_or(Value::Null),
         "sourceUrl": payload.get("sourceUrl").cloned().unwrap_or(Value::Null),
         "status": payload.get("status").cloned().unwrap_or(Value::Null),
@@ -10116,6 +10706,22 @@ fn runtime_handoff_path(session_name: &str) -> PathBuf {
     get_socket_dir().join(format!("{}.handoff.json", session_name))
 }
 
+fn browserless_runtime_handoff_prepare(path: &Path, session_name: &str) -> Result<Value, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(format!(
+            "runtime_handoff_recovery_pending: session '{session_name}' has an existing recovery descriptor; resume it before preparing another handoff"
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!({
+            "prepared": false,
+            "browserPresent": false,
+            "sessionName": session_name,
+        })),
+        Err(error) => Err(format!(
+            "runtime_handoff_recovery_inspection_failed: cannot inspect the recovery descriptor for session '{session_name}': {error}"
+        )),
+    }
+}
+
 fn write_runtime_handoff(descriptor: &RuntimeHandoffDescriptor) -> Result<PathBuf, String> {
     let path = runtime_handoff_path(&descriptor.session_name);
     let parent = path
@@ -10200,12 +10806,7 @@ fn current_service_browser_host(session_name: &str) -> ServiceBrowserHost {
 async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value, String> {
     let Some(manager) = state.browser.as_mut() else {
         let path = runtime_handoff_path(&state.session_id);
-        let _ = fs::remove_file(path);
-        return Ok(json!({
-            "prepared": false,
-            "browserPresent": false,
-            "sessionName": state.session_id,
-        }));
+        return browserless_runtime_handoff_prepare(&path, &state.session_id);
     };
     if !manager.is_connection_alive().await {
         return Err(format!(
@@ -10236,6 +10837,7 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
         host,
         close_browser_on_close: state.close_behavior == CloseBehavior::CloseBrowser,
         active_target_id: manager.active_target_id().ok().map(str::to_string),
+        custody: None,
         prepared_at: OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .unwrap_or_else(|_| OffsetDateTime::now_utc().unix_timestamp().to_string()),
@@ -10267,11 +10869,45 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
         ));
     }
     let descriptor = read_runtime_handoff(&state.session_id)?;
-    if descriptor.schema_version != 1 || descriptor.session_name != state.session_id {
+    if !matches!(descriptor.schema_version, 1..=3) || descriptor.session_name != state.session_id {
         return Err(format!(
             "Runtime handoff identity mismatch for session '{}'",
             state.session_id
         ));
+    }
+    if descriptor.schema_version == 2 {
+        #[cfg(target_os = "linux")]
+        {
+            let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+            super::runtime_handoff_v2::verify(
+                &snapshot,
+                &state.session_id,
+                descriptor.browser_pid,
+                descriptor.runtime_profile.as_deref(),
+                &descriptor.cdp_url,
+                descriptor.active_target_id.as_deref(),
+                descriptor.custody.as_ref(),
+            )?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err("runtime_handoff_v2_linux_required".into());
+    }
+    if descriptor.schema_version == 3 {
+        #[cfg(target_os = "linux")]
+        {
+            let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+            super::runtime_handoff_v2::verify_stale_snapshot_recovery(
+                &snapshot,
+                &state.session_id,
+                descriptor.browser_pid,
+                descriptor.runtime_profile.as_deref(),
+                &descriptor.cdp_url,
+                descriptor.active_target_id.as_deref(),
+                descriptor.custody.as_ref(),
+            )?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err("runtime_handoff_v3_linux_required".into());
     }
     let stale_attached_pid_dropped = descriptor
         .browser_pid
@@ -10293,6 +10929,17 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
         descriptor.active_target_id.as_deref(),
     )
     .await?;
+    if matches!(descriptor.schema_version, 2 | 3)
+        && manager.active_target_id().ok() != descriptor.active_target_id.as_deref()
+    {
+        return Err("runtime_handoff_attached_target_mismatch".into());
+    }
+    if matches!(descriptor.schema_version, 2 | 3) {
+        LockedServiceStateRepository::default_json()?.mutate(|snapshot| {
+            snapshot.runtime_custody_receipts.remove(&state.session_id);
+            Ok(())
+        })?;
+    }
     state.reset_input_state();
     state.attached_runtime_profile = descriptor.runtime_profile.clone();
     state.attached_browser_pid = if stale_attached_pid_dropped {
@@ -10338,8 +10985,16 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
 
 async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
     let attached_runtime_profile = state.attached_runtime_profile.take();
-    let attached_browser_pid = state.attached_browser_pid.take();
     let close_behavior = std::mem::take(&mut state.close_behavior);
+    let attached_browser_pid = state.attached_browser_pid.take().or_else(|| {
+        (close_behavior == CloseBehavior::CloseBrowser)
+            .then(|| runtime_profile_pid(attached_runtime_profile.as_deref()))
+            .flatten()
+    });
+    // A disconnected client is not a closed browser. Preserve retained custody
+    // on detach and on repeated closes with no attached browser to shut down.
+    let browser_shutdown_requested = close_behavior == CloseBehavior::CloseBrowser
+        && (state.browser.is_some() || attached_browser_pid.is_some());
     let mut shutdown_outcome = BrowserShutdownOutcome::default();
 
     if let Some(ref mgr) = state.browser {
@@ -10421,7 +11076,9 @@ async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
     state.screencasting = false;
     state.reset_input_state();
     state.update_stream_client().await;
-    persist_closed_browser_health(state, Some(&shutdown_outcome));
+    if browser_shutdown_requested {
+        persist_closed_browser_health(state, Some(&shutdown_outcome));
+    }
 
     // Stop background Fetch handler
     if let Some(task) = state.fetch_handler_task.take() {
@@ -12927,6 +13584,11 @@ async fn handle_tab_handle_refresh(cmd: &Value, state: &mut DaemonState) -> Resu
                 } else {
                     no_duplicate_target_cleanup()
                 };
+                let broker_attachments_rebound = rebind_broker_attachments_after_exact_refresh(
+                    state,
+                    &refreshed_handle,
+                    url.as_str(),
+                );
                 return Ok(json!({
                     "ok": true,
                     "action": "tab_handle_refresh",
@@ -12940,6 +13602,7 @@ async fn handle_tab_handle_refresh(cmd: &Value, state: &mut DaemonState) -> Resu
                     "title": title,
                     "tabSwitch": switched,
                     "serviceTabHandle": refreshed_handle,
+                    "brokerAttachmentsRebound": broker_attachments_rebound,
                     "duplicateTargetCleanup": duplicate_target_cleanup,
                     "candidates": candidates,
                 }));
@@ -13600,6 +14263,47 @@ fn origin_for_url(url: &str) -> Option<String> {
             .map(|host| format!("http://{}", host.to_ascii_lowercase()));
     }
     None
+}
+
+fn rebind_broker_attachments_after_exact_refresh(
+    state: &mut DaemonState,
+    refreshed_handle: &Value,
+    current_url: &str,
+) -> usize {
+    let Some(handle) = refreshed_handle.as_object() else {
+        return 0;
+    };
+    let (Some(browser_id), Some(profile_id), Some(session_name), Some(target_id)) = (
+        handle.get("browserId").and_then(Value::as_str),
+        handle.get("profileId").and_then(Value::as_str),
+        handle.get("sessionName").and_then(Value::as_str),
+        handle.get("targetId").and_then(Value::as_str),
+    ) else {
+        return 0;
+    };
+    if session_name != state.session_id
+        || handle.get("valid").and_then(Value::as_bool) != Some(true)
+    {
+        return 0;
+    }
+    let Some(current_origin) = origin_for_url(current_url) else {
+        return 0;
+    };
+    let mut rebound = 0;
+    for attachment in state.broker_attachments.values_mut() {
+        if attachment.browser_id != browser_id
+            || attachment.profile_id != profile_id
+            || attachment.session_name != session_name
+            || attachment.target_id != target_id
+            || origin_for_url(&attachment.expected_url).as_deref() != Some(current_origin.as_str())
+        {
+            continue;
+        }
+        attachment.expected_url = current_url.to_string();
+        attachment.service_tab_handle = refreshed_handle.clone();
+        rebound += 1;
+    }
+    rebound
 }
 
 fn persist_tab_handle_refresh_event(
@@ -19402,11 +20106,196 @@ async fn handle_service_browser_close(
         ));
     }
 
-    let mut result = handle_close(state).await?;
+    let mut result = if state.close_behavior == CloseBehavior::Detach {
+        close_recovered_service_browser(state).await?
+    } else {
+        handle_close(state).await?
+    };
     result["browserId"] = json!(browser_id);
     result["requestedBrowserId"] = json!(browser_id);
     result["serviceOwned"] = json!(true);
     Ok(result)
+}
+
+/// Validate custody before issuing any terminal command. An attached client is
+/// not ownership: only an exact, originally service-owned retained record qualifies.
+fn recovered_close_identity(
+    snapshot: &ServiceState,
+    session_id: &str,
+    endpoint: &str,
+    attached_pid: Option<u32>,
+    attached_profile: Option<&str>,
+) -> Result<(String, String, u32), String> {
+    let id = service_browser_id(session_id);
+    let browser = snapshot
+        .browsers
+        .get(&id)
+        .ok_or("Retained browser record missing")?;
+    let session = snapshot
+        .sessions
+        .get(session_id)
+        .ok_or("Retained session missing")?;
+    let profile_id = browser
+        .profile_id
+        .as_deref()
+        .ok_or("Retained profile missing")?;
+    let profile = snapshot
+        .profiles
+        .get(profile_id)
+        .ok_or("Retained profile record missing")?;
+    let pid = browser
+        .pid
+        .filter(|pid| *pid > 0)
+        .ok_or("Retained browser PID missing")?;
+    if !matches!(
+        browser.host,
+        ServiceBrowserHost::LocalHeadless
+            | ServiceBrowserHost::LocalHeaded
+            | ServiceBrowserHost::RemoteHeaded
+    ) || profile.profile_origin != ProfileOrigin::AgentBrowserOwned
+        || browser.id != id
+        || session.id != session_id
+        || profile.id != profile_id
+        || browser.active_session_ids != [session_id]
+        || session.browser_ids != [id.as_str()]
+        || session.profile_id.as_deref() != Some(profile_id)
+        || session.lease == LeaseState::Released
+        || browser.cdp_endpoint.as_deref() != Some(endpoint)
+        || attached_pid != Some(pid)
+        || attached_profile.is_some_and(|value| value != profile_id)
+        || snapshot.sessions.values().any(|other| {
+            other.id != session_id
+                && other.lease != LeaseState::Released
+                && (other.profile_id.as_deref() == Some(profile_id)
+                    || other.browser_ids.contains(&id))
+        })
+    {
+        return Err("Recovered terminal close refused: owned browser/session/profile/connection identity is not exclusive and exact".into());
+    }
+    Ok((
+        profile_id.to_owned(),
+        profile
+            .user_data_dir
+            .clone()
+            .ok_or("Retained profile directory missing")?,
+        pid,
+    ))
+}
+
+async fn close_recovered_service_browser(state: &mut DaemonState) -> Result<Value, String> {
+    let repository = LockedServiceStateRepository::default_json()?;
+    let expected = repository.load_snapshot()?;
+    let mgr = state.browser.as_ref().ok_or("Browser not attached")?;
+    let endpoint = mgr.get_cdp_url().to_owned();
+    let (profile_id, directory, pid) = recovered_close_identity(
+        &expected,
+        &state.session_id,
+        &endpoint,
+        state.attached_browser_pid,
+        state.attached_runtime_profile.as_deref(),
+    )?;
+    // Reuse the no-launch verifier: exact profile, executable, start ticks,
+    // DevTools browser UUID and listener inode owned by this process are required.
+    let port = endpoint
+        .strip_prefix("ws://127.0.0.1:")
+        .and_then(|value| value.split_once('/'))
+        .and_then(|(port, _)| port.parse::<u16>().ok())
+        .ok_or("Recovered close requires a local, exact browser WebSocket endpoint")?;
+    let runtime = crate::runtime_profile::RuntimeState {
+        runtime_profile: profile_id.clone(),
+        user_data_dir: directory.clone(),
+        browser_pid: pid,
+        headed: true,
+        launch_mode: "retained-close-proof".into(),
+        devtools_port: Some(port),
+        ws_url: Some(endpoint.clone()),
+        launch_record: None,
+    };
+    let start_ticks = super::runtime_attach_proof::verify_retained_service_process(
+        &runtime,
+        &profile_id,
+        pid,
+        &endpoint,
+        &directory,
+    )
+    .map_err(|reason| format!("Recovered terminal close refused: {reason}"))?;
+    // Recheck persisted identity after process observation, before Browser.close.
+    let current = repository.load_snapshot()?;
+    recovered_close_identity(
+        &current,
+        &state.session_id,
+        &endpoint,
+        state.attached_browser_pid,
+        state.attached_runtime_profile.as_deref(),
+    )?;
+    if current.browsers.get(&service_browser_id(&state.session_id))
+        != expected
+            .browsers
+            .get(&service_browser_id(&state.session_id))
+        || current.sessions.get(&state.session_id) != expected.sessions.get(&state.session_id)
+        || current.profiles.get(&profile_id) != expected.profiles.get(&profile_id)
+    {
+        return Err("Recovered browser custody changed before shutdown; nothing closed".into());
+    }
+    let command = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        mgr.client.send_command_no_params("Browser.close", None),
+    )
+    .await;
+    // Chrome may disconnect before acknowledging Browser.close. Only observed
+    // process exit plus lock release permits terminal persistence, never a reply.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(7);
+    loop {
+        let process = std::path::PathBuf::from(format!("/proc/{pid}"));
+        let exited = match std::fs::read_to_string(process.join("stat")) {
+            Ok(stat) => stat.rsplit_once(") ").is_some_and(|(_, rest)| {
+                let fields = rest.split_whitespace().collect::<Vec<_>>();
+                fields
+                    .get(19)
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .is_some_and(|ticks| ticks != start_ticks || fields.first() == Some(&"Z"))
+            }),
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound && !process.exists(),
+        };
+        let unlocked =
+            std::fs::symlink_metadata(std::path::Path::new(&directory).join("SingletonLock"))
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+        if exited && unlocked {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("Recovered shutdown unconfirmed; process/profile custody preserved (CDP acknowledged: {})", matches!(command, Ok(Ok(_)))));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let outcome = BrowserShutdownOutcome {
+        polite_close_attempted: true,
+        polite_close_succeeded: true,
+        ..Default::default()
+    };
+    super::service_health::persist_closed_browser_health_if_unchanged(
+        &repository,
+        &state.session_id,
+        Some(&outcome),
+        Some(&expected),
+    )?;
+    // Only drop the connection after durable terminal acknowledgement. Never
+    // invoke the generic close path, which may signal an attached PID.
+    state.browser = None;
+    state.attached_browser_pid = None;
+    state.attached_runtime_profile = None;
+    state.launch_hash = None;
+    state.screencasting = false;
+    state.reset_input_state();
+    state.update_stream_client().await;
+    if let Some(task) = state.fetch_handler_task.take() {
+        task.abort();
+    }
+    state.origin_headers.write().await.clear();
+    state.ref_map.clear();
+    Ok(
+        json!({"closed": true, "processExitConfirmed": true, "profileLockReleased": true, "shutdownMethod": "cdp_browser_close"}),
+    )
 }
 
 async fn handle_service_browser_repair(cmd: &Value) -> Result<Value, String> {
@@ -23936,7 +24825,10 @@ fn decide_durable_task_authority_confirmation(
         .filter(|value| !value.is_empty())
         .ok_or("Task authority confirmation requires expectedAction")?;
     let actor = task_authority_decision_actor(cmd)?;
-    let current = confirmation_target_binding(&json!({}), state);
+    // Preserve the caller's already-issued service-tab binding. Falling back
+    // to the browser's active tab here makes an unrelated tab focus change
+    // invalidate a durable confirmation for an otherwise unchanged target.
+    let current = confirmation_target_binding(cmd, state);
     let decided = decide_task_authority_confirmation(DecideTaskAuthorityConfirmation {
         root: &state.task_authority_ledger_root,
         session_id: &state.session_id,
@@ -24515,6 +25407,31 @@ mod tests {
                 .map(|value| (*value).to_string())
                 .collect(),
         }
+    }
+
+    #[test]
+    fn service_download_expected_name_is_validation_not_rename_authority() {
+        assert!(
+            service_validate_expected_download_name(Some("proposal.pdf"), "proposal.pdf").is_ok()
+        );
+        let error = service_validate_expected_download_name(Some("proposal.pdf"), "stale.pdf")
+            .expect_err("provider filename mismatch must fail");
+        assert!(error.contains("does not match expectedFileName"));
+    }
+
+    #[test]
+    fn service_file_sha256_receipts_bind_exact_bytes() {
+        let path = env::temp_dir().join(format!(
+            "agent-browser-file-transfer-sha-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&path, b"browser transfer receipt").unwrap();
+        let digest = service_file_sha256(&path).unwrap();
+        let _ = fs::remove_file(&path);
+        assert_eq!(
+            digest,
+            "6d8b226073c15194db757e96c4b5fba4c1703eb2142dae54b0ea82586d16d8d7"
+        );
     }
 
     #[tokio::test]
@@ -27271,7 +28188,8 @@ mod tests {
         let command = json!({
             "action": "navigate",
             "params": {
-                "args": ["--no-sandbox"]
+                "args": ["--no-sandbox"],
+                "executablePath": "/opt/reviewed/chrome"
             }
         });
         let mut options = LaunchOptions {
@@ -27282,6 +28200,10 @@ mod tests {
         apply_auto_launch_command_hints(&mut options, &command, None);
 
         assert_eq!(options.args, vec!["--no-sandbox".to_string()]);
+        assert_eq!(
+            options.executable_path.as_deref(),
+            Some("/opt/reviewed/chrome")
+        );
 
         let command = json!({
             "action": "navigate",
@@ -29640,6 +30562,65 @@ mod tests {
         .expect("schema-v1 handoff descriptor should remain readable");
 
         assert_eq!(descriptor.active_target_id, None);
+    }
+
+    #[test]
+    fn test_runtime_handoff_descriptor_accepts_schema_v2_custody() {
+        let descriptor: RuntimeHandoffDescriptor = serde_json::from_value(json!({
+            "schemaVersion": 2,
+            "sessionName": "custody-session",
+            "cdpUrl": "ws://127.0.0.1:9222/devtools/browser/example",
+            "browserPid": 42,
+            "runtimeProfile": "custody-profile",
+            "engine": "chrome",
+            "host": "local_headed",
+            "closeBrowserOnClose": true,
+            "activeTargetId": "target-a",
+            "preparedAt": "2026-09-19T12:00:00Z",
+            "custody": {"source": {"pid": 7}, "browser": {"process": {"pid": 42}}}
+        }))
+        .expect("schema-v2 handoff descriptor should remain readable");
+
+        assert_eq!(descriptor.schema_version, 2);
+        assert_eq!(descriptor.custody.as_ref().unwrap()["source"]["pid"], 7);
+    }
+
+    #[test]
+    fn test_runtime_handoff_descriptor_accepts_schema_v3_stale_snapshot_custody() {
+        let descriptor: RuntimeHandoffDescriptor = serde_json::from_value(json!({
+            "schemaVersion": 3,
+            "sessionName": "recovery-session",
+            "cdpUrl": "ws://127.0.0.1:9222/devtools/browser/example",
+            "browserPid": 42,
+            "runtimeProfile": "chatgpt-pro",
+            "engine": "chrome",
+            "host": "local_headed",
+            "closeBrowserOnClose": false,
+            "activeTargetId": "retained-target",
+            "preparedAt": "2026-09-20T12:00:00Z",
+            "custody": {"source": {"pid": 7}, "browser": {"pid": 42}}
+        }))
+        .expect("schema-v3 stale snapshot descriptor should remain readable");
+
+        assert_eq!(descriptor.schema_version, 3);
+        assert_eq!(
+            descriptor.active_target_id.as_deref(),
+            Some("retained-target")
+        );
+    }
+
+    #[test]
+    fn browserless_handoff_prepare_preserves_existing_recovery_descriptor() {
+        let root = unique_socket_dir("browserless-handoff-preserve");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("retained.handoff.json");
+        fs::write(&path, b"exact recovery bytes").unwrap();
+
+        let error = browserless_runtime_handoff_prepare(&path, "retained").unwrap_err();
+
+        assert!(error.starts_with("runtime_handoff_recovery_pending:"));
+        assert_eq!(fs::read(&path).unwrap(), b"exact recovery bytes");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -38719,6 +39700,97 @@ mod tests {
     }
 
     #[test]
+    fn recovered_close_identity_denies_borrowing_and_identity_drift_without_effects() {
+        let id = service_browser_id("retained");
+        let endpoint = "ws://127.0.0.1:9222/devtools/browser/exact";
+        let mut original = ServiceState::default();
+        original.browsers.insert(
+            id.clone(),
+            BrowserProcess {
+                id: id.clone(),
+                profile_id: Some("owned".into()),
+                pid: Some(123),
+                host: ServiceBrowserHost::LocalHeaded,
+                cdp_endpoint: Some(endpoint.into()),
+                active_session_ids: vec!["retained".into()],
+                ..Default::default()
+            },
+        );
+        original.sessions.insert(
+            "retained".into(),
+            BrowserSession {
+                id: "retained".into(),
+                profile_id: Some("owned".into()),
+                browser_ids: vec![id.clone()],
+                ..Default::default()
+            },
+        );
+        original.profiles.insert(
+            "owned".into(),
+            BrowserProfile {
+                id: "owned".into(),
+                user_data_dir: Some("/fixture/profile".into()),
+                ..Default::default()
+            },
+        );
+        assert!(recovered_close_identity(&original, "retained", endpoint, Some(123), None).is_ok());
+        for drift in [
+            "host", "origin", "pid", "endpoint", "profile", "session", "shared",
+        ] {
+            let mut snapshot = original.clone();
+            match drift {
+                "host" => {
+                    snapshot.browsers.get_mut(&id).unwrap().host =
+                        ServiceBrowserHost::AttachedExisting
+                }
+                "origin" => {
+                    snapshot.profiles.get_mut("owned").unwrap().profile_origin =
+                        ProfileOrigin::ExternalByop
+                }
+                "pid" => snapshot.browsers.get_mut(&id).unwrap().pid = Some(124),
+                "endpoint" => {
+                    snapshot.browsers.get_mut(&id).unwrap().cdp_endpoint = Some("other".into())
+                }
+                "profile" => {
+                    snapshot.sessions.get_mut("retained").unwrap().profile_id = Some("other".into())
+                }
+                "session" => snapshot
+                    .sessions
+                    .get_mut("retained")
+                    .unwrap()
+                    .browser_ids
+                    .clear(),
+                "shared" => {
+                    snapshot.sessions.insert(
+                        "other".into(),
+                        BrowserSession {
+                            id: "other".into(),
+                            profile_id: Some("owned".into()),
+                            ..Default::default()
+                        },
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let before = snapshot.clone();
+            assert!(
+                recovered_close_identity(&snapshot, "retained", endpoint, Some(123), None).is_err(),
+                "{drift}"
+            );
+            assert_eq!(snapshot, before);
+        }
+        assert!(recovered_close_identity(&original, "retained", endpoint, None, None).is_err());
+        assert!(recovered_close_identity(
+            &original,
+            "retained",
+            endpoint,
+            Some(123),
+            Some("other")
+        )
+        .is_err());
+    }
+
+    #[test]
     fn test_retry_service_browser_in_repository_marks_faulted_browser_retryable() {
         let home = unique_socket_dir("service-browser-retry-repository-home");
         fs::create_dir_all(&home).unwrap();
@@ -38967,6 +40039,58 @@ mod tests {
         }));
 
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn test_detach_and_repeated_close_preserve_retained_browser_identity() {
+        let home = unique_socket_dir("detach-retained-home");
+        fs::create_dir_all(&home).unwrap();
+        let guard = EnvGuard::new(&["HOME", "AGENT_BROWSER_SESSION"]);
+        guard.set("HOME", home.to_str().unwrap());
+        guard.set("AGENT_BROWSER_SESSION", "detach-session");
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        let original = ServiceState {
+            browsers: BTreeMap::from([(
+                "session:detach-session".to_string(),
+                BrowserProcess {
+                    id: "session:detach-session".to_string(),
+                    profile_id: Some("custom-profile".to_string()),
+                    pid: Some(std::process::id()),
+                    cdp_endpoint: Some("ws://127.0.0.1:9222/devtools/browser/retained".into()),
+                    health: ServiceBrowserHealth::Ready,
+                    active_session_ids: vec!["detach-session".into()],
+                    ..BrowserProcess::default()
+                },
+            )]),
+            sessions: BTreeMap::from([(
+                "detach-session".to_string(),
+                BrowserSession {
+                    id: "detach-session".to_string(),
+                    profile_id: Some("custom-profile".to_string()),
+                    lease: LeaseState::Exclusive,
+                    ..BrowserSession::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+        store.save(&original).unwrap();
+        let before = store.load().unwrap();
+        let mut state = DaemonState::new();
+        state.close_behavior = CloseBehavior::Detach;
+        state.attached_runtime_profile = Some("custom-profile".into());
+        state.attached_browser_pid = Some(std::process::id());
+        for _ in 0..2 {
+            assert_eq!(handle_close(&mut state).await.unwrap()["closed"], true);
+            assert_eq!(store.load().unwrap(), before);
+        }
+        // A fresh daemon receiving close without an attached browser must not
+        // erase the preserved mapping either.
+        assert_eq!(
+            handle_close(&mut DaemonState::new()).await.unwrap()["closed"],
+            true
+        );
+        assert_eq!(store.load().unwrap(), before);
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[tokio::test]
@@ -39434,6 +40558,26 @@ mod tests {
     }
 
     #[test]
+    fn test_managed_runtime_cdp_attach_omits_launch_only_profile() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_PROFILE"]);
+        guard.set("AGENT_BROWSER_PROFILE", "/tmp/env-profile");
+        let command = json!({ "profile": "/tmp/cmd-profile" });
+
+        assert_eq!(
+            launch_profile_for_browser_command(&command, true, true),
+            None
+        );
+        assert_eq!(
+            launch_profile_for_browser_command(&command, true, false).as_deref(),
+            Some("/tmp/cmd-profile")
+        );
+        assert_eq!(
+            launch_profile_for_browser_command(&command, false, true).as_deref(),
+            Some("/tmp/cmd-profile")
+        );
+    }
+
+    #[test]
     fn test_service_tab_profile_id_prefers_access_plan_profile_for_attached_existing_browser() {
         assert_eq!(
             service_tab_profile_id(&json!({ "runtimeProfile": "chatgpt-pro" }), None,),
@@ -39482,5 +40626,292 @@ mod tests {
 
         guard.remove("AGENT_BROWSER_ARGS");
         assert!(launch_args_from_sources(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn broker_transport_method_admission_is_narrow_and_binding_is_exact() {
+        let attachment = BrokerAttachment {
+            attachment_id: "attachment-1".to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: "AABBCCDDEEFF00112233445566778899".to_string(),
+            generation: "generation-1".to_string(),
+            page_session_id: "page-session-1".to_string(),
+            expected_url: "https://chatgpt.com/c/example".to_string(),
+            service_tab_handle: json!({"valid": true}),
+            event_rx: Arc::new(Mutex::new(broadcast::channel(1).1)),
+            event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+        };
+        assert_eq!(
+            broker_method_action("Runtime.evaluate", &json!({"expression": "location.href"}))
+                .unwrap(),
+            "url"
+        );
+        assert_eq!(
+            broker_method_action("DOM.getDocument", &json!({})).unwrap(),
+            "diagnostics"
+        );
+        assert_eq!(
+            broker_method_action("Page.navigate", &json!({"url":"https://example.com"})).unwrap(),
+            "navigate"
+        );
+        assert_eq!(
+            broker_method_action("Page.reload", &json!({})).unwrap(),
+            "reload"
+        );
+        assert!(broker_method_action("Target.createTarget", &json!({})).is_err());
+        let binding = broker_binding_value(&attachment);
+        assert!(broker_binding_matches(&attachment, &binding));
+        let mut changed = binding;
+        changed["targetId"] = json!("different-target");
+        assert!(!broker_binding_matches(&attachment, &changed));
+    }
+
+    #[test]
+    fn exact_handle_refresh_rebinds_only_same_origin_matching_broker_attachment() {
+        let make_attachment = |id: &str, target: &str, url: &str| BrokerAttachment {
+            attachment_id: id.to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: target.to_string(),
+            generation: format!("generation-{id}"),
+            page_session_id: format!("page-{id}"),
+            expected_url: url.to_string(),
+            service_tab_handle: json!({"valid": true, "targetId": target, "url": url}),
+            event_rx: Arc::new(Mutex::new(broadcast::channel(1).1)),
+            event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+        };
+        let mut state = DaemonState::new();
+        state.session_id = "broker".to_string();
+        state.broker_attachments.insert(
+            "matching".to_string(),
+            make_attachment(
+                "matching",
+                "target-1",
+                "https://chatgpt.com/g/project/project",
+            ),
+        );
+        state.broker_attachments.insert(
+            "other-target".to_string(),
+            make_attachment(
+                "other-target",
+                "target-2",
+                "https://chatgpt.com/g/project/project",
+            ),
+        );
+        state.broker_attachments.insert(
+            "other-origin".to_string(),
+            make_attachment("other-origin", "target-1", "https://example.com/project"),
+        );
+        let conversation_url =
+            "https://chatgpt.com/g/project/c/11111111-1111-1111-1111-111111111111";
+        let handle = json!({
+            "browserId": "session:broker", "profileId": "chatgpt-pro",
+            "sessionName": "broker", "targetId": "target-1", "valid": true,
+            "url": conversation_url,
+        });
+        assert_eq!(
+            rebind_broker_attachments_after_exact_refresh(&mut state, &handle, conversation_url,),
+            1
+        );
+        assert_eq!(
+            state.broker_attachments["matching"].expected_url,
+            conversation_url
+        );
+        assert_eq!(
+            state.broker_attachments["matching"].service_tab_handle,
+            handle
+        );
+        assert_eq!(
+            state.broker_attachments["other-target"].expected_url,
+            "https://chatgpt.com/g/project/project"
+        );
+        assert_eq!(
+            state.broker_attachments["other-origin"].expected_url,
+            "https://example.com/project"
+        );
+    }
+
+    #[tokio::test]
+    async fn broker_detach_is_idempotent_and_never_needs_a_browser_manager() {
+        let attachment = BrokerAttachment {
+            attachment_id: "attachment-1".to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: "AABBCCDDEEFF00112233445566778899".to_string(),
+            generation: "generation-1".to_string(),
+            page_session_id: "page-session-1".to_string(),
+            expected_url: "https://chatgpt.com/c/example".to_string(),
+            service_tab_handle: json!({"valid": true}),
+            event_rx: Arc::new(Mutex::new(broadcast::channel(1).1)),
+            event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+        };
+        let binding = broker_binding_value(&attachment);
+        let mut state = DaemonState::new();
+        state
+            .broker_attachments
+            .insert(attachment.attachment_id.clone(), attachment);
+        for request_id in ["detach-1", "detach-2"] {
+            let result = handle_broker_transport(&json!({
+                "brokerRequest": {"operation": "detach", "requestId": request_id, "binding": binding}
+            }), &mut state).await.unwrap();
+            assert_eq!(result["detached"], true);
+            assert_eq!(result["browserPreserved"], true);
+        }
+        assert!(state.broker_attachments.is_empty());
+        assert_eq!(state.broker_detachments.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn broker_events_are_session_bound_and_cursor_addressable() {
+        let (event_tx, event_rx) = broadcast::channel(4);
+        let attachment = BrokerAttachment {
+            attachment_id: "attachment-events".to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: "AABBCCDDEEFF00112233445566778899".to_string(),
+            generation: "generation-1".to_string(),
+            page_session_id: "page-session-1".to_string(),
+            expected_url: "https://chatgpt.com/c/example".to_string(),
+            service_tab_handle: json!({"valid": true}),
+            event_rx: Arc::new(Mutex::new(event_rx)),
+            event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+        };
+        event_tx
+            .send(CdpEvent {
+                method: "Page.loadEventFired".to_string(),
+                params: json!({"timestamp": 1}),
+                session_id: Some("page-session-1".to_string()),
+            })
+            .unwrap();
+        event_tx
+            .send(CdpEvent {
+                method: "Page.loadEventFired".to_string(),
+                params: json!({"timestamp": 2}),
+                session_id: Some("other-page-session".to_string()),
+            })
+            .unwrap();
+        let (cursor, overflow, events) = broker_attachment_events(&attachment, 0).await.unwrap();
+        assert_eq!(cursor, 1);
+        assert!(!overflow);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["sequence"], 1);
+        let (cursor, overflow, events) =
+            broker_attachment_events(&attachment, cursor).await.unwrap();
+        assert_eq!(cursor, 1);
+        assert!(!overflow);
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn broker_events_prune_acknowledged_history_without_false_overflow() {
+        let (event_tx, event_rx) = broadcast::channel(4);
+        let attachment = BrokerAttachment {
+            attachment_id: "attachment-events-prune".to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: "AABBCCDDEEFF00112233445566778899".to_string(),
+            generation: "generation-1".to_string(),
+            page_session_id: "page-session-1".to_string(),
+            expected_url: "https://chatgpt.com/c/example".to_string(),
+            service_tab_handle: json!({"valid": true}),
+            event_rx: Arc::new(Mutex::new(event_rx)),
+            event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+        };
+        let mut cursor = 0;
+        for index in 0..(BROKER_EVENT_BUFFER_CAPACITY + 20) {
+            event_tx
+                .send(CdpEvent {
+                    method: "Page.loadEventFired".to_string(),
+                    params: json!({"timestamp": index}),
+                    session_id: Some("page-session-1".to_string()),
+                })
+                .unwrap();
+            let (next_cursor, overflow, events) =
+                broker_attachment_events(&attachment, cursor).await.unwrap();
+            assert!(!overflow);
+            assert_eq!(events.len(), 1);
+            cursor = next_cursor;
+        }
+        assert_eq!(cursor, (BROKER_EVENT_BUFFER_CAPACITY + 20) as u64);
+    }
+
+    #[tokio::test]
+    async fn broker_events_page_initial_burst_without_false_overflow() {
+        let (event_tx, event_rx) = broadcast::channel(BROKER_EVENT_BUFFER_CAPACITY + 1);
+        let attachment = BrokerAttachment {
+            attachment_id: "attachment-events-page".to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: "AABBCCDDEEFF00112233445566778899".to_string(),
+            generation: "generation-1".to_string(),
+            page_session_id: "page-session-1".to_string(),
+            expected_url: "https://chatgpt.com/c/example".to_string(),
+            service_tab_handle: json!({"valid": true}),
+            event_rx: Arc::new(Mutex::new(event_rx)),
+            event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+        };
+        let event_count = BROKER_EVENT_BATCH_CAPACITY + 20;
+        for index in 0..event_count {
+            event_tx
+                .send(CdpEvent {
+                    method: "Page.loadEventFired".to_string(),
+                    params: json!({"timestamp": index}),
+                    session_id: Some("page-session-1".to_string()),
+                })
+                .unwrap();
+        }
+        let (cursor, overflow, events) = broker_attachment_events(&attachment, 0).await.unwrap();
+        assert!(!overflow);
+        assert_eq!(cursor, BROKER_EVENT_BATCH_CAPACITY as u64);
+        assert_eq!(events.len(), BROKER_EVENT_BATCH_CAPACITY);
+        let (cursor, overflow, events) =
+            broker_attachment_events(&attachment, cursor).await.unwrap();
+        assert!(!overflow);
+        assert_eq!(cursor, event_count as u64);
+        assert_eq!(events.len(), 20);
+    }
+
+    #[tokio::test]
+    async fn broker_events_page_large_events_below_transport_limit() {
+        let (event_tx, event_rx) = broadcast::channel(8);
+        let attachment = BrokerAttachment {
+            attachment_id: "attachment-events-bytes".to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: "AABBCCDDEEFF00112233445566778899".to_string(),
+            generation: "generation-1".to_string(),
+            page_session_id: "page-session-1".to_string(),
+            expected_url: "https://chatgpt.com/c/example".to_string(),
+            service_tab_handle: json!({"valid": true}),
+            event_rx: Arc::new(Mutex::new(event_rx)),
+            event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+        };
+        for index in 0..3 {
+            event_tx
+                .send(CdpEvent {
+                    method: "Network.requestWillBeSent".to_string(),
+                    params: json!({"index": index, "payload": "x".repeat(350_000)}),
+                    session_id: Some("page-session-1".to_string()),
+                })
+                .unwrap();
+        }
+        let (cursor, overflow, events) = broker_attachment_events(&attachment, 0).await.unwrap();
+        assert!(!overflow);
+        assert_eq!(cursor, 2);
+        assert_eq!(events.len(), 2);
+        assert!(serde_json::to_vec(&events).unwrap().len() < 1_048_576);
+        let (cursor, overflow, events) =
+            broker_attachment_events(&attachment, cursor).await.unwrap();
+        assert!(!overflow);
+        assert_eq!(cursor, 3);
+        assert_eq!(events.len(), 1);
     }
 }

@@ -1,5 +1,71 @@
 # Private credential broker
 
+## 2026-09-10: retained handoff proof refresh correction
+
+Installation checkpoint verified: guarded publication installed executable
+d6bc35878dc456c0ec30456ea96dd68634f83c258cdfe777be331da0611d6329
+with its matching workstation record. Strict unlocked doctor passed; the three
+original Chrome processes and exact Workshop target survived daemon handoff.
+Runtime-interlock custody was restored. RUNBOOK records transactional recovery,
+the live failures corrected, exact hashes and validation. This completes the
+bounded installation fix, not private credential delivery/renewal activation.
+Earlier preflight STOP entries below remain historical evidence.
+
+Workstation provenance correction is implemented and undergoing live activation:
+verified unchanged support assets, durable before/after manifest snapshots,
+journal-bound pair recovery before daemon restart, exact-byte/mode manifest
+rollback, and mandatory installed doctor before readiness. Twenty isolated
+provenance cases and the widened publisher fixtures pass. The first live attempt
+refused changed session inventory before candidate staging or service mutation;
+the live reconciler was independently confirmed running. Installation remains
+unfinished until the guarded apply and post-install checks succeed.
+
+Activation preflight stopped at a separate concrete provenance blocker: binary-only
+publication would leave the workstation payload manifest bound to the old hash,
+making the currently healthy installation drifted. Native reconciliation cannot
+repair that binding. Independent review confirmed STOP; no installation or browser
+input occurred. RUNBOOK records current hashes and the required transactional
+payload/provenance update. The native lock correction remains locally verified.
+
+The native interlock compatibility gap is locally fixed: exact native-command
+admission, proven root/mount checks, crash-persistent receipt-bound native custody,
+and foreign-lock refusal now accompany legacy flock support. Eight fixture suites
+and 26 workstation Rust tests passed, including real child-process crash recovery
+and native marker refusal. Typecheck, lint, format, Clippy and builds passed.
+Independent review closed after fixing filesystem-remapping authority checks.
+Read-only installed root validation passed; no live apply or installation occurred.
+RUNBOOK records exact artifacts, validation limits and pending guarded activation.
+
+Follow-on publisher source correction is locally validated: hash-pinned prebuilt
+snapshots, copied-byte verification before replacement, explicit session-set
+checks, exact runtime-interlock timer/flock custody and receipt-bound recovery.
+Two independently reviewed recovery findings were accepted and fixed, including
+the crash gap between first-handoff failure journal writes. Eight isolated
+fixture suites and lint/typecheck/format/Clippy/build checks passed; RUNBOOK
+records artifact hashes and caveats. No live activation occurred. The session
+checks do not fence independent clients; quiet all-session maintenance and live
+retained-target verification remain required before claiming broker readiness.
+
+The local source now refreshes preserved build metadata through the existing
+process verifier in the same transaction as browser health, before deriving
+attachability. Exact retained session/profile/PID/endpoint agreement is required;
+no profile, tab or display custody is created or changed. Integrated regression
+covers successful refresh, idempotence, mismatches and stale-proof revocation.
+Final local checks passed: eight focused tests; 1,242 widened native tests with
+73 ignored; format, Clippy, lint, service-client typecheck, docs and Rust builds.
+RUNBOOK records hashes and the reviewed atomicity correction. Plan audit was
+clean but not applicable, so it does not establish plan acceptance.
+This source correction is not installed or live broker-reuse acceptance.
+Shared-runtime activation still needs a scoped maintenance decision; credential
+entry, production recipe authority and renewal remain disabled.
+
+Follow-on activation preflight stopped before mutation: the legacy publisher
+rebuilds the candidate and handles every socket session without coordinating the
+enabled runtime-interlock timer. The newer installed skill's generation/census
+guarantees are absent from this checkout. Current hashes, live no-launch checks,
+independent review disposition and the bounded activation-path follow-up are
+recorded in RUNBOOK. No runtime installation or broker-reuse acceptance occurred.
+
 Status: opt-in daemon executing coordinator, private handoff, cooperative CDP execution and guarded delivery implemented; live activation blocked on independently reviewed execution authority.
 
 ## 2026-09-10: executing coordinator wired to the daemon

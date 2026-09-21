@@ -8,7 +8,6 @@ export function retirePreparedDaemon(prepared, dependencies = {}) {
   if (
     !prepared.handoffPath
     || !existsSync(prepared.handoffPath)
-    || !isProcessLive(prepared.daemonPid)
   ) {
     throw new Error(
       `Prepared daemon session '${prepared.sessionName}' lacks a verifiable retirement boundary`,
@@ -16,7 +15,7 @@ export function retirePreparedDaemon(prepared, dependencies = {}) {
   }
   const descriptor = JSON.parse(readFileSync(prepared.handoffPath, 'utf8'));
   if (
-    descriptor?.schemaVersion !== 1
+    ![1, 2].includes(descriptor?.schemaVersion)
     || descriptor?.sessionName !== prepared.sessionName
     || descriptor?.cdpUrl !== prepared.cdpUrl
     || (descriptor?.browserPid ?? null) !== prepared.browserPid
@@ -29,6 +28,10 @@ export function retirePreparedDaemon(prepared, dependencies = {}) {
       `Prepared daemon session '${prepared.sessionName}' has a mismatched durable descriptor`,
     );
   }
+
+  // The original may exit after the wait timed out. Preserve the descriptor
+  // and browser checks above, but do not signal a process that is already gone.
+  if (!isProcessLive(prepared.daemonPid)) return 'already_exited';
 
   signalProcess(prepared.daemonPid, 'SIGTERM');
   let signal = 'SIGTERM';

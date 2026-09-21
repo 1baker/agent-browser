@@ -260,6 +260,8 @@ pub struct TaskAuthorityIssueRequest {
     pub issuer: TaskAuthorityIssuer,
     pub approval_reference: String,
     pub expires_in_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consequence_ceiling: Option<String>,
     pub steps: Vec<TaskAuthorityPlanStep>,
 }
 
@@ -278,6 +280,8 @@ pub struct TaskAuthorityReconcileRequest {
     pub issuer: TaskAuthorityIssuer,
     pub approval_reference: String,
     pub expires_in_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consequence_ceiling: Option<String>,
     pub steps: Vec<TaskAuthorityPlanStep>,
 }
 
@@ -498,6 +502,23 @@ fn default_evidence_reservation(action: &str) -> u64 {
     } else {
         DEFAULT_EVIDENCE_RESERVATION_BYTES
     }
+}
+
+fn requested_consequence_ceiling(
+    requested: Option<&str>,
+) -> Result<(ActionConsequence, ActionConsequence), String> {
+    let Some(requested) = requested else {
+        return Ok((ActionConsequence::Navigation, ActionConsequence::ReadOnly));
+    };
+    let ceiling = ActionConsequence::parse(requested)
+        .ok_or_else(|| format!("Invalid task authority consequenceCeiling '{requested}'"))?;
+    if ceiling.authority_rank() > ActionConsequence::ScriptExecution.authority_rank() {
+        return Err(format!(
+            "Task authority consequenceCeiling '{}' exceeds the broker-issued maximum 'script_execution'",
+            ceiling.as_str()
+        ));
+    }
+    Ok((ceiling, ceiling))
 }
 
 fn evidence_reservation(cmd: &Value, action: &str) -> u64 {
@@ -1735,6 +1756,9 @@ fn issue_task_authority_with_identity(
         ));
     }
 
+    let (plan_consequence_ceiling, envelope_consequence_ceiling) =
+        requested_consequence_ceiling(request.consequence_ceiling.as_deref())?;
+
     let authority_id =
         authority_id.unwrap_or_else(|| format!("authority-{}", uuid::Uuid::new_v4()));
     let mut actions = BTreeSet::new();
@@ -1748,9 +1772,10 @@ fn issue_task_authority_with_identity(
             return Err("Task authority plan action must be non-empty".to_string());
         }
         let consequence = super::policy::action_consequence(action);
-        if consequence.authority_rank() > ActionConsequence::Navigation.authority_rank() {
+        if consequence.authority_rank() > plan_consequence_ceiling.authority_rank() {
             return Err(format!(
-                "Task authority issuer does not yet permit '{}' ({}) in an approved plan",
+                "Task authority consequenceCeiling '{}' does not permit '{}' ({}) in an approved plan",
+                plan_consequence_ceiling.as_str(),
                 action,
                 consequence.as_str()
             ));
@@ -1817,7 +1842,7 @@ fn issue_task_authority_with_identity(
                 .map_err(|_| "Task authority action count overflow")?,
             max_evidence_bytes: evidence_bytes,
         },
-        consequence_ceiling: ActionConsequence::ReadOnly.as_str().to_string(),
+        consequence_ceiling: envelope_consequence_ceiling.as_str().to_string(),
         expires_at: expires_at.to_rfc3339(),
     };
     let hash = envelope_sha256(&envelope)?;
@@ -2028,12 +2053,14 @@ fn reconcile_task_authority_inner(
             "Task authority reconcile replacement lifetime or step count is invalid".to_string(),
         );
     }
+    let (plan_consequence_ceiling, _) =
+        requested_consequence_ceiling(request.consequence_ceiling.as_deref())?;
     let mut replacement_evidence_bytes = 0u64;
     for step in &request.steps {
         let action = step.action.trim();
         let consequence = super::policy::action_consequence(action);
         if action.is_empty()
-            || consequence.authority_rank() > ActionConsequence::Navigation.authority_rank()
+            || consequence.authority_rank() > plan_consequence_ceiling.authority_rank()
             || (consequence == ActionConsequence::Navigation && step.url.is_none())
         {
             return Err(
@@ -2221,6 +2248,7 @@ fn reconcile_task_authority_inner(
             issuer: request.issuer.clone(),
             approval_reference: request.approval_reference.clone(),
             expires_in_seconds: request.expires_in_seconds,
+            consequence_ceiling: request.consequence_ceiling.clone(),
             steps: request.steps.clone(),
         })
         .map_err(|error| format!("Failed to prepare replacement authority: {error}"))?;
@@ -2904,7 +2932,44 @@ mod tests {
             &root,
         )
         .unwrap_err();
-        assert!(mutation_error.contains("does not yet permit"));
+        assert!(mutation_error.contains("does not permit"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn broker_issue_accepts_explicit_script_execution_ceiling() {
+        let root =
+            std::env::temp_dir().join(format!("agent-browser-authority-{}", uuid::Uuid::new_v4()));
+        let mut request = issue_request(json!([{"action": "evaluate"}]));
+        request["consequenceCeiling"] = json!("script_execution");
+        let issued = issue_task_authority(
+            &request,
+            "session-1",
+            "target-1",
+            "https://example.com/start",
+            &root,
+        )
+        .unwrap();
+        assert_eq!(issued["envelope"]["consequenceCeiling"], "script_execution");
+        assert_eq!(issued["envelope"]["allowedActions"], json!(["evaluate"]));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn broker_issue_rejects_lifecycle_consequence_ceiling() {
+        let root =
+            std::env::temp_dir().join(format!("agent-browser-authority-{}", uuid::Uuid::new_v4()));
+        let mut request = issue_request(json!([{"action": "title"}]));
+        request["consequenceCeiling"] = json!("browser_lifecycle");
+        let error = issue_task_authority(
+            &request,
+            "session-1",
+            "target-1",
+            "https://example.com/start",
+            &root,
+        )
+        .unwrap_err();
+        assert!(error.contains("exceeds the broker-issued maximum"));
         let _ = fs::remove_dir_all(root);
     }
 

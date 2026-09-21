@@ -6,15 +6,24 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
-  mkdirSync,
   readFileSync,
+  readlinkSync,
   readdirSync,
-  renameSync,
-  rmSync,
   statSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import {
+  stagePrebuiltPublicationCandidate,
+  requireExpectedPublicationSessions,
+  requireLegacyPublicationTarget,
+  installPublicationBinaryAtomically,
+} from './lib/local-dashboard-prebuilt-candidate.js';
+import { acquireLocalDashboardPublicationInterlock, readLocalDashboardPublicationInterlockReceipt } from './lib/local-dashboard-publication-interlock.js';
+import { prepareWorkstationProvenance, applyWorkstationProvenance, verifyWorkstationProvenance } from './lib/local-dashboard-workstation-provenance.js';
+import { parseControllerUpdate, verifyControllerCandidate } from './lib/local-dashboard-controller-candidate.js';
+import { prepareDashboardSessionQuiesce, verifyDashboardSessionQuiesce, refreshDashboardSessionEvidence } from './lib/local-dashboard-quiesce-sessions.js';
+import { validatePublicationDoctor, validateStrictPublicationDoctor } from './lib/local-dashboard-publication-doctor.js';
 import {
   evaluateLocalDashboardBrowserSmokeResult,
 } from './lib/local-dashboard-smoke-policy.js';
@@ -33,6 +42,7 @@ import {
   evaluateRetainedBrowserExpectation,
   isLoopbackDevToolsUrl,
   normalizeRetainedBrowserExpectation,
+  retainedTargetUrlsMatch,
 } from './lib/local-dashboard-retained-browser-guard.js';
 import {
   discoverRetainedBrowserExpectation,
@@ -44,6 +54,7 @@ import {
 } from './lib/local-dashboard-retained-browser-requirement.js';
 import { resolveRuntimeSocketDir } from './lib/runtime-socket-dir.js';
 import { retirePreparedDaemon } from './lib/prepared-daemon-retirement.js';
+import { waitForRuntimeDaemonExit, verifyRuntimeSessionsRetired } from './lib/runtime-daemon-exit.js';
 import {
   resolveRuntimeDaemonClientBinary as runtimeDaemonClientBinary,
 } from './lib/runtime-daemon-client-binary.js';
@@ -73,7 +84,13 @@ const options = {
   browserBuild: '',
   browserProfile: '',
   release: false,
+  prebuiltBin: '',
+  controllerUpdates: [],
+  expectedSha256: '',
+  expectedSessions: null,
   recoverOnly: false,
+  recoverInterlockReceipt: null,
+  recoverReplacedRetainedBrowser: null,
   retainedBrowserStatus: false,
   retainedRequirementPath: process.env.AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT
     || resolve(homedir(), '.agent-browser', 'publications', 'local-dashboard-retained-browser.json'),
@@ -124,8 +141,21 @@ for (let index = 0; index < args.length; index += 1) {
     options.journalStatus = true;
   } else if (arg === '--release') {
     options.release = true;
+  } else if (arg === '--prebuilt-bin') {
+    options.prebuiltBin = requiredValue(args, ++index, arg);
+  } else if (arg === '--controller-update') {
+    options.controllerUpdates.push(parseControllerUpdate(requiredValue(args, ++index, arg)));
+  } else if (arg === '--expected-sha256') {
+    options.expectedSha256 = requiredValue(args, ++index, arg);
+  } else if (arg === '--expected-sessions') {
+    const value = requiredValue(args, ++index, arg);
+    options.expectedSessions = value === 'none' ? [] : value.split(',');
   } else if (arg === '--recover-only') {
     options.recoverOnly = true;
+  } else if (arg === '--recover-interlock-receipt') {
+    options.recoverInterlockReceipt = requiredValue(args, ++index, arg);
+  } else if (arg === '--recover-replaced-retained-browser') {
+    options.recoverReplacedRetainedBrowser = requiredValue(args, ++index, arg);
   } else if (arg === '--retained-browser-status') {
     options.retainedBrowserStatus = true;
   } else if (arg === '--retained-requirement') {
@@ -159,6 +189,9 @@ const selectedOperations = [
 ].filter(Boolean).length;
 if (selectedOperations > 1) {
   fail('Journal status, recovery, retained browser status, and requirement write cannot be combined');
+}
+if (options.recoverReplacedRetainedBrowser && !options.recoverOnly) {
+  fail('--recover-replaced-retained-browser requires --recover-only');
 }
 try {
   const retainedExpectationRequested = [
@@ -309,12 +342,19 @@ try {
 }
 
 async function run() {
+  if (options.controllerUpdates.length && (!options.prebuiltBin || options.recoverOnly
+      || options.journalStatus || options.retainedBrowserStatus || options.writeRetainedRequirement)) {
+    throw new Error('Controller updates require a fresh reviewed prebuilt publication');
+  }
   if (options.journalStatus) {
     report.publicationJournalStatus = inspectLocalDashboardPublicationJournal({
       journal: publicationJournal,
       pathExists: existsSync,
       sha256File,
     });
+    const receiptPath = `${publicationJournal.path}.interlock.json`;
+    report.publicationJournalStatus.interlockCustody = existsSync(receiptPath)
+      ? readLocalDashboardPublicationInterlockReceipt(receiptPath) : null;
     return;
   }
   if (options.retainedBrowserStatus || options.writeRetainedRequirement) {
@@ -402,10 +442,50 @@ async function run() {
         'agent-browser',
       ),
       builtBinaryExists: existsSync,
+      stagePrebuiltCandidate: () => stagePrebuiltPublicationCandidate({
+        sourcePath: options.prebuiltBin,
+        expectedSha256: options.expectedSha256,
+        installPath: report.installBin,
+        journalPath: publicationJournal.path,
+      }),
+      acquireMaintenance: () => acquireLocalDashboardPublicationInterlock({
+        receiptPath: `${publicationJournal.path}.interlock.json`,
+        recoverReceiptId: options.recoverInterlockReceipt,
+        installBin: report.installBin,
+        workstationRoot: homedir(),
+      }),
+      hasMaintenanceReceipt: () => existsSync(`${publicationJournal.path}.interlock.json`),
+      prepareWorkstationProvenance: ({ installBin, builtBin }) => {
+        const version = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8')).version;
+        const candidateVersion = execFileSync(builtBin, ['--version'], { encoding: 'utf8', timeout: 15000 }).trim();
+        if (candidateVersion !== `agent-browser ${version}`) throw new Error('Candidate package version differs from publication checkout');
+        verifyControllerCandidate(builtBin, options.controllerUpdates);
+        return prepareWorkstationProvenance({ root: homedir(), version, installBin, builtBin,
+          journalPath: publicationJournal.path, controllerUpdates: options.controllerUpdates });
+      },
+      applyWorkstationProvenance,
+      verifyWorkstationProvenance,
+      verifyInstalledDoctor: (installBin, context = {}) => {
+        const result = spawnSync(installBin, ['install', 'doctor', '--json'], {
+          encoding: 'utf8', timeout: 90000, maxBuffer: 8 * 1024 * 1024, cwd: homedir(),
+        });
+        if (result.error || ![0, 1].includes(result.status)) throw new Error('Installation doctor did not complete');
+        const value = JSON.parse(result.stdout);
+        if (context.strict) return validateStrictPublicationDoctor(value);
+        return validatePublicationDoctor(value, {
+          ...context, journalPath: publicationJournal.path, ownerPid: process.pid,
+          installedSha256: sha256File(installBin), verifyListenerEvidence,
+        });
+      },
       serviceStatus,
       backupInstalledBinary,
       quiesceDashboardForRuntimeHandoff,
+      prepareQuiesceSessions,
+      verifyQuiesceSessions,
       prepareRuntimeHandoffs,
+      verifyRuntimeSessionsRetired: () => verifyRuntimeSessionsRetired({
+        sessionNames: runtimeSessionNames(), readRuntimePid, isProcessLive: browserProcessIsLive,
+      }),
       installBinaryAtomically,
       syncReferenceBinaries,
       resumeRuntimeHandoffs,
@@ -413,6 +493,7 @@ async function run() {
       runHttpReadinessSmoke,
       verifyRuntimeManifestReadback,
       verifyRetainedBrowserExpectation,
+      verifyRecoveredRetainedBrowserExpectation,
       runBrowserSmokeDiagnostic,
       pathExists: existsSync,
       sha256File,
@@ -480,17 +561,8 @@ function platformBinaryName() {
   return `agent-browser-${platform}-${arch}${extension}`;
 }
 
-function installBinaryAtomically(source, target, mode) {
-  mkdirSync(dirname(target), { recursive: true });
-  const staged = `${target}.next-${timestamp()}-${process.pid}`;
-  try {
-    copyFileSync(source, staged);
-    chmodSync(staged, mode);
-    renameSync(staged, target);
-  } catch (error) {
-    rmSync(staged, { force: true });
-    throw error;
-  }
+function installBinaryAtomically(source, target, mode, expectedSha256 = null) {
+  installPublicationBinaryAtomically(source, target, mode, expectedSha256);
 }
 
 function runtimeSocketDir() {
@@ -508,9 +580,11 @@ function runtimeSessionNames() {
     .sort();
 }
 
-function prepareRuntimeHandoffs(clientBin, rollbackBin) {
+function prepareRuntimeHandoffs(clientBin, rollbackBin, expectedSessions = null) {
   try {
-    for (const sessionName of runtimeSessionNames()) {
+    const sessions = runtimeSessionNames();
+    if (expectedSessions) requireExpectedPublicationSessions(expectedSessions, sessions);
+    for (const sessionName of sessions) {
       const daemonPid = readRuntimePid(sessionName);
       const daemonClientBin = runtimeDaemonClientBinary(daemonPid, rollbackBin);
       const prepared = runAgentJson(clientBin, sessionName, ['handoff', 'prepare']);
@@ -530,9 +604,11 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin) {
           report.handoffs.prepared.push(preparedHandoff);
           try {
             waitForDaemonExit(sessionName, daemonPid);
-          } catch {
+          } catch (error) {
+            if (error.code !== 'runtime_daemon_exit_timeout') throw error;
             preparedHandoff.strandedDaemonTermination =
               retirePreparedDaemon(preparedHandoff);
+            waitForDaemonExit(sessionName, daemonPid);
           }
         } else {
           report.handoffs.retiredIdleSessions.push({ sessionName, daemonPid });
@@ -619,6 +695,31 @@ function resumeRuntimeHandoffs(installBin) {
       prepared.sessionName,
       prepared,
     );
+    if (
+      prepared.host === 'attached_existing'
+      && prepared.browserPid == null
+      && prepared.cdpUrl
+      && !cdpEndpointIsReachable(prepared.cdpUrl)
+    ) {
+      const retryRecordRemoved = removeVerifiedRuntimeHandoffRecord(prepared);
+      if (Number.isInteger(existingDaemonPid) && browserProcessIsLive(existingDaemonPid)) {
+        process.kill(existingDaemonPid, 'SIGTERM');
+        waitForDaemonExit(prepared.sessionName, existingDaemonPid);
+      }
+      report.handoffs.resumed.push({
+        sessionName: prepared.sessionName,
+        browserPid: null,
+        attachedBrowserPid: null,
+        staleBrowserPidDropped: false,
+        staleAttachedEndpointDropped: true,
+        cdpUrl: prepared.cdpUrl,
+        runtimeProfile: prepared.runtimeProfile ?? null,
+        targetsReattached: 0,
+        retryRecordRemoved,
+        daemonPid: null,
+      });
+      continue;
+    }
     if (existing.success && existing.browser) {
       const browser = existing.browser;
       if (
@@ -730,7 +831,7 @@ function discoverPreparedRuntimeHandoffs(candidateSessions) {
     }
     const schemaVersion = descriptor.schemaVersion ?? descriptor.schema_version;
     const descriptorSessionName = descriptor.sessionName ?? descriptor.session_name;
-    if (schemaVersion !== 1 || descriptorSessionName !== sessionName) {
+    if (![1, 2].includes(schemaVersion) || descriptorSessionName !== sessionName) {
       throw new Error(`Prepared runtime handoff identity mismatch for session '${sessionName}'`);
     }
     handoffs.push({
@@ -785,6 +886,102 @@ function serviceBrowserForSession(binary, sessionName, expectedBrowser = null) {
   };
 }
 
+function processIdentity(pid) {
+  const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  const close = stat.lastIndexOf(')');
+  if (close < 0) throw new Error('retained custody process stat is malformed');
+  const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+  const uidLine = status.split('\n').find(line => line.startsWith('Uid:'));
+  const executable = statSync(`/proc/${pid}/exe`);
+  return {
+    pid,
+    bootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+    startTicks: Number(stat.slice(close + 1).trim().split(/\s+/)[19]),
+    executableDevice: Number(executable.dev),
+    executableInode: Number(executable.ino),
+    uid: Number(uidLine?.trim().split(/\s+/)[1]),
+  };
+}
+
+function sameProcessIdentity(actual, expected) {
+  return ['pid', 'bootId', 'startTicks', 'executableDevice', 'executableInode', 'uid']
+    .every(key => actual[key] === expected?.[key]);
+}
+
+function validateReceiptBackedProfile(browser) {
+  const profile = browser.canonicalProfile;
+  const metadata = statSync(profile);
+  if (!metadata.isDirectory()
+    || Number(metadata.dev) !== browser.profileDevice
+    || Number(metadata.ino) !== browser.profileInode) {
+    throw new Error('retained custody profile identity changed');
+  }
+  const raw = readFileSync(`/proc/${browser.process.pid}/cmdline`).toString('utf8');
+  let args = raw.split('\0').filter(Boolean);
+  if (args.length === 1 && raw.endsWith('\0') && !raw.slice(0, -1).includes('\0')) {
+    const executable = readlinkSync(`/proc/${browser.process.pid}/exe`);
+    if (!args[0].startsWith(`${executable} `)) {
+      throw new Error('retained custody process title is not bound to live executable');
+    }
+    args = args[0].split(/\s+/);
+  }
+  const profiles = args.map((value, index) => value.startsWith('--user-data-dir=')
+    ? value.slice('--user-data-dir='.length)
+    : value === '--user-data-dir' ? args[index + 1] : null).filter(Boolean);
+  if (profiles.length !== 1 || resolve(profiles[0]) !== profile) {
+    throw new Error('retained custody browser profile argument changed');
+  }
+  const endpoint = new URL(browser.cdpEndpoint);
+  const [port, path] = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').trim().split('\n');
+  if (endpoint.protocol !== 'ws:' || endpoint.hostname !== '127.0.0.1'
+    || port !== endpoint.port || path !== endpoint.pathname) {
+    throw new Error('retained custody DevTools identity changed');
+  }
+}
+
+async function receiptBackedBrowserForSession(sessionName, expectation) {
+  const statePath = join(homedir(), '.agent-browser', 'service', 'state.json');
+  const before = readFileSync(statePath);
+  const state = JSON.parse(before);
+  const receipt = state.runtimeCustodyReceipts?.[sessionName];
+  const browserId = `session:${sessionName}`;
+  const session = state.sessions?.[sessionName];
+  const browser = state.browsers?.[browserId];
+  const profile = state.profiles?.[session?.profileId];
+  const receiptTab = state.tabs?.[`target:${receipt?.targetId}`];
+  const expectedTab = state.tabs?.[`target:${expectation.targetId}`];
+  if (receipt?.schemaVersion !== 2 || receipt.phase !== 'committed'
+    || session?.lease !== 'exclusive' || session.profileId !== expectation.profileId
+    || !browser || browser.id !== browserId || browser.health !== 'ready'
+    || browser.pid !== receipt.browser?.process?.pid
+    || browser.cdpEndpoint !== receipt.browser?.cdpEndpoint
+    || browser.profileId !== session.profileId
+    || !profile?.userDataDir || resolve(profile.userDataDir) !== receipt.browser?.canonicalProfile
+    || !session.browserIds?.includes(browserId)
+    || !session.tabIds?.includes(`target:${receipt.targetId}`)
+    || receiptTab?.browserId !== browserId || receiptTab?.ownerSessionId !== sessionName
+    || receiptTab?.lifecycle !== 'ready'
+    || !session.tabIds?.includes(`target:${expectation.targetId}`)
+    || expectedTab?.browserId !== browserId || expectedTab?.ownerSessionId !== sessionName
+    || expectedTab?.lifecycle !== 'ready' || expectedTab.url !== expectation.url) {
+    throw new Error('receipt-backed retained browser identity is incomplete or changed');
+  }
+  if (!sameProcessIdentity(processIdentity(browser.pid), receipt.browser.process)
+    || !sameProcessIdentity(processIdentity(receipt.destination.pid), receipt.destination)) {
+    throw new Error('receipt-backed retained process identity changed');
+  }
+  validateReceiptBackedProfile(receipt.browser);
+  const targets = await readCdpTargetInventory(browser.cdpEndpoint);
+  if (!targets.some(target => target?.id === receipt.targetId && target.type === 'page' && target.url === receiptTab.url)
+    || !targets.some(target => target?.id === expectation.targetId && target.type === 'page' && target.url === expectation.url)) {
+    throw new Error('receipt-backed retained target is absent or changed');
+  }
+  if (!before.equals(readFileSync(statePath))) {
+    throw new Error('retained service state changed during receipt-backed verification');
+  }
+  return { browser, targets };
+}
+
 async function verifyRetainedBrowserExpectation(_binary, { expectation, stage }) {
   const daemonPid = readRuntimePid(expectation.sessionName);
   if (!browserProcessIsLive(daemonPid)) {
@@ -804,10 +1001,26 @@ async function verifyRetainedBrowserExpectation(_binary, { expectation, stage })
     throw error;
   }
   const daemonClientBin = runtimeDaemonClientBinary(daemonPid, report.installBin);
-  const serviceReadback = serviceBrowserForSession(
+  let serviceReadback = serviceBrowserForSession(
     daemonClientBin,
     expectation.sessionName,
   );
+  if (!serviceReadback.success
+    && ['pre_mutation', 'read_only_preflight'].includes(stage)
+    && serviceReadback.error === 'migration_profile_target_url_display_changed') {
+    try {
+      const receiptBacked = await receiptBackedBrowserForSession(expectation.sessionName, expectation);
+      serviceReadback = {
+        success: true,
+        browser: receiptBacked.browser,
+        error: null,
+        cdpTargets: receiptBacked.targets,
+        custodyFallback: 'committed_schema_v2_receipt',
+      };
+    } catch (error) {
+      serviceReadback.error = `migration receipt fallback failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
   if (!serviceReadback.success) {
     const error = new Error(
       `Retained browser guard could not read session '${expectation.sessionName}' ` +
@@ -822,9 +1035,9 @@ async function verifyRetainedBrowserExpectation(_binary, { expectation, stage })
     };
     throw error;
   }
-  let cdpTargets = null;
+  let cdpTargets = serviceReadback.cdpTargets || null;
   let cdpError = null;
-  if (serviceReadback.browser?.cdpEndpoint) {
+  if (!cdpTargets && serviceReadback.browser?.cdpEndpoint) {
     try {
       cdpTargets = await readCdpTargetInventory(serviceReadback.browser.cdpEndpoint);
     } catch (error) {
@@ -842,6 +1055,51 @@ async function verifyRetainedBrowserExpectation(_binary, { expectation, stage })
     const error = new Error(
       `Retained browser guard failed at ${stage}: ${evidence.reason}: ${evidence.message}` +
       (cdpError ? ` (${cdpError})` : ''),
+    );
+    error.retainedBrowserEvidence = evidence;
+    throw error;
+  }
+  return evidence;
+}
+
+async function verifyRecoveredRetainedBrowserExpectation(binary, { expectation, stage }) {
+  const expected = normalizeRetainedBrowserExpectation(expectation);
+  const daemonPid = readRuntimePid(expected.sessionName);
+  const serviceReadback = serviceBrowserForSession(
+    browserProcessIsLive(daemonPid)
+      ? runtimeDaemonClientBinary(daemonPid, binary)
+      : binary,
+    expected.sessionName,
+  );
+  if (!serviceReadback.success || !serviceReadback.browser?.cdpEndpoint) {
+    throw new Error(
+      `Recovered retained browser '${expected.sessionName}' is unavailable: ${serviceReadback.error || 'missing CDP endpoint'}`,
+    );
+  }
+  const targets = await readCdpTargetInventory(serviceReadback.browser.cdpEndpoint);
+  const matches = targets.filter((target) =>
+    target?.type === 'page' && retainedTargetUrlsMatch(expected.url, target.url));
+  if (matches.length !== 1) {
+    throw new Error(
+      `Recovered retained conversation matched ${matches.length} page targets; expected exactly one`,
+    );
+  }
+  const replacement = normalizeRetainedBrowserExpectation({
+    sessionName: expected.sessionName,
+    browserId: expected.browserId || `session:${expected.sessionName}`,
+    profileId: expected.profileId,
+    targetId: matches[0].id,
+    url: expected.url,
+  });
+  const evidence = evaluateRetainedBrowserExpectation({
+    browser: serviceReadback.browser,
+    cdpTargets: targets,
+    expectation: replacement,
+    stage,
+  });
+  if (!evidence.verified) {
+    const error = new Error(
+      `Recovered retained browser verification failed: ${evidence.reason}: ${evidence.message}`,
     );
     error.retainedBrowserEvidence = evidence;
     throw error;
@@ -891,14 +1149,40 @@ function browserProcessIsLive(pid) {
   }
 }
 
-function waitForDaemonExit(sessionName, priorPid) {
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    const currentPid = readRuntimePid(sessionName);
-    if (currentPid === null && !browserProcessIsLive(priorPid)) return;
-    sleep(50);
+function cdpEndpointIsReachable(cdpUrl) {
+  let endpoint;
+  try {
+    endpoint = new URL(cdpUrl);
+  } catch {
+    return false;
   }
-  throw new Error(`Daemon session '${sessionName}' did not exit for executable handoff`);
+  if (
+    !['ws:', 'wss:'].includes(endpoint.protocol)
+    || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname)
+  ) {
+    return false;
+  }
+  endpoint.protocol = endpoint.protocol === 'wss:' ? 'https:' : 'http:';
+  endpoint.pathname = '/json/version';
+  endpoint.search = '';
+  endpoint.hash = '';
+  const probe = spawnSync(process.execPath, [
+    '--input-type=module',
+    '-e',
+    'const response = await fetch(process.argv[1], { signal: AbortSignal.timeout(1000) }); process.exit(response.ok ? 0 : 1);',
+    endpoint.href,
+  ], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'ignore', 'ignore'],
+    timeout: 2000,
+  });
+  return probe.status === 0;
+}
+
+function waitForDaemonExit(sessionName, priorPid) {
+  return waitForRuntimeDaemonExit(sessionName, priorPid, {
+    readRuntimePid, isProcessLive: browserProcessIsLive,
+  });
 }
 
 function sleep(milliseconds) {
@@ -915,6 +1199,7 @@ function resolveInstallBin() {
 }
 
 function guardInstallPath(path) {
+  requireLegacyPublicationTarget(path);
   if (options.allowOutsideHome) return;
   const home = resolve(homedir());
   const resolved = resolve(path);
@@ -941,8 +1226,101 @@ function quiesceDashboardForRuntimeHandoff() {
   }
 }
 
+// Prove the only session consumed by systemd stop is its idle backend. A
+// session-name exception alone could terminate a retained browser unnoticed.
+async function prepareQuiesceSessions(expectedSessions) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await prepareQuiesceSessionsOnce(expectedSessions);
+    } catch (error) {
+      const procRace = error?.code === 'ENOENT'
+        && typeof error?.path === 'string'
+        && error.path.startsWith('/proc/');
+      if (!procRace || attempt === 2) throw error;
+      requireExpectedPublicationSessions(expectedSessions, runtimeSessionNames());
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  }
+  throw new Error('Quiescence evidence retry exhausted');
+}
+
+async function prepareQuiesceSessionsOnce(expectedSessions) {
+  if (report.service.before?.activeState !== 'active' || process.platform !== 'linux') return null;
+  const dashboardCgroup = commandOutput('systemctl', ['--user', 'show', 'agent-browser-dashboard.service', '--property=ControlGroup', '--value']).trim();
+  const state = JSON.parse(readFileSync(join(homedir(), '.agent-browser/service/state.json'), 'utf8'));
+  for (const key of ['browsers', 'jobs', 'viewerLeases']) {
+    if (!state[key] || typeof state[key] !== 'object') throw new Error(`Missing quiescence evidence: ${key}`);
+  }
+  const activeViewerLeases = Object.values(state.viewerLeases).filter(row => !['disconnected', 'expired', 'released', 'failed'].includes(row.state)).length;
+  const evidence = expectedSessions.map(sessionName => {
+    const daemonPid = readRuntimePid(sessionName);
+    const readback = serviceBrowserForSession(runtimeDaemonClientBinary(daemonPid, report.installBin), sessionName);
+    if (!readback.success) throw new Error(`Cannot verify browser ownership before dashboard stop: ${sessionName}`);
+    const browserRows = Object.values(state.browsers).filter(browser => browser.id === `session:${sessionName}`);
+    if (readback.browser) browserRows.push(readback.browser);
+    const browserPids = [...new Set(browserRows.map(browser => browser.pid).filter(pid => Number.isInteger(pid) && pid > 0))];
+    return {
+      sessionName, daemonPid, daemonCgroup: processCgroup(daemonPid), browserPids,
+      browserCgroups: browserPids.map(processCgroup), hasPersistedBrowser: browserRows.length > 0,
+      activeJobs: null, activeViewerLeases,
+    };
+  });
+  // Also inspect browser rows outside the socket inventory before killing any
+  // cgroup. A missing daemon socket is not proof that its browser is absent.
+  for (const browser of Object.values(state.browsers)) {
+    if (Number.isInteger(browser.pid) && browser.pid > 0) {
+      const group = processCgroup(browser.pid);
+      if (group === dashboardCgroup || group.startsWith(`${dashboardCgroup}/`)) {
+        throw new Error('Dashboard cgroup contains a retained browser; refusing quiescence');
+      }
+    }
+  }
+  // Dashboard event polling itself is a short-lived service job. Observe a
+  // bounded idle point after readback rather than reusing an older busy snapshot.
+  const idleDeadline = Date.now() + 5000;
+  let activeJobs;
+  let current;
+  do {
+    current = JSON.parse(readFileSync(join(homedir(), '.agent-browser/service/state.json'), 'utf8'));
+    if (!current.jobs || typeof current.jobs !== 'object') throw new Error('Missing current job evidence');
+    activeJobs = Object.values(current.jobs).filter(row => !['succeeded', 'failed', 'cancelled', 'canceled'].includes(row.state)).length;
+    if (activeJobs === 0) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } while (Date.now() < idleDeadline);
+  const refreshedEvidence = refreshDashboardSessionEvidence({ evidence, state: current, readCgroup: processCgroup });
+  return prepareDashboardSessionQuiesce({ expectedSessions, currentSessions: runtimeSessionNames(), dashboardCgroup, evidence: refreshedEvidence });
+}
+
+function verifyQuiesceSessions(record) {
+  return verifyDashboardSessionQuiesce(record, {
+    currentSessions: runtimeSessionNames(),
+    evidence: record.evidence.map(row => ({
+      sessionName: row.sessionName,
+      daemonPid: readRuntimePid(row.sessionName) ?? row.daemonPid,
+      daemonAlive: browserProcessIsLive(row.daemonPid),
+      socketPresent: existsSync(join(runtimeSocketDir(), `${row.sessionName}.sock`)),
+    })),
+  }).expectedSessions;
+}
+
+function processCgroup(pid) {
+  const rows = readFileSync(`/proc/${pid}/cgroup`, 'utf8').trim().split('\n');
+  const unified = rows.find(row => row.startsWith('0::'));
+  if (!unified) throw new Error(`Cannot verify unified cgroup for PID ${pid}`);
+  return unified.slice(3);
+}
+
+function verifyListenerEvidence({ pid }) {
+  const startTime = () => readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').at(-1).split(' ')[19];
+  const processStartTimeBefore = startTime();
+  const executablePath = readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, '');
+  const sha256 = sha256File(`/proc/${pid}/exe`);
+  const processStartTimeAfter = startTime();
+  return { pid, executablePath, sha256, processStartTimeBefore, processStartTimeAfter };
+}
+
 async function restartOrStartDashboard(installBin, { restoring = false } = {}) {
-  restartOrStartDashboardRuntime({
+  const restart = restartOrStartDashboardRuntime({
     installBin,
     restoring,
     startIfMissing: options.startIfMissing,
@@ -950,6 +1328,20 @@ async function restartOrStartDashboard(installBin, { restoring = false } = {}) {
     serviceStatus,
     runCommand,
   });
+  if (!restart.started) return;
+  const deadline = Date.now() + 30000;
+  let lastError;
+  // systemctl restart acknowledges process startup, not HTTP readiness.
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(new URL('/api/runtime/manifest', options.dashboardUrl), { signal: AbortSignal.timeout(3000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      verifyRuntimeManifestReadback(installBin, await response.json());
+      return;
+    } catch (error) { lastError = error; }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  throw new Error(`Dashboard did not become ready after restart: ${lastError?.message}`);
 }
 
 function serviceStatus() {
@@ -1199,6 +1591,23 @@ without changing their browser PIDs or CDP endpoints, and verify the externally
 visible dashboard runtime.
 
 Options:
+  --recover-interlock-receipt <id>
+                              With --recover-only, recover exact prior dead-publisher timer custody.
+  --recover-replaced-retained-browser <transaction-id>
+                              With --recover-only, explicitly acknowledge an exited retained
+                              process after verifying one replacement target at the same session,
+                              profile, and conversation URL. The identity loss remains journaled.
+  --prebuilt-bin <absolute-path>
+                              Publish reviewed embedded-dashboard bytes without rebuilding.
+  --expected-sha256 <sha256>  Required lowercase digest for --prebuilt-bin.
+  --controller-update <path=absolute-source=sha256>
+                              Repeatable, prebuilt-only existing scripts/ asset update.
+                              Candidate must embed those exact bytes. Journal snapshots
+                              restore scripts, binary and manifest together on rollback.
+  --expected-sessions <names|none>
+                              Required exact comma-separated session inventory for prebuilt mode.
+                              Prebuilt mode requires --skip-reference-sync --skip-browser;
+                              --release and --skip-smoke are rejected.
   --dashboard-url <url>       Dashboard URL to smoke. Default: http://127.0.0.1:4848/
   --discover-retained-url-prefix <url>
                               With requirement write, discover exactly one ready target under this reviewed prefix.

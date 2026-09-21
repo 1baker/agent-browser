@@ -1,8 +1,1496 @@
 # Runbook
 
+## 2026-09-13 | Healthy maintenance installed and live-verified
+
+Full partitioned Rust suite (`bash scripts/ci/rust-tests.sh`) passed after
+synthetic gate isolation, without skips added or production privacy rules
+weakened. Primary also repeated all 17 CDP tests five times in parallel mode
+(85 successful executions), ran five private-execution tests, 29 workstation
+tests, all ten command-boundary fixture scenarios, source-free installation
+coverage, and isolated install/reinstall with six extracted controller tests.
+Rust format, strict Clippy in both checkouts, scoped build, JS lint, and diff
+checks passed. Existing ignored tests remain outside this unit-suite claim.
+
+Guarded publication `local-dashboard-00a04b57-bace-4a7d-a367-e532e990f11b`
+completed terminal `ready`, updating binary and installation provenance together.
+Installed SHA: `3d2e7954865610e9f4fccb006a411aadb6b218379b4f82f2eca67b04e3f861e4`.
+Manifest SHA: `e407882b28c3571b69d895cb9bd3f86007955b3e3e03832169b9a6f2394351c0`.
+Rollback binary: `/home/bak3r/.local/bin/agent-browser.pre-local-dashboard-20260913013608`.
+Paired provenance: `/home/bak3r/.agent-browser/publications/.workstation-provenance-eNOx8m`.
+Final publication doctor passed with raw success, no degradation, no repair
+requirement, and ready payload. Workshop browser PID `505779`, exact target
+`4C4278BF20BBD5794A62582E9622E7D8`, profile, URL, and CDP endpoint were preserved;
+viewer browser PIDs `495544` and `496206` were preserved by verified handoffs.
+
+Primary ran two installed reconcile commands followed by the actual
+`agent-browser-runtime-interlock.service`. All three returned
+`healthy-runtime-preserved`. Across every pass the dashboard PID remained
+`167378`, its monotonic start timestamp remained `89700804247`, and the exact
+four-session inventory was unchanged. No transient default daemon appeared.
+The actual interlock completed with `ExecMainStatus=0`; its timer remained
+active. The durable convergence receipt contains only retained verification
+and healthy preservation steps. Final no-launch retained identity check passed.
+No ChatGPT prompt, image-task interruption, or GitHub write occurred.
+
+This closes the maintenance interruption and synthetic privacy-test blockers.
+The wider integration goal remains open: next verify AuraCall control-plane
+attestation and independently downloaded artifacts from the already completed
+response, without replaying a prompt or taking a different conversation target.
+
+## 2026-09-13 | Synthetic privacy-gate isolation
+
+The three remaining failures were traced to synthetic localhost endpoints
+using production gate storage. Gate identity intentionally uses scheme, host,
+and port. Tests intentionally leave unfinished private intervals or pending
+command receipts; OS port reuse then exposes another test to that durable
+state. The observed `privacy_gate_locked` and `privacy_gate_pending` are
+correct fail-closed results, not permission to clear operator gate records.
+Representative failures passed alone, and an explicit same-URL fixture
+regression now covers isolation without weakening sibling/reconnect guards.
+
+Added test-only `TestCdpEndpoint` with UUID temporary gate storage and a real
+endpoint-bound PrivacyGate. Sibling connections share the fixture gate; separate
+fixtures never share it. Production endpoint resolution, leases, observers,
+and private recovery checks are unchanged; only the post-resolution connection
+body was extracted for reuse. Converted synthetic transport tests in CDP client,
+clipboard, browser, inspect server, private attachment/execution, and stream
+WebSocket modules. The private-journey end-to-end fixture retains its explicit
+isolated-runner boundary and production endpoint resolution.
+
+Delegated `/root/privacy_test_failure_review` supplied source-backed diagnosis
+and implemented client/gate test infrastructure without builds or live actions.
+Primary reviewed the production diff, migrated sibling test modules, and ran
+17 CDP tests plus five private-execution tests successfully. No operator gate
+files were deleted. Subsequent full-suite and installed validation are recorded
+in the completed maintenance entry above.
+
+## 2026-09-13 | Recurring workstation restart diagnosis
+
+Primary live inspection confirmed the installed interlock invokes
+`install workstation reconcile` every five minutes. The native reconciler
+unconditionally quiesces the dashboard and both timers before provisioning,
+even when the preceding install doctor reports success, no issues, and a ready
+payload. During a scheduled pass, dashboard PID was zero and remote-view doctor
+reported `install_dashboard_runtime_stale_or_unreadable` despite both canonical
+routes passing readiness. After the pass, dashboard PID `4190117` was active.
+This proves maintenance-induced interruption; it does not implicate the user's
+image generator. No user browser or image task was stopped by this inspection.
+
+Bounded remediation is implemented but not installed: check fresh installed
+provenance, retained identity, service health, and canonical route authority
+before any quiescence. A healthy pass preserves running services and browser
+lifecycle and updates only its convergence receipt. Existing
+remote-view doctor performs Guacamole authentication probes, so this is not a
+claim of zero authentication-token writes. Unknown or unsafe evidence must not
+authorize repair. The existing source-free workstation fixture passed before
+the change. Delegated lane `/root/reconcile_fastpath` supplied the source-backed
+diagnosis and implementation. Independent `/root/healthy_reconcile_review`
+identified R1: unready remote evidence could bypass active route comparison.
+Primary accepted R1; remediation now requires canonical route evidence and
+active-conflict validation before every repair decision. The reviewer verified
+R1 closed by source inspection; primary independently ran the command fixture.
+
+Primary validation: all 29 workstation Rust tests passed. All ten synthetic command-boundary scenarios passed on the
+scoped candidate, including repeated healthy checks, fresh receipt readback,
+provenance/publication/unknown/incomplete evidence refusals, active conflicts
+with both ready and unready remote state, and stopped-service/configuration
+repair admission. The source-free install fixture and isolated install/reinstall
+manifest verification passed; six extracted controller tests passed. Full JS
+lint, Rust format, scoped strict Clippy/build, and diff check passed.
+
+Candidate SHA: `6d62661bd3672c1b714de07e0a5cef1323ff0e7956165c017776063e80c4d0c5`
+at `/home/bak3r/projects/agent-browser-startup-20260911/cli/target/debug/agent-browser`.
+Only this slice's workstation source and help change were copied into that
+scoped checkout; unrelated main-worktree changes were not bundled.
+
+Installation held: partitioned parallel tests failed three privacy-gate tests.
+An initial serial rerun overlapped a test-executable rebuild and is not accepted
+as reliable subprocess-crash evidence. A second serial full-suite run with no
+rebuild completed with 2,089 passed, three failed, and 74 ignored. Failures:
+`native::cdp::client::tests::private_quiescence_cancels_live_pending_reply_without_publication`,
+`native::cdp::client::tests::private_quiescence_old_proof_cannot_authorize_new_epoch`,
+and `native::private_execution::tests::private_transport_admits_once_encrypts_result_and_never_broadcasts_secret`.
+Observed errors include `privacy_gate_locked` and `privacy_gate_pending`.
+Do not claim full-suite green or installed maintenance preservation until these
+are reconciled and the candidate is published and live-tested. The installed
+cold-start binary remains `088989f15d6c60c46af35a9b444b25e6f2e4220d53adc934e3ec5dd7da03b893`.
+The latest inventory again included a transient default daemon while the
+interlock was activating; service jobs had zero nonterminal entries. No
+publication bypass, ChatGPT submission, GitHub write, or image-task stop occurred.
+
+## 2026-09-13 | Cold MCP startup installed and verified
+
+User confirmed proceeding after the inventory pause. Primary refreshed live
+state: no nonterminal service jobs; the transient default daemon appeared and
+disappeared while the scheduled runtime-interlock service was active. The
+interlock's receipt records user-unit quiescence and reactivation; dashboard
+journal restarts match its five-minute timer. This establishes maintenance
+activity, not attribution to the user's image generator. No image task was
+stopped. After the interlock finished, the original four-session inventory
+matched and normal guarded publication proceeded without bypass.
+
+Publication `local-dashboard-d2d4f366-a118-480b-a7ea-42dc262a36d1` completed
+terminal `ready`. Installed binary SHA:
+`088989f15d6c60c46af35a9b444b25e6f2e4220d53adc934e3ec5dd7da03b893`.
+Matching installation manifest SHA:
+`6ebb060b0d9dffd8168e7482ba62aeb0518e58a4cba113f7dfc32c048a881f85`.
+Rollback binary:
+`/home/bak3r/.local/bin/agent-browser.pre-local-dashboard-20260913004856`;
+paired provenance:
+`/home/bak3r/.agent-browser/publications/.workstation-provenance-Ym2yiE`.
+Final install doctor passed without degradation or repair requirements.
+Workshop PID `505779`, exact target `4C4278BF20BBD5794A62582E9622E7D8`,
+profile and CDP endpoint were preserved. Viewer PIDs `495544` and `496206`
+were preserved. Post-test retained-browser-status independently verified.
+
+Primary live-tested the installed executable with fresh isolated MCP clients:
+default navigate, canonical tab_new, explicit profile alias overriding default,
+repeat retained read and close all passed. Cold-admission negative fixture
+passed without effects. Installed daemon crash/recover/detach/reconnect/terminal
+close also passed: disposable Chrome PID `4099524`, target
+`362F1FD7ED1796B74EF7359D0B97A066`, exactly one backend commit, retained mapping
+preserved on detach, terminal process exit and profile-lock release confirmed.
+No ChatGPT prompt or GitHub write. Existing MCP processes are not claimed to
+have reloaded new code automatically.
+
+Remaining integration work: investigate unnecessary maintenance churn and
+verify AuraCall control-plane attestation plus independent document downloads.
+The broader seamless-operation goal is not complete merely because cold startup
+and the recovery regression now pass on the installed binary.
+
+## 2026-09-13 | Cold MCP acquisition candidate verified
+
+Implemented cold startup across `main.rs`, `mcp.rs`, `connection.rs` and
+`native/daemon.rs`. Fresh validated `navigate`/`tab_new` requires a URL, exact
+selected profile and an available, unblocked new-browser access plan with no
+active lease, compatible browser or daemon metadata. Existing/retained reads
+and input do not gain bootstrap authority. Standard configured launch values
+are passed explicitly; explicit profile aliases and nested fields win defaults.
+Cold startup uses OS-released startup serialization, exclusive metadata/token
+creation, no socket unlink and exact child PID/token readiness. It dispatches
+once without transport retry. Existing ordinary recovery is preserved.
+
+Primary accepted delegated implementation from `/root/mcp_cold_bootstrap` and
+independently ran seven focused tests plus the full partitioned Rust suite:
+2,089 passed, 74 ignored, zero failures. Format, strict Clippy and new fixture
+lint pass. Fresh reviewer `/root/cold_start_review` found one blocking profile
+alias precedence issue; primary fixed it with nested-field precedence coverage.
+Reviewer verified that remediation in source; primary reran the focused suite
+and tested the explicit-alias/configured-default case live successfully.
+
+Main candidate live proofs: fresh real MCP default `navigate` and canonical
+`tab_new`, exact new profile, one browser, repeated read through retained default
+route and shutdown/lock release all pass. The cold-admission no-launch fixture
+passes: read/input, retained hints, competing lease and stale metadata refuse
+without state changes. Recovered-terminal-close live regression also passes on
+main SHA `acd1bb6af39a01bc7be8d1993baded4fd2f9f1e913fc1ea6f34b6115c66fc970`,
+Chrome PID `4048422`, target `483FF044BFC7045163F91732BB80FC32`, one commit.
+
+First positive fixture lacked isolated installed-Chrome cache identity and
+correctly failed the stock-build proof gate after launch. The fixture now links
+the real installed Chrome into its isolated cache, as the existing recovery
+fixture does. The failed disposable browser was closed through its exact owned
+session; no guard was weakened or production browser adopted. Test artifacts
+are isolated from real HOME, socket, profile and service state.
+
+Only the four startup files and cold-start help lines were applied to the
+existing scoped installation checkout. Guarded publication/live installed
+acceptance is pending below. No ChatGPT prompt or GitHub write.
+
+Scoped candidate SHA:
+`088989f15d6c60c46af35a9b444b25e6f2e4220d53adc934e3ec5dd7da03b893`.
+Primary live-tested scoped navigate, tab_new and explicit profile alias; all
+passed. Scoped cold-admission and cold-profile tests, strict Clippy, format and
+diff checks passed. Main full JS lint passed; CodeGraph synchronized seven files.
+
+Guarded installation was refused before mutation: expected four retained
+sessions, but `default` appeared in the live daemon inventory during preflight.
+An immediate read confirmed five sessions; a later read returned the original
+four and default socket/PID metadata was absent. Its creator was not established.
+No daemon was closed or silently added to the approved publication inventory.
+Installed SHA remains
+`9faf73ed3da8cc0366a329822813609a8a078e4b681e22c1101caeee1ba22086`.
+Previous publication transaction remains terminal ready, with no new journal,
+backup, replacement, handoff or dashboard restart. Retained Workshop identity
+passed pre-mutation verification. A quiet, confirmed client window is needed
+before repeating guarded installation; do not bypass inventory admission.
+
+## 2026-09-13 | Seamless AuraCall goal: cold MCP navigation reproduced
+
+Continuation checkpoint: canonical broker `tab_new` also reproduced the missing
+default-daemon failure with exact `runtimeProfile=fresh-profile`; isolated
+fixture `/tmp/ab-mcp-default-5NtKRw`. Both acquisition actions must pass, not
+only custom navigation. New no-launch `test-mcp-cold-admission.js` passed on
+installed runtime: read/input, missing retained route hints, competing profile
+lease and stale metadata are refused with unchanged state and no daemon
+artifacts. Both new fixtures pass targeted ESLint. Implementation is delegated
+and in progress; no installation or successful cold-launch claim yet.
+
+Previous goal slice made verified progress: installed daemon crash recovery and
+explicit terminal shutdown passed. Full integration remains open, not flawless.
+Primary reran installed `test-mcp-cold-profile.js` and
+`test-mcp-retained-route-unavailable.js`: both pass. Thus profile creation and
+retained-route refusal are resolved; old references to that setup gap are
+superseded by this narrower first-navigation finding.
+
+New `scripts/test-mcp-default-launch-live.js` uses real MCP stdio, isolated
+HOME/socket/config/profile and an explicit installed Linux Chrome path. Profile
+upsert and no-launch access planning succeed without a daemon. First supported
+`service_request` navigation fails in `send_queued_tool_command`/`send_command`:
+missing default socket, five connect retries, no daemon/browser launched.
+Reproduced on installed SHA
+`9faf73ed3da8cc0366a329822813609a8a078e4b681e22c1101caeee1ba22086`.
+Failed isolated state `/tmp/ab-mcp-default-KeQqzp` has one succeeded profile job,
+one profile, zero browsers and no socket artifacts. The first fixture revision
+used unsupported action `launch`; that validation error is not a product bug.
+The supported `navigate` reproduction is the accepted finding. The fixture now
+also requests the exact registered runtime profile and will require that binding
+once navigation reaches a daemon. It is a failing regression, not green coverage.
+
+Next implementation must admit only clearly authorized cold launch requests
+before transport, with fresh access-plan/profile/metadata checks. Do not retry
+effects after transport uncertainty, bootstrap an absent retained route, repair
+stale metadata implicitly or launch over another profile lease. Preserve config
+host/build/profile choices. Root owns fixture and integration; delegated
+`/root/mcp_cold_bootstrap` owns bounded design discovery and, after review,
+the bounded MCP/startup seam. Design inspection found startup currently
+overwrites PID/version/SHA metadata and unlinks the socket in daemon.rs.
+Primary approved the minimal four-file extension (main, connection, MCP,
+native daemon) for configured startup context and cold-only nonreplacement.
+No runtime change or new ChatGPT prompt in this slice.
+
+Fresh access-plan evidence for the unauthenticated fixture recommends
+`launch_new_browser` with zero leases/browsers, while its top-level action is
+`verify_or_seed_profile_before_authenticated_work`. Admission must use actual
+available/unblocked launch capability plus reuse policy; requiring authenticated
+freshness for a local unauthenticated page would be an incorrect new blocker.
+Live Workshop no-launch access plan separately returned `wait_for_profile_lease`
+with one active lease. Primary respected that result and did not attach or
+navigate. This is not a failed recovery or permission to create another lane.
+
+Primary also passed `pnpm test:service-client`: generated contract checks,
+JavaScript typecheck, package exports, request/observability helpers, managed
+profile workflow and broker/composed examples. These are no-launch/source
+contracts, not proof that the cold MCP first navigation works. New fixture lint
+and diff checks pass; its live acceptance remains red until the startup fix.
+
+Independent provider-free AuraCall test lane `/root/auracall_test_map` reported
+11 suites, 181 passed, one skipped across bridge, response binding, reattach,
+attachment, retained-project routing and required document-set tests. Primary
+accepted this as delegated source evidence, not installed integration proof.
+Primary inspected current AuraCall Plan 0359: it remains OPEN for missing
+control-plane attestation and independent DOCX/PDF downloads (ZIP alone was
+materialized). These are next integration checks after cold navigation; no
+existing provider response may be replayed. Broad live completion is unproven.
+
+## 2026-09-13 | Recovered terminal close verified in scoped candidate
+
+Supersedes the source-only terminal-cleanup limitation below. `actions.rs`
+preserves retained identity on ordinary detach and provides explicit recovered
+`service_browser_close` through the existing CDP connection, without PID signals.
+`runtime_attach_proof.rs` exposes the existing exact Linux process verifier.
+`service_health.rs` commits terminal cleanup only if custody is unchanged.
+Borrowed/shared custody, process/profile/endpoint drift, uncertain exit or lock
+release and persistence errors fail closed. Unsupported physical proof also
+refuses shutdown rather than guessing ownership.
+
+Reusable regression: `pnpm test:recovered-terminal-close-live`, with explicit
+`AGENT_BROWSER_SMOKE_AGENT_BROWSER_CMD` and
+`AGENT_BROWSER_SMOKE_CHROME_PATH`. It isolates HOME, service state, daemon socket,
+profile and loopback page; only its exact verified daemon receives SIGKILL.
+It proves one backend commit, unchanged Chrome PID/target/CDP after recovery,
+detach mapping preservation, second reconnect, CDP terminal shutdown, process
+exit, profile lock release and terminal mapping removal. Successful fixture
+data is removed; failed evidence is retained without forced recovery.
+
+Primary ran the final scoped candidate regression successfully:
+SHA-256 `9faf73ed3da8cc0366a329822813609a8a078e4b681e22c1101caeee1ba22086`,
+Chrome PID `3932402`, target `2BC7A826D226F58F57F136C088F89673`, commit count one.
+Earlier main/scoped candidate runs passed as well. The first fixture revision
+incorrectly expected targetId from CLI tab-list output; corrected to a read-only
+exact disposable endpoint target listing. Its pre-crash browser was closed via
+the owned session close path; no retained production target was involved.
+
+Delegated implementation: `/root/terminal_close_impl`, actions and health only.
+Primary reviewed and independently ran the focused tests, full partitioned Rust
+suite, Rust format, strict Clippy, build, full JavaScript lint and diff check.
+Fresh read-only `/root/terminal_close_review` identified an omitted newly shared
+session check. Primary classified it blocking and added a fresh pre-close
+identity check plus locked terminal exclusivity check and regression. Reviewer
+verified that accepted fix in source; primary reran focused and live tests.
+Final full-suite rerun passed: 2,082 passed, 74 ignored, zero failures. Final
+main and scoped strict Clippy checks passed, as did format and full JS lint.
+
+Guarded publication completed with transaction
+`local-dashboard-14683cdf-3308-4b2f-970c-922d2c0fa2e1`, phase `ready`.
+Installed binary SHA matches the final scoped candidate above; installation
+manifest SHA is `8cae6c0131608a3957305ccbc25c29d775bdacd6599887600b8ce762a5e3bd56`.
+Rollback binary is
+`/home/bak3r/.local/bin/agent-browser.pre-local-dashboard-20260913001826`,
+with paired provenance snapshot
+`/home/bak3r/.agent-browser/publications/.workstation-provenance-8PNgdP`.
+Final publisher doctor and independent `install doctor --json` both succeeded.
+Workshop Chrome PID `505779`, profile `chatgpt-pro`, exact target
+`4C4278BF20BBD5794A62582E9622E7D8` and endpoint were unchanged before/after
+handoff and at final readiness. Viewer Chrome PIDs `495544` and `496206` were
+also preserved. Publication restored its runtime interlock.
+
+Primary repeated the complete live regression against the installed binary:
+Chrome PID `3944030`, target `510095692C10148FE6A8615D69D8C394`, one commit,
+mapping preserved on detach, verified terminal process exit and lock release.
+Result: installed recover/detach/reconnect/explicit-close sequence verified.
+This is daemon-crash recovery, not proof of full-host or Chrome-crash recovery.
+The separate default-profile MCP daemon work remains outside this slice.
+
+Only the close fix and its process-proof wrapper were applied to the existing
+scoped installation checkout; unrelated background-exit and other dirty work
+remain preserved. The old unmapped disposable PID `3755158` remains outside
+this close authority. No synthetic mapping, forced attach, ChatGPT prompt,
+GitHub write or Duo/tmux helper tab was created.
+
+## 2026-09-13 | Detach record preservation patched; terminal cleanup incomplete
+
+Source-only repair in `cli/src/native/actions.rs`: `handle_close` now calls
+terminal browser-health persistence only when CloseBrowser actually has a
+manager or resolved attached process to shut down. Detach and repeated or fresh
+no-browser close preserve the retained browser/session identity and lease.
+The existing runtime-profile PID resolution is captured before cleanup.
+No recovered or external attachment gains process-kill authority.
+
+Primary regression
+`test_detach_and_repeated_close_preserve_retained_browser_identity` passed. It
+checks complete persisted state equality after detach, repeated close and a
+fresh no-browser close. After the final profile-PID refinement, the new test,
+nine existing `test_close` cases, Rust format, strict Clippy, debug build and
+diff checks passed.
+This unit fixture does not prove live recovered-manager or terminal shutdown.
+
+Independent read-only `/root/close_review` confirmed the unconditional terminal
+persistence defect and reviewed the patch. Primary accepted its profile-only
+PID refinement. CodeGraph reported current index but did not resolve
+`handle_close`; direct source inspection supplied the evidence. No live browser
+or operating-system mutations were delegated.
+
+Installation is deferred: `service_browser_close` still inherits Detach for a
+recovered manager. Its stored-PID termination fallback does not establish exact
+process ownership, so merely flipping that mode is unsafe. A verified terminal
+shutdown path and live regression remain required. The old disposable Chrome
+PID `3755158` remains preserved because the installed version already removed
+its mapping; no synthetic record, forced attachment or process signal repairs
+that missing authority in this slice. Signed-in sessions and dirty worktrees
+remain untouched. Installed binary still has SHA-256 `1704d4c72a7a5b493cb7d6ca7ff8a76f8773dd1257afd826a1ee675c3ec8030b`.
+
+## 2026-09-12 | Installed transfers and recovery passed; cleanup blocked
+
+Primary tested installed SHA-256
+`1704d4c72a7a5b493cb7d6ca7ff8a76f8773dd1257afd826a1ee675c3ec8030b`
+using the loopback fixture at `http://127.0.0.1:36773/` and a fresh custom
+profile under `/tmp/agent-browser-installed-qa-eTerCC`. The no-launch plan
+selected no existing profile and advertised explicit throwaway behavior.
+The agent-browser skill scoped this test to disposable no-login state.
+No production browser input, prompts, installation or GitHub writes occurred.
+
+Upload and download both passed: 87 bytes, SHA-256
+`d8c5055518e8bae96b568b7c04108acab21405dccd7eff60ee6a33aa6207c888`.
+Server evidence recorded exactly one upload and one download. After one commit,
+the primary verified disposable daemon PID `3755098` against its executable,
+PID file and isolated environment, then injected SIGKILL only into that daemon.
+An ordinary tab-list read reconnected through daemon `3759087` without replay.
+Chrome PID `3755158`, endpoint UUID `c69537a3-922f-4402-b581-0f44e1321cfe`,
+target `8BC0363FCDEED75BC9039C34AE689A87` and exact URL remained unchanged.
+Both rendered committed state and independent server counters stayed at one.
+This proves post-commit daemon recovery, not browser/host crash or uncertain
+in-flight effect recovery.
+
+Cleanup failed after those checks. Ordinary `close` returned `closed=true` but
+preserved recovered Chrome PID `3755158`. A subsequent read refused the live
+custom-profile lock with ownership unknown and no mapped runtime/browser.
+Exact-session MCP `service_browser_close` then returned
+`Service browser session:installed-transfer-qa is not attached to this control plane`.
+No force attachment, state edit or browser signal bypassed the ownership gate.
+The disposable browser and its profile remain preserved pending scoped cleanup
+recovery. Retained production browser status still verified without launch.
+Overall outcome is partial: transfer and recovery passed, terminal cleanup
+requires repair. The fixture and payload remain ephemeral in the directory
+above; the exact outcome and artifact identity are recorded here durably.
+
+## 2026-09-12 | Tested candidate installed; retained browsers preserved
+
+Guarded local publication transaction
+`local-dashboard-65d1acc5-f036-4a46-8a19-fa2949f28a13` completed in terminal
+`ready` state. Preflight found the exact four expected sessions idle. The
+publisher paired the binary replacement with workstation manifest provenance,
+restored the runtime interlock and released its publication lock. No recovery
+action is pending.
+
+Installed binary SHA-256:
+`1704d4c72a7a5b493cb7d6ca7ff8a76f8773dd1257afd826a1ee675c3ec8030b`.
+Installed manifest SHA-256:
+`6555000391a53c0136bd973c0c74bd19721d7f2fb1763e80670242ba201300ad`.
+Verified prior binary backup:
+`/home/bak3r/.local/bin/agent-browser.pre-local-dashboard-20260912233147`,
+SHA-256 `cbb1e4a728f343f4f1d7880f86fa69bb8b4d0430a32eaee0623806db4f178dbf`.
+Paired prior provenance snapshot:
+`/home/bak3r/.agent-browser/publications/.workstation-provenance-sbecpx`.
+Rollback artifacts are retained; this successful transaction did not exercise
+a rollback.
+
+All three retained browser sessions resumed with unchanged Chrome PIDs:
+ChatGPT Pro `505779`, viewer A `495544`, viewer B `496206`. The publisher
+verified the retained browser expectation at final readiness; a separate
+installed retained-browser-status check also returned verified without launch.
+No ChatGPT prompt, navigation or browser replacement occurred.
+
+Fresh installed `install doctor` exited zero with success and no issues.
+Both isolated installed-binary tests passed:
+`scripts/test-mcp-cold-profile.js` and
+`scripts/test-mcp-retained-route-unavailable.js`. They prove cold profile
+creation without a daemon/browser, refusal of stale metadata and unavailable
+retained routes without launching or creating jobs. The preceding three full
+standard suite passes remain the source validation evidence; the 74 ignored
+tests and cross-platform/live E2E coverage are not claimed as passing here.
+Dirty worktrees were preserved; no GitHub writes occurred.
+
+## 2026-09-12 | Controller lock repaired; final standard suite green locally
+
+Controller `lock` now returns a must-use borrowed `DirectoryLock` with explicit
+owner-PID-checked unlock. `run` retains it through socket cleanup and listener
+destruction; the anchored directory closes last. Keys, durable authority,
+existing-socket refusal and nonblocking admission remain unchanged. A duplicate
+descriptor regression failed before the change and passed afterward; a second
+regression proves a child-like destructor cannot unlock the parent's lease.
+
+Validation also reproduced a test-only setup race in
+`private_journey::tests::concurrent_same_consent_claim_has_exactly_one_winner`:
+one worker could panic opening a nonblocking store before reaching the barrier,
+leaving the other worker waiting. The fixture now opens two independent handles
+before spawning; the unchanged barrier still races claims and requires exactly
+one winner. A superseded pre-fixture-fix full run stalled there and was explicitly
+terminated; it is incomplete, not passing evidence.
+
+Final primary validation after both fixes: twenty fresh-home 16-thread private
+suite repetitions passed 91 tests each (11 ignored). Three fresh-home complete
+standard CI runs passed 2,079 tests each (74 ignored). No tests were excluded
+beyond the existing ignored set, no CI partition changes or busy retries were
+added. Rust format, strict Clippy, debug build, CodeGraph sync and diff checks
+passed. The previously observed lock, expiry and installer test blockers are
+resolved in this local candidate; ignored live/E2E and cross-platform coverage
+remain unproven.
+
+Both changes were carried into the scoped installation checkout only after
+baseline-file hash comparison. There, six controller tests, the one-winner
+claim test, formatting, strict Clippy, build and diff checks passed. Installed
+runtime unchanged; retained-browser status verified without launch. No GitHub
+writes, ChatGPT prompts or production account actions occurred; dirty worktrees
+were preserved. Next is guarded candidate publication with paired rollback,
+not another blind restart.
+
+Delegation: `private_lock_review` completed independent closed-world source
+reviews of the lock implementation and test-only setup repair. Primary accepted
+the must-use/PID recommendations, inspected both diffs and ran the tests above.
+Reviewer reported no critical regression. CodeGraph supplied lock/cleanup call
+paths; read-only local context granted no browser or provider authority.
+Source SHA-256 (`private_controller_socket.rs`):
+`00ebf13b113b4aed25bd81c8a1261223bbe4e60049f62162fe6f26f5f7a1ada7`.
+Source SHA-256 (`private_journey.rs`):
+`ee883278e3a4c03878f37941a4d96c93f7eaa7e08a7189657a65c30a1d016af4`.
+
+## 2026-09-12 | Installer port fixtures repaired; controller-lock blocker remains
+
+Both released-port fixtures in `install.rs` now retain a bound, non-listening
+`TcpSocket` until their probes finish. The helper asserts a competing listener
+cannot bind and a bounded connection attempt fails. Before the fix, the new
+reservation assertion deterministically failed the stale-inventory test.
+Releasing the port allowed another HTTP test to claim it, consistent with the
+paired stale-count/empty-User-Agent failures. The User-Agent test now also
+requires HTTP 200 instead of discarding the request result. Production code and
+CI partitions are unchanged; no retries or exclusions were added.
+
+Primary validation: ten fresh-home, 16-thread installer repetitions passed
+66 tests each. The first complete standard CI run passed 2,077 tests with 74
+ignored. The second stopped in its parallel partition with 1,461 passed and
+one failure: `native::private_controller_socket::linux::tests::duplicate_lock_and_existing_socket_fail_closed`
+at `private_controller_socket.rs:639`, `lock(&directory).unwrap()` returned
+`private_controller_unavailable`. Third repetition was not run after failure.
+This is the remaining validation blocker; do not represent the suite as
+reliably green or install the pending candidate yet.
+
+Main build, strict Clippy, Rust formatting, CodeGraph sync and diff check passed.
+The test-only patch was carried to the scoped installation checkout after its
+`install.rs` baseline matched HEAD; its 66 installer tests, strict Clippy,
+formatting, debug build and diff check also passed. No live
+publication, browser interaction or GitHub write occurred. Retained-browser
+status verified without launch; dirty worktrees were preserved.
+
+Delegation receipt: `private_lock_review` completed read-only diagnosis and
+closed-world review. Primary accepted the second released-port finding and
+verified both reservation lifetimes and test results. Review found no critical
+regression; cross-platform execution was not performed. CodeGraph supplied the
+inventory/HTTP fixture paths; runtime evidence came from the primary tests.
+`install.rs` SHA-256:
+`7369fc1d1f876c9127dc2b5c3164d39c44aa11527f2d0cf785b116fcf7bf6c82`.
+
+## 2026-09-12 | Expiry fixture synchronized; installer-test blocker remains
+
+The private handoff EOF-expiry fixture no longer assumes a 60 ms Tokio sleep
+proves a 30 ms SystemTime deadline elapsed. It prewrites the authenticated frame,
+observes readable input and a pending receive, checks no staging occurred, then
+withholds EOF until the actual authority deadline is observed expired. A five
+second monotonic bound detects clock stalls. Rejection and unchanged storage
+remain required. A separate direct `expired_validated_frame_never_stages` test
+checks post-frame expiry without timing. Production expiry logic is unchanged;
+no evidence establishes a production expiry bypass from the former assertion.
+
+Primary validation: the corrected EOF fixture passed 30 fresh-home parallel
+private-suite repetitions; the final 29 included the new direct test, with 89
+passed and 11 ignored each. Two complete CI runs passed 2,077 tests with 74
+ignored each. The third failed in the parallel partition: 1,460 passed and two
+failed. Exact remaining failures are
+`install::tests::active_runtime_inventory_classifies_unreachable_stream_backend_as_stale`
+(`staleCount` was zero instead of one) and
+`install::tests::http_client_sends_user_agent` (empty captured request).
+The first fixture releases its reserved TCP listener before probing the port;
+cross-test port reuse is a candidate explanation, not yet proven. Do not call
+the full suite reliably green or install until these failures are reconciled.
+
+Repeated stress runs now create a fresh isolated home each time. An earlier
+reused-home diagnostic produced `privacy_gate_locked` in a private attachment
+test after 14 successful repetitions; retained endpoint state can survive in
+that harness and must not be mistaken for fresh-process isolation.
+
+Main debug build, strict Clippy, formatting, CodeGraph sync and diff checks
+passed. Existing dirty work was preserved. The three reviewed lock/expiry files
+were also carried into the scoped installation checkout after verifying its
+baseline files matched HEAD and its pre-build binary exactly matched installed
+SHA `cbb1e4a728f343f4f1d7880f86fa69bb8b4d0430a32eaee0623806db4f178dbf`.
+Scoped validation also passed: four lease regressions, all five handoff tests,
+formatting, strict Clippy, debug build and diff check.
+No publication or installation was attempted; retained-browser status verified
+without launch. No ChatGPT prompts or GitHub writes occurred.
+
+Delegation: `private_lock_review` completed read-only diagnosis and closed-world
+fixture review, finding no weakened expiry assertion. Primary accepted the
+ordering recommendation, inspected the code and ran validation. CodeGraph
+provided receive/staging paths; local read-only context supplied no new authority.
+Final `private_handoff.rs` SHA-256:
+`bc6d5438b66d7be0c9351b2c01bcffcbed9f58b0aca6578887c38d38a472c587`.
+
+## 2026-09-12 | Private flock lifetime fix verified locally, not installed
+
+Reproduced `private_store_busy` in the parallel private-operation tests on
+iteration 2 (private execution admission), matching the earlier broker resume
+failure. UUID fixture roots did not prevent it. Close-only independent flock
+descriptors can remain owned by a concurrent child's inherited open-file
+description until exec. Two deterministic duplicate-descriptor regressions
+both failed before the fix and passed afterward.
+
+`private_secret_store.rs` now returns a non-clone `GateLease` for every
+independent shared/exclusive lease. Owner Drop explicitly unlocks before close;
+a PID mismatch prevents a child's destructor from unlocking its parent's
+lease. `privacy_gate.rs` uses that owner for public, command and private permits.
+No durable privacy marker, pending receipt, replay evidence or cleanup gate is
+removed by Drop. Real competing leases still fail immediately. No retries were
+added. A trial CI-serialization workaround failed outside its selected modules
+and was fully removed; the original CI partitions are unchanged.
+
+Four regression tests cover inherited-descriptor release, independent-reader
+exclusion, child-PID ownership, and pending command receipt preservation.
+Primary validation: ten 16-thread private-suite repetitions passed with 87
+tests each, explicitly excluding the separately failing expiry test below;
+three complete standard CI runs passed with 2,076 tests and 74 ignored each.
+Rust format, strict Clippy, debug build, CodeGraph sync and diff checks passed.
+No live/E2E or cross-platform coverage is claimed for this slice.
+
+Delegation receipt: `private_lock_review` completed read-only diagnosis and
+closed-world source review. Primary accepted the lock-lifetime diagnosis and
+PID regression recommendation, inspected the patch, and ran all tests above.
+Reviewer found no critical regression; its review was not runtime evidence.
+CodeGraph supplied the lock/permit call paths, followed by source and test
+verification. Graphiti-discovery skill was unavailable; read-only local context
+was retrieved without provider submission.
+
+Remaining blocker: `private_handoff::tests::expiry_during_eof_wait_prevents_staging`
+failed both before this patch (serial run) and afterward (parallel run), although
+it passed in the three complete CI runs. Its 30 ms wall-clock expiry / 60 ms
+timer assertion is unresolved; the lock stress exclusion is diagnostic only,
+not a CI exclusion or a claim that expiry behavior is correct. Investigate that
+failure before publishing/installing this candidate.
+
+Source SHA-256 (`private_secret_store.rs`):
+`baf00b6a1172c36b44a8f69beb9736f33bd93e6bbbc92f076ea53f3bc6c00d32`.
+Source SHA-256 (`privacy_gate.rs`):
+`4327400e16dae6e0c17b81227f6f6cc56bb63db7847062440506337920b69d12`.
+Local debug candidate SHA-256:
+`3f1a1ab164ea1cea9be3c7bab08be8aad111180beec741a9db0495f548358612`.
+Installed runtime unchanged; retained-browser status verified without launch.
+Dirty worktrees preserved; no GitHub writes or ChatGPT prompts.
+
+## 2026-09-12 | Cold MCP profile creation installed and verified
+
+`service_profile_upsert` now uses a short-lived browserless control-plane worker
+only when the requested session has no daemon metadata. It preserves canonical
+validation, queued job evidence and profile persistence. It starts no socket
+daemon, browser or ambient monitor. Existing, stale or unreadable metadata keeps
+the guarded transport path; a failed send never authorizes fallback or replay.
+This is a profile-upsert exception, not general cold-start browser authority.
+
+Real MCP stdio fixtures `scripts/test-mcp-cold-profile.js` and
+`scripts/test-mcp-retained-route-unavailable.js` passed against the main build,
+scoped candidate and installed binary. They prove one persisted profile/job,
+no daemon/browser, mismatched-ID rejection, unchanged stale metadata and
+fail-closed absent retained routes. Both builds and strict Clippy passed;
+targeted ESLint, Rust format, CodeGraph sync and diff checks passed. The Rust
+`profile_upsert` test filter selected zero tests and is not regression evidence.
+Independent source review by `crash_path_review` found no critical regression;
+primary verified the implementation and executed the transport fixtures.
+
+Publication `local-dashboard-f23bd272-b6fd-4acf-aabd-c644674e38a0` reached
+terminal `ready`, with three prepared/resumed browser-preserving handoffs.
+Installed SHA-256:
+`cbb1e4a728f343f4f1d7880f86fa69bb8b4d0430a32eaee0623806db4f178dbf`.
+Paired manifest SHA-256:
+`4b30f65da48284f9331261287c95b5d67dc4ee3bcca83772e66535b9a07cff3c`.
+Rollback binary:
+`/home/bak3r/.local/bin/agent-browser.pre-local-dashboard-20260912165509`;
+paired provenance:
+`/home/bak3r/.agent-browser/publications/.workstation-provenance-XSsw6d`.
+Use governed rollback, not an unpaired binary replacement.
+
+Post-install doctor returned success with no issues and matching installed
+provenance; all four daemon listeners matched the installed executable.
+Retained-browser status independently verified the configured Workshop identity
+without launch. No ChatGPT prompt or GitHub write occurred. Dirty worktrees
+were preserved. Fresh MCP processes were tested; already-running MCP clients
+are not claimed to have reloaded the new executable. The earlier broad serial
+suite remains incomplete, as recorded below.
+
+## 2026-09-12 | First-command recovery installed and verified
+
+CLI prestart now lets implicit `tab_list`, `browser_pid` and `cdp_url` requests
+reach daemon acquisition directly instead of sending a separate launch after
+daemon restart. Explicit launch options, managed runtime attachments and input
+commands retain prior behavior. This does not guarantee no launch when there
+is no valid retained candidate, nor authorize replay of uncertain effects.
+
+Focused routing tests passed in both checkouts. Both builds, strict Clippy,
+format and diff checks passed. Reviewer `crash_path_review` recommended the
+narrow metadata-only allowlist and preserving explicit build, proxy-bypass and
+leave-open choices; primary accepted those findings and verified the code.
+The optional broad serial suite was interrupted after roughly three minutes
+without progress at `native::parity_tests::test_all_documented_actions_are_handled`.
+It is incomplete, not a passing full-suite result.
+
+Scoped installation transaction
+`local-dashboard-8927f11e-0fef-4497-9a35-99a84afbb0ac` finished terminal ready,
+with final strict doctor passing and retained Workshop identity preserved.
+Installed binary SHA-256:
+`dc4bc25f4790bba4133e97dc4067c84ef301eed036dd58f15b9925b53751233d`.
+Manifest SHA-256:
+`36185a7ba5a4e34a001ba760ca5cb057be8e7cc157fbef3675485e5e486bd225`.
+Rollback binary:
+`/home/bak3r/.local/bin/agent-browser.pre-local-dashboard-20260912142131`;
+paired provenance:
+`/home/bak3r/.agent-browser/publications/.workstation-provenance-nc4tvw`.
+
+Candidate and installed real-browser tests both passed on the first command
+after SIGKILL of only the disposable daemon. Installed Chrome PID 2117730,
+endpoint UUID `718cee3b-c300-41e2-9af9-95fd38a11f4e`, fixture target
+`729693209E95F490FED5F46998B44C7E`, loopback URL and peer target stayed exact.
+DOM and independent server evidence both showed one committed action. No
+retry, duplicate browser, duplicate submission or ChatGPT prompt occurred.
+Disposable browser/server were stopped; final retained status verified.
+Full Chrome crash and uncertain in-flight effect replay remain outside this
+proof. The deferred new-profile/default-daemon setup issue is next.
+
+## 2026-09-12 | Owned launch proof installed; first-command recovery gap
+
+After operator pause confirmation, guarded publication
+`local-dashboard-32625cf8-3f73-4d77-b40d-04d5e45b3459` completed terminal
+`ready`. Installed binary SHA-256:
+`38feafaf755e7a3ac784ef1b9ec7eb41996d443dee6d3d18da2aa24810085389`.
+Paired manifest SHA-256:
+`0589ccb032b205d9ee6724f88f9f0512682898ac02bb9ff2621979107043317a`.
+Rollback binary is
+`/home/bak3r/.local/bin/agent-browser.pre-local-dashboard-20260912141347`;
+paired provenance is retained in
+`/home/bak3r/.agent-browser/publications/.workstation-provenance-N4Oc1C`.
+Use governed rollback/recovery, not manual binary replacement.
+
+The scoped startup checkout's pre-patch binary matched production exactly. Only
+the owned-launch reuse proof fix was applied there. Scoped build, two proof
+tests, strict Clippy, format, diff and prebuilt publisher fixture passed. The
+publisher preserved all three browser PIDs and Workshop's exact target, passed
+dashboard HTTP/bundle checks and final strict doctor, and restored interlock
+custody. No ChatGPT prompt or GitHub write occurred.
+
+Installed disposable repeat-launch/commit passed. SIGKILL of only test daemon
+2068418 exposed a remaining first-command recovery failure: tab-list attempted
+launch and hit the profile-lock guard for surviving Chrome PID 2068453. The
+following read reattached successfully with unchanged PID, endpoint UUID
+`2aea0115-6a4b-4eb1-abe1-a634743f458e`, exact fixture target
+`8F0D77B27A7292027208156ADC4AD85A`, URL and peer target. DOM and server both
+reported one commit. This is recovery after an initial failed command, not
+seamless first-command crash recovery. Earlier candidate success also followed
+an initial configuration-related refusal; do not generalize it to first-call
+success. Test browser/server were stopped. Fix first-command retained-session
+routing before addressing the deferred MCP default-daemon issue.
+
+## 2026-09-12 | Owned Chrome reuse proof and disposable crash test
+
+Candidate-only fix: the unchanged live owned-manager branch now reapplies exact
+installed-executable proof before persisting newly constructed launch metadata.
+Repeated explicit launch flags previously replaced proof with an unverified
+request. Attached managers, unknown executables, registry refusals and stealth
+requests retain their existing guards. No runtime replacement was performed.
+
+Primary checks passed: two stock-proof unit tests, two retained-session selection
+tests, new real-Chrome repeated-launch E2E, build, strict Clippy, format and diff
+checks. Candidate debug SHA-256 before help-only documentation update:
+`9d89eed8ff3d5f8104e715e036bb11c06bfe00f974bd6e11ddada4a01f00c8ee`.
+
+The disposable candidate daemon was killed with SIGKILL after one committed
+fixture action. With the fixture's supported `service.defaultBrowserBuild`
+configuration, a same-session tab-list reconnected. Chrome PID 2037908,
+endpoint UUID `242d9df4-a547-4f86-bc9a-4a3a37d4a1d3`, target
+`2D2E8F0699DA46F0F0A53B9F37E1B6FC`, loopback URL, and peer target were
+unchanged. The committed DOM result and independent server counter both stayed
+at one. The initial reconnect refusal was caused by the fixture's unsupported
+top-level build field, not an authorization grant to weaken the build guard.
+
+Reviewer `crash_path_review` independently identified the raw metadata overwrite
+and reviewed the bounded helper reuse. Primary verified its source findings and
+ran all live checks. No Chrome-process crash, uncertain in-flight replay,
+production broker recovery or production installation is claimed. The default
+MCP daemon issue remains deferred. Ephemeral fixture details and earlier test
+correction are in `docs/dev/notes/2026-09-12-disposable-crash-recovery-test.md`.
+
+## 2026-09-12 | MCP handle routing installed
+
+After the operator confirmed browser workflows paused, scoped checkout
+`/home/bak3r/projects/agent-browser-startup-20260911` received only the reviewed
+`cli/src/mcp.rs` diff. Its previous binary matched the installed SHA exactly;
+the other preexisting source changes were not modified in this slice. The
+rebuilt candidate passed the real isolated MCP retained-route regression.
+
+Guarded publication `local-dashboard-8369b807-a97a-4676-a875-3a6aa9ae752b`
+finished terminal `ready`. Two earlier attempts stopped before mutation because
+the ephemeral dashboard backend changed the expected session inventory. The
+successful attempt captured and checked the immediate inventory against the
+four approved sessions plus the optional dashboard backend, without weakening
+the publisher's exact-set check.
+
+Installed binary SHA-256:
+`3772ea17f4bc27655e196a93ce2d4cebdfd48acb78691be9e48f9cf447b4eeed`.
+Installed manifest SHA-256:
+`58b47f3e03be01c2711cf27f3a9732ac49f975ddbcc8b60b136b050da6cd85f6`.
+Rollback binary:
+`/home/bak3r/.local/bin/agent-browser.pre-local-dashboard-20260912133647`.
+Paired manifest snapshots:
+`/home/bak3r/.agent-browser/publications/.workstation-provenance-H21EZN`.
+Use governed recovery: automatic old-binary restoration is intentionally
+restricted after browser handoff starts, to preserve browser ownership.
+
+Primary verification: installed strict doctor exit 0, success true, zero issues,
+payload ready and binary provenance matching; installed no-launch retained
+status verified. Workshop Chrome PID 505779, exact pinned target/URL and all
+three retained page targets survived the handoff. Both viewer browser PIDs
+were also preserved. Dashboard HTTP/bundle/runtime smoke passed and interlock
+custody was restored. Installed-binary MCP no-launch regression passed; 52
+provenance and 40 publication-doctor fixture cases passed. The three routing
+unit regressions were rerun in the main checkout. No new prompt was sent.
+
+Read-only evaluator `routing_install_review` found no concrete code blocker;
+it independently matched main/candidate routing diffs and reviewed rollback
+boundaries. Full pre-patch source provenance for the candidate's other dirty
+files was not independently reconstructed. Primary owns installation judgment.
+
+Existing long-lived MCP stdio processes still reference deleted old executable
+inodes. New CLI/MCP processes use the installed fix, but existing clients need
+their agent-browser MCP connection refreshed before claiming this routing fix
+is active in those clients. They were not killed or their chats restarted.
+No GitHub writes, Chrome restart, profile replacement or unrelated cleanup.
+
+## 2026-09-12 | MCP retained handle routing compatibility
+
+The prior no-prompt Workshop attach/read/detach test succeeded with explicit
+`browserId` and `sessionName`, preserving the browser and its three tabs.
+Handle-only diagnostics instead selected `default`: the MCP dispatcher ignored
+the handle's retained route. `cli/src/mcp.rs` now derives that route from the
+handle, rejects conflicting or unusable identities before transport, and keeps
+missing retained daemons on the no-launch error path. Daemon-side profile,
+target, freshness and ownership checks remain authoritative.
+
+Validation: `node scripts/run-rust-tests-isolated.js -- service_request` passed
+87 tests, including three new handle-routing regressions. The real isolated
+stdio test `node scripts/test-mcp-retained-route-unavailable.js` passed with
+no daemon, browser or job created. Targeted ESLint, rustfmt for `mcp.rs`, and
+`git diff --check` passed. `cargo clippy --manifest-path cli/Cargo.toml -- -D warnings`
+passed; the stdio regression compiled and exercised the debug candidate.
+CodeGraph was synchronized after the source changes.
+Help, README, commands documentation and the repo
+skill describe the routing contract.
+
+This is a source/candidate fix, not an installed-runtime claim. The running
+installation and retained browser were not replaced, restarted or sent a
+prompt. Existing unrelated worktree changes remain intact. Rollout must use
+the guarded binary/installation-record publication with paired rollback;
+continue copying explicit access-plan routing fields until that rollout.
+
+## 2026-09-12 | Bounded retained job inspection
+
+The MCP adapter output truncated a large historical jobs resource inside JSON.
+The complete installed CLI resource read remained valid: 200 retained records,
+157 succeeded and 43 failed, with no nonterminal records at observation time.
+This was an output-size failure, not evidence that Chrome was stuck.
+
+Use `node scripts/read-service-job-summary.js /home/bak3r/.local/bin/agent-browser`
+from this checkout. The helper captures at most 16 MiB for at most 15 seconds,
+validates the complete resource and unique records, and emits bounded counts
+without job results, prompts, or errors. Unknown states and read failures block
+idle. Exit 0 means observed idle; it is not an exclusive lease. Exit 2 means
+nonterminal work and exit 1 means unavailable. No daemon replacement is needed.
+Regression command: `node --test scripts/test-service-job-summary.js`.
+Validation: all five regression tests passed, targeted ESLint passed, and the
+helper returned complete observed-idle counts against the installed binary.
+The worktree diff check passed. Existing dirty changes were preserved; no
+runtime installation, browser effect, chat submission, or GitHub write occurred.
+The separate live attach/read/detach test remains unverified by this check.
+
+## 2026-09-12 | Desktop startup fix installed with paired rollback
+
+After the operator confirmed other workflows paused, fresh preflight verified
+the exact retained Workshop target, five socket-session names, unchanged source
+and candidate digests, no unresolved publication, and no pending recovery
+attempt. The running native interlock finished naturally before publication;
+it was not killed. No interrupted publisher from the aborted turn was found.
+
+Guarded prebuilt publication `local-dashboard-dc7ac324-d5fc-44a2-a0aa-ed0da247afad`
+reached terminal `ready` at 2026-09-12T12:56:16.743Z. Installed binary SHA-256:
+`2f6d8d80ddf077e11d00cdb8855a7049449229d0497ba7b78a85708beb4e8b79`.
+Installed manifest SHA-256:
+`00d3ec0ba5bb3fa9686bf89a4cf1ad4378f9874f61bf99d60277c7ef04dbb9e2`.
+The only controller update was `scripts/open-rdp-guac-route-displays.js`, SHA-256
+`aea5061dfa5bf8dccd5a1f8ef4ff71c78b622555613037ab6368e5a58841bfef`.
+The paired provenance verifier passed after publication, including unchanged
+assets and permissions. Strict unlocked doctor passed with no degradation;
+HTTP/dashboard embedded-manifest verification passed and the dashboard service
+and interlock timer are active.
+
+All three handoffs preserved browser PIDs: Workshop 505779, route A 495544,
+route B 496206. The exact Workshop target
+`4C4278BF20BBD5794A62582E9622E7D8`, profile, URL and CDP endpoint passed final
+retained verification. The proven idle default daemon was retired; no browser
+was closed. No prompt, navigation, WSL restart, Git commit or GitHub write was
+performed. No new independent review was spawned for this serialized deployment;
+the prior bounded review was retained and live gates were run by the primary.
+
+Main reran 52 provenance cases and the controller-candidate suite before apply,
+then all six isolated startup tests against the actual installed opener. The
+separate installed Workshop helper's digest remained unchanged. Its reviewed
+`--rearm-verified` migration retained the prior receipt and updated artifact pins;
+`--check-readiness` returned `dependencies_ready` and `retainedVerified=true`.
+No reboot was performed, so a full cold-boot end-to-end claim remains unproved.
+The historical cause of unrelated Chrome exits is not resolved by this patch.
+
+Rollback binary:
+`/home/bak3r/.local/bin/agent-browser.pre-local-dashboard-20260912125526`.
+Matching original/candidate manifest and controller snapshots:
+`/home/bak3r/.agent-browser/publications/.workstation-provenance-BTtQ0j`.
+Keep these paired and preserve the publication journal. Do not restore one file
+independently; any subsequent rollback needs the same guarded handoff and a
+reviewed recovery-helper rearm for the restored artifacts.
+
+## 2026-09-11 | Scoped desktop controller publication candidate
+
+Implemented a prebuilt-only, explicit `--controller-update` option. The publisher
+checks the source digest and embedded bytes, snapshots old/new controller files
+with the existing binary/manifest transaction, preserves modes and unrelated
+assets, and recovers interrupted controller/manifest combinations before daemon
+restart. Existing binary-only publication remains the default. No directory
+discovery or blanket publication of dirty work is permitted.
+
+Candidate checkout: `/home/bak3r/projects/agent-browser-startup-20260911`, detached
+at c284351a with the documented already-installed native fixes and installed
+controller bundle copied through reviewed patches. The corrected opener and
+publisher-help text are included; the newer Plan 0131 control-plane change and
+its actions visibility change are excluded. The original worktree is preserved.
+The existing built dashboard assets were copied, not rebuilt from unrelated UI
+work. Candidate debug executable SHA-256:
+`2f6d8d80ddf077e11d00cdb8855a7049449229d0497ba7b78a85708beb4e8b79`.
+Controller SHA-256:
+`aea5061dfa5bf8dccd5a1f8ef4ff71c78b622555613037ab6368e5a58841bfef`.
+
+Primary verified two native fixture-root installations, the second invoked from
+the fixture-installed executable. Both retained the fixed opener, matching
+binary/manifest hashes and all controller digests. All six startup regressions
+passed against the extracted opener. No host provisioning, service activation
+or browser launch occurs in this fixture. Reproduce with the explicit candidate
+path in `AGENT_BROWSER_TEST_CANDIDATE_BIN` and `pnpm test:controller-payload-install`.
+
+Primary validation: 52 provenance fixtures; controller-candidate positive and
+10 rejection cases; 38 Workshop/systemd tests; existing publisher orchestration,
+publication operations, interlock and prebuilt-candidate suites; service-client
+typecheck; scoped ESLint; native build/format/Clippy; docs build; CodeGraph sync;
+diff check. The candidate also passed 115 focused Rust tests: workstation
+installation (26), runtime attach proof (9), service access (37), and service
+health (43), run serially within each module. The docs build retains its existing
+multiple-lockfile warning.
+No new plan was opened; existing recovery acceptance and deployment boundaries
+were audited directly (there is no plans:audit package command).
+
+Delegation: `controller_provenance` implemented only provenance and its fixtures;
+primary read the source and reran them. Fresh read-only evaluator
+`controller_update_evaluator` independently reran both helper suites and returned
+no blocking findings. Main owns candidate selection and installation judgment;
+review of helper code is not live publication approval or installed proof.
+
+At this candidate checkpoint, live installation was held: AuraCall used the retained lane for
+`provider-frontend-response` and `full-joined-writer-progress` shortly before
+preflight. Session `chatgpt-pro` still reports an exclusive AuraCall/codex lease.
+An empty instantaneous job queue is not proof of a quiet maintenance window.
+The operator was asked to pause other browser workflows. No handoff, runtime
+replacement, pin rotation, helper rearm or prompt submission has occurred.
+After that pause, recheck exact sessions/retained identity and run the reviewed
+prebuilt publisher with only the opener update. Require unlocked doctor and
+retained-target verification, then reviewed Workshop helper rearm/readiness.
+
+## 2026-09-11 | Background browser exit evidence
+
+Plan 0131 addresses lost diagnostics after the autonomous document workflow's
+two retained-Chrome exits. Primary inspected broker events, process presence,
+launch stderr and user-systemd timing. No recorded shutdown operation explains
+the exits, and their underlying cause remains unknown. Default daemon logs are
+discarded, so generic process-exited events are insufficient.
+
+Worker `/root/conversation_capacity_detection` reused the existing owned-child
+exit metadata helper in control-plane cleanup before closing the manager. Three
+focused tests passed, covering exit code, signal, polling error and no evidence;
+primary reviewed the diff and independently reran all three tests and Clippy
+with warnings denied; both passed.
+No policy, retry behavior, provider request or installed binary was changed.
+
+While diagnosis ran, a separate controller restored session:chatgpt-pro with
+PID 505779 and navigated the Workshop tab. Installation and live download
+verification require reconciliation with that current owner; no replacement or
+competing navigation was attempted. Full autonomous proposal acceptance remains
+open, including actual source readiness and exact automatic document retrieval.
+
+## 2026-09-11 | AuraCall access-plan readiness mismatch
+
+The document smoke request resp_dde12ed7885d4ada94e7861ad3d041b9 remains
+running with an expired lease after the runtime interruption. No replay was
+submitted and no artifacts have been verified. A subsequent no-launch plan
+selected chatgpt-pro while reading readiness from auracall-chatgpt, incorrectly
+requiring manual seeding. Browser control remains paused at that gate.
+
+Source repair makes default readiness follow the effective selected runtime
+profile while preserving an explicit diagnostic readiness override. The focused
+regression passes, including the explicit override retaining its manual gate.
+This is source-only validation, not installed recovery or live document proof.
+No browser processes or authentication records were changed for this repair.
+Primary validation: all 37 service-access tests passed, cargo format check and
+Clippy with warnings denied passed, and git diff whitespace checks passed.
+CodeGraph was synchronized after the edit. Next is guarded installed-runtime
+publication, then original-response recovery without prompt replay.
+
+Installed at 14:44 UTC through guarded prebuilt publication. Binary digest
+90e5dffdbc360f8fe3f1dfef34ffe0f4c5370ac4f11b1a7d602c68d075529272 and
+workstation manifest digest
+2aa2258a75b1c4e1a2470021548800c3eb9b1ed697b013621fa7e9c554191778
+were published together. Strict unlocked doctor passed. Rollback binary is
+/home/bak3r/.local/bin/agent-browser.pre-local-dashboard-20260911144331;
+paired manifest snapshot is publications/.workstation-provenance-8UP3M0.
+Chrome PID 49015, CDP endpoint and Workshop target survived unchanged.
+Installed CLI readiness now selects chatgpt-pro. Existing pre-upgrade MCP
+server still computes the old readiness result; its queued actions use the
+current broker. Matching the observed shared_display route yields reuse.
+Broker download recovered both original response artifacts without replay;
+retained-browser verification still passed afterwards.
+
 This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
+
+## 2026-09-11 | Opt-in Workshop boot recovery
+
+Status at this historical checkpoint: the exact signed-in Workshop conversation
+was restored, verified and rearmed. Both route desktops were verified live.
+The September 12 entry above records subsequent installation of the tested
+desktop command failure fixes in the packaged runtime.
+
+Historical blocker: the binary-only publisher preserved controller assets.
+Installation requires a rollback-capable controller-payload update; do not
+overwrite packaged files or modify their hashes independently.
+
+Deployment preflight confirmed the installed binary embeds the old opener
+(`5a95949c3cfc81013d6d9a2d3f5712867d4ee7297d5b88cfb948fcf9101d1cad`),
+not the corrected source
+(`aea5061dfa5bf8dccd5a1f8ef4ff71c78b622555613037ab6368e5a58841bfef`).
+Its workstation installer regenerates controller assets from embedded bytes.
+A script-and-manifest hotfix would therefore be reverted by reinstalling that
+binary; doctor success alone would not establish embedded installer coherence.
+The durable path needs a scoped binary-and-controller publication, with a
+reviewed browser handoff if required, not publication of the entire dirty tree.
+No installation or browser mutation was performed during this preflight.
+Independent read-only review `payload_update_review` confirmed the four-hunk
+installed-script delta and the existing matching temporary-route dependency.
+The primary independently verified the embedded bytes and strict installed
+doctor success; the native retained-browser check also passed without launch.
+
+Validation entry point: `pnpm test:workshop-recovery` runs isolated desktop and
+recovery fixtures without touching a browser. The separate opt-in
+`pnpm test:workshop-recovery:systemd` uses disposable user-service processes only.
+
+Preserve the signed-in browser, exact conversation pin and archived failure
+receipts. Do not restart WSL to diagnose this deployment gap. Runtime paths
+remain unchanged.
+
+Full chronological evidence is preserved in
+[Workshop recovery history](docs/dev/notes/2026-09-11-workshop-recovery-history.md).
+Workstream boundaries are listed in
+[the dirty-worktree map](docs/dev/notes/2026-09-11-worktree-map.md).
+
+## 2026-09-11 | Verify Chrome rewritten process titles
+
+AuraCall no-launch reuse found process_profile_mismatch despite the exact
+installed Chrome executable and correct profile argument. Chrome PID 569667
+exposes one space-joined /proc cmdline field. The verifier now accepts only a
+strict unquoted switch-only title headed by the independently verified
+executable, with no spaced executable/profile paths and a profile SingletonLock
+naming the same PID. Existing runtime, executable inode, active-port, listener
+ownership and process-start checks remain mandatory. Failed verifier evidence
+can be re-observed; registry refusals remain ineligible.
+
+Nine proof tests, production Clippy and build passed. Independent read-only
+/root/handoff_race_review identified positional profile-suffix ambiguity;
+primary accepted and rejected positional title tokens, added independent
+SingletonLock validation and negative fixtures, then reran the tests.
+Guarded publication installed SHA256
+9cce482622c3633921d8447a2a0ce6de7b544209c25a8b28c5d704303fd80198 with manifest
+cc385cc59af036411cec3740493a139e6afe5b93f9ea10f90093cf0195db0f2f.
+Strict unlocked doctor and retained continuity passed. Live service readback
+now reports stock_chrome and verified_installed_chrome_runtime_attach for the
+unchanged retained PID/profile. AuraCall subsequently completed text nonce
+request resp_b7c424366b154997a27d8c6c3eb44a1c without launching another browser.
+
+## 2026-09-11 | Distinguish daemon exit from session reacquisition
+
+Fixed publisher retirement classification: a dead original process with stale
+PID metadata is retired; a different live session PID is reacquisition, not a
+timeout and never a termination target. An original exiting between timeout
+and retirement returns already_exited only after descriptor/browser checks.
+The production publisher also rechecks live session inventory immediately
+before replacement. On failure it resumes through the unchanged installed
+runtime; failed resume is uncertain and prevents dashboard restart.
+This is a bounded race repair, not a global daemon-start exclusion mechanism.
+
+Primary validation: daemon-exit, prepared-retirement, publication-operations,
+publisher-orchestration and the complete local-runtime-convergence suites pass;
+scoped ESLint and git diff check pass. Updated the convergence source contract
+to account for the existing three-argument handoff and new vacancy check.
+CodeGraph refreshed the changed area.
+
+Delegation receipt: spawned /root/handoff_race_review for read-only evidence
+and closed-world review; completed. Accepted the source-level false timeout
+finding and one recovery-ordering regression. Primary fixed failed resume
+handling and independently ran failure-injection coverage proving no install
+or restart on uncertain recovery and resume-before-restart on success.
+No broad review loop or new browser-start permission was introduced.
+
+Installed outcome: publication local-dashboard-c4b5a303-ad6d-4ae6-9a9f-bfeabf8365cf
+reached ready at 2026-09-11T13:48:24Z. Installed binary SHA256 is
+3323ff14edfae255d539c21566930b6e92e265bd388193c60c6b07b5ee55e868 and matching
+workstation manifest SHA256 is
+274fbebc21058bbcd9b8257ee9dd0e206154a87861322e50088bf081762c335a.
+Strict unlocked doctor passed with rawSuccess=true, degraded=false and
+workstationPayloadReady=true. Dashboard and interlock timer are active.
+ChatGPT PID 569667 and both route viewer browsers (566675, 567977) survived
+their three controller handoffs; exact ChatGPT target and CDP endpoint passed
+final_readiness. Backup binary is
+/home/bak3r/.local/bin/agent-browser.pre-local-dashboard-20260911134746;
+matching source manifest is preserved by the publication provenance snapshot.
+The default session had independently disappeared before this attempt; its
+false-retirement regression is fixture-proven, not reproduced in this live
+successful publication. Browser page-action smoke was skipped: this proves
+installed runtime and retained continuity, not an AuraCall prompt/answer.
+AuraCall end-to-end verification and subsequent runtime installation remain.
+
+## 2026-09-11 | Exact acquisition selection and recovered publication attempt
+
+Operator approved replacing the obsolete retained requirement. The fresh
+profile's newly acquired target responded with a signed-in Pro composer.
+Live discovery nevertheless rejected four same-URL targets. Preparation now
+passes the complete opened identity into discovery: session, browser, profile,
+target and URL must all agree. Unselected discovery remains strict; duplicate
+exact identities and missing targets still fail closed. Live-pin, discovery
+and requirement fixture suites pass, including the same-URL regression.
+
+The prior chatgpt-pro lane was concurrently restored and its requirement now
+pins target B3C22C284AE36F4E6FF9C69C551FA6B2. Read-only preflight verifies it;
+this turn did not rotate or delete that live requirement.
+
+Guarded prebuilt publication of candidate 3323ff14 failed before installation:
+default lacked a verifiable retirement boundary. Old daemon PID 880 exited,
+but a replacement default daemon was present afterward and the handoff file
+was absent. This is consistent with concurrent reacquisition; causality is
+not proven. Do not bypass retirement checks or kill the replacement daemon.
+Transaction local-dashboard-1716a422-e8d9-4d0a-b577-1e072a942f5e reached
+recovered_rolled_back. Exact receipt recovery restored interlock custody;
+dashboard and timer are active, retained preflight passes, and installed
+SHA256 remains d6bc35878dc456c0ec30456ea96dd68634f83c258cdfe777be331da0611d6329.
+Candidate installation and AuraCall end-to-end/installed smoke remain undone.
+Next repair must coordinate daemon reacquisition with publication, not repeat
+approval requests or assume another blind publication attempt will succeed.
+
+## 2026-09-11 | Reconciliation candidate built; activation held
+
+Locked offline cargo build succeeded. Candidate binary SHA256 is
+3323ff14edfae255d539c21566930b6e92e265bd388193c60c6b07b5ee55e868;
+installed binary remains
+d6bc35878dc456c0ec30456ea96dd68634f83c258cdfe777be331da0611d6329.
+Source service_health.rs still matches the tested digest
+e81652d6f0b6c738fca2012f3969cc0179a712a898c40540e372b9516f747b37.
+
+Read-only publisher preflight failed retained_daemon_missing: the durable
+requirement still pins chatgpt-pro target 3DDDE3A7210A0249DD650CA6674C0BB1.
+No Chrome processes were listed. Actual live socket root is
+/run/user/1000/agent-browser, containing dashboard-service-backend and default;
+home-directory socket/PID files are stale and are not activation evidence.
+No publication, daemon handoff, requirement edit, or AuraCall install occurred.
+Resolve the obsolete retained-lane requirement with the operator before apply;
+do not bypass it with an alternate path or fabricate a live target.
+
+## 2026-09-11 | Reject obsolete process reconciliation results
+
+Reproduced a race in merge_reconciled_service_state: a probe for an old PID
+could mark a replacement browser under the same session ID as ProcessExited.
+The initial regression failed with ProcessExited versus expected Ready.
+Compare both PID and CDP endpoint with the pre-probe snapshot before merging;
+reject obsolete health, tab/session updates and deletions, and scoped events.
+Unchanged-process observations continue through the normal merge path.
+
+Independent read-only evaluator /root/stale_health_review identified three
+accepted companion protections: cleanup deletion, tab/session updates, and
+obsolete events. Its bounded closed-world source review found all addressed
+and no critical regression in this scope. Primary owns test verification.
+The regression covers PID-only and endpoint-only replacement, operational
+cleanup, and unchanged-process acceptance. Primary validation: all six merge
+tests and all 43 service-health tests pass; cargo fmt check, production Clippy
+with warnings denied, and git diff check pass. CodeGraph sync completed.
+
+This demonstrates a source race, not the definitive cause of the observed live
+default-session disappearance. No browser, daemon, or installed executable was
+changed in this slice. AuraCall prompt/answer and subsequent installed-copy
+smoke remain required before claiming the user's installation goal complete.
+
+## 2026-09-10 | Transactional workstation record update installed
+
+The bounded installation objective is live-verified. The guarded publisher
+installed executable SHA256
+d6bc35878dc456c0ec30456ea96dd68634f83c258cdfe777be331da0611d6329
+and its matching same-version workstation manifest together. The manifest digest
+is d0bbc0f41a4e29cda0f7a766da1f59fc1b6828619f951393603a4d20b5808d2b.
+Unchanged support assets, unit files and Guacamole bundle were independently
+hashed before admission; no broad workstation provisioning or secret changes
+were used. Version remains 0.28.0, not a formal release.
+
+Publication transaction local-dashboard-9a9cc9a0-da74-410e-9edc-cee2e24ade59 reached ready after
+HTTP/runtime-manifest checks and exact retained-target verification. The ordinary
+unlocked installed doctor returned success=true, rawSuccess=true, degraded=false,
+workstationPayloadReady=true. Timer custody was restored. Chrome PIDs 785726,
+777235 and 779674 were preserved while their daemon controllers were replaced.
+Workshop target 3DDDE3A7210A0249DD650CA6674C0BB1 retained its profile, browser PID,
+CDP endpoint and canonical conversation identity. No prompt, navigation or
+credential action was performed. Idle default and AuraCall controller sessions
+were retired through the existing compatibility path; no browser was attached to
+those sessions. The dashboard's proven idle backend was recreated by its service.
+
+Implemented source surfaces: local-dashboard-workstation-provenance.js and its
+20-case isolated fixture, publisher orchestration and adapters, session-quiesce
+proof helper, and transaction-scoped doctor helper. Binary and original/candidate
+manifest snapshots are journaled before replacement; recovery pairs the manifest
+with verified installed bytes before restart. Rollback preserves exact original
+manifest bytes/mode and no longer replaces an unchanged executable inode.
+
+Live attempts exposed and corrected dashboard-backend inventory removal,
+unnecessary rollback inode replacement, doctor self-publication lock rejection,
+HTTP startup timing, and transient dashboard event-poll job snapshots. Recovery
+completed the failed source transactions with explicitly degraded receipts whose
+live controller executable hashes and PID start identities matched the source;
+those receipts were not represented as installed readiness. The subsequent
+successful publication reconciled the controllers and passed strict doctor.
+Only the exact owning publication warning is scoped out before commit; unrelated
+doctor issues still fail. Source rollback degradation is limited to explicit
+pre-handoff failure evidence and empty recorded/discovered/resumed handoffs.
+
+Independent bounded review: payload_pair implemented isolated provenance and
+quiescence helpers; pair_review implemented doctor validation and reviewed the
+integration. Primary independently ran their tests and live verification. The
+post-idle evidence freshness finding was accepted as blocking for the source
+preflight and corrected by refreshing browser/viewer/cgroup proof. Its 55-case
+fixture passed, and a final read-only live refresh admitted exactly the idle
+dashboard backend from five current sessions, without stopping anything.
+Historical unrelated rows with no PID or CDP endpoint do not imply ownership;
+backend-associated persisted rows and live process evidence remain guarded. The unrelated
+empty-session uncertain-handoff case remains nonblocking backlog for this
+nonempty retained-session installation scope.
+
+Primary validation: all eleven publisher/provenance/quiescence/doctor fixture
+suites, 26 workstation Rust tests, service-client typecheck, ESLint, Rust format, Clippy with warnings denied,
+native debug build, docs build, CodeGraph sync and whitespace checks. The docs
+build retains its existing multiple-lockfile warning. Planning-contract audit
+returned ok=true with no problems but applicable=false, not plan acceptance.
+No GitHub writes, dirty-worktree cleanup, credential renewal or production
+private-executor enablement occurred. Browser-driven task acceptance remains a
+separate bounded no-prompt exercise; this result establishes the installation
+and retained-browser continuity, not unrestricted autonomous account access.
+
+## 2026-09-10 | Metadata-preserving attachment proof correction
+
+### Guarded activation preflight: workstation provenance blocker
+
+The requested installation/live demonstration stopped before mutation. Current
+installed doctor returned success with no issues and ready workstation payload;
+the native retained-browser requirement returned configured/verified. Candidate
+dry-run returned planned, mutated=false, and verified the same requirement.
+Installed SHA256 remains f95c3f19c00aaab1bc591da1ad59755e9de45730ce8bcb19eeaa8acbbf15c9f5;
+candidate remains 154d08ea045c8a1b6a00d1b58bb230b0cce0738a5241d307c615ac030a081938.
+
+Blocking: the legacy publisher replaces only the binary and validates the live
+runtime manifest, but the installed workstation manifest separately binds the
+old binary SHA256. install.rs requires that binding for payload readiness. This
+publication would turn the currently ready installation into provenance drift.
+Native reconciliation does not update that manifest. Do not manually rewrite
+the expected hash or invoke broad provisioning to conceal the mismatch. The
+next activation path needs a scoped transactional payload/provenance update,
+rollback and a passing post-install doctor.
+
+Read-only MCP access-plan for the exact Workshop URL and chatgpt-pro profile
+reported one active profile lease, no compatible live browser and
+wait_for_profile_lease; no tab request, attach, navigation or prompt followed.
+Systemd inspection also found the interlock activating, so no oneshot was stopped.
+The installed skill's preservation and exact-reuse rules kept browser work closed.
+
+Delegation spawned: /root/activation_preflight independently verified the actual
+manifest/hash mismatch and the absence of a publisher update or reconcile repair
+path. Terminal result STOP was accepted and checked against install.rs and the
+publisher by the primary agent. No code edits, build, installation, service
+mutation, browser input or GitHub write occurred. Existing dirty work remains.
+Documentation-only closeout passed git diff --check. Live browsing capability
+has not been demonstrated by this preflight.
+
+### Native interlock compatibility correction
+
+The publisher now recognizes the exact installed native reconcile command as
+well as the legacy flock wrapper. Native admission checks the service and manager
+environment, supported environment file, and filesystem-remapping directives.
+It refuses unproven roots, busy oneshots and all foreign lock files. No stale
+PID-based takeover is used. A private staged non-PID marker is fsynced, its
+device/inode and executable binding recorded in a version-2 custody receipt,
+then exclusively hard-linked to the native workstation lock. Native reconciliation
+rejects this marker even after publisher death. Exact receipt recovery checks
+the dead owner and original file identity before reacquiring; verified release
+removes only its own marker. Nonterminal failures retain the marker and timer
+custody. A crash before receipt creation can leave an unpublished private stage;
+one after receipt removal can leave an orphan stage. Neither blocks the native
+lock, and no automatic orphan cleanup is claimed.
+
+Delegation spawned: /root/native_lock_review performed read-only protocol review
+and closed-world implementation review. Primary accepted its filesystem-remapping
+finding, rejected those overrides, added fixtures and independently reran tests.
+Reviewer terminal result: no remaining blocking findings in the bounded scope.
+
+Primary validation passed: all eight publisher/retained-browser fixture suites,
+26 workstation Rust tests (including native non-PID marker refusal), service-client
+typecheck, ESLint, Rust format, Clippy with warnings denied, Rust build, docs build,
+and diff whitespace checks. Crash fixtures use actual exited child processes at
+before-link, after-link and after-unlink boundaries; systemd is mocked. CodeGraph
+was synced. Docs retain the existing multiple-lockfile warning. No separate plan
+audit runner was available in the current tool inventory; prior non-applicable
+audit results are not promoted to acceptance.
+
+Read-only installed root/mount-contract verification passed. Installed binary
+SHA256 remains f95c3f19c00aaab1bc591da1ad59755e9de45730ce8bcb19eeaa8acbbf15c9f5.
+Local debug binary SHA256: 154d08ea045c8a1b6a00d1b58bb230b0cce0738a5241d307c615ac030a081938.
+Native helper SHA256: 2f999e6f50ab58d6a9d11fb88d6bfe9951836e6eac43b93718d554494770484a.
+Interlock helper SHA256: 4add8e1a40a8a3bc51b6d7888c3b9fc653bee0fdda4dbe8ad2d5958861e06af2.
+This completes the local compatibility slice, not live activation. No service
+mutation, publication, install, browser input, renewal, credential operation or
+GitHub write occurred. Existing dirty work was preserved. Live all-session
+maintenance and retained-target verification remain a separate guarded step.
+
+### Live preflight: native interlock contract mismatch
+
+Follow-on live preflight confirmed candidate and publisher hashes below remain
+unchanged. Read-only systemd inspection found the installed interlock executes
+the installed binary with `install workstation reconcile --json`, not the older
+flock wrapper used by the new helper fixtures. It was activating/running during
+inspection; its timer was active. The helper requires a structured flock
+ExecStart and therefore cannot admit this installed service even when it idles.
+CodeGraph was current and located WorkstationLock in workstation_install.rs;
+the native reconciler uses .agent-browser/convergence/workstation.lock, an
+exclusive PID-bearing file, not the legacy runtime-directory flock contract.
+
+This is an installed-layout coverage gap in the prior correction. Do not bypass
+the helper, wrap only the timer, or substitute the old lock. Next source slice
+must support the exact native reconcile command and native exclusion semantics,
+including owner-safe release, crash recovery and fixture coverage for the actual
+installed layout before live publication. No publisher apply, timer stop,
+handoff, installation, browser control, credentials, renewal or GitHub write was
+performed. Journal status remained terminal recovered_ready with no publication
+lock or interlock custody receipt; installed SHA256 remains f95c3f19c00aaab1bc591da1ad59755e9de45730ce8bcb19eeaa8acbbf15c9f5.
+Delegation not spawned: the concrete installed-command mismatch was on the
+immediate critical path and ended this bounded maintenance preflight. Prior
+fixture results remain valid for their tested legacy layout, not live acceptance.
+
+### Publisher maintenance source correction
+
+Implemented hash-bound prebuilt publication in the legacy publisher. Required
+prebuilt path, digest and expected-session set reject incomplete options, builds,
+reference sync and disposable browser smoke; HTTP and manifest checks stay on.
+Private executable snapshots retain reviewed bytes independently of workspace
+changes. Atomic installation hashes the copied file before rename and rejects
+generation-selector symlinks. Source snapshots remain available for journal
+recovery; no automatic snapshot cleanup is provided. Session-name checks bound
+the observed batch but are not a global admission fence against other clients.
+
+The publisher now coordinates the exact installed interlock timer/service and
+declared flock. It refuses an active oneshot, stops only the timer, and holds a
+parent-owned lock descriptor across asynchronous work. Immutable custody intent
+is synced before timer mutation. Verified success or rollback restores prior
+timer state; nonterminal failure retains stopped-timer custody. Exact receipt-ID
+recovery requires the previous publisher to be dead and never implicitly claims
+an unresolved receipt. Journal status exposes that receipt without mutation.
+No-op recovery with no journal/custody performs no systemd operation.
+
+Delegation: /root/interlock_guard implemented only the new guard and its fixture;
+primary inspected/integrated it and reran tests. /root/publisher_review completed
+independent read-only review. Primary accepted two blocking findings: failed
+recovery admission restoring timer custody, and unknown first-handoff outcomes
+being treated as safe rollback. Both are fixed. Uncertainty is recorded in the
+first failure commit; recovery also recognizes legacy failedAtPhase evidence.
+Incomplete prepared-session evidence refuses recovery without replay. Reviewer
+closed-world verification passed, including the intermediate-journal crash gap.
+
+Primary final validation: eight fixture suites passed (prebuilt candidate,
+publication interlock, publisher orchestration, publisher lifecycle, publication
+journal, publication operations, retained browser guard, retained live pin).
+The interlock fixture uses mock systemd and real temporary-file flock to verify
+exclusion across await. Service-client typecheck, ESLint, Rust format, Clippy with
+warnings denied, Rust build and docs build passed. CodeGraph synced nine changed
+files. The docs build retains its existing multiple-lockfile warning. An initial
+planning audit reported no problems but applicable=false; it is not independent
+plan acceptance. Final diff whitespace validation passed. An initial
+operations fixture exposed an unnecessary read-only systemd check on no-op
+recovery; corrected and additionally isolated its systemctl/PATH/runtime/bus.
+An unused import initially failed lint and was removed before the passing rerun.
+No live install, service stop, handoff, browser input, credential operation,
+renewal or GitHub write occurred; existing dirty work remains intact.
+
+SHA256 local debug binary after the publisher-help update (not installed):
+f6cc50216e4b1afef1bcc172047ec719b803bf58c3dc5a35d75fca333be0a6e0
+SHA256 scripts/publish-local-dashboard-runtime.js:
+39e966171ff249974b23ff75388d9b00e42eab1ca6e3114fbe80bf945b0ed746
+SHA256 scripts/lib/local-dashboard-prebuilt-candidate.js:
+2fdb2c395f4fa370b029b101a90c5e94971399b2d11722bba33acf6668873215
+SHA256 scripts/lib/local-dashboard-publication-interlock.js:
+818e1e8b74ced5c798a49cf9fff98ea8f01b4000d055fe670b6c77f23aa590d9
+SHA256 scripts/lib/local-dashboard-publisher-orchestration.js:
+a4cfcac9120c47199894592c881ba6ae2537d2eb79e44b922502180aa63fa215
+
+Next live gate remains a quiet, explicitly scoped all-session maintenance window
+with fresh process/target/cgroup evidence and the exact candidate digest. These
+fixtures do not prove deployed broker reuse, current sign-in or SAM renewal.
+
+### Activation preflight: held before mutation
+
+Follow-on maintenance inspection confirmed the source and local binary hashes
+below are unchanged. Installed binary remains
+f95c3f19c00aaab1bc591da1ad59755e9de45730ce8bcb19eeaa8acbbf15c9f5,
+a regular legacy-layout file, not a generation selector. Installed dry-run
+reported mutated=false and the retained requirement verified without launch.
+Compact doctor reported five converged runtimes, no stale runtimes, installed
+payload and dashboard ready, and zero cleanup candidates; exit 1 was solely
+path_command_workspace_binary_mismatch. This is not activation acceptance.
+
+No-launch MCP access-plan still selected litscout-sam-linux with zero compatible
+live browsers and retained_browser_build_mismatch_or_missing_proof. No queued
+request followed. Process/cgroup inspection found the four retained browser
+roots for chatgpt-pro, default/SAM, and the two RDP viewer sessions outside the
+dashboard cgroup. The dashboard uses KillMode=control-group. Retained state
+showed no active jobs; this observation is not an admission fence.
+
+Blocking maintenance gap: the publisher always rebuilds rather than consuming
+the hash-pinned tested artifact, processes all socket sessions, and does not
+coordinate the runtime-interlock timer. The interlock was running on first
+inspection, subsequently finished, and its timer remains enabled. The publisher
+also deliberately skips original-binary restoration after handoff begins.
+The installed skill describes newer census/generation transactions absent from
+this checkout's workstation installer; those guarantees cannot be assumed.
+Journal inspection showed terminal recovered_ready history, no publication lock,
+and no recovery recommendation; its installed-artifact classification is unknown,
+not a verified rollback receipt for the current binary.
+
+Independent read-only /root/activation_scope completed source review. Primary
+accepted mandatory rebuild and uncoordinated interlock as blocking, verified
+legacy layout and separate browser cgroups, and retained all-session/rollback
+scope as required maintenance evidence. CodeGraph was current and identified
+the publisher orchestration callers and existing fixture suite. No code edits,
+install, service stop, handoff, browser input, credential operation, renewal or
+GitHub write occurred. Next bounded slice: hash-bound prebuilt activation with
+interlock coordination, exact affected-session admission, and explicit recovery
+receipts, covered by isolated publisher fixtures before live maintenance.
+
+Implemented exact retained-session proof refresh for metadata=None health writes.
+The helper verifies the existing sole browser binding, profile, PID and endpoint
+before invoking the existing process verifier; only build-proof fields change.
+Registry refusals and non-stock builds remain unchanged. A failed process check
+clears stale build/path projections. It does not create ownership or launch.
+
+Independent read-only `/root/handoff_fix_review` found an initial two-write crash
+window. Accepted as blocking and corrected: refresh now runs in the same health
+repository mutation, before attachability derivation. Regression exercises the
+integrated persistence path, idempotence, seven identity/policy mismatch cases,
+process-listener loss and preservation of every non-proof state field.
+No live handoff, installation, credential action or renewal has been performed.
+
+Final corrected-source validation: isolated runtime_attach_proof filter passed
+8/8; widened native filter passed 1,242 with 73 ignored and zero failures.
+Both used CARGO_INCREMENTAL=0. Rust format, Clippy with warnings denied,
+ESLint, service-client typecheck, docs build, local Rust build and diff check
+passed. CodeGraph sync completed. Planning audit reported ok with no problems
+but applicable=false; this is not independent plan acceptance. The docs build
+retains the existing multiple-lockfile warning. Follow-up independent review
+confirmed the atomicity correction and found no critical introduced regression.
+
+SHA256 runtime_attach_proof.rs:
+6204a6c48adb178ae05ca5522188e2aec128eedc3f52ffbc6d5d8bcb1d050f64
+SHA256 local cli/target/debug/agent-browser (not installed):
+d008a9f6e888364534229c6400ae34e5904cd5510c5e80460447916bbd6739bf
+
+## 2026-09-10 | SAM attachment proof activation diagnosis
+
+Read-only installed retained-browser-status verified the configured requirement.
+Installed compact doctor reported runtime convergence, dashboard and payload
+ready, no stale runtimes, and only path_command_workspace_binary_mismatch.
+The retained SAM session still records stock_chrome with applied=false and
+no_matching_preference_binding; browser health alone does not supply build proof.
+
+Independent read-only reviewer `/root/sam_activation_review` completed. Primary
+verified its blocking finding: handoff resume calls persist_current_browser_health
+with metadata=None, while the new attachment verifier is inside metadata.map.
+Therefore preserved-metadata handoff skips proof refresh. Handoff preservation
+is not proof repair, and the shared publisher additionally affects other lanes.
+No handoff, installer apply, attachment, browser replacement, credentials or
+renewal was performed. Next bounded implementation must refresh only the exact
+retained binding through the verifier and cover metadata=None plus identity drift
+before any activation proposal.
+
+Initial focused test command discovered zero tests after the prior publication
+snapshot shared the Cargo output directory. This is not acceptance evidence.
+CARGO_INCREMENTAL=0 with the isolated runner forced recompilation of the actual
+checkout and passed all seven runtime_attach_proof tests. No production state
+or ownership evidence was edited to clear the refusal.
 
 ## 2026-09-10 | Scoped private coordinator publication
 
@@ -145,6 +1633,243 @@ SAM quota bookkeeping and may have incremented the local counter (approximately
 eight validations; exact delta unverified). No live HTTP occurred and no quota
 history was reset. All final delivery tests and the interoperability helper now
 redirect both quota path and cached state to their temporary fixture.
+
+## 2026-09-10 | Approved timer pause and broker-owned SAM recovery
+
+User approved pausing the failing maintenance timer and broker-owned recovery.
+Stopped only `agent-browser-runtime-interlock.timer`; verified inactive and no
+running reconciliation MainPID before recovery. Workstation dry-run still
+refused `retained_browser_missing`; no installer apply, requirement rotation,
+ownership fabrication or forced shutdown was attempted. The timer remains
+paused intentionally pending resolution of that separate retained requirement.
+
+The no-launch broker access plan selected saved profile `litscout-sam-linux`,
+reported zero live browsers/active leases and recommended `launch_new_browser`.
+Exact scoped executable preflight passed for installed Linux Chrome
+152.0.7977.82. Submitted one recommended service `tab_new` to SAM account details
+with detach cleanup. The broker created browser/session `session:default` /
+`default`, PID 467915, DevTools port 33729, using the existing user-data directory.
+No duplicate lane, saved-profile deletion or alternate profile was requested.
+
+The new SAM target C1538FDDC6F432F3130E7A9D8EFA7324 rendered `https://sam.gov/`
+with title `Home | SAM.gov`, not the requested authenticated account-details
+page. The saved profile also restored Login.gov target
+2B1F56A6AD4FD80C1F7346A9D10B22A7. Retrieved its broker-issued handle from service
+inventory and performed bounded metadata-only evaluation: canonical URL
+`https://secure.login.gov/`, title `Sign in | Login.gov`, document complete,
+email and password field presence true. No input values or page body were read.
+The first evaluate was rejected before execution for missing positive timeout;
+the corrected five-second request passed. A target-only handle-refresh request
+was rejected for lacking a handle; used actual broker inventory, not a fabricated
+handle. No input action or submission occurred.
+
+Fresh access plan now reports one compatible live browser and
+`reuse_existing_browser` for the exact profile. Service inventory proves stock
+Chrome/executable metadata and valid handles to the two observed canonical URLs.
+Browser recovery is verified; authentication and the full Slack/Login.gov/MFA/
+SAM renewal/LitScout consumer sequence are not. Private-executor and consumer
+installation gates remain in place, and stale pre-recovery private bindings
+must not be reused for the new browser/target identity.
+
+No binary installation, source implementation change, credential retrieval,
+backup-code use, renewal, ChatGPT prompt or GitHub write. RUNBOOK and Plan 0130
+only; diff hygiene checked. No delegation: this was a short sequential operation
+with exact plan/preflight/handle checks, not an independent implementation lane.
+The agent-browser skill's broker-first recovery and retained-profile safeguards
+guided the operation. Keep the restored browser and paused timer as recorded.
+
+## 2026-09-10 | Goal revalidation found the retained runtime missing
+
+The preceding goal turn was progress: it completed the final optimized build
+and established the shared-maintenance blocker. This continuation revalidated
+current state rather than assuming that the previous browser still existed.
+Installed retained-browser status now fails with `retained_daemon_missing`.
+Supported `runtime status litscout-sam-linux` reports `browserAlive=false`,
+`devtoolsReachable=false`, no port and no targets. PID 2774558 remains only in
+the stale runtime record; its proc executable is absent. The recovery daemon
+is also absent. The recorded WebSocket must not be reused as live authority.
+The runtime interlock remains failed, exit status 1. No host-ingress ownership
+metadata exists; do not manufacture it or use forced shutdown/reconciliation
+to manufacture ownership for this legacy state.
+
+The full acceptance objective remains protected Slack credential retrieval,
+Login.gov sign-in and required MFA, SAM key renewal, protected delivery into
+LitScout, and a verified consumer use of the installed key. None is established
+by build success. Source inspection still finds `renewalEnabled=false` on the
+private controller response, independent approval required by bound execution,
+and LitScout `credential_approvals.py` rejecting the authentication-executor
+installation path with `credential_authentication_executor_unavailable`.
+No passwords, backup codes, Slack messages, API keys or page content were read.
+
+The next dependency is now authorized broker-owned runtime recovery, not merely
+refreshing an existing connection. The prior maintenance approval question is
+still unanswered by the automatic goal continuation. Stop at that boundary;
+no installation, launch, handoff, shutdown, lease deletion, credential retrieval
+or renewal was attempted. No delegation this turn: current-state revalidation
+was a short sequential check with no independent implementation lane. Only
+RUNBOOK and Plan 0130 changed; diff hygiene was checked. The goal remains active
+and incomplete; this is not an end-to-end pass.
+
+## 2026-09-09 | Activation preflight stopped at shared-runtime maintenance drift
+
+User approved proceeding with controlled activation. Read-only install doctor
+reported seven existing issues: six stale executable daemon records
+(`bwkuehl-headless-qa-20260907`, `chatgpt-pro`, `cloudflare-login-handoff`, and
+the A/B/C route viewers), plus `workstation_payload_partial_or_drifted`.
+Dashboard, service, launch config and remote-view privileges were ready;
+the retained-browser requirement verified before and after inspection.
+
+The active five-minute runtime-interlock timer invokes the shared installed
+binary's workstation reconciler. Its naturally scheduled cycle ran during
+inspection and failed with `install doctor did not report ready`, exit status 1.
+The reconciler also manages canonical Guacamole routes/displays and user units.
+Replacing the shared binary is therefore not a SAM-only activation. Do not
+silently run the all-session publisher or full workstation apply under a narrow
+session repair. A coordinated maintenance window must explicitly include the
+timer, shared payload and affected retained connections before installation.
+
+The no-launch SAM plan still sees one retained lease but zero compatible
+browsers and reports `retained_browser_build_mismatch_or_missing_proof`.
+Runtime status verified PID 2774558, port 42717, original browser WebSocket and
+the original Login.gov and new-tab page targets. No auth probe, navigation,
+prompt, capability mutation, handoff prepare, close or binary install was run.
+The seven isolated provenance tests passed again and diff hygiene passed.
+The refreshed optimized build completed successfully from the final verifier
+source. Candidate SHA-256:
+`11428079f6accfdc0c3ada017007ad1c84363ce6fd8ab03784c7a67a4572c20c`.
+Installed binary remains unchanged, SHA-256:
+`cb131da45e9e4ad0547b72d1e160fc018891bf7aba06980f0b0bbcfc6e58323d`.
+
+Delegation: `/root/activation_boundary` completed read-only source review.
+Primary confirmed that ordinary daemon startup does not enable private
+controller execution, and that explicit `handoff prepare` persists exact
+browser authority and stops only the daemon; `handoff resume` restores it.
+`leave-open close` is not a close-time override. The full publisher is broader
+than the selected-session path. These findings informed the stop decision;
+they do not constitute a live handoff test. Existing dirty work remains intact.
+
+## 2026-09-09 | Managed runtime attachment provenance repaired locally
+
+Bounded local repair of the preceding SAM blocker, with independent security
+review and no ChatGPT submission. Added `runtime_attach_proof.rs` and hooked it
+into common managed-attachment metadata persistence. On Linux, installer proof
+requires the recorded runtime/profile/PID, canonical profile directory, exact
+connected browser WebSocket, DevToolsActivePort, process executable path and
+inode, process start ticks, profile arguments, and process-owned loopback
+listener to agree. Requested executable preferences alone are not proof.
+Registry refusals and non-stock builds remain closed. Failed re-verification
+clears persisted build/executable rather than keeping stale positive evidence.
+The check never launches, navigates, closes, or changes a profile or binding.
+
+Primary validation: seven focused tests passed; widened isolated native suite
+passed 1,235 tests, with 70 ignored and the crash-child fixture excluded. Rust
+format, Clippy with warnings denied, service-client typecheck, root ESLint, docs
+production build, native development build, and diff check passed. After the
+final guard preserving existing non-Linux/non-stock authority, both focused and
+widened suites passed again. Current development binary SHA-256:
+`2e34b8adae3a35e486f62e00e2b4bbb9f975a7e9626bb4d8f6979510ec5a6076`.
+Verifier source SHA-256:
+`b6c43871421600d0a4df69977d3a1376e46b0ff81bf8f4aa79f070de0eaf8c78`.
+An optimized build also completed, but began before that final guard; rebuild
+the optimized candidate before any installation. The first widened command had an
+argument-separator error and ran no tests; the corrected invocation passed.
+Planning audit returned no problems but `applicable=false`, not substantive
+plan-contract certification. CodeGraph was synced; its affected-test suggestions
+were not useful for this Rust surface, so direct focused/native suites govern.
+
+Delegation receipt: spawned `/root/attach_proof_review` for read-only acceptance
+and closed-world review. Completed with no critical remaining findings; primary
+inspected its evidence and retained exact listener ownership and registry-gate
+requirements. Added selected-executable mismatch coverage after its test-gap
+note. Process-change race branches are inspected, not separately fault-injected.
+
+Source/build staging only; no runtime installation or daemon replacement in
+this slice. A read-only process/state check still found PID 2774558, Linux Chrome
+152.0.7977.82 and the original recorded browser WebSocket/port 42717. This does
+not prove live broker reuse of the new code. Activation must account for the
+shared installed runtime and unrelated pre-existing dirty implementation before
+a controlled leave-open connection refresh. Do not replace Chrome or erase a
+lease to deploy this repair. Authentication, renewal, and GitHub writes remain
+out of scope; the entire dirty worktree is preserved.
+
+## 2026-09-09 | SAM retained runtime attached; build proof still blocks reuse
+
+After explicit approval to reconcile the existing browser, inspected the
+installed runtime help and attach implementation. Used the supported
+`runtime attach litscout-sam-linux` with session `litscout-sam-recovery`, explicit
+runtime profile and `leave-open`. The session name was absent from the prior
+session inventory. Result: `attached=true`, `attachedToExistingBrowser=true`,
+DevTools port 42717. This created an automation connection, not a browser.
+
+Before/after runtime status preserved browser PID 2774558, exact browser
+WebSocket identity, Login.gov page target FAA0D733399AC22A5C7F7A7F415593AF and
+new-tab target 7BDFD0FE86F1740050DFE49489EFD933. Proc executable still resolves
+to Linux Chrome 152.0.7977.82. Service now projects
+`session:litscout-sam-recovery`, health ready, profile `litscout-sam-linux`, a
+valid handle to `https://secure.login.gov/`, and cleanup `detach`.
+
+Partial recovery only: access-plan refuses reuse with
+`retained_browser_build_mismatch_or_missing_proof`, zero compatible browsers,
+and `wait_for_profile_lease`. The projected browser has null `browserBuild`
+and `executablePath`; `browserBuildProof.applied=false` with
+`no_matching_preference_binding`. Runtime attach did not preserve the scoped
+service/task attribution used by the routing rule. Do not solve this by
+broadening the rule, fabricating proof, deleting the lease or launching again.
+Next engineering boundary is verified existing-process build attribution in
+the supported runtime-attach path, followed by no-prompt reuse verification.
+
+No page snapshot, input, credential access, renewal, navigation, browser closure,
+GitHub write or binary installation. Connection retained deliberately for
+recovery; browser stays open. Only RUNBOOK and Plan 0130 changed in source.
+Validation was installed attach receipt plus independent runtime, process,
+service-browser/session and no-launch access-plan readback, not code tests.
+Agent-browser skill guided preservation and refusal handling. Delegation:
+`not_spawned`, bounded sequential operator recovery had no independent lane.
+
+## 2026-09-09 | SAM inspection executable routing and retained-profile blocker
+
+Authorized bounded routing repair used the installed registry upsert API, not
+raw Service State edits. Added `browserPreferenceBindings` record
+`litscout-sam-linux-readonly-inspection`: scope `task`, target `sam-gov`, service
+`LitScout`, task `sam-readonly-page-recipe-review`, empty account filter,
+build `stock_chrome`, priority 200. All three populated filters are conjunctive.
+It names host `linux-local-headless`, executable `sam-chrome-152-7977-82-linux`,
+and capability `sam-chrome-152-7977-82-cdp`. The exact profile compatibility row
+is `litscout-sam-linux-chrome-152` for `litscout-sam-linux`, with reason
+`same_browser_family` and no operator override. Other routing rules were preserved.
+
+The executable record points to
+`/home/bak3r/.agent-browser/browsers/chrome-152.0.7977.82/chrome`.
+Its capability records observed headed/CDP support, not headless support.
+`sam-chrome-152-7977-82-observed-launch` records only observation of an existing
+launch at 2026-09-10T01:19:01Z: live PID 2774558, matching proc executable,
+ELF x86-64 and version check, headed managed runtime and reachable DevTools.
+It does not attest broker custody, new launch, authentication or renewal.
+Initial routing used the existing .42 registry executable; after discovering
+the live .82 process, both the binding and compatibility row were corrected to
+.82 to avoid a future downgrade. No profile contents or global defaults changed.
+
+Primary no-launch verification: exact request reports `validated_binding_applied`
+and the .82 Linux path; changed task does not match; unregistered profile reports
+`profile_compatibility_missing_or_blocked`. A success envelope on these negative
+preflights is not launch authorization. All three report `wouldLaunch=false`.
+
+One authorized `tab_new` attempt, before the .82 discovery, refused the occupied
+profile and returned PID 2774558. No retry or raw attachment followed. The
+prescribed runtime-status diagnostic reports a page titled `Sign in | Login.gov`
+at `https://secure.login.gov/`, target `FAA0D733399AC22A5C7F7A7F415593AF`, plus a
+new tab. This is metadata, not rendered form or successful authentication proof.
+The service access plan had reported no compatible browser despite this live
+profile owner. Preserve that process and stop at the requested sign-in boundary;
+exact broker custody reconciliation is required before later automated inspection.
+
+Delegation: `spawned`, `/root/sam_route_review`, completed read-only source review.
+Primary accepted its evidence that preflight skips service-profile preparation
+used by actual launch. Therefore the earlier Windows preflight path alone did
+not prove an actual Windows launch. CodeGraph and agent-browser skills guided
+the source trace and no-launch checks. No Rust/JS implementation changed, so
+compilation and code suites were not rerun. No credentials, renewal, service
+restart, browser closure, Pro submission or GitHub writes. Dirty work preserved.
 
 ## 2026-09-09 | Plan 0130 production handoff boundary assessment
 
@@ -8949,3 +10674,22 @@ renewal stays disabled and no live credential was used.
   consumed before I/O and cannot be rebuilt from saved public references.
 - No renewal runtime is enabled. Encrypted staging, retained-browser transitions,
   verified privacy cleanup and the guarded key/consumer handoff remain required.
+
+### 2026-09-19: mixed-generation retained-runtime convergence
+
+- Fixed service-state compatibility so current writers preserve opaque
+  `runtimeCustodyReceipts` required by an older live daemon.
+- Added fail-closed schema-v2 handoff verification and two digest-bound internal
+  recovery tools. The last-resort attached-existing path can revoke only an
+  exact stale deleted daemon after proving the preserved browser, profile,
+  loopback DevTools endpoint, target, and service projection; it never treats
+  daemon staleness as authority to terminate or relaunch Chrome.
+- Recovered the six retained runtime lanes without changing their Chrome
+  processes. The final no-launch install doctor reported `ready`, runtime
+  convergence `converged`, and zero stale runtimes. See
+  `docs/dev/notes/2026-09-19-mixed-generation-runtime-custody-recovery.md` for
+  the failure mode, safety boundary, and reproducible validation command.
+- The isolated service file-transfer smoke then found and fixed explicit
+  `executablePath` loss in auto-launch plus a test-only privacy-mode mismatch.
+  The rerun passed exact upload/download digest and filename provenance checks,
+  and the complete Rust suite passed after the fix.

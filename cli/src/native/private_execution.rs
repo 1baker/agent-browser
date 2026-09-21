@@ -527,7 +527,9 @@ mod tests {
                     }
                 }
             });
-            let client = CdpClient::connect(&endpoint).await.unwrap();
+            let endpoint_fixture =
+                crate::native::cdp::client::TestCdpEndpoint::new(&endpoint).unwrap();
+            let client = endpoint_fixture.connect().await.unwrap();
             let mut raw = client.subscribe_raw();
             let operation = if read_key {
                 operation(

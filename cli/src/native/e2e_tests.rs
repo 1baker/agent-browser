@@ -38,6 +38,160 @@ fn get_data(resp: &Value) -> &Value {
     resp.get("data").expect("Missing 'data' in response")
 }
 
+#[tokio::test]
+#[ignore]
+async fn e2e_repeated_owned_launch_preserves_build_proof() {
+    let installed = crate::install::find_installed_chrome().expect("installed Chrome required");
+    let (root, profile) = e2e_temp_profile("repeat-owned-proof");
+    let session = format!("repeat-proof-{}", std::process::id());
+    let guard = EnvGuard::new(&["AGENT_BROWSER_SESSION"]);
+    guard.set("AGENT_BROWSER_SESSION", &session);
+    let mut state = DaemonState::new();
+    let launch = json!({"id":"proof-launch", "action":"launch", "headless":true,
+        "browserBuild":"stock_chrome", "browserHost":"local_headless",
+        "profile":profile, "executablePath":installed});
+    let first = execute_command(&launch, &mut state).await;
+    assert_success(&first);
+    let before = execute_command(&json!({"id":"before","action":"browser_pid"}), &mut state).await;
+    let repeated = execute_command(&launch, &mut state).await;
+    let after = execute_command(&json!({"id":"after","action":"browser_pid"}), &mut state).await;
+    let persisted = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap())
+        .load()
+        .unwrap();
+    let browser = persisted
+        .browsers
+        .get(&format!("session:{session}"))
+        .unwrap()
+        .clone();
+    let closed = execute_command(&json!({"id":"close","action":"close"}), &mut state).await;
+    assert_success(&closed);
+    assert_success(&repeated);
+    assert_eq!(get_data(&repeated)["reused"], true);
+    assert_success(&before);
+    assert_success(&after);
+    assert_eq!(get_data(&before)["pid"], get_data(&after)["pid"]);
+    assert_eq!(
+        serde_json::to_value(browser.browser_build).unwrap(),
+        "stock_chrome"
+    );
+    assert_eq!(browser.browser_build_proof.unwrap()["applied"], true);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+#[ignore]
+async fn e2e_native_broker_attach_and_idempotent_detach_preserve_browser() {
+    let installed = crate::install::find_installed_chrome().expect("installed Chrome required");
+    let (root, profile) = e2e_temp_profile("native-broker-attach");
+    let session = format!("native-broker-{}", std::process::id());
+    let guard = EnvGuard::new(&["AGENT_BROWSER_SESSION"]);
+    guard.set("AGENT_BROWSER_SESSION", &session);
+    let requested_url = "data:text/html,<title>broker fixture</title>";
+    let mut state = DaemonState::new();
+    assert_success(&execute_command(&json!({
+        "id":"launch", "action":"launch", "headless":true, "browserBuild":"stock_chrome",
+        "browserHost":"local_headless", "profile":profile, "executablePath":installed, "url":requested_url,
+    }), &mut state).await);
+    // Chrome canonicalizes data: URLs during navigation. Bind against the
+    // browser's rendered canonical URL, exactly as a broker client must.
+    let url = state
+        .browser
+        .as_ref()
+        .unwrap()
+        .active_page_url()
+        .unwrap()
+        .to_owned();
+    let target_id = state
+        .browser
+        .as_ref()
+        .unwrap()
+        .active_target_id()
+        .unwrap()
+        .to_owned();
+    let handle = json!({
+        "browserId": format!("session:{session}"), "sessionName": session,
+        "tabId": format!("target:{target_id}"), "targetId": target_id,
+        "profileId":"broker-e2e", "profileOrigin":"agent_browser_owned", "valid":true,
+        "url":url,
+    });
+    let attached = execute_command(
+        &json!({
+            "id":"attach", "action":"cdp_attach", "cdpAttachmentAllowed":true,
+            "serviceTabHandle":handle, "params":{"brokerTransport":true,"expectedUrl":url},
+        }),
+        &mut state,
+    )
+    .await;
+    assert_success(&attached);
+    let binding = get_data(&attached)["binding"].clone();
+    assert_eq!(get_data(&attached)["controlPlaneMode"], "broker");
+    assert!(get_data(&attached).get("browserWebSocketUrl").is_none());
+    let page_session_id = state
+        .browser
+        .as_ref()
+        .unwrap()
+        .active_session_id()
+        .unwrap()
+        .to_owned();
+    let client = &state.browser.as_ref().unwrap().client;
+    client
+        .send_command_with_timeout(
+            "Page.enable",
+            Some(json!({})),
+            Some(&page_session_id),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    client
+        .send_command_with_timeout(
+            "Page.reload",
+            Some(json!({})),
+            Some(&page_session_id),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    let mut event_batch = Value::Null;
+    for attempt in 0..10 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        event_batch = execute_command(
+            &json!({
+                "id":format!("events-{attempt}"), "action":"__broker_transport",
+                "brokerRequest":{"operation":"events", "requestId":format!("events-{attempt}"),
+                    "binding":binding, "cursor":0},
+            }),
+            &mut state,
+        )
+        .await;
+        if event_batch["data"]["events"]
+            .as_array()
+            .is_some_and(|events| !events.is_empty())
+        {
+            break;
+        }
+    }
+    assert_success(&event_batch);
+    assert!(event_batch["data"]["events"]
+        .as_array()
+        .is_some_and(|events| !events.is_empty()));
+    for id in ["detach-first", "detach-second"] {
+        let detached = execute_command(
+            &json!({
+                "id":id, "action":"__broker_transport",
+                "brokerRequest":{"operation":"detach", "requestId":id, "binding":binding},
+            }),
+            &mut state,
+        )
+        .await;
+        assert_success(&detached);
+        assert_eq!(get_data(&detached)["browserPreserved"], true);
+    }
+    assert_success(&execute_command(&json!({"id":"title", "action":"title"}), &mut state).await);
+    assert_success(&execute_command(&json!({"id":"close", "action":"close"}), &mut state).await);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn native_test_fixture_html(name: &str) -> &'static str {
     match name {
         "drag_probe" => include_str!("test_fixtures/drag_probe.html"),

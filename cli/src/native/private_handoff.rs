@@ -430,18 +430,39 @@ mod tests {
         let (fixture, store) = store();
         let before = std::fs::read_dir(&fixture.0).unwrap().count();
         let mut authority = authority();
-        authority.expires_at = SystemTime::now() + Duration::from_millis(30);
         let (mut writer, reader) = UnixStream::pair().unwrap();
-        let sender = tokio::spawn(async move {
-            writer.write_all(&wire(&payloads())).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(60)).await;
-            writer.shutdown().await.unwrap();
-        });
+        writer.write_all(&wire(&payloads())).await.unwrap();
+        reader.readable().await.unwrap();
+        authority.expires_at = SystemTime::now() + Duration::from_millis(100);
+        let expires_at = authority.expires_at;
+        let mut receiving = Box::pin(receive(reader, authority, store));
+        // The entire frame is readable, but EOF is withheld. Prove admission
+        // has not completed instead of racing a separately scheduled sender.
+        assert!(futures_util::poll!(&mut receiving).is_pending());
+        assert_eq!(std::fs::read_dir(&fixture.0).unwrap().count(), before);
+
+        // Tokio's monotonic sleep is not evidence that SystemTime expired.
+        // Observe the same clock as the authority, bounded against clock stalls.
+        let wait_started = std::time::Instant::now();
+        while SystemTime::now() < expires_at {
+            assert!(wait_started.elapsed() < Duration::from_secs(5));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        writer.shutdown().await.unwrap();
+        assert!(matches!(receiving.await, Err(FAILED)));
+        assert_eq!(std::fs::read_dir(&fixture.0).unwrap().count(), before);
+    }
+
+    #[test]
+    fn expired_validated_frame_never_stages() {
+        let (fixture, store) = store();
+        let before = std::fs::read_dir(&fixture.0).unwrap().count();
+        let mut authority = authority();
+        authority.expires_at = SystemTime::UNIX_EPOCH;
         assert!(matches!(
-            receive(reader, authority, store).await,
+            stage_validated(serde_json::to_vec(&payloads()).unwrap(), authority, store),
             Err(FAILED)
         ));
-        sender.await.unwrap();
         assert_eq!(std::fs::read_dir(&fixture.0).unwrap().count(), before);
     }
 }

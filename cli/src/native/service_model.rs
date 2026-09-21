@@ -2324,6 +2324,11 @@ pub struct RemoteViewHandoff {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ServiceState {
+    /// Committed executable-handoff receipts remain authoritative while an
+    /// older custody-aware daemon still owns a retained browser. Keep this
+    /// opaque map even when the current build does not consume the receipt so
+    /// mixed-generation service-state writes cannot strand that daemon.
+    pub runtime_custody_receipts: BTreeMap<String, Value>,
     pub control_plane: Option<ControlPlaneSnapshot>,
     pub reconciliation: Option<ServiceReconciliationSnapshot>,
     pub events: Vec<ServiceEvent>,

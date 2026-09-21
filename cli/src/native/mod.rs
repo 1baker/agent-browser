@@ -85,6 +85,9 @@ pub mod remote_view_lease;
 pub mod remote_view_proof;
 #[allow(dead_code)]
 pub mod retained_browser_requirement;
+mod runtime_attach_proof;
+#[cfg(target_os = "linux")]
+mod runtime_handoff_v2;
 #[allow(dead_code)]
 pub mod screenshot;
 #[allow(dead_code)]
