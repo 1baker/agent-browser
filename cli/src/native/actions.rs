@@ -4706,7 +4706,10 @@ fn task_authority_control_requires_confirmation(action: &str) -> bool {
     )
 }
 
-fn task_authority_active_target(cmd: &Value, state: &DaemonState) -> Result<(String, String), String> {
+fn task_authority_active_target(
+    cmd: &Value,
+    state: &DaemonState,
+) -> Result<(String, String), String> {
     // A broker has already acquired and pinned its service tab. Authority issue,
     // reconciliation, and revocation must bind that same tab, not whichever
     // unrelated tab happened to become active in the shared retained browser.

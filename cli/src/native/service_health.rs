@@ -700,16 +700,34 @@ pub(super) fn persist_service_browser_record_with_refresh(
         let (browser_build, executable_path, browser_build_proof) =
             if let Some(proof) = new_browser_build_proof {
                 let proven = proof.get("applied").and_then(|value| value.as_bool()) == Some(true);
-                let browser_build = proven
-                    .then(|| proof.get("browserBuild"))
-                    .flatten()
-                    .and_then(|value| serde_json::from_value(value.clone()).ok());
-                let executable_path = proven
-                    .then(|| proof.get("executablePath"))
-                    .flatten()
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string);
-                (browser_build, executable_path, Some(proof))
+                if proven {
+                    let browser_build = proof
+                        .get("browserBuild")
+                        .and_then(|value| serde_json::from_value(value.clone()).ok());
+                    let executable_path = proof
+                        .get("executablePath")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string);
+                    (browser_build, executable_path, Some(proof))
+                } else if previous
+                    .as_ref()
+                    .and_then(|browser| browser.browser_build_proof.as_ref())
+                    .and_then(|proof| proof.get("applied"))
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
+                {
+                    (
+                        previous.as_ref().and_then(|browser| browser.browser_build),
+                        previous
+                            .as_ref()
+                            .and_then(|browser| browser.executable_path.clone()),
+                        previous
+                            .as_ref()
+                            .and_then(|browser| browser.browser_build_proof.clone()),
+                    )
+                } else {
+                    (None, None, Some(proof))
+                }
             } else {
                 (
                     previous.as_ref().and_then(|browser| browser.browser_build),
@@ -4160,7 +4178,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_headed_browser_record_upserts_private_display_allocation() {
+    fn remote_headed_browser_record_preserves_verified_build_after_unproven_refresh() {
         let home = temp_home("service-health-display-allocation");
         let store = JsonServiceStateStore::new(home.join("state.json"));
         let repository = LockedServiceStateRepository::new(store.clone());
@@ -4287,13 +4305,19 @@ mod tests {
             }),
         )
         .unwrap();
-        let unproven = store.load().unwrap();
-        let browser = &unproven.browsers["session:persist-session"];
-        assert_eq!(browser.browser_build, None);
-        assert_eq!(browser.executable_path, None);
+        let refreshed_after_unproven_launch = store.load().unwrap();
+        let browser = &refreshed_after_unproven_launch.browsers["session:persist-session"];
+        assert_eq!(
+            browser.browser_build,
+            Some(BrowserBuild::StealthcdpChromium)
+        );
+        assert_eq!(
+            browser.executable_path.as_deref(),
+            Some("/opt/stealth/chrome")
+        );
         assert_eq!(
             browser.browser_build_proof.as_ref().unwrap()["applied"],
-            false
+            true
         );
 
         let _ = fs::remove_dir_all(&home);

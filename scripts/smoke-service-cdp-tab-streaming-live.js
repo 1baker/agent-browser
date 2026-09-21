@@ -2,7 +2,8 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { request } from 'node:http';
 import { createConnection } from 'node:net';
 
@@ -47,6 +48,18 @@ const timeout = setTimeout(() => {
 let streamPort;
 let ws;
 let profilePath;
+
+function exposeInstalledBrowserToFixture() {
+  if (!browserExecutable) return;
+  const versionDirectory = dirname(browserExecutable);
+  const versionName = basename(versionDirectory);
+  if (!versionName.startsWith('chrome-')) return;
+  const fixtureBrowsers = join(context.agentHome, 'browsers');
+  mkdirSync(fixtureBrowsers, { recursive: true, mode: 0o700 });
+  const fixtureVersionDirectory = join(fixtureBrowsers, versionName);
+  mkdirSync(fixtureVersionDirectory, { recursive: true, mode: 0o700 });
+  symlinkSync(browserExecutable, join(fixtureVersionDirectory, basename(browserExecutable)));
+}
 
 function createFixtureProfile() {
   const windowsTempRoot = isWslWindowsBrowserExecutable(browserExecutable)
@@ -366,10 +379,12 @@ class SmokeWebSocket {
 }
 
 try {
+  exposeInstalledBrowserToFixture();
   profilePath = createFixtureProfile();
   streamPort = await ensureStreamPort(context, 120000);
 
   await serviceRequest('navigate', {
+    browserBuild: 'stock_chrome',
     headless: true,
     args: ['--no-sandbox'],
     url: pageA,
@@ -398,6 +413,7 @@ try {
   const pageAFrame = await ws.nextFrame('page A');
 
   await serviceRequest('tab_new', {
+    browserBuild: 'stock_chrome',
     url: pageB,
     waitUntil: 'load',
   }, 'openPageB');
