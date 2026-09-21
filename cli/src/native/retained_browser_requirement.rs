@@ -466,6 +466,32 @@ fn validate_expectation(expectation: &RetainedBrowserExpectation) -> Result<(), 
     Ok(())
 }
 
+/// Return proof-bound profile identity only for an exact verified attach.
+///
+/// Older persisted rows can retain a stale profile projection after an attached
+/// browser has been reidentified. The proof is authoritative only when it
+/// binds the same governed build, executable, and CDP endpoint as the row.
+fn effective_persisted_browser_profile_id(
+    browser: &serde_json::Map<String, Value>,
+) -> Option<&str> {
+    let proof = browser.get("browserBuildProof")?.as_object()?;
+    let browser_cdp_endpoint = browser.get("cdpEndpoint")?.as_str()?;
+    let proof_cdp_endpoint = proof.get("cdpEndpoint")?.as_str()?;
+    let browser_executable_path = browser.get("executablePath")?.as_str()?;
+    let proof_executable_path = proof.get("executablePath")?.as_str()?;
+    let browser_pid = browser.get("pid").and_then(Value::as_u64);
+    let proof_pid = proof.get("browserPid").and_then(Value::as_u64);
+    let verified_attach = browser.get("host").and_then(Value::as_str) == Some("attached_existing")
+        && proof.get("applied").and_then(Value::as_bool) == Some(true)
+        && browser.get("browserBuild") == proof.get("browserBuild")
+        && browser_executable_path == proof_executable_path
+        && browser_cdp_endpoint == proof_cdp_endpoint
+        && browser_pid.is_none_or(|pid| proof_pid == Some(pid));
+    verified_attach
+        .then(|| proof.get("profileId").and_then(Value::as_str))
+        .flatten()
+}
+
 fn verify_persisted_browser(
     state: &Value,
     expectation: &RetainedBrowserExpectation,
@@ -483,7 +509,9 @@ fn verify_persisted_browser(
     if browser.get("id").and_then(Value::as_str) != Some(browser_id.as_str()) {
         return Err(failure("retained_browser_id_changed"));
     }
-    if browser.get("profileId").and_then(Value::as_str) != Some(expectation.profile_id.as_str()) {
+    let effective_profile_id = effective_persisted_browser_profile_id(browser)
+        .or_else(|| browser.get("profileId").and_then(Value::as_str));
+    if effective_profile_id != Some(expectation.profile_id.as_str()) {
         return Err(failure("retained_browser_profile_changed"));
     }
     if browser.get("health").and_then(Value::as_str) != Some("ready") {
@@ -530,8 +558,7 @@ fn verify_persisted_browser(
                             == Some(expectation.session_name.as_str())
                         && handle.get("targetId").and_then(Value::as_str)
                             == Some(expectation.target_id.as_str())
-                        && handle.get("profileId").and_then(Value::as_str)
-                            == Some(expectation.profile_id.as_str())
+                        && effective_profile_id == Some(expectation.profile_id.as_str())
                         && handle
                             .get("url")
                             .and_then(Value::as_str)
@@ -1119,6 +1146,38 @@ mod tests {
             assert!(error.contains(expected));
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn verified_attached_proof_repairs_stale_profile_projection_without_widening_identity() {
+        let root = fixture_root("verified-attached-profile");
+        let (cdp_endpoint, server) = start_cdp(json!([{
+            "id": "target-exact",
+            "url": "https://chatgpt.test/c/exact"
+        }]));
+        seed_fixture(&root, &cdp_endpoint, "https://chatgpt.test/c/exact");
+        let state_path = root.join(".agent-browser/service/state.json");
+        let mut state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        let browser = &mut state["browsers"]["session:workshop-retained"];
+        browser["host"] = json!("attached_existing");
+        browser["pid"] = Value::Null;
+        browser["profileId"] = json!("default");
+        browser["browserBuild"] = json!("stock_chrome");
+        browser["executablePath"] = json!("/opt/agent-browser/chrome");
+        browser["browserBuildProof"] = json!({
+            "applied": true,
+            "browserBuild": "stock_chrome",
+            "profileId": "chatgpt-pro",
+            "executablePath": "/opt/agent-browser/chrome",
+            "cdpEndpoint": cdp_endpoint,
+            "browserPid": 1234,
+        });
+        browser["tabHandles"][0]["profileId"] = json!("default");
+        write_private_json(&state_path, &state);
+
+        verify_fixture(&root).unwrap();
+        server.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
