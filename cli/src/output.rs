@@ -5101,7 +5101,7 @@ agent-browser install - Install browser binaries
 Usage: agent-browser install [--with-deps] [--with-remote-view-privileges]
        agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]
        agent-browser install workstation retained-browser-status [--json]
-       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--rotate-stale-requirement-sha256 <sha256>] [--json]
+       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--browser-id <id> --daemon-session-name <name> --session-name <name> --route-pool-entry-id <id>] [--rotate-stale-requirement-sha256 <sha256>] [--json]
        agent-browser install workstation reconcile [--json]
        agent-browser install workstation backup [--json]
        agent-browser install stealthcdp-chromium [--force]
@@ -5207,6 +5207,12 @@ Options:
   --url-prefix <url>    Reviewed origin and path boundary for preparation
   --runtime-profile <id>
                        Required managed profile for preparation
+  --browser-id <id>     Existing retained browser route hint for preparation
+  --daemon-session-name <name>
+                       Existing retained daemon route hint for preparation
+  --session-name <name> Existing retained route-owner session hint for preparation
+  --route-pool-entry-id <id>
+                       Existing checked-out retained route-pool entry
   --rotate-stale-requirement-sha256 <sha256>
                        Replace only a proven-dead retained requirement matching this digest
 

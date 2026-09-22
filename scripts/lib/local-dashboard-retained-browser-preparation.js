@@ -35,11 +35,42 @@ export function normalizeRetainedBrowserPreparationRequest(input) {
       'The retained browser build must be stock_chrome or stealthcdp_chromium',
     );
   }
+  const sessionName = String(input.sessionName || runtimeProfile).trim();
+  if (!SAFE_PROFILE_ID.test(sessionName)) {
+    throw preparationError(
+      'retained_browser_preparation_session_invalid',
+      'A safe retained session name is required',
+    );
+  }
+  const daemonSessionName = String(input.daemonSessionName || sessionName).trim();
+  if (!SAFE_PROFILE_ID.test(daemonSessionName)) {
+    throw preparationError(
+      'retained_browser_preparation_daemon_session_invalid',
+      'A safe retained daemon session name is required',
+    );
+  }
+  const browserId = String(input.browserId || `session:${daemonSessionName}`).trim();
+  if (browserId !== `session:${daemonSessionName}`) {
+    throw preparationError(
+      'retained_browser_preparation_browser_identity_invalid',
+      'The retained browser id must match the selected daemon session name',
+    );
+  }
+  const routePoolEntryId = String(input.routePoolEntryId || '').trim();
+  if (routePoolEntryId && !SAFE_PROFILE_ID.test(routePoolEntryId)) {
+    throw preparationError(
+      'retained_browser_preparation_route_pool_entry_invalid',
+      'A safe retained route-pool entry id is required',
+    );
+  }
   return {
     url: exactUrl,
     urlPrefix,
     runtimeProfile,
-    sessionName: runtimeProfile,
+    sessionName,
+    daemonSessionName,
+    browserId,
+    routePoolEntryId,
     browserBuild,
     serviceName: boundedLabel(input.serviceName, 'AuraCall'),
     agentName: boundedLabel(input.agentName, 'codex'),
@@ -52,12 +83,20 @@ export function buildRetainedBrowserRemoteViewArgs(request) {
   return [
     '--json',
     '--session',
-    request.sessionName,
+    request.daemonSessionName,
     'remote-view',
     'open',
     request.url,
     '--runtime-profile',
     request.runtimeProfile,
+    '--browser-id',
+    request.browserId,
+    '--session-name',
+    request.sessionName,
+    ...(request.routePoolEntryId ? [
+      '--route-pool-entry-id',
+      request.routePoolEntryId,
+    ] : []),
     '--browser-build',
     request.browserBuild,
     '--view-stream-provider',

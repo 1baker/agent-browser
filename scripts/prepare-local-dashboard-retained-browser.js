@@ -18,12 +18,16 @@ const options = {
     || resolve(homedir(), '.local', 'bin', 'agent-browser'),
   agentName: 'codex',
   browserBuild: 'stock_chrome',
+  browserId: '',
+  daemonSessionName: '',
   jobTimeoutMs: 120000,
   json: false,
   runtimeProfile: '',
+  sessionName: '',
   retainedRequirement: process.env.AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT
     || resolve(homedir(), '.agent-browser', 'publications', 'local-dashboard-retained-browser.json'),
   rotateStaleRequirementSha256: '',
+  routePoolEntryId: '',
   serviceName: 'AuraCall',
   taskName: 'prepare-retained-browser-lane',
   url: '',
@@ -36,14 +40,18 @@ for (let index = 0; index < process.argv.slice(2).length; index += 1) {
   if (arg === '--') continue;
   if (arg === '--agent-browser-bin') options.agentBrowserBin = requiredValue(args, ++index, arg);
   else if (arg === '--agent-name') options.agentName = requiredValue(args, ++index, arg);
+  else if (arg === '--browser-id') options.browserId = requiredValue(args, ++index, arg);
+  else if (arg === '--daemon-session-name') options.daemonSessionName = requiredValue(args, ++index, arg);
   else if (arg === '--browser-build') options.browserBuild = requiredValue(args, ++index, arg);
   else if (arg === '--job-timeout-ms') options.jobTimeoutMs = requiredValue(args, ++index, arg);
   else if (arg === '--json') options.json = true;
   else if (arg === '--runtime-profile') options.runtimeProfile = requiredValue(args, ++index, arg);
+  else if (arg === '--session-name') options.sessionName = requiredValue(args, ++index, arg);
   else if (arg === '--retained-requirement') options.retainedRequirement = requiredValue(args, ++index, arg);
   else if (arg === '--rotate-stale-requirement-sha256') {
     options.rotateStaleRequirementSha256 = requiredValue(args, ++index, arg);
   }
+  else if (arg === '--route-pool-entry-id') options.routePoolEntryId = requiredValue(args, ++index, arg);
   else if (arg === '--service-name') options.serviceName = requiredValue(args, ++index, arg);
   else if (arg === '--task-name') options.taskName = requiredValue(args, ++index, arg);
   else if (arg === '--url') options.url = requiredValue(args, ++index, arg);
@@ -154,6 +162,10 @@ Options:
   --url <url>                 Exact canonical URL to open and retain.
   --url-prefix <url>          Reviewed origin and path boundary containing the exact URL.
   --runtime-profile <id>      Required managed runtime profile.
+  --browser-id <id>           Existing retained browser id. Must match session:<daemon-session-name>.
+  --daemon-session-name <id>  Existing daemon route. Defaults to the retained owner session.
+  --session-name <id>         Retained route owner session. Defaults to the runtime profile.
+  --route-pool-entry-id <id>  Existing checked-out route selected for retained reuse.
   --retained-requirement <path>
                               Private durable requirement path.
   --rotate-stale-requirement-sha256 <sha256>

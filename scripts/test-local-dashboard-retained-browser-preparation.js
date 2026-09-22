@@ -12,16 +12,22 @@ const request = normalizeRetainedBrowserPreparationRequest({
   url: 'https://chatgpt.com/g/g-p-workshop/c/conversation-id',
   urlPrefix: 'https://chatgpt.com/g/g-p-workshop/',
   runtimeProfile: 'chatgpt-pro',
+  browserId: 'session:auracall-destination-smoke',
+  daemonSessionName: 'auracall-destination-smoke',
+  sessionName: 'chatgpt-pro',
+  routePoolEntryId: 'guacamole-rdp-b',
 });
 const remoteArgs = buildRetainedBrowserRemoteViewArgs(request);
 assert.deepEqual(remoteArgs.slice(0, 6), [
   '--json',
   '--session',
-  'chatgpt-pro',
+  'auracall-destination-smoke',
   'remote-view',
   'open',
   request.url,
 ]);
+assert.equal(remoteArgs[remoteArgs.indexOf('--browser-id') + 1], 'session:auracall-destination-smoke');
+assert.equal(remoteArgs[remoteArgs.indexOf('--route-pool-entry-id') + 1], 'guacamole-rdp-b');
 for (const forbidden of ['click', 'type', 'fill', 'evaluate', 'send', 'submit']) {
   assert.equal(remoteArgs.includes(forbidden), false);
 }

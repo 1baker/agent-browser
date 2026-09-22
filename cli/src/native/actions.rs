@@ -14649,16 +14649,19 @@ fn remote_view_open_should_reuse_current_browser(
     acquisition_plan: &RemoteViewAcquisitionPlan,
     daemon_state: &DaemonState,
     browser_id: &str,
-    session_id: &str,
+    _session_id: &str,
 ) -> bool {
-    if browser_id != service_browser_id(&daemon_state.session_id)
-        || session_id != daemon_state.session_id
-    {
+    if browser_id != service_browser_id(&daemon_state.session_id) {
         return false;
     }
     if daemon_state.browser.is_none() {
         return false;
     }
+    // The daemon session identifies the live browser process, while the route
+    // owner session can intentionally be a different retained service session.
+    // The acquisition plan has already verified both identities against the
+    // checked-out route, so requiring them to be equal here would launch a
+    // duplicate browser instead of reusing the verified attached browser.
     acquisition_plan.decisions.iter().any(|decision| {
         decision.step == "route_pool_entry" && decision.reason == "same_owner_checked_out_route"
     })

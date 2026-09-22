@@ -2437,7 +2437,7 @@ fn parse_port(value: Option<&String>, flag: &str) -> Result<u16, String> {
 }
 
 fn workstation_usage() -> &'static str {
-    "Usage: agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]\n       agent-browser install workstation retained-browser-status [--json]\n       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--rotate-stale-requirement-sha256 <sha256>] [--json]"
+    "Usage: agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]\n       agent-browser install workstation retained-browser-status [--json]\n       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--browser-id <id> --daemon-session-name <name> --session-name <name> --route-pool-entry-id <id>] [--rotate-stale-requirement-sha256 <sha256>] [--json]"
 }
 
 #[derive(Debug)]

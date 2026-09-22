@@ -130,7 +130,7 @@ authority file is written. The durable requirement records the discovered
 target's exact URL and stable identity, never the broader prefix.
 
 To remove the manual navigation handoff, run
-<code>agent-browser install workstation prepare-retained-browser --url EXACT_URL --url-prefix REVIEWED_PROJECT_PREFIX --runtime-profile PROFILE --json</code>.
+<code>agent-browser install workstation prepare-retained-browser --url EXACT_URL --url-prefix REVIEWED_PROJECT_PREFIX --runtime-profile PROFILE [--browser-id session:DAEMON_SESSION --daemon-session-name DAEMON_SESSION --session-name ROUTE_OWNER_SESSION --route-pool-entry-id CHECKED_OUT_ENTRY] --json</code>. Supply the exact browser, daemon-session, retained route-owner, and checked-out route hints when the profile is owned by a differently named daemon session.
 The command uses only route-bound <code>remote-view open</code>, verifies exact
 rendered URL, profile, target, browser, session, and operator-visible route
 agreement, then requires one exact-URL and exact-profile discovery match before

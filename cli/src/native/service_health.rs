@@ -709,12 +709,13 @@ pub(super) fn persist_service_browser_record_with_refresh(
                         .and_then(|value| value.as_str())
                         .map(str::to_string);
                     (browser_build, executable_path, Some(proof))
-                } else if previous
-                    .as_ref()
-                    .and_then(|browser| browser.browser_build_proof.as_ref())
-                    .and_then(|proof| proof.get("applied"))
-                    .and_then(|value| value.as_bool())
-                    == Some(true)
+                } else if proof.get("verificationReason").is_none()
+                    && previous
+                        .as_ref()
+                        .and_then(|browser| browser.browser_build_proof.as_ref())
+                        .and_then(|proof| proof.get("applied"))
+                        .and_then(|value| value.as_bool())
+                        == Some(true)
                 {
                     (
                         previous.as_ref().and_then(|browser| browser.browser_build),

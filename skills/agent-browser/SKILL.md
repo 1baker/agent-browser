@@ -188,7 +188,7 @@ incomplete PID/profile identity, degraded health, or origin/path drift. It does
 not navigate, launch, attach, type, click, or send.
 
 When manual navigation itself is the handoff gap, use
-`agent-browser install workstation prepare-retained-browser --url <exact-url> --url-prefix <reviewed-origin-and-path-prefix> --runtime-profile <profile> --json`.
+`agent-browser install workstation prepare-retained-browser --url <exact-url> --url-prefix <reviewed-origin-and-path-prefix> --runtime-profile <profile> [--browser-id session:<daemon-session> --daemon-session-name <daemon-session> --session-name <route-owner-session> --route-pool-entry-id <checked-out-entry>] --json`. Pass the exact browser, daemon-session, retained route-owner, and checked-out route hints when the profile is owned by a differently named daemon session.
 It invokes only route-bound `remote-view open`, verifies exact rendered URL,
 profile, target, browser, session, and operator-visible route agreement, then
 requires one exact-URL and exact-profile discovery match before the same

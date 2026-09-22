@@ -18,7 +18,7 @@ const fs = require('fs');
 fs.appendFileSync(process.env.PREPARATION_AUDIT, JSON.stringify({ kind: 'open', args: process.argv.slice(2) }) + '\\n');
 const url = process.argv[process.argv.indexOf('open') + 1];
 const profile = process.argv[process.argv.indexOf('--runtime-profile') + 1];
-const session = process.argv[process.argv.indexOf('--session') + 1];
+const session = process.argv[process.argv.indexOf('--session-name') + 1];
 console.log(JSON.stringify({ success: true, data: {
   status: 'opened', dryRun: false, browserId: 'session:workshop', sessionName: session,
   handoffUrl: 'https://desktop.example.test/remote-view/r1',
@@ -45,6 +45,10 @@ console.log(JSON.stringify({ success: true, data: {
     '--url', url,
     '--url-prefix', 'https://chatgpt.com/g/g-p-workshop/',
     '--runtime-profile', 'chatgpt-pro',
+    '--browser-id', 'session:auracall-destination-smoke',
+    '--daemon-session-name', 'auracall-destination-smoke',
+    '--session-name', 'chatgpt-pro',
+    '--route-pool-entry-id', 'guacamole-rdp-b',
     '--agent-browser-bin', fakeAgentBrowser,
     '--json',
   ], {
@@ -64,8 +68,10 @@ console.log(JSON.stringify({ success: true, data: {
   assert.equal(audit.length, 2);
   assert.deepEqual(audit.map((entry) => entry.kind), ['open', 'pin']);
   assert.deepEqual(audit[0].args.slice(0, 6), [
-    '--json', '--session', 'chatgpt-pro', 'remote-view', 'open', url,
+    '--json', '--session', 'auracall-destination-smoke', 'remote-view', 'open', url,
   ]);
+  assert.equal(audit[0].args[audit[0].args.indexOf('--browser-id') + 1], 'session:auracall-destination-smoke');
+  assert.equal(audit[0].args[audit[0].args.indexOf('--route-pool-entry-id') + 1], 'guacamole-rdp-b');
   assert.equal(audit[1].args.includes('--exact-url'), true);
   assert.equal(audit[1].args.includes('--profile-id'), true);
   for (const entry of audit) {
