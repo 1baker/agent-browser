@@ -764,7 +764,11 @@ fn parse_service_browser_capability_guide(
     Ok(cmd)
 }
 
-fn parse_service_browser_capability_prefer(id: String, rest: &[&str]) -> Result<Value, ParseError> {
+fn parse_service_browser_capability_prefer(
+    id: String,
+    rest: &[&str],
+    flags: &Flags,
+) -> Result<Value, ParseError> {
     if rest.get(1).copied() != Some("prefer") {
         return Err(ParseError::InvalidValue {
             message: "Expected service browser-capability prefer".to_string(),
@@ -911,6 +915,13 @@ fn parse_service_browser_capability_prefer(id: String, rest: &[&str]) -> Result<
             }
         }
         i += 1;
+    }
+
+    // --browser-build is also a global launch-routing option. The top-level
+    // flag parser removes it before this nested parser runs, so preserve the
+    // explicit CLI selection here just as the preflight parser does.
+    if browser_build.is_none() && flags.cli_browser_build {
+        browser_build = flags.browser_build.clone();
     }
 
     let Some(browser_build) = browser_build else {
@@ -2658,7 +2669,7 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             Some("browser-capability") => match rest.get(1).copied() {
                 Some("preflight") => parse_service_browser_capability_preflight(id, &rest, flags),
                 Some("guide") => parse_service_browser_capability_guide(id, &rest, flags),
-                Some("prefer") => parse_service_browser_capability_prefer(id, &rest),
+                Some("prefer") => parse_service_browser_capability_prefer(id, &rest, flags),
                 Some(subcommand) => Err(ParseError::UnknownSubcommand {
                     subcommand: subcommand.to_string(),
                     valid_options: &["preflight", "guide", "prefer"],
@@ -7703,6 +7714,22 @@ mod tests {
         assert_eq!(cmd["record"]["browserBuild"], "stock_chrome");
         assert_eq!(cmd["record"]["priority"], 250);
         assert_eq!(cmd["record"]["reason"], "site_requires_stock_chrome");
+    }
+
+    #[test]
+    fn test_service_browser_capability_prefer_preserves_cleaned_browser_build() {
+        let all_args = args(
+            "service browser-capability prefer --browser-build stealthcdp_chromium --target-service-id chatgpt --preferred-executable-id stealthcdp-win-150 --reason operator_primary_browser_preference",
+        );
+        let mut flags = default_flags();
+        flags.browser_build = Some("stealthcdp_chromium".to_string());
+        flags.cli_browser_build = true;
+
+        let cleaned = crate::flags::clean_args(&all_args);
+        let cmd = parse_command(&cleaned, &flags).unwrap();
+
+        assert_eq!(cmd["action"], "service_browser_capability_registry_upsert");
+        assert_eq!(cmd["record"]["browserBuild"], "stealthcdp_chromium");
     }
 
     #[test]

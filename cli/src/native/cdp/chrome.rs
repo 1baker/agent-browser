@@ -17,6 +17,7 @@ use crate::runtime_profile::{
     write_runtime_state, RuntimeLaunchRecord, RuntimeProfileSummary, RuntimeState,
 };
 
+use crate::native::privacy_gate::PrivacyGate;
 use crate::native::service_store::{JsonServiceStateStore, ServiceStateStore};
 
 use super::discovery::discover_cdp_url;
@@ -74,6 +75,8 @@ pub struct ChromeProcess {
     /// Exact executable selected for this newly owned process, never an attach hint.
     pub launched_executable_path: Box<Path>,
     owns_process: bool,
+    /// A verified shutdown must not send a second signal to a recycled PGID on Drop.
+    shutdown_verified: bool,
     temp_user_data_dir: Option<PathBuf>,
     user_data_dir: PathBuf,
     runtime_profile: Option<String>,
@@ -165,6 +168,12 @@ impl ChromeProcess {
     }
 
     pub fn kill_with_outcome(&mut self) -> ProcessShutdownOutcome {
+        if self.shutdown_verified {
+            return ProcessShutdownOutcome {
+                force_kill_succeeded: true,
+                ..ProcessShutdownOutcome::default()
+            };
+        }
         let mut outcome = ProcessShutdownOutcome {
             force_kill_attempted: true,
             ..ProcessShutdownOutcome::default()
@@ -244,6 +253,9 @@ impl ChromeProcess {
             outcome
                 .errors
                 .push("Failed to force kill Chrome process: forced by smoke test".to_string());
+        }
+        if outcome.force_kill_succeeded {
+            self.shutdown_verified = true;
         }
         outcome
     }
@@ -860,6 +872,9 @@ pub fn launch_chrome(options: &LaunchOptions) -> Result<ChromeProcess, String> {
             }
             Err(e) => {
                 last_err = e;
+                if last_err.starts_with("privacy_gate_locked_shutdown_unconfirmed") {
+                    return Err(last_err);
+                }
                 if attempt < max_attempts {
                     // Use write! instead of eprintln! to avoid panicking
                     // if the daemon's stderr pipe is broken (parent dropped it).
@@ -1463,36 +1478,12 @@ fn try_launch_chrome(
         Some(pid)
     };
 
-    if let Some(ref runtime_profile_name) = runtime_profile {
-        let _ = write_runtime_state(&RuntimeState {
-            runtime_profile: runtime_profile_name.clone(),
-            user_data_dir: user_data_dir.display().to_string(),
-            browser_pid: child.id(),
-            headed: !options.headless,
-            launch_mode: if remote_debugging {
-                "automation".to_string()
-            } else {
-                "manual".to_string()
-            },
-            devtools_port: if remote_debugging {
-                ws_debug_port(&ws_url).or_else(|| read_runtime_devtools_port(&user_data_dir))
-            } else {
-                None
-            },
-            ws_url: if remote_debugging {
-                Some(ws_url.clone())
-            } else {
-                None
-            },
-            launch_record: None,
-        });
-    }
-
-    Ok(ChromeProcess {
+    let mut process = ChromeProcess {
         child,
         ws_url,
         launched_executable_path: chrome_path.into(),
         owns_process: true,
+        shutdown_verified: false,
         temp_user_data_dir,
         user_data_dir,
         runtime_profile,
@@ -1507,7 +1498,56 @@ fn try_launch_chrome(
         windows_browser,
         #[cfg(unix)]
         pgid,
-    })
+    };
+
+    // A newly owned Chrome can receive an OS-reused CDP port whose existing
+    // endpoint privacy gate is locked. Never clear that gate: stop only this
+    // exact process, prove shutdown, then let the bounded launch loop try a
+    // fresh ephemeral port. Do this before publishing runtime-profile state.
+    if matches!(
+        PrivacyGate::for_endpoint(&process.ws_url).and_then(|gate| gate.public_lease().map(|_| ())),
+        Err("privacy_gate_locked")
+    ) {
+        let shutdown = process.kill_with_outcome();
+        if !shutdown.force_kill_succeeded {
+            return Err(format!(
+                "privacy_gate_locked_shutdown_unconfirmed: {}",
+                shutdown.errors.join("; ")
+            ));
+        }
+        return Err(
+            "privacy_gate_locked: newly owned Chrome endpoint; retrying with a fresh port"
+                .to_string(),
+        );
+    }
+
+    if let Some(ref runtime_profile_name) = process.runtime_profile {
+        let _ = write_runtime_state(&RuntimeState {
+            runtime_profile: runtime_profile_name.clone(),
+            user_data_dir: process.user_data_dir.display().to_string(),
+            browser_pid: process.child.id(),
+            headed: !options.headless,
+            launch_mode: if remote_debugging {
+                "automation".to_string()
+            } else {
+                "manual".to_string()
+            },
+            devtools_port: if remote_debugging {
+                ws_debug_port(&process.ws_url)
+                    .or_else(|| read_runtime_devtools_port(&process.user_data_dir))
+            } else {
+                None
+            },
+            ws_url: if remote_debugging {
+                Some(process.ws_url.clone())
+            } else {
+                None
+            },
+            launch_record: None,
+        });
+    }
+
+    Ok(process)
 }
 
 #[cfg(target_os = "linux")]
@@ -4162,6 +4202,7 @@ mod tests {
                 ws_url: String::new(),
                 launched_executable_path: PathBuf::new().into_boxed_path(),
                 owns_process: true,
+                shutdown_verified: false,
                 temp_user_data_dir: Some(dir.clone()),
                 user_data_dir: dir.clone(),
                 runtime_profile: None,
@@ -4195,6 +4236,7 @@ mod tests {
             ws_url: "ws://127.0.0.1:9222/devtools/browser/handoff".to_string(),
             launched_executable_path: PathBuf::new().into_boxed_path(),
             owns_process: true,
+            shutdown_verified: false,
             temp_user_data_dir: Some(dir.clone()),
             user_data_dir: dir.clone(),
             runtime_profile: None,
@@ -4211,6 +4253,41 @@ mod tests {
 
         let _ = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_verified_shutdown_is_not_repeated_on_drop() {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-browser-chrome-shutdown-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let child = spawn_sleep_child();
+        let mut process = ChromeProcess {
+            child,
+            aux_processes: Vec::new(),
+            #[cfg(target_os = "linux")]
+            windows_browser: None,
+            ws_url: "ws://127.0.0.1:9222/devtools/browser/shutdown".to_string(),
+            launched_executable_path: PathBuf::new().into_boxed_path(),
+            owns_process: true,
+            shutdown_verified: false,
+            temp_user_data_dir: Some(dir.clone()),
+            user_data_dir: dir.clone(),
+            runtime_profile: None,
+            display_name: None,
+            stderr_log_path: None,
+            stderr_drainer: None,
+            pgid: None,
+        };
+        let first = process.kill_with_outcome();
+        assert!(first.force_kill_succeeded, "{first:?}");
+        let second = process.kill_with_outcome();
+        assert!(second.force_kill_succeeded);
+        assert!(!second.force_kill_attempted);
+        drop(process);
+        assert!(!dir.exists(), "Drop must still clean the temporary profile");
     }
 
     #[test]
