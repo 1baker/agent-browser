@@ -24,6 +24,7 @@ mod workstation_install;
 use serde_json::json;
 use std::env;
 use std::fs;
+use std::path::Path;
 use std::process::exit;
 
 #[cfg(windows)]
@@ -662,11 +663,25 @@ fn daemon_profile_for_launch<'a>(
 
 /// Bootstrap only an admitted cold MCP lane, using the ordinary configured
 /// daemon options. Attaching an existing runtime is never cold admission.
-fn start_cold_mcp_daemon(flags: &Flags) -> Result<(), String> {
+fn start_cold_mcp_daemon(
+    flags: &Flags,
+    session: &str,
+    runtime_profile_override: Option<&str>,
+    profile_override: Option<&str>,
+) -> Result<(), String> {
+    let runtime_profile = runtime_profile_override
+        .map(str::to_string)
+        .or_else(|| runtime_profile_name_for_launch(flags));
+    let profile = profile_override.or(flags.profile.as_deref());
+    let selected_runtime_live = runtime_profile.as_ref().is_some_and(|name| {
+        runtime_status_with_user_data_dir(name, profile.map(Path::new)).is_ok_and(|status| {
+            status.browser_alive && status.devtools_port.is_some() && status.devtools_reachable
+        })
+    });
     if flags.cdp.is_some()
         || flags.auto_connect
         || flags.provider.is_some()
-        || live_runtime_status_for_flags(flags).is_some()
+        || selected_runtime_live
     {
         return Err(
             "Cold MCP startup cannot attach or acquire an existing runtime/provider".to_string(),
@@ -677,7 +692,6 @@ fn start_cold_mcp_daemon(flags: &Flags) -> Result<(), String> {
     let use_real_keychain = env::var("AGENT_BROWSER_USE_REAL_KEYCHAIN")
         .is_ok_and(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | ""))
         || keychain_password.is_some();
-    let runtime_profile = runtime_profile_name_for_launch(flags);
     let opts = DaemonOptions {
         headed: flags.headed,
         debug: flags.debug,
@@ -694,7 +708,7 @@ fn start_cold_mcp_daemon(flags: &Flags) -> Result<(), String> {
         proxy_password: proxy.as_ref().and_then(|value| value.password.as_deref()),
         ignore_https_errors: flags.ignore_https_errors,
         allow_file_access: flags.allow_file_access,
-        profile: flags.profile.as_deref(),
+        profile,
         state: flags.state.as_deref(),
         provider: flags.provider.as_deref(),
         device: flags.device.as_deref(),
@@ -727,7 +741,7 @@ fn start_cold_mcp_daemon(flags: &Flags) -> Result<(), String> {
         no_auto_dialog: flags.no_auto_dialog,
         allow_stale_daemon_handoff: false,
     };
-    connection::ensure_cold_daemon(&flags.session, &opts).map(|_| ())
+    connection::ensure_cold_daemon(session, &opts).map(|_| ())
 }
 
 fn run_runtime_command(clean: &[String], flags: &Flags) {

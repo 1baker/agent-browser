@@ -786,6 +786,9 @@ For full details on login flows, OAuth, 2FA, cookie-based auth, and the auth vau
 Fresh MCP `service_request` calls can start a cold daemon for `navigate` or
 `tab_new` with a URL and an exact selected profile, only when the current access
 plan permits a new browser and no daemon metadata or competing lease exists.
+If the default daemon already serves a different profile, an admitted request
+starts a separate `mcp-cold-<id>` session for the selected profile, leaving the
+default browser untouched. The response identifies the new session for reuse.
 Retained route hints, reads and input actions never grant cold-start authority.
 Cold startup preserves configured launch options, refuses competing startup,
 and dispatches the first action once without a transport replay fallback.

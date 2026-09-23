@@ -1486,6 +1486,9 @@ Cold MCP `service_request` acquisition with `navigate` or `tab_new`
 requires a URL, exact selected profile, launch-new access-plan approval and no
 daemon metadata or competing lease. Retained hints, reads and input must never
 trigger cold startup. Do not retry an uncertain first action.
+When the default daemon serves a different profile, admitted cold acquisition
+uses a separate `mcp-cold-<id>` session and returns its handle; it does not
+replace the default browser. Route hints only select existing daemon lanes.
 
 After crash recovery, ordinary `close` detaches and preserves retained browser
 identity. Explicit `service_browser_close` requires exclusive original ownership,

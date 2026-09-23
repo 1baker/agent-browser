@@ -5065,6 +5065,8 @@ Active sessions retain their proven browser build across follow-up commands
 when only the global launch default differs. Explicit builds and site/profile
 or registry policies still apply; missing proof fails closed.
 MCP service_request sessionName/browserId select existing daemons, not new ones.
+An access-plan-admitted cold navigate/tab_new for another profile may open a
+separate mcp-cold session without replacing the occupied default daemon.
 On retained_daemon_unavailable, refresh the access plan and inspect recovery;
 do not launch a duplicate profile or blindly replay an uncertain action.
 

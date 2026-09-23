@@ -6519,10 +6519,8 @@ fn call_service_request_with_flags(
         }
     }
     let (trace, command) = service_request_command_with_state(&configured_arguments, Some(&state))?;
-    let mut cold_started = false;
     if let Some(flags) = flags {
         if matches!(command["action"].as_str(), Some("navigate" | "tab_new"))
-            && !crate::connection::daemon_ready(session)
             && !cold_request_has_route_hint(arguments)
             && !cold_request_has_route_hint(&command)
         {
@@ -6533,29 +6531,70 @@ fn call_service_request_with_flags(
             let request = parse_service_access_plan_query(params)
                 .map_err(|err| JsonRpcError::invalid_params(&err))?;
             let plan = service_access_plan_for_state(&state, request);
-            if !cold_service_request_admitted(arguments, &command, &plan)
-                || !crate::connection::daemon_session_metadata_absent(session)
-            {
+            if cold_service_request_admitted(arguments, &command, &plan) {
+                let selected_profile = plan["decision"]["profileReuse"]["selectedProfileId"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        JsonRpcError::invalid_params(
+                            "Cold MCP startup denied: selected profile missing",
+                        )
+                    })?;
+                let selected_path = cold_mcp_selected_profile_path(&command, &plan)?;
+                let cold_session = if crate::connection::daemon_ready(session) {
+                    format!("mcp-cold-{}", uuid::Uuid::new_v4().simple())
+                } else {
+                    session.to_string()
+                };
+                if !crate::connection::daemon_session_metadata_absent(&cold_session) {
+                    return Err(JsonRpcError::invalid_params("Cold MCP startup denied: refresh access plan and inspect retained profile/session ownership"));
+                }
+                crate::start_cold_mcp_daemon(
+                    flags,
+                    &cold_session,
+                    Some(selected_profile),
+                    Some(selected_path),
+                )
+                .map_err(|err| JsonRpcError {
+                    code: -32603,
+                    message: "Cold MCP startup denied",
+                    data: Some(json!({"message": err, "requestDispatched": false})),
+                })?;
+                return send_queued_tool_command_with_sender(
+                    "service_request",
+                    &cold_session,
+                    trace,
+                    command,
+                    |command, session| crate::connection::send_command_once(&command, session),
+                );
+            }
+            if !crate::connection::daemon_ready(session) {
                 return Err(JsonRpcError::invalid_params("Cold MCP startup denied: refresh access plan and inspect retained profile/session ownership"));
             }
-            crate::start_cold_mcp_daemon(flags).map_err(|err| JsonRpcError {
-                code: -32603,
-                message: "Cold MCP startup denied",
-                data: Some(json!({"message": err, "requestDispatched": false})),
-            })?;
-            cold_started = true;
         }
     }
-    if cold_started {
-        return send_queued_tool_command_with_sender(
-            "service_request",
-            session,
-            trace,
-            command,
-            |command, session| crate::connection::send_command_once(&command, session),
-        );
-    }
     send_queued_tool_command("service_request", session, trace, command)
+}
+
+fn cold_mcp_selected_profile_path<'a>(
+    command: &Value,
+    plan: &'a Value,
+) -> Result<&'a str, JsonRpcError> {
+    let selected = plan["selectedProfile"]["userDataDir"]
+        .as_str()
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params("Cold MCP startup denied: selected profile path missing")
+        })?;
+    if command
+        .get("profile")
+        .and_then(Value::as_str)
+        .is_some_and(|requested| requested != selected)
+    {
+        return Err(JsonRpcError::invalid_params(
+            "Cold MCP startup denied: request profile path differs from access plan",
+        ));
+    }
+    Ok(selected)
 }
 
 fn cold_request_has_route_hint(value: &Value) -> bool {
@@ -11304,6 +11343,19 @@ mod tests {
         let command =
             json!({"action": "navigate", "url": "data:text/html,hello", "runtimeProfile": "wrong"});
         assert!(!cold_service_request_admitted(&command, &command, &plan));
+    }
+
+    #[test]
+    fn cold_mcp_selected_profile_path_must_match_access_plan() {
+        let plan = json!({"selectedProfile": {"userDataDir": "/tmp/selected-profile"}});
+        let request = json!({"profile": "/tmp/selected-profile"});
+        assert_eq!(
+            cold_mcp_selected_profile_path(&request, &plan).unwrap(),
+            "/tmp/selected-profile"
+        );
+        let wrong = json!({"profile": "/tmp/other-profile"});
+        assert!(cold_mcp_selected_profile_path(&wrong, &plan).is_err());
+        assert!(cold_mcp_selected_profile_path(&request, &json!({})).is_err());
     }
 
     #[test]

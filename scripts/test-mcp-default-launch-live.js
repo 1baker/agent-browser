@@ -13,6 +13,7 @@ mkdirSync(chromeCache, { recursive: true });
 symlinkSync(resolve(chrome), join(chromeCache, 'chrome'));
 const config = join(context.tempHome, 'config.json');
 const profile = join(context.tempHome, 'profile');
+const secondProfile = join(context.tempHome, 'second-profile');
 const useProfileAlias = process.env.AGENT_BROWSER_SMOKE_PROFILE_ALIAS === '1';
 writeFileSync(config, JSON.stringify({ executablePath: chrome, profile,
   ...(useProfileAlias ? { runtimeProfile: 'configured-unused' } : {}),
@@ -58,10 +59,32 @@ try {
   assert.equal(repeated.title, 'Default MCP QA');
   const afterRead = JSON.parse(readFileSync(join(context.agentHome, 'service', 'state.json'), 'utf8'));
   assert.equal(afterRead.browsers['session:default'].pid, state.browsers['session:default'].pid);
+  await call('service_profile_upsert', { id: 'second-profile', profile: {
+    id: 'second-profile', name: 'Second disposable profile', userDataDir: secondProfile,
+  } });
+  const secondUrl = 'data:text/html,<title>Second MCP QA</title><p>Isolated profile ready</p>';
+  const secondPlan = await call('service_access_plan', {
+    url: secondUrl, runtimeProfile: 'second-profile', browserHost: 'local_headless',
+  });
+  assert.equal(secondPlan.decision.profileReuse.recommendedAction, 'launch_new_browser');
+  const second = await call('service_request', { action: 'tab_new', runtimeProfile: 'second-profile',
+    params: { url: secondUrl, browserHost: 'local_headless', headless: true },
+  });
+  const secondSession = second.serviceTabHandle?.sessionName;
+  assert.match(secondSession, /^mcp-cold-[0-9a-f]{32}$/);
+  const withSecond = JSON.parse(readFileSync(join(context.agentHome, 'service', 'state.json'), 'utf8'));
+  assert.equal(withSecond.browsers['session:default'].pid, state.browsers['session:default'].pid);
+  assert.equal(withSecond.browsers[`session:${secondSession}`].profileId, 'second-profile');
+  assert.equal(Object.keys(withSecond.browsers).length, 2, 'exactly two profile-isolated browsers');
+  const secondTitle = await call('service_request', { action: 'title',
+    serviceTabHandle: second.serviceTabHandle });
+  assert.equal(secondTitle.title, 'Second MCP QA');
+  await runCli(context, ['--session', secondSession, '--json', 'close']);
   await runCli(context, ['--json', 'close']);
   assert.throws(() => lstatSync(join(profile, 'SingletonLock')), { code: 'ENOENT' });
+  assert.throws(() => lstatSync(join(secondProfile, 'SingletonLock')), { code: 'ENOENT' });
   complete = true;
-  console.log(`Fresh MCP default daemon (${acquisitionAction}): profile, access plan, first launch, read and close passed.`);
+  console.log(`Fresh MCP default daemon (${acquisitionAction}) and occupied-default isolated cold launch passed.`);
 } finally {
   await client.close();
   if (complete) context.cleanupTempHome();
