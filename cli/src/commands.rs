@@ -2035,7 +2035,15 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
         }
 
         // === Close ===
-        "close" | "quit" | "exit" => Ok(json!({ "id": id, "action": "close" })),
+        "close" | "quit" | "exit" => {
+            let mut command = json!({ "id": id, "action": "close" });
+            // A close request bypasses prestart launch, so an explicit CLI
+            // override must travel with the request to the existing daemon.
+            if flags.cli_leave_open && flags.leave_open {
+                command["leaveOpen"] = json!(true);
+            }
+            Ok(command)
+        }
         "handoff" => {
             let subcommand = rest.first().copied().ok_or_else(|| {
                 ParseError::MissingArguments {
@@ -5552,6 +5560,21 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn close_carries_only_an_explicit_leave_open_override() {
+        let ordinary = parse_command(&args("close"), &default_flags()).unwrap();
+        assert!(ordinary.get("leaveOpen").is_none());
+
+        let mut configured_only = default_flags();
+        configured_only.leave_open = true;
+        let configured = parse_command(&args("close"), &configured_only).unwrap();
+        assert!(configured.get("leaveOpen").is_none());
+
+        configured_only.cli_leave_open = true;
+        let explicit = parse_command(&args("close"), &configured_only).unwrap();
+        assert_eq!(explicit["leaveOpen"], true);
     }
 
     // === Cookies Tests ===

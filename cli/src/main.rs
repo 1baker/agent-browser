@@ -48,6 +48,75 @@ use output::{
 use runtime_profile::{
     list_runtime_profiles, runtime_status_with_user_data_dir, RuntimeProfileSummary, RuntimeStatus,
 };
+
+/// Admission for an explicit daemon-only reconnect. A saved session name is
+/// not authority to launch or replace a browser: its retained record must
+/// still bind the exact live profile, process, endpoint, and proven build.
+pub(crate) fn retained_reconnect_endpoint(
+    session: &str,
+    runtime_profile: &str,
+    status: &RuntimeStatus,
+) -> Result<String, String> {
+    use native::service_store::{LockedServiceStateRepository, ServiceStateRepository};
+
+    let pid = status
+        .browser_pid
+        .ok_or("Retained reconnect requires a browser PID")?;
+    let port = status
+        .devtools_port
+        .ok_or("Retained reconnect requires a DevTools port")?;
+    if !status.browser_alive || !status.devtools_reachable {
+        return Err("Retained reconnect requires a live reachable browser".to_string());
+    }
+    let state = LockedServiceStateRepository::default_json()
+        .map_err(|err| err.to_string())?
+        .load_snapshot()
+        .map_err(|err| err.to_string())?;
+    let browser_id = format!("session:{session}");
+    let browser = state
+        .browsers
+        .get(&browser_id)
+        .ok_or("Retained reconnect requires the exact browser record")?;
+    let retained_session = state
+        .sessions
+        .get(session)
+        .ok_or("Retained reconnect requires the exact session record")?;
+    let profile = state
+        .profiles
+        .get(runtime_profile)
+        .ok_or("Retained reconnect requires the exact profile record")?;
+    let endpoint = browser
+        .cdp_endpoint
+        .as_deref()
+        .ok_or("Retained reconnect requires a recorded CDP endpoint")?;
+    let expected_prefix = format!("ws://127.0.0.1:{port}/devtools/browser/");
+    if browser.profile_id.as_deref() != Some(runtime_profile)
+        || browser.pid != Some(pid)
+        || browser.browser_build.is_none()
+        || browser
+            .browser_build_proof
+            .as_ref()
+            .is_none_or(|proof| proof["applied"] != true)
+        || retained_session.profile_id.as_deref() != Some(runtime_profile)
+        || retained_session.browser_ids.as_slice() != [browser_id.as_str()]
+        || !browser.active_session_ids.iter().any(|id| id == session)
+        || profile.user_data_dir.as_deref() != Some(status.user_data_dir.as_str())
+        || !endpoint.starts_with(&expected_prefix)
+        || endpoint == expected_prefix
+    {
+        return Err("Retained reconnect identity or build proof changed".to_string());
+    }
+    let active_port =
+        fs::read_to_string(Path::new(&status.user_data_dir).join("DevToolsActivePort"))
+            .map_err(|_| "Retained reconnect active endpoint is unreadable")?;
+    let mut lines = active_port.lines();
+    if lines.next().and_then(|value| value.parse::<u16>().ok()) != Some(port)
+        || lines.next() != endpoint.strip_prefix(&format!("ws://127.0.0.1:{port}"))
+    {
+        return Err("Retained reconnect active endpoint changed".to_string());
+    }
+    Ok(endpoint.to_string())
+}
 use upgrade::run_upgrade;
 
 fn serialize_json_value(value: &serde_json::Value) -> String {
@@ -996,7 +1065,8 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                 }
             }
         }
-        Some("attach") => {
+        Some("attach" | "reconnect") => {
+            let reconnect_only = clean.get(1).is_some_and(|command| command == "reconnect");
             let runtime_name = selected_runtime_name(clean, flags, 2);
             let configured_user_data_dir = flags
                 .configured_runtime_profiles
@@ -1017,6 +1087,21 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                 };
 
             let attach_to_existing = status.browser_alive && status.devtools_port.is_some();
+            let reconnect_endpoint = if reconnect_only {
+                match retained_reconnect_endpoint(&flags.session, &runtime_name, &status) {
+                    Ok(endpoint) => Some(endpoint),
+                    Err(error) => {
+                        if flags.json {
+                            print_json_error(error);
+                        } else {
+                            eprintln!("{} {}", color::error_indicator(), error);
+                        }
+                        exit(1);
+                    }
+                }
+            } else {
+                None
+            };
             if status.browser_alive && status.devtools_port.is_none() {
                 let msg = format!(
                     "Runtime profile '{}' has a live browser without a DevTools port. Close that browser before attaching automation, or relaunch manual login with `agent-browser runtime login --attachable`.",
@@ -1085,8 +1170,12 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                     .service_recovery_max_backoff_ms_source
                     .as_str(),
                 default_timeout: flags.default_timeout,
-                cdp: cdp_port_str.as_deref(),
-                runtime_attach_managed: attach_to_existing,
+                cdp: if reconnect_only {
+                    None
+                } else {
+                    cdp_port_str.as_deref()
+                },
+                runtime_attach_managed: attach_to_existing && !reconnect_only,
                 no_auto_dialog: flags.no_auto_dialog,
                 allow_stale_daemon_handoff: false,
             };
@@ -1103,7 +1192,18 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                 }
             };
 
-            let launch_cmd = if let Some(port) = status.devtools_port {
+            let launch_cmd = if reconnect_only {
+                json!({
+                    "id": gen_id(),
+                    "action": "retained_owner_prepare",
+                    "browserId": format!("session:{}", flags.session),
+                    "sessionName": flags.session,
+                    "cdpPort": status.devtools_port,
+                    "runtimeProfile": runtime_name,
+                    "expectedBrowserPid": status.browser_pid,
+                    "expectedCdpEndpoint": reconnect_endpoint,
+                })
+            } else if let Some(port) = status.devtools_port {
                 json!({
                     "id": gen_id(),
                     "action": "launch",
@@ -1124,6 +1224,20 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
 
             match send_command(launch_cmd, &flags.session) {
                 Ok(resp) if resp.success => {
+                    if reconnect_only
+                        && retained_reconnect_endpoint(&flags.session, &runtime_name, &status)
+                            .ok()
+                            .as_deref()
+                            != reconnect_endpoint.as_deref()
+                    {
+                        let error = "Retained reconnect post-check failed; browser was preserved";
+                        if flags.json {
+                            print_json_error(error);
+                        } else {
+                            eprintln!("{} {}", color::error_indicator(), error);
+                        }
+                        exit(1);
+                    }
                     if flags.json {
                         print_json_value(json!({
                             "attached": true,
@@ -1873,6 +1987,10 @@ fn main() {
         Some("close") | Some("quit") | Some("exit")
     ) && clean.iter().any(|a| a == "--all")
     {
+        if flags.cli_leave_open && flags.leave_open {
+            eprintln!("--leave-open close --all is not supported; detach one verified managed runtime session at a time");
+            exit(2);
+        }
         run_close_all(&flags);
         return;
     }

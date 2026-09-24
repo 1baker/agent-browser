@@ -597,9 +597,35 @@ impl BrowserManager {
             visited_origins: HashSet::new(),
         };
         manager
-            .discover_and_attach_retained_targets_for_handoff(preferred_target_id)
+            .discover_and_attach_retained_targets_for_handoff(preferred_target_id, false)
             .await?;
         Ok(manager)
+    }
+
+    /// Attach only the exact retained target. Missing or duplicated identity
+    /// fails before any target is attached or activated and never falls back.
+    pub async fn connect_cdp_for_exact_handoff(url: &str, target_id: &str) -> Result<Self, String> {
+        let ws_url = resolve_cdp_url(url).await?;
+        let client = Arc::new(CdpClient::connect(&ws_url).await?);
+        let mut manager = Self {
+            client,
+            browser_process: None,
+            ws_url,
+            pages: Vec::new(),
+            active_page_index: 0,
+            default_timeout_ms: 25_000,
+            download_path: None,
+            ignore_https_errors: false,
+            visited_origins: HashSet::new(),
+        };
+        manager
+            .discover_and_attach_retained_targets_for_handoff(Some(target_id), true)
+            .await?;
+        Ok(manager)
+    }
+
+    pub(super) fn connected_cdp_endpoint(&self) -> &str {
+        &self.ws_url
     }
 
     /// Connect to a provider CDP proxy where the WebSocket IS the page session.
@@ -749,6 +775,7 @@ impl BrowserManager {
     async fn discover_and_attach_retained_targets_for_handoff(
         &mut self,
         preferred_target_id: Option<&str>,
+        strict_exact: bool,
     ) -> Result<(), String> {
         self.client
             .send_command_typed::<_, Value>(
@@ -769,6 +796,45 @@ impl BrowserManager {
             .collect();
         if page_targets.is_empty() {
             return Err("Runtime handoff found no retained page targets".to_string());
+        }
+
+        if strict_exact {
+            let target_id = preferred_target_id
+                .ok_or_else(|| "Exact runtime handoff requires target identity".to_string())?;
+            let matches = page_targets
+                .iter()
+                .filter(|target| target.target_id == target_id)
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return Err("Exact runtime handoff target is missing or ambiguous".to_string());
+            }
+            let target = matches[0];
+            let attach_result: AttachToTargetResult = self
+                .client
+                .send_command_typed(
+                    "Target.attachToTarget",
+                    &AttachToTargetParams {
+                        target_id: target.target_id.clone(),
+                        flatten: true,
+                    },
+                    None,
+                )
+                .await?;
+            self.pages.push(PageInfo {
+                target_id: target.target_id.clone(),
+                session_id: attach_result.session_id,
+                url: target.url.clone(),
+                title: target.title.clone(),
+                target_type: target.target_type.clone(),
+            });
+            self.enable_domains_with_timeout(
+                &self.pages[0].session_id,
+                RUNTIME_HANDOFF_TARGET_INIT_TIMEOUT,
+            )
+            .await?;
+            self.active_page_index = 0;
+            self.activate_page(0).await?;
+            return Ok(());
         }
 
         for target in &page_targets {
@@ -2638,7 +2704,7 @@ async fn resolve_cdp_url(input: &str) -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn focus_x11_browser_window(pid: u32, display_name: &str) -> Result<Value, String> {
+pub(super) fn focus_x11_browser_window(pid: u32, display_name: &str) -> Result<Value, String> {
     x11_focus::focus_window_for_pid(pid, display_name)
 }
 

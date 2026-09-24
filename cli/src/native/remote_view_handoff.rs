@@ -11,8 +11,9 @@ use super::remote_view_proof::{
     remote_view_operator_visible_state, remote_view_target_component_state,
 };
 use super::service_model::{
-    ControlInputProvider, DisplayAllocation, RemoteViewAcquisitionLease, RemoteViewHandoff,
-    RemoteViewRoute, RoutePoolEntry, ServiceState, TabLifecycle, ViewStreamProvider,
+    BrowserHealth, ControlInputProvider, DisplayAllocation, LeaseState, RemoteViewAcquisitionLease,
+    RemoteViewHandoff, RemoteViewRecoveryIdentity, RemoteViewRoute, RoutePoolEntry, ServiceState,
+    TabLifecycle, ViewStreamProvider,
 };
 use super::service_store::{
     JsonServiceStateStore, LockedServiceStateRepository, ServiceStateRepository,
@@ -534,12 +535,15 @@ pub fn remote_view_handoff_resolution_command(
         );
     }
     if !allow_reopen_closed {
-        if let Some(target_id) = handoff.target_id.as_ref() {
-            command.insert(
-                "preferredTargetId".to_string(),
-                Value::String(target_id.clone()),
-            );
-        }
+        let identity = handoff
+            .recovery_identity
+            .as_ref()
+            .ok_or_else(|| "durable_handoff_recovery_identity_missing".to_string())?;
+        command.insert(
+            "preferredTargetId".to_string(),
+            Value::String(identity.target_id.clone()),
+        );
+        command.insert("strictRetainedRecovery".to_string(), Value::Bool(true));
     }
     Ok(Value::Object(command))
 }
@@ -1615,6 +1619,13 @@ fn persist_remote_view_handoff(
         let created_at = existing
             .and_then(|handoff| handoff.created_at.clone())
             .or_else(|| Some(input.observed_at.to_string()));
+        let recovery_identity = capture_remote_view_recovery_identity(
+            state,
+            input.browser_id,
+            input.session_name,
+            profile_id.as_deref(),
+            target_id.as_deref(),
+        );
         state.remote_view_handoffs.insert(
             input.handoff_id.to_string(),
             RemoteViewHandoff {
@@ -1628,6 +1639,7 @@ fn persist_remote_view_handoff(
                 session_name: Some(input.session_name.to_string()),
                 tab_id,
                 target_id,
+                recovery_identity,
                 view_stream_provider: Some(input.intent.view_stream_provider),
                 control_input,
                 last_route_id: Some(input.route_binding.route_id.clone()),
@@ -1648,6 +1660,213 @@ fn persist_remote_view_handoff(
         );
         Ok(())
     })
+}
+
+fn capture_remote_view_recovery_identity(
+    state: &ServiceState,
+    browser_id: &str,
+    session_name: &str,
+    profile_id: Option<&str>,
+    target_id: Option<&str>,
+) -> Option<RemoteViewRecoveryIdentity> {
+    let profile_id = profile_id?;
+    let target_id = target_id?;
+    let browser = state.browsers.get(browser_id)?;
+    let session = state.sessions.get(session_name)?;
+    let profile = state.profiles.get(profile_id)?;
+    let proof = browser.browser_build_proof.as_ref()?;
+    let browser_pid = browser.pid?;
+    let cdp_endpoint = browser.cdp_endpoint.as_deref()?;
+    let browser_build = browser.browser_build?;
+    let executable_path = browser.executable_path.as_deref()?;
+    let executable_sha256 = proof.get("executableSha256").and_then(Value::as_str)?;
+    let process_start_ticks = proof.get("processStartTicks").and_then(Value::as_u64)?;
+    let proof_build = proof
+        .get("browserBuild")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok());
+    let accepted_reason = matches!(
+        proof.get("reason").and_then(Value::as_str),
+        Some(
+            "verified_external_byop_process"
+                | "verified_registered_runtime_attach_process"
+                | "verified_installed_chrome_runtime_attach"
+        )
+    );
+    let matching_tabs = state
+        .tabs
+        .values()
+        .filter(|tab| tab.target_id.as_deref() == Some(target_id))
+        .collect::<Vec<_>>();
+    let tab = (matching_tabs.len() == 1).then_some(matching_tabs[0])?;
+    if browser.health != BrowserHealth::Ready
+        || browser.profile_id.as_deref() != Some(profile_id)
+        || profile
+            .browser_build
+            .is_some_and(|build| build != browser_build)
+        || session.profile_id.as_deref() != Some(profile_id)
+        || session.browser_ids.as_slice() != [browser_id]
+        || matches!(session.lease, LeaseState::Released | LeaseState::Expired)
+        || !browser
+            .active_session_ids
+            .iter()
+            .any(|value| value == session_name)
+        || proof.get("applied").and_then(Value::as_bool) != Some(true)
+        || !accepted_reason
+        || proof_build != Some(browser_build)
+        || proof.get("profileId").and_then(Value::as_str) != Some(profile_id)
+        || proof.get("browserPid").and_then(Value::as_u64) != Some(u64::from(browser_pid))
+        || proof.get("cdpEndpoint").and_then(Value::as_str) != Some(cdp_endpoint)
+        || proof.get("executablePath").and_then(Value::as_str) != Some(executable_path)
+        || tab.browser_id != browser_id
+        || tab.owner_session_id.as_deref() != Some(session_name)
+        || tab.lifecycle != TabLifecycle::Ready
+    {
+        return None;
+    }
+    Some(RemoteViewRecoveryIdentity {
+        browser_id: browser_id.to_string(),
+        session_name: session_name.to_string(),
+        profile_id: profile_id.to_string(),
+        browser_pid,
+        cdp_endpoint: cdp_endpoint.to_string(),
+        browser_build,
+        executable_path: executable_path.to_string(),
+        executable_sha256: Some(executable_sha256.to_string()),
+        process_start_ticks,
+        target_id: target_id.to_string(),
+        target_url: tab.url.clone(),
+        browser_build_proof: proof.clone(),
+    })
+}
+
+/// Resolve and validate the immutable identity for an exact retained-browser
+/// recovery. Mutable service rows may confirm the snapshot, never replace it.
+pub fn durable_handoff_recovery_identity(
+    state: &ServiceState,
+    handoff_id: &str,
+) -> Result<RemoteViewRecoveryIdentity, String> {
+    let handoff = state
+        .remote_view_handoffs
+        .get(handoff_id)
+        .ok_or_else(|| "durable_handoff_not_found".to_string())?;
+    let identity = handoff
+        .recovery_identity
+        .as_ref()
+        .ok_or_else(|| "durable_handoff_recovery_identity_missing".to_string())?;
+    if handoff.browser_id.as_deref() != Some(identity.browser_id.as_str())
+        || handoff.session_name.as_deref() != Some(identity.session_name.as_str())
+        || handoff.profile_id.as_deref() != Some(identity.profile_id.as_str())
+        || handoff.target_id.as_deref() != Some(identity.target_id.as_str())
+    {
+        return Err("durable_handoff_recovery_identity_changed".to_string());
+    }
+    let browser = state
+        .browsers
+        .get(&identity.browser_id)
+        .ok_or_else(|| "durable_handoff_browser_missing".to_string())?;
+    let session = state
+        .sessions
+        .get(&identity.session_name)
+        .ok_or_else(|| "durable_handoff_session_missing".to_string())?;
+    let profile = state
+        .profiles
+        .get(&identity.profile_id)
+        .ok_or_else(|| "durable_handoff_profile_missing".to_string())?;
+    if browser.health != BrowserHealth::Ready
+        || browser.profile_id.as_deref() != Some(identity.profile_id.as_str())
+        || browser.browser_build != Some(identity.browser_build)
+        || browser.executable_path.as_deref() != Some(identity.executable_path.as_str())
+        || browser.pid != Some(identity.browser_pid)
+        || browser.cdp_endpoint.as_deref() != Some(identity.cdp_endpoint.as_str())
+        || browser.browser_build_proof.as_ref() != Some(&identity.browser_build_proof)
+        || profile
+            .browser_build
+            .is_some_and(|build| build != identity.browser_build)
+        || session.profile_id.as_deref() != Some(identity.profile_id.as_str())
+        || session.browser_ids.as_slice() != [identity.browser_id.as_str()]
+        || matches!(session.lease, LeaseState::Released | LeaseState::Expired)
+        || !browser
+            .active_session_ids
+            .iter()
+            .any(|value| value == &identity.session_name)
+    {
+        return Err("durable_handoff_current_identity_mismatch".to_string());
+    }
+    let browser_claims = state
+        .browsers
+        .values()
+        .filter(|candidate| {
+            candidate.pid == Some(identity.browser_pid)
+                || candidate.cdp_endpoint.as_deref() == Some(identity.cdp_endpoint.as_str())
+                || (candidate.profile_id.as_deref() == Some(identity.profile_id.as_str())
+                    && candidate.health == BrowserHealth::Ready
+                    && candidate.pid.is_some())
+        })
+        .count();
+    let session_claims = state
+        .sessions
+        .values()
+        .filter(|candidate| {
+            candidate
+                .browser_ids
+                .iter()
+                .any(|id| id == &identity.browser_id)
+                && !matches!(candidate.lease, LeaseState::Released | LeaseState::Expired)
+        })
+        .count();
+    let target_claims = state
+        .tabs
+        .values()
+        .filter(|candidate| candidate.target_id.as_deref() == Some(identity.target_id.as_str()))
+        .collect::<Vec<_>>();
+    if browser_claims != 1 || session_claims != 1 || target_claims.len() != 1 {
+        return Err("durable_handoff_recovery_identity_ambiguous".to_string());
+    }
+    let tab = target_claims[0];
+    if tab.browser_id != identity.browser_id
+        || tab.owner_session_id.as_deref() != Some(identity.session_name.as_str())
+        || tab.lifecycle != TabLifecycle::Ready
+    {
+        return Err("durable_handoff_target_identity_mismatch".to_string());
+    }
+    Ok(identity.clone())
+}
+
+/// Internal, no-launch command used by the dashboard HTTP bridge before it
+/// dispatches the public durable-handoff resolver.
+pub fn durable_handoff_owner_prepare_command(
+    state: &ServiceState,
+    handoff_id: &str,
+    source: &Value,
+) -> Result<Value, String> {
+    let identity = durable_handoff_recovery_identity(state, handoff_id)?;
+    let port = identity
+        .cdp_endpoint
+        .strip_prefix("ws://127.0.0.1:")
+        .and_then(|rest| rest.split_once("/devtools/browser/"))
+        .and_then(|(port, browser_uuid)| {
+            (!browser_uuid.is_empty())
+                .then(|| port.parse::<u16>().ok())
+                .flatten()
+        })
+        .ok_or_else(|| "durable_handoff_cdp_endpoint_invalid".to_string())?;
+    Ok(json!({
+        "id": format!("retained-owner-prepare:{handoff_id}"),
+        "action": "retained_owner_prepare",
+        "handoffId": handoff_id,
+        "browserId": identity.browser_id,
+        "sessionName": identity.session_name,
+        "runtimeProfile": identity.profile_id,
+        "cdpPort": port,
+        "expectedBrowserPid": identity.browser_pid,
+        "expectedCdpEndpoint": identity.cdp_endpoint,
+        "expectedTargetId": identity.target_id,
+        "expectedTargetUrl": identity.target_url,
+        "serviceName": source.get("serviceName"),
+        "agentName": source.get("agentName"),
+        "taskName": source.get("taskName"),
+    }))
 }
 
 pub fn final_route_bound_handoff_route_binding(
@@ -2373,8 +2592,9 @@ mod tests {
         normalize_remote_view_open_intent, plan_remote_view_acquisition,
     };
     use crate::native::service_model::{
-        BrowserProcess, DisplayAllocation, RemoteViewRoute, RoutePoolEntry, ServiceState,
-        ViewStreamProvider,
+        BrowserBuild, BrowserProcess, BrowserProfile, BrowserSession, BrowserTab,
+        DisplayAllocation, RemoteViewRecoveryIdentity, RemoteViewRoute, RoutePoolEntry,
+        ServiceState, ViewStreamProvider,
     };
     use crate::native::service_store::ServiceStateStore;
     use std::collections::BTreeMap;
@@ -2400,6 +2620,119 @@ mod tests {
             route_descriptor: Some(json!({ "kind": "guacamole", "id": "route-a" })),
             readiness: None,
         }
+    }
+
+    fn command_test_recovery_identity() -> RemoteViewRecoveryIdentity {
+        RemoteViewRecoveryIdentity {
+            browser_id: "session:browser-a".to_string(),
+            session_name: "session-a".to_string(),
+            profile_id: "profile-a".to_string(),
+            browser_pid: 42,
+            cdp_endpoint: "ws://127.0.0.1:9222/devtools/browser/browser-a".to_string(),
+            browser_build: BrowserBuild::StealthcdpChromium,
+            executable_path: "/opt/chromium/chrome".to_string(),
+            executable_sha256: Some("a".repeat(64)),
+            process_start_ticks: 100,
+            target_id: "target-a".to_string(),
+            target_url: Some("https://example.com/article".to_string()),
+            browser_build_proof: json!({"applied": true}),
+        }
+    }
+
+    fn command_test_recovery_state() -> ServiceState {
+        let identity = command_test_recovery_identity();
+        let proof = identity.browser_build_proof.clone();
+        ServiceState {
+            profiles: BTreeMap::from([(
+                identity.profile_id.clone(),
+                BrowserProfile {
+                    id: identity.profile_id.clone(),
+                    user_data_dir: Some("/tmp/profile-a".to_string()),
+                    browser_build: Some(identity.browser_build),
+                    ..BrowserProfile::default()
+                },
+            )]),
+            browsers: BTreeMap::from([(
+                identity.browser_id.clone(),
+                BrowserProcess {
+                    id: identity.browser_id.clone(),
+                    profile_id: Some(identity.profile_id.clone()),
+                    browser_build: Some(identity.browser_build),
+                    executable_path: Some(identity.executable_path.clone()),
+                    browser_build_proof: Some(proof),
+                    health: BrowserHealth::Ready,
+                    pid: Some(identity.browser_pid),
+                    cdp_endpoint: Some(identity.cdp_endpoint.clone()),
+                    active_session_ids: vec![identity.session_name.clone()],
+                    ..BrowserProcess::default()
+                },
+            )]),
+            sessions: BTreeMap::from([(
+                identity.session_name.clone(),
+                BrowserSession {
+                    id: identity.session_name.clone(),
+                    lease: LeaseState::Shared,
+                    profile_id: Some(identity.profile_id.clone()),
+                    browser_ids: vec![identity.browser_id.clone()],
+                    ..BrowserSession::default()
+                },
+            )]),
+            tabs: BTreeMap::from([(
+                "target:target-a".to_string(),
+                BrowserTab {
+                    id: "target:target-a".to_string(),
+                    browser_id: identity.browser_id.clone(),
+                    target_id: Some(identity.target_id.clone()),
+                    lifecycle: TabLifecycle::Ready,
+                    url: identity.target_url.clone(),
+                    owner_session_id: Some(identity.session_name.clone()),
+                    ..BrowserTab::default()
+                },
+            )]),
+            remote_view_handoffs: BTreeMap::from([(
+                "job-handoff-a".to_string(),
+                RemoteViewHandoff {
+                    id: "job-handoff-a".to_string(),
+                    profile_id: Some(identity.profile_id.clone()),
+                    browser_id: Some(identity.browser_id.clone()),
+                    session_name: Some(identity.session_name.clone()),
+                    target_id: Some(identity.target_id.clone()),
+                    recovery_identity: Some(identity),
+                    ..RemoteViewHandoff::default()
+                },
+            )]),
+            ..ServiceState::default()
+        }
+    }
+
+    #[test]
+    fn retained_owner_prepare_plan_uses_only_immutable_identity() {
+        let state = command_test_recovery_state();
+        let command = durable_handoff_owner_prepare_command(
+            &state,
+            "job-handoff-a",
+            &json!({"serviceName": "agent-browser-dashboard"}),
+        )
+        .expect("exact retained identity should plan owner preparation");
+
+        assert_eq!(command["action"], "retained_owner_prepare");
+        assert_eq!(command["sessionName"], "session-a");
+        assert_eq!(command["browserId"], "session:browser-a");
+        assert_eq!(command["expectedBrowserPid"], 42);
+        assert_eq!(command["expectedTargetId"], "target-a");
+    }
+
+    #[test]
+    fn retained_owner_prepare_plan_rejects_ambiguous_browser_claim() {
+        let mut state = command_test_recovery_state();
+        let mut duplicate = state.browsers["session:browser-a"].clone();
+        duplicate.id = "session:browser-b".to_string();
+        state.browsers.insert(duplicate.id.clone(), duplicate);
+
+        assert_eq!(
+            durable_handoff_owner_prepare_command(&state, "job-handoff-a", &json!({})).unwrap_err(),
+            "durable_handoff_recovery_identity_ambiguous"
+        );
     }
 
     #[test]
@@ -2443,7 +2776,9 @@ mod tests {
             }),
             browser_id: Some("session:browser-a".to_string()),
             session_name: Some("session-a".to_string()),
+            profile_id: Some("profile-a".to_string()),
             target_id: Some("target-a".to_string()),
+            recovery_identity: Some(command_test_recovery_identity()),
             ..RemoteViewHandoff::default()
         };
 
@@ -2474,6 +2809,9 @@ mod tests {
             }),
             browser_id: Some("session:browser-a".to_string()),
             session_name: Some("session-a".to_string()),
+            profile_id: Some("profile-a".to_string()),
+            target_id: Some("target-a".to_string()),
+            recovery_identity: Some(command_test_recovery_identity()),
             view_stream_provider: Some(ViewStreamProvider::RdpGateway),
             last_route_id: Some("route-a".to_string()),
             last_route_pool_entry_id: Some("pool-a".to_string()),
@@ -2556,6 +2894,9 @@ mod tests {
             intent: json!({ "viewStreamProvider": "rdp_gateway" }),
             browser_id: Some("session:browser-a".to_string()),
             session_name: Some("session-a".to_string()),
+            profile_id: Some("profile-a".to_string()),
+            target_id: Some("target-a".to_string()),
+            recovery_identity: Some(command_test_recovery_identity()),
             view_stream_provider: Some(ViewStreamProvider::RdpGateway),
             last_route_id: Some("route-a".to_string()),
             last_route_pool_entry_id: Some("pool-a".to_string()),

@@ -2309,6 +2309,10 @@ pub struct RemoteViewHandoff {
     pub session_name: Option<String>,
     pub tab_id: Option<String>,
     pub target_id: Option<String>,
+    /// Immutable browser/process/target identity captured when this handoff was
+    /// created. Exact retained recovery is unavailable for legacy handoffs
+    /// without this evidence; it must never infer identity from mutable rows.
+    pub recovery_identity: Option<RemoteViewRecoveryIdentity>,
     pub view_stream_provider: Option<ViewStreamProvider>,
     pub control_input: Option<ControlInputProvider>,
     pub last_route_id: Option<String>,
@@ -2318,6 +2322,25 @@ pub struct RemoteViewHandoff {
     pub updated_at: Option<String>,
     pub last_resolved_at: Option<String>,
     pub last_resolution: Option<Value>,
+}
+
+/// Redacted, immutable identity needed to recover a retained browser without
+/// launching a replacement process or selecting a different tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteViewRecoveryIdentity {
+    pub browser_id: String,
+    pub session_name: String,
+    pub profile_id: String,
+    pub browser_pid: u32,
+    pub cdp_endpoint: String,
+    pub browser_build: BrowserBuild,
+    pub executable_path: String,
+    pub executable_sha256: Option<String>,
+    pub process_start_ticks: u64,
+    pub target_id: String,
+    pub target_url: Option<String>,
+    pub browser_build_proof: Value,
 }
 
 /// Top-level snapshot of the browser service control plane.
@@ -8110,6 +8133,7 @@ mod tests {
             session_name: Some("session-a".to_string()),
             tab_id: Some("tab-a".to_string()),
             target_id: Some("target-a".to_string()),
+            recovery_identity: None,
             view_stream_provider: Some(ViewStreamProvider::RdpGateway),
             control_input: Some(ControlInputProvider::ManualAttachedDesktop),
             last_route_id: Some("route-a".to_string()),

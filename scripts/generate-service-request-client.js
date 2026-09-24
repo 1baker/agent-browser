@@ -1195,6 +1195,7 @@ export interface ServiceExternalByopAdoptRequestOptions extends Omit<ServiceRequ
   runtimeProfile?: string;
   cdpUrl?: string;
   cdpPort?: number;
+  browserPid?: number;
   url?: string;
   params?: Record<string, unknown>;
 }

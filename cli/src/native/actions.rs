@@ -57,8 +57,9 @@ use super::remote_view_attachability::refresh_remote_view_attachability;
 use super::remote_view_handoff::{
     apply_retained_remote_view_route, begin_route_bound_handoff_failure_recovery,
     begin_route_bound_handoff_plan_acquisition, complete_route_bound_handoff_failure_cleanup,
-    complete_route_bound_handoff_open, planned_route_bound_handoff_response,
-    remote_view_handoff_resolution_command, remote_view_handoff_was_explicitly_closed,
+    complete_route_bound_handoff_open, durable_handoff_recovery_identity,
+    planned_route_bound_handoff_response, remote_view_handoff_resolution_command,
+    remote_view_handoff_was_explicitly_closed,
     route_bound_handoff_checkout_command_with_visible_window_proof,
     route_bound_handoff_checkout_failure, route_bound_handoff_failure_cleanup_task_result,
     route_bound_handoff_focus_command, route_bound_handoff_focus_failure,
@@ -353,6 +354,7 @@ pub(crate) fn action_skips_browser_launch(action: &str) -> bool {
             | "stream_status"
             | "view_takeover"
             | "remote_view_open"
+            | "retained_owner_prepare"
             | "service_remote_view_handoff_resolve"
             | "service_remote_view_route_preflight"
             | "service_remote_view_browser_reattach"
@@ -2396,11 +2398,17 @@ fn persist_current_browser_health(
             None,
             metadata,
             |service_state| {
-                if !preserves_existing_metadata {
-                    return;
-                }
                 if let Some(runtime_profile) = state.attached_runtime_profile.as_deref() {
-                    super::runtime_attach_proof::refresh_retained_attach_proof(
+                    if preserves_existing_metadata {
+                        super::runtime_attach_proof::refresh_retained_attach_proof(
+                            service_state,
+                            &state.session_id,
+                            runtime_profile,
+                            pid,
+                            cdp_endpoint.as_deref(),
+                        );
+                    }
+                    refresh_registered_runtime_attach_proof(
                         service_state,
                         &state.session_id,
                         runtime_profile,
@@ -2408,7 +2416,9 @@ fn persist_current_browser_health(
                         cdp_endpoint.as_deref(),
                     );
                 }
-                refresh_cdp_screencast_view_streams(service_state);
+                if preserves_existing_metadata {
+                    refresh_cdp_screencast_view_streams(service_state);
+                }
             },
         );
     }
@@ -5359,7 +5369,8 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "evaluate" => handle_evaluate(cmd, state).await,
         "runtime_handoff_prepare" => handle_runtime_handoff_prepare(state).await,
         "runtime_handoff_resume" => handle_runtime_handoff_resume(state).await,
-        "close" => handle_close(state).await,
+        "retained_owner_prepare" => handle_retained_owner_prepare(cmd, state).await,
+        "close" => handle_close_request(cmd, state).await,
         "snapshot" => handle_snapshot(cmd, state).await,
         "screenshot" => handle_screenshot(cmd, state).await,
         "click" => handle_click(cmd, state).await,
@@ -6071,6 +6082,260 @@ async fn try_auto_restore_state(state: &mut DaemonState) {
 // Phase 1 handlers
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RetainedReconnectAdmission {
+    browser_id: String,
+    session_name: String,
+    runtime_profile: String,
+    pid: u32,
+    endpoint: String,
+    port: u16,
+    target_id: String,
+    target_url: Option<String>,
+}
+
+/// Admit only one exact, physically re-observed retained browser. This helper
+/// deliberately does not depend on the runtime-profile state file because that
+/// projection may disappear while Chrome and durable Service custody survive.
+fn retained_reconnect_admission(
+    cmd: &Value,
+    daemon_session: &str,
+) -> Result<RetainedReconnectAdmission, String> {
+    let repository = LockedServiceStateRepository::default_json()?;
+    let service_state = repository.load_snapshot()?;
+    let strict_handoff = cmd
+        .get("handoffId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(|handoff_id| durable_handoff_recovery_identity(&service_state, handoff_id))
+        .transpose()?;
+    let (browser_id, runtime_profile, pid, endpoint, target_id, target_url) =
+        if let Some(identity) = strict_handoff.as_ref() {
+            if daemon_session != identity.session_name {
+                return Err(
+                    "Retained reconnect route conflicts with the durable handoff".to_string(),
+                );
+            }
+            (
+                identity.browser_id.clone(),
+                identity.profile_id.clone(),
+                identity.browser_pid,
+                identity.cdp_endpoint.clone(),
+                identity.target_id.clone(),
+                identity.target_url.clone(),
+            )
+        } else {
+            let runtime_profile = cmd
+                .get("runtimeProfile")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or("Retained reconnect requires an explicit runtime profile")?;
+            let pid = cmd
+                .get("expectedBrowserPid")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .ok_or("Retained reconnect requires an expected browser PID")?;
+            let endpoint = cmd
+                .get("expectedCdpEndpoint")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or("Retained reconnect requires an expected CDP endpoint")?;
+            let browser_id = format!("session:{daemon_session}");
+            let browser = service_state
+                .browsers
+                .get(&browser_id)
+                .ok_or("Retained reconnect requires the exact browser record")?;
+            let session = service_state
+                .sessions
+                .get(daemon_session)
+                .ok_or("Retained reconnect requires the exact session record")?;
+            let targets = service_state
+                .tabs
+                .values()
+                .filter(|tab| {
+                    tab.browser_id == browser_id
+                        && tab.owner_session_id.as_deref() == Some(daemon_session)
+                        && tab.lifecycle == TabLifecycle::Ready
+                        && tab.target_id.is_some()
+                })
+                .collect::<Vec<_>>();
+            if browser.health != ServiceBrowserHealth::Ready
+                || browser.profile_id.as_deref() != Some(runtime_profile)
+                || session.profile_id.as_deref() != Some(runtime_profile)
+                || session.browser_ids.as_slice() != [browser_id.as_str()]
+                || matches!(session.lease, LeaseState::Released | LeaseState::Expired)
+                || !browser
+                    .active_session_ids
+                    .iter()
+                    .any(|value| value == daemon_session)
+                || targets.len() != 1
+            {
+                return Err("Retained reconnect identity or target is ambiguous".to_string());
+            }
+            (
+                browser_id,
+                runtime_profile.to_string(),
+                pid,
+                endpoint.to_string(),
+                targets[0].target_id.clone().unwrap(),
+                targets[0].url.clone(),
+            )
+        };
+    let port = endpoint
+        .strip_prefix("ws://127.0.0.1:")
+        .and_then(|rest| rest.split_once("/devtools/browser/"))
+        .and_then(|(port, browser_uuid)| {
+            (!browser_uuid.is_empty()
+                && browser_uuid
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'))
+            .then(|| port.parse::<u16>().ok())
+            .flatten()
+        })
+        .ok_or("Retained reconnect requires an exact loopback browser endpoint")?;
+    if cmd
+        .get("cdpPort")
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        != Some(port)
+        || cmd.get("expectedBrowserPid").and_then(Value::as_u64) != Some(u64::from(pid))
+        || cmd.get("expectedCdpEndpoint").and_then(Value::as_str) != Some(endpoint.as_str())
+        || cmd.get("runtimeProfile").and_then(Value::as_str) != Some(runtime_profile.as_str())
+        || strict_handoff.is_some()
+            && cmd.get("expectedTargetId").and_then(Value::as_str) != Some(target_id.as_str())
+    {
+        return Err(
+            "Retained reconnect command conflicts with immutable handoff identity".to_string(),
+        );
+    }
+
+    if cmd
+        .get("browserId")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value != browser_id)
+        || cmd
+            .get("sessionName")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value != daemon_session)
+    {
+        return Err("Retained reconnect route conflicts with the daemon session".to_string());
+    }
+
+    let browser = service_state
+        .browsers
+        .get(&browser_id)
+        .ok_or("Retained reconnect requires the exact browser record")?;
+    let profile = service_state
+        .profiles
+        .get(&runtime_profile)
+        .ok_or("Retained reconnect requires the exact profile record")?;
+    let browser_claims = service_state
+        .browsers
+        .values()
+        .filter(|candidate| {
+            candidate.pid == Some(pid)
+                || candidate.cdp_endpoint.as_deref() == Some(endpoint.as_str())
+                || (candidate.profile_id.as_deref() == Some(runtime_profile.as_str())
+                    && candidate.health == ServiceBrowserHealth::Ready
+                    && candidate.pid.is_some())
+        })
+        .count();
+    let target_claims = service_state
+        .tabs
+        .values()
+        .filter(|candidate| candidate.target_id.as_deref() == Some(target_id.as_str()))
+        .count();
+    if browser_claims != 1 || target_claims != 1 {
+        return Err("Retained reconnect identity is ambiguous".to_string());
+    }
+    super::runtime_attach_proof::verify_persisted_retained_process(
+        browser, profile, pid, &endpoint,
+    )
+    .map_err(|reason| format!("Retained reconnect physical proof failed: {reason}"))?;
+
+    Ok(RetainedReconnectAdmission {
+        browser_id,
+        session_name: daemon_session.to_string(),
+        runtime_profile,
+        pid,
+        endpoint,
+        port,
+        target_id,
+        target_url,
+    })
+}
+
+/// Prepare the exact retained browser owner lane without launching Chrome or
+/// replaying the durable handoff. An occupied daemon must already point at the
+/// same process and endpoint; otherwise recovery fails closed.
+async fn handle_retained_owner_prepare(
+    cmd: &Value,
+    state: &mut DaemonState,
+) -> Result<Value, String> {
+    let admission = retained_reconnect_admission(cmd, &state.session_id)?;
+    if let Some(manager) = state.browser.as_mut() {
+        let live_pid = manager.browser_pid().or(state.attached_browser_pid);
+        if live_pid != Some(admission.pid)
+            || manager.connected_cdp_endpoint() != admission.endpoint.as_str()
+            || state.attached_runtime_profile.as_deref() != Some(admission.runtime_profile.as_str())
+            || !manager.has_target(&admission.target_id)
+            || !manager.is_connection_alive().await
+        {
+            return Err(
+                "Retained owner preparation refuses an occupied or changed daemon session"
+                    .to_string(),
+            );
+        }
+        if retained_reconnect_admission(cmd, &state.session_id)? != admission {
+            return Err("Retained owner preparation proof changed during admission".to_string());
+        }
+        return Ok(json!({
+            "status": "already_prepared",
+            "browserId": admission.browser_id,
+            "sessionName": admission.session_name,
+            "runtimeProfile": admission.runtime_profile,
+            "browserPid": admission.pid,
+            "cdpEndpoint": admission.endpoint,
+            "targetId": admission.target_id,
+            "browserLaunched": false,
+        }));
+    }
+
+    let launch = json!({
+        "id": optional_command_string(cmd, "id")
+            .unwrap_or_else(|| format!("retained-owner-prepare:{}", admission.session_name)),
+        "action": "launch",
+        "browserId": admission.browser_id,
+        "sessionName": admission.session_name,
+        "cdpPort": admission.port,
+        "runtimeProfile": admission.runtime_profile,
+        "runtimeAttachManaged": true,
+        "leaveOpen": true,
+        "retainedReconnectOnly": true,
+        "handoffId": cmd.get("handoffId"),
+        "expectedBrowserPid": admission.pid,
+        "expectedCdpEndpoint": admission.endpoint,
+        "expectedTargetId": admission.target_id,
+        "expectedTargetUrl": admission.target_url,
+        "serviceName": cmd.get("serviceName"),
+        "agentName": cmd.get("agentName"),
+        "taskName": cmd.get("taskName"),
+    });
+    let attached = handle_launch(&launch, state).await?;
+    Ok(json!({
+        "status": "prepared",
+        "browserId": admission.browser_id,
+        "sessionName": admission.session_name,
+        "runtimeProfile": admission.runtime_profile,
+        "browserPid": admission.pid,
+        "cdpEndpoint": admission.endpoint,
+        "targetId": admission.target_id,
+        "browserLaunched": false,
+        "attachment": attached,
+    }))
+}
+
 async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let headless = cmd
         .get("headless")
@@ -6091,6 +6356,21 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         .get("runtimeAttachManaged")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let retained_reconnect_only = cmd
+        .get("retainedReconnectOnly")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let retained_admission = if retained_reconnect_only {
+        if state.browser.is_some() {
+            return Err("Retained reconnect refuses an occupied daemon session".to_string());
+        }
+        if !runtime_attach_managed || !leave_open || cdp_url.is_some() || auto_connect {
+            return Err("Retained reconnect requires attach-only CDP posture".to_string());
+        }
+        Some(retained_reconnect_admission(cmd, &state.session_id)?)
+    } else {
+        None
+    };
     let manual_login_launch = manual_login_launch_from_command(cmd, headless)?;
     let viewport_size = cmd.get("viewport").and_then(|viewport| {
         let width = viewport.get("width").and_then(|v| v.as_u64())?;
@@ -6312,31 +6592,61 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     }
 
     if let Some(port) = cdp_port {
+        let retained_manager = if let Some(admission) = retained_admission.as_ref() {
+            let endpoint = admission.endpoint.as_str();
+            // Use the exact browser WebSocket, not a fresh /json/version lookup by
+            // port. Exact recovery refuses every target fallback before activation.
+            let manager =
+                BrowserManager::connect_cdp_for_exact_handoff(endpoint, &admission.target_id)
+                    .await?;
+            if manager.connected_cdp_endpoint() != endpoint
+                || manager.active_target_id().ok() != Some(admission.target_id.as_str())
+                || retained_reconnect_admission(cmd, &state.session_id)? != *admission
+            {
+                return Err(
+                    "Retained reconnect build or process proof failed; browser was preserved"
+                        .to_string(),
+                );
+            }
+            Some(manager)
+        } else {
+            None
+        };
         state.reset_input_state();
         state.attached_runtime_profile = if runtime_attach_managed {
             launch_options.runtime_profile.clone()
         } else {
             None
         };
-        state.attached_browser_pid = if runtime_attach_managed {
+        state.attached_browser_pid = if let Some(admission) = retained_admission.as_ref() {
+            Some(admission.pid)
+        } else if runtime_attach_managed {
             runtime_profile_pid(launch_options.runtime_profile.as_deref())
         } else {
             None
         };
         state.close_behavior =
             close_behavior_for_attached_browser(runtime_attach_managed, leave_open);
-        state.browser = Some(BrowserManager::connect_cdp(&port.to_string()).await?);
+        state.browser = Some(match retained_manager {
+            Some(manager) => manager,
+            None => BrowserManager::connect_cdp(&port.to_string()).await?,
+        });
         state.subscribe_to_browser_events();
         state.start_fetch_handler();
         state.start_dialog_handler();
         state.update_stream_client().await;
-        persist_current_browser_health(
-            state,
-            service_host,
-            ServiceBrowserHealth::Ready,
-            Some(metadata),
-        );
-        return Ok(json!({ "launched": true }));
+        if retained_admission.is_none() {
+            persist_current_browser_health(
+                state,
+                service_host,
+                ServiceBrowserHealth::Ready,
+                Some(metadata),
+            );
+        }
+        return Ok(json!({
+            "launched": retained_admission.is_none(),
+            "retainedReconnected": retained_admission.is_some(),
+        }));
     }
 
     if auto_connect {
@@ -6601,6 +6911,13 @@ async fn handle_external_byop_adopt(cmd: &Value, state: &mut DaemonState) -> Res
             profile_id, profile.profile_origin
         ));
     }
+    if profile.browser_build.is_some()
+        && cdp_url.as_deref().is_some_and(|url| {
+            !url.starts_with("ws://127.0.0.1:") && !url.starts_with("http://127.0.0.1:")
+        })
+    {
+        return Err("external_byop_adopt governed build requires a loopback CDP URL".to_string());
+    }
 
     if let Some(mgr) = state.browser.as_mut() {
         if mgr.is_connection_alive().await {
@@ -6611,6 +6928,15 @@ async fn handle_external_byop_adopt(cmd: &Value, state: &mut DaemonState) -> Res
         }
     }
 
+    let mgr = if let Some(url) = cdp_url.as_deref() {
+        BrowserManager::connect_cdp(url).await?
+    } else {
+        BrowserManager::connect_cdp(&cdp_port.unwrap().to_string()).await?
+    };
+    // Attaching is read-only; do not replace daemon/session state until an
+    // explicitly governed build has been physically verified.
+    let browser_build_proof =
+        external_byop_build_proof(&service_state, profile, browser_pid, mgr.get_cdp_url())?;
     state.browser = None;
     state.launch_hash = None;
     state.reset_input_state();
@@ -6618,12 +6944,6 @@ async fn handle_external_byop_adopt(cmd: &Value, state: &mut DaemonState) -> Res
     state.attached_browser_pid = None;
     state.close_behavior = CloseBehavior::Detach;
     state.screencasting = false;
-
-    let mgr = if let Some(url) = cdp_url.as_deref() {
-        BrowserManager::connect_cdp(url).await?
-    } else {
-        BrowserManager::connect_cdp(&cdp_port.unwrap().to_string()).await?
-    };
     state.attached_runtime_profile = Some(profile_id.clone());
     state.attached_browser_pid = browser_pid;
     state.browser = Some(mgr);
@@ -6649,7 +6969,7 @@ async fn handle_external_byop_adopt(cmd: &Value, state: &mut DaemonState) -> Res
         cleanup: SessionCleanupPolicy::Detach,
         profile_selection_reason: Some(ProfileSelectionReason::ExplicitProfile),
         browser_stderr_log_path: None,
-        browser_capability_launch: None,
+        browser_capability_launch: browser_build_proof.clone(),
         view_streams: Vec::new(),
         display_isolation: None,
         display_name: None,
@@ -6693,12 +7013,267 @@ async fn handle_external_byop_adopt(cmd: &Value, state: &mut DaemonState) -> Res
         "profileOrigin": "external_byop",
         "browserHost": ServiceBrowserHost::AttachedExisting,
         "browserPid": browser_pid,
+        "browserBuildProof": browser_build_proof,
         "targetId": target_id,
         "url": url,
         "title": title,
         "tabNew": opened,
         "serviceTabHandle": service_tab_handle,
     }))
+}
+
+/// A BYOP build label is only accepted when an operator-validated registry row
+/// and the exact live Linux process agree on executable bytes, profile, and CDP.
+fn external_byop_build_proof(
+    service_state: &ServiceState,
+    profile: &BrowserProfile,
+    browser_pid: Option<u32>,
+    endpoint: &str,
+) -> Result<Option<Value>, String> {
+    let Some(build) = profile.browser_build else {
+        return Ok(None);
+    };
+    let pid = browser_pid.ok_or("external_byop_adopt governed build requires browserPid")?;
+    let user_data_dir = profile
+        .user_data_dir
+        .as_deref()
+        .ok_or("external_byop_adopt governed build requires userDataDir")?;
+    let registry = &service_state.browser_capability_registry;
+    let mut verified = Vec::new();
+    for executable in &registry.browser_executables {
+        if executable.get("buildLabel").and_then(Value::as_str) != Some(browser_build_label(build))
+        {
+            continue;
+        }
+        let Some(executable_id) = executable.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(host_id) = executable.get("hostId").and_then(Value::as_str) else {
+            continue;
+        };
+        let host_ok = registry.browser_hosts.iter().any(|host| {
+            host.get("id").and_then(Value::as_str) == Some(host_id)
+                && host.get("hostKind").and_then(Value::as_str) == Some("local")
+                && host.get("reachable").and_then(Value::as_bool) == Some(true)
+        });
+        if !host_ok {
+            continue;
+        }
+        let compatibility =
+            profile_compatibility_gate(service_state, Some(&profile.id), host_id, executable_id);
+        if !compatibility.allowed {
+            continue;
+        }
+        for capability in &registry.browser_capabilities {
+            if capability.get("hostId").and_then(Value::as_str) != Some(host_id)
+                || capability.get("executableId").and_then(Value::as_str) != Some(executable_id)
+                || capability.get("cdpSupported").and_then(Value::as_bool) != Some(true)
+            {
+                continue;
+            }
+            let Some(capability_id) = capability.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let validation = validation_gate(
+                service_state,
+                host_id,
+                executable_id,
+                Some(capability_id),
+                false,
+            );
+            if !validation.allowed {
+                continue;
+            }
+            let Some(path) = executable.get("executablePath").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(expected_sha256) = executable.get("sha256").and_then(Value::as_str) else {
+                continue;
+            };
+            if expected_sha256.len() != 64
+                || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                continue;
+            }
+            let Ok(path) = Path::new(path).canonicalize() else {
+                continue;
+            };
+            if !path.is_file()
+                || service_file_sha256(&path).ok().as_deref() != Some(expected_sha256)
+            {
+                continue;
+            }
+            let Ok(start_ticks) = super::runtime_attach_proof::verify_external_byop_process(
+                pid,
+                endpoint,
+                user_data_dir,
+                &path,
+            ) else {
+                continue;
+            };
+            verified.push(json!({
+                "applied": true,
+                "reason": "verified_external_byop_process",
+                "browserBuild": browser_build_label(build),
+                "profileId": profile.id,
+                "executablePath": path,
+                "executableSha256": expected_sha256,
+                "browserPid": pid,
+                "processStartTicks": start_ticks,
+                "cdpEndpoint": endpoint,
+                "userDataDir": user_data_dir,
+                "hostId": host_id,
+                "executableId": executable_id,
+                "capabilityId": capability_id,
+                "profileCompatibilityIds": compatibility.allowed_ids,
+                "validationEvidenceIds": validation.passed_ids,
+            }));
+        }
+    }
+    match verified.len() {
+        1 => Ok(verified.pop()),
+        0 => Err("external_byop_adopt governed build could not verify exact executable digest, profile, PID, loopback CDP listener, and registry evidence".to_string()),
+        _ => Err("external_byop_adopt governed build has ambiguous verified registry bindings".to_string()),
+    }
+}
+
+/// Re-observe a custom managed-runtime attachment under the Service State
+/// mutation lock. Registry labels alone never confer build identity: the
+/// runtime record, exact session/browser binding, executable digest, profile,
+/// process start token, and process-owned loopback listener must all agree.
+fn refresh_registered_runtime_attach_proof(
+    service_state: &mut ServiceState,
+    session_id: &str,
+    runtime_profile: &str,
+    pid: Option<u32>,
+    endpoint: Option<&str>,
+) {
+    let browser_id = service_browser_id(session_id);
+    let Some(browser) = service_state.browsers.get(&browser_id) else {
+        return;
+    };
+    let profile = service_state.profiles.get(runtime_profile).cloned();
+    // An externally adopted browser has no managed runtime-state file. Its
+    // independent BYOP proof remains authoritative across daemon handoff.
+    if profile
+        .as_ref()
+        .is_some_and(|profile| profile.profile_origin == ProfileOrigin::ExternalByop)
+    {
+        return;
+    }
+    if profile.as_ref().and_then(|profile| profile.browser_build)
+        != Some(BrowserBuild::StealthcdpChromium)
+        && browser.browser_build != Some(BrowserBuild::StealthcdpChromium)
+    {
+        return;
+    }
+    let result = (|| -> Result<Value, String> {
+        let profile = profile.ok_or("managed runtime profile missing")?;
+        if profile.profile_origin != ProfileOrigin::AgentBrowserOwned
+            || profile.browser_build != Some(BrowserBuild::StealthcdpChromium)
+            || browser.profile_id.as_deref() != Some(runtime_profile)
+            || browser.pid != pid
+            || browser.cdp_endpoint.as_deref() != endpoint
+        {
+            return Err("managed runtime browser binding changed".to_string());
+        }
+        let session = service_state
+            .sessions
+            .get(session_id)
+            .ok_or("managed runtime session missing")?;
+        if session.profile_id.as_deref() != Some(runtime_profile)
+            || session.browser_ids.len() != 1
+            || session.browser_ids[0] != browser_id
+            || !browser.active_session_ids.iter().any(|id| id == session_id)
+        {
+            return Err("managed runtime session binding changed".to_string());
+        }
+        let runtime = read_runtime_state(runtime_profile)
+            .map_err(|_| "managed runtime state unreadable")?
+            .ok_or("managed runtime state missing")?;
+        let process_pid = pid.ok_or("managed runtime PID missing")?;
+        let endpoint = endpoint.ok_or("managed runtime endpoint missing")?;
+        let profile_path = profile
+            .user_data_dir
+            .as_deref()
+            .ok_or("managed runtime profile path missing")?;
+        let runtime_path = std::path::Path::new(&runtime.user_data_dir)
+            .canonicalize()
+            .map_err(|_| "managed runtime profile path unreadable")?;
+        let recorded_path = std::path::Path::new(profile_path)
+            .canonicalize()
+            .map_err(|_| "registered profile path unreadable")?;
+        if runtime.runtime_profile != runtime_profile
+            || runtime.browser_pid != process_pid
+            || runtime_path != recorded_path
+        {
+            return Err("managed runtime identity changed".to_string());
+        }
+        let port = endpoint
+            .strip_prefix("ws://127.0.0.1:")
+            .and_then(|rest| rest.split_once("/devtools/browser/"))
+            .and_then(|(port, id)| (!id.is_empty()).then(|| port.parse::<u16>().ok()).flatten())
+            .ok_or("managed runtime endpoint invalid")?;
+        if runtime
+            .devtools_port
+            .or_else(|| read_devtools_port(std::path::Path::new(&runtime.user_data_dir)))
+            != Some(port)
+        {
+            return Err("managed runtime DevTools port changed".to_string());
+        }
+        if runtime
+            .ws_url
+            .as_deref()
+            .is_some_and(|recorded| recorded != endpoint)
+        {
+            return Err("managed runtime endpoint changed".to_string());
+        }
+        let active_port = fs::read_to_string(runtime_path.join("DevToolsActivePort"))
+            .map_err(|_| "managed runtime active endpoint unreadable")?;
+        let mut active_lines = active_port.lines();
+        if active_lines
+            .next()
+            .and_then(|value| value.parse::<u16>().ok())
+            != Some(port)
+            || active_lines.next() != endpoint.strip_prefix(&format!("ws://127.0.0.1:{port}"))
+        {
+            return Err("managed runtime active endpoint changed".to_string());
+        }
+        let mut proof =
+            external_byop_build_proof(service_state, &profile, Some(process_pid), endpoint)?
+                .ok_or("registered build proof unavailable")?;
+        if read_runtime_state(runtime_profile).ok().flatten().as_ref() != Some(&runtime) {
+            return Err("managed runtime state changed during proof".to_string());
+        }
+        proof["reason"] = json!("verified_registered_runtime_attach_process");
+        Ok(proof)
+    })();
+    let proof = match result {
+        Ok(proof) => proof,
+        Err(reason) => json!({
+            "applied": false,
+            "reason": "registered_runtime_attach_unverified",
+            "browserBuild": "stealthcdp_chromium",
+            "profileId": runtime_profile,
+            "verificationReason": reason,
+        }),
+    };
+    let proven = proof["applied"] == true;
+    if let Some(browser) = service_state.browsers.get_mut(&browser_id) {
+        browser.browser_build = proven.then_some(BrowserBuild::StealthcdpChromium);
+        browser.executable_path = proven
+            .then(|| proof["executablePath"].as_str().map(str::to_owned))
+            .flatten();
+        browser.browser_build_proof = Some(proof.clone());
+        if let Some(allocation_id) = browser.display_allocation_id.as_deref() {
+            if let Some(allocation) = service_state.display_allocations.get_mut(allocation_id) {
+                allocation.browser_build = proven.then(|| "stealthcdp_chromium".to_string());
+            }
+        }
+    }
+    if let Some(session) = service_state.sessions.get_mut(session_id) {
+        session.browser_capability_launch = Some(proof);
+    }
 }
 
 fn external_byop_service_tab_handle(
@@ -8805,8 +9380,8 @@ fn validate_service_ui_step(step: &Value) -> Result<(), String> {
         .and_then(Value::as_str)
         .ok_or_else(|| "ui_action step requires type".to_string())?;
     match step_type {
-        "find" | "click" | "fill" | "type" | "select" | "wait" | "focus" | "clear" | "dialog"
-        | "menu_select" => {}
+        "find" | "click" | "os_click" | "fill" | "type" | "select" | "wait" | "focus" | "clear"
+        | "dialog" | "menu_select" => {}
         _ => return Err(format!("unsupported ui_action step type: {step_type}")),
     }
     if matches!(
@@ -8856,6 +9431,18 @@ fn validate_service_ui_step(step: &Value) -> Result<(), String> {
             return Err("ui_action dialog response must be status, accept, or dismiss".to_string());
         }
     }
+    if step_type == "os_click" {
+        for field in ["viewportX", "viewportY"] {
+            if step.get(field).and_then(Value::as_u64).is_none() {
+                return Err(format!(
+                    "ui_action os_click requires nonnegative integer {field}"
+                ));
+            }
+        }
+        if step.get("selector").is_some() || step.get("windowId").is_some() {
+            return Err("ui_action os_click accepts viewport coordinates only; the service resolves the exact window".to_string());
+        }
+    }
     Ok(())
 }
 
@@ -8886,6 +9473,7 @@ async fn run_service_ui_step(
     let result = match step_type {
         "find" => run_service_ui_find_step(state, step, timeout_ms, max_text_bytes).await?,
         "click" => handle_click(&cmd, state).await?,
+        "os_click" => run_service_ui_os_click_step(state, step).await?,
         "fill" => handle_fill(&cmd, state).await?,
         "type" => handle_type(&cmd, state).await?,
         "select" => handle_select(&cmd, state).await?,
@@ -8921,6 +9509,370 @@ async fn run_service_ui_step(
         "result": result,
         "page": page,
     }))
+}
+
+/// Classify the process-display evidence without trusting a missing value.
+#[cfg(target_os = "linux")]
+fn os_click_process_display_evidence(
+    process_env: &[u8],
+    display: &str,
+) -> Result<&'static str, String> {
+    let expected = format!("DISPLAY={display}");
+    let declared = process_env
+        .split(|byte| *byte == 0)
+        .filter(|entry| entry.starts_with(b"DISPLAY="))
+        .collect::<Vec<_>>();
+    if !declared.is_empty() {
+        if declared.iter().all(|entry| *entry == expected.as_bytes()) {
+            return Ok("process_environ");
+        }
+        return Err("os_click browser process DISPLAY mismatch".to_string());
+    }
+    // Chromium can overwrite its initial environment while rewriting the
+    // process title. Admit only that observable all-zero state; the exact
+    // process, sole X11 window PID, geometry, and image alignment still have
+    // to pass below before any input is emitted.
+    if !process_env.is_empty() && process_env.iter().all(|byte| *byte == 0) {
+        return Ok("scrubbed_process_environ_with_x11_proof");
+    }
+    Err("os_click browser process DISPLAY mismatch".to_string())
+}
+
+/// Attached CDP handoff deliberately drops an unowned PID. Governed BYOP
+/// clicks may recover it from the persisted proof, but conflicting identities
+/// still fail before any OS input is emitted.
+#[cfg(target_os = "linux")]
+fn os_click_proven_browser_pid(browser_pid: Option<u32>, proof: &Value) -> Result<u32, String> {
+    let proven_pid = proof["browserPid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid != 0)
+        .ok_or("os_click retained browser PID missing")?;
+    if browser_pid.is_some_and(|pid| pid != proven_pid) {
+        return Err("os_click retained BYOP process proof mismatch".to_string());
+    }
+    Ok(proven_pid)
+}
+
+/// Emit one real X11 pointer click only on a separately opted-in private
+/// display and a currently proven external BYOP process. CDP supplies bounded
+/// viewport geometry, but never dispatches the mouse event.
+#[cfg(target_os = "linux")]
+async fn run_service_ui_os_click_step(
+    state: &mut DaemonState,
+    step: &Value,
+) -> Result<Value, String> {
+    let viewport_x = step["viewportX"]
+        .as_u64()
+        .ok_or("os_click viewportX missing")?;
+    let viewport_y = step["viewportY"]
+        .as_u64()
+        .ok_or("os_click viewportY missing")?;
+    let display = env::var("DISPLAY").map_err(|_| "os_click requires DISPLAY")?;
+    if display.is_empty()
+        || env::var("AGENT_BROWSER_OS_CLICK_ISOLATED_DISPLAY")
+            .ok()
+            .as_deref()
+            != Some(display.as_str())
+    {
+        return Err("os_click requires an explicitly opted-in isolated X11 display".to_string());
+    }
+    let mgr = state
+        .browser
+        .as_ref()
+        .ok_or("os_click requires a live browser")?;
+    let endpoint = mgr.get_cdp_url();
+    let target_id = mgr.active_target_id()?.to_string();
+    let browser_id = service_browser_id(&state.session_id);
+    let repository = LockedServiceStateRepository::default_json()?;
+    let service_state = repository.load_snapshot()?;
+    let browser = service_state
+        .browsers
+        .get(&browser_id)
+        .ok_or("os_click retained browser missing")?;
+    let proof = browser
+        .browser_build_proof
+        .as_ref()
+        .ok_or("os_click build proof missing")?;
+    let pid = os_click_proven_browser_pid(browser.pid, proof)?;
+    let profile = browser
+        .profile_id
+        .as_deref()
+        .and_then(|id| service_state.profiles.get(id));
+    if browser.host != ServiceBrowserHost::AttachedExisting
+        || profile.is_none_or(|profile| profile.profile_origin != ProfileOrigin::ExternalByop)
+        || proof["applied"] != true
+        || proof["reason"] != "verified_external_byop_process"
+        || proof["browserPid"].as_u64() != Some(u64::from(pid))
+        || proof["cdpEndpoint"].as_str() != Some(endpoint)
+        || browser.cdp_endpoint.as_deref() != Some(endpoint)
+        || browser.executable_path.as_deref() != proof["executablePath"].as_str()
+        || browser.browser_build.map(browser_build_label) != proof["browserBuild"].as_str()
+        || mgr
+            .browser_pid()
+            .or(state.attached_browser_pid)
+            .is_some_and(|attached_pid| attached_pid != pid)
+    {
+        return Err("os_click retained BYOP process proof mismatch".to_string());
+    }
+    let executable = Path::new(
+        browser
+            .executable_path
+            .as_deref()
+            .ok_or("os_click executable missing")?,
+    );
+    if service_file_sha256(executable).ok().as_deref() != proof["executableSha256"].as_str()
+        || super::runtime_attach_proof::verify_external_byop_process(
+            pid,
+            endpoint,
+            proof["userDataDir"]
+                .as_str()
+                .ok_or("os_click profile proof missing")?,
+            executable,
+        )
+        .ok()
+            != proof["processStartTicks"].as_u64()
+    {
+        return Err("os_click live process identity changed".to_string());
+    }
+    let process_env = fs::read(format!("/proc/{pid}/environ"))
+        .map_err(|_| "os_click process display unreadable")?;
+    let display_binding_evidence = os_click_process_display_evidence(&process_env, &display)?;
+
+    let capture: super::cdp::types::CaptureScreenshotResult = mgr
+        .client
+        .send_command_typed(
+            "Page.captureScreenshot",
+            &super::cdp::types::CaptureScreenshotParams {
+                format: Some("png".to_string()),
+                quality: None,
+                clip: None,
+                from_surface: Some(true),
+                capture_beyond_viewport: None,
+            },
+            Some(mgr.active_session_id()?),
+        )
+        .await?;
+    let png = BASE64_STANDARD
+        .decode(capture.data)
+        .map_err(|_| "os_click screenshot decode failed")?;
+    let screenshot = image::load_from_memory(&png).map_err(|_| "os_click screenshot invalid")?;
+    if screenshot.width() == 0
+        || screenshot.height() == 0
+        || screenshot.width() > 5000
+        || screenshot.height() > 3000
+        || viewport_x >= u64::from(screenshot.width())
+        || viewport_y >= u64::from(screenshot.height())
+    {
+        return Err(
+            "os_click coordinates fall outside the bounded fresh viewport image".to_string(),
+        );
+    }
+    // The native lookup observes _NET_WM_PID before focusing. Recheck the
+    // exact window through xdotool immediately before the XTEST click.
+    let focus = super::browser::focus_x11_browser_window(pid, &display)?;
+    let window_hex = focus["window"]
+        .as_str()
+        .ok_or("os_click X11 window missing")?;
+    let window_id = u64::from_str_radix(window_hex.trim_start_matches("0x"), 16)
+        .map_err(|_| "os_click X11 window invalid")?;
+    let window_arg = window_id.to_string();
+    let pid_arg = pid.to_string();
+    let visible = run_xdotool(&display, &["search", "--onlyvisible", "--pid", &pid_arg]).await?;
+    if visible
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+        != 1
+        || visible.trim() != window_arg
+    {
+        return Err("os_click requires exactly one visible window for the proven PID".to_string());
+    }
+    let window_pid = run_xdotool(&display, &["getwindowpid", &window_arg]).await?;
+    if window_pid.trim() != pid_arg {
+        return Err("os_click X11 window PID changed".to_string());
+    }
+    let window_geometry =
+        run_xdotool(&display, &["getwindowgeometry", "--shell", &window_arg]).await?;
+    let width = xdotool_geometry_number(&window_geometry, "WIDTH")?;
+    let height = xdotool_geometry_number(&window_geometry, "HEIGHT")?;
+    if width > 5000
+        || height > 3000
+        || width < u64::from(screenshot.width())
+        || height < u64::from(screenshot.height())
+    {
+        return Err("os_click X11 window cannot contain the fresh viewport image".to_string());
+    }
+    let window_capture = capture_x11_window(&display, &window_arg).await?;
+    if u64::from(window_capture.width()) != width || u64::from(window_capture.height()) != height {
+        return Err("os_click X11 capture and window geometry disagree".to_string());
+    }
+    let (origin_x, origin_y) = match_viewport_origin(&screenshot, &window_capture)?;
+    let window_x = u64::from(origin_x) + viewport_x;
+    let window_y = u64::from(origin_y) + viewport_y;
+    if window_x >= width || window_y >= height {
+        return Err("os_click matched viewport point leaves the exact window".to_string());
+    }
+    let x_arg = window_x.to_string();
+    let y_arg = window_y.to_string();
+    run_xdotool(
+        &display,
+        &["mousemove", "--window", &window_arg, &x_arg, &y_arg],
+    )
+    .await?;
+    let active = run_xdotool(&display, &["getwindowfocus"]).await?;
+    let current_pid = run_xdotool(&display, &["getwindowpid", &window_arg]).await?;
+    if active.trim() != window_arg
+        || current_pid.trim() != pid_arg
+        || mgr.active_target_id().ok() != Some(target_id.as_str())
+        || super::runtime_attach_proof::verify_external_byop_process(
+            pid,
+            endpoint,
+            proof["userDataDir"]
+                .as_str()
+                .ok_or("os_click profile proof missing")?,
+            executable,
+        )
+        .ok()
+            != proof["processStartTicks"].as_u64()
+    {
+        return Err("os_click X11 window lost focus or changed PID before click".to_string());
+    }
+    run_xdotool(&display, &["click", "1"]).await?;
+    Ok(json!({
+        "clicked": true,
+        "inputSource": "xdotool_x11_xtest",
+        "browserPid": pid,
+        "display": display,
+        "displayBindingEvidence": display_binding_evidence,
+        "windowId": window_arg,
+        "viewportX": viewport_x,
+        "viewportY": viewport_y,
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn run_service_ui_os_click_step(
+    _state: &mut DaemonState,
+    _step: &Value,
+) -> Result<Value, String> {
+    Err("os_click is available only on Linux X11".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn xdotool_geometry_number(output: &str, key: &str) -> Result<u64, String> {
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}=")))
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| format!("os_click xdotool {key} unavailable"))
+}
+
+#[cfg(target_os = "linux")]
+async fn capture_x11_window(display: &str, window_id: &str) -> Result<image::DynamicImage, String> {
+    let mut command = tokio::process::Command::new("import");
+    command
+        .args(["-window", window_id, "png:-"])
+        .env("DISPLAY", display)
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(4), command.output())
+        .await
+        .map_err(|_| "os_click X11 capture timed out")?
+        .map_err(|_| "os_click X11 capture tool unavailable")?;
+    if !output.status.success() || output.stdout.len() > 20_000_000 {
+        return Err("os_click X11 capture failed or exceeded byte limit".to_string());
+    }
+    image::load_from_memory(&output.stdout).map_err(|_| "os_click X11 capture invalid".to_string())
+}
+
+/// Locate the page viewport in the exact OS window from fresh in-memory
+/// images. Stealth Chromium may spoof JS screen/outer geometry, so a unique
+/// pixel match is required instead of trusting those script-visible values.
+#[cfg(target_os = "linux")]
+fn match_viewport_origin(
+    viewport: &image::DynamicImage,
+    window: &image::DynamicImage,
+) -> Result<(u32, u32), String> {
+    let page = viewport.to_rgb8();
+    let desktop = window.to_rgb8();
+    if page.width() > desktop.width()
+        || page.height() > desktop.height()
+        || page.width() < 16
+        || page.height() < 16
+    {
+        return Err("os_click viewport cannot fit inside X11 window".to_string());
+    }
+    let mut features = Vec::new();
+    for y in (2..page.height() - 2).step_by(5) {
+        for x in (2..page.width() - 2).step_by(5) {
+            let here = page.get_pixel(x, y).0;
+            let right = page.get_pixel(x + 2, y).0;
+            let below = page.get_pixel(x, y + 2).0;
+            let contrast: u32 = (0..3)
+                .map(|channel| {
+                    u32::from(here[channel].abs_diff(right[channel]))
+                        + u32::from(here[channel].abs_diff(below[channel]))
+                })
+                .sum();
+            if contrast >= 70 {
+                features.push((x, y, here));
+            }
+        }
+    }
+    if features.len() < 20 {
+        return Err(
+            "os_click viewport lacks enough visual features for unique alignment".to_string(),
+        );
+    }
+    let stride = features.len().div_ceil(256);
+    let samples = features
+        .into_iter()
+        .step_by(stride)
+        .take(256)
+        .collect::<Vec<_>>();
+    let mut best = (u64::MAX, 0_u32, 0_u32);
+    let mut runner_up = u64::MAX;
+    for offset_y in 0..=desktop.height() - page.height() {
+        for offset_x in 0..=desktop.width() - page.width() {
+            let mut score = 0_u64;
+            for &(x, y, pixel) in &samples {
+                let candidate = desktop.get_pixel(offset_x + x, offset_y + y).0;
+                for channel in 0..3 {
+                    score += u64::from(pixel[channel].abs_diff(candidate[channel]));
+                }
+            }
+            if score < best.0 {
+                if best.0 != u64::MAX {
+                    runner_up = runner_up.min(best.0);
+                }
+                best = (score, offset_x, offset_y);
+            } else if offset_x.abs_diff(best.1) > 3 || offset_y.abs_diff(best.2) > 3 {
+                runner_up = runner_up.min(score);
+            }
+        }
+    }
+    let pixels = samples.len() as u64;
+    if best.0 > pixels * 3 * 12 || runner_up <= best.0 + pixels * 3 * 3 {
+        return Err("os_click viewport alignment is weak or ambiguous".to_string());
+    }
+    Ok((best.1, best.2))
+}
+
+#[cfg(target_os = "linux")]
+async fn run_xdotool(display: &str, args: &[&str]) -> Result<String, String> {
+    let mut command = tokio::process::Command::new("xdotool");
+    command
+        .args(args)
+        .env("DISPLAY", display)
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(3), command.output())
+        .await
+        .map_err(|_| "os_click xdotool timed out")?
+        .map_err(|_| "os_click xdotool unavailable")?;
+    if !output.status.success() {
+        return Err(format!("os_click xdotool {} failed", args[0]));
+    }
+    String::from_utf8(output.stdout).map_err(|_| "os_click xdotool output invalid".to_string())
 }
 
 async fn run_service_ui_find_step(
@@ -10816,6 +11768,39 @@ fn current_service_browser_host(session_name: &str) -> ServiceBrowserHost {
         .unwrap_or(ServiceBrowserHost::AttachedExisting)
 }
 
+/// An attached-existing handoff intentionally omits its PID: it may represent
+/// a relay. Recover a PID only for an agent-browser-owned runtime whose saved
+/// profile path and live DevToolsActivePort bind this exact browser endpoint.
+fn managed_runtime_handoff_pid(runtime_profile: &str, endpoint: &str) -> Option<u32> {
+    let snapshot = LockedServiceStateRepository::default_json()
+        .ok()?
+        .load_snapshot()
+        .ok()?;
+    let profile = snapshot.profiles.get(runtime_profile)?;
+    if profile.profile_origin != ProfileOrigin::AgentBrowserOwned {
+        return None;
+    }
+    let runtime = read_runtime_state(runtime_profile).ok()??;
+    if runtime.runtime_profile != runtime_profile
+        || profile.user_data_dir.as_deref() != Some(runtime.user_data_dir.as_str())
+        || !pid_is_running(runtime.browser_pid)
+    {
+        return None;
+    }
+    let port = runtime
+        .devtools_port
+        .or_else(|| read_devtools_port(Path::new(&runtime.user_data_dir)))?;
+    let active_port =
+        fs::read_to_string(Path::new(&runtime.user_data_dir).join("DevToolsActivePort")).ok()?;
+    let mut lines = active_port.lines();
+    if lines.next().and_then(|value| value.parse::<u16>().ok()) != Some(port)
+        || lines.next() != endpoint.strip_prefix(&format!("ws://127.0.0.1:{port}"))
+    {
+        return None;
+    }
+    Some(runtime.browser_pid)
+}
+
 async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value, String> {
     let Some(manager) = state.browser.as_mut() else {
         let path = runtime_handoff_path(&state.session_id);
@@ -10958,7 +11943,12 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
     state.attached_browser_pid = if stale_attached_pid_dropped {
         None
     } else {
-        descriptor.browser_pid
+        descriptor.browser_pid.or_else(|| {
+            descriptor
+                .runtime_profile
+                .as_deref()
+                .and_then(|profile| managed_runtime_handoff_pid(profile, &descriptor.cdp_url))
+        })
     };
     state.close_behavior = if descriptor.close_browser_on_close {
         CloseBehavior::CloseBrowser
@@ -10994,6 +11984,71 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
             .map(BrowserManager::page_count)
             .unwrap_or(0),
     }))
+}
+
+/// An explicit close-time detach is valid only for this daemon's exact live
+/// managed runtime browser. It must not turn a generic CDP attachment into a
+/// retained browser or silently change an unrelated session's close policy.
+fn verify_explicit_close_detach(state: &DaemonState) -> Result<(), String> {
+    let browser = state
+        .browser
+        .as_ref()
+        .ok_or("--leave-open close requires an attached managed runtime browser")?;
+    let (profile_name, browser_pid) = if let Some(profile_name) = browser.runtime_profile_name() {
+        (profile_name, browser.browser_pid())
+    } else {
+        (
+            state
+                .attached_runtime_profile
+                .as_deref()
+                .ok_or("--leave-open close requires an attached managed runtime profile")?,
+            state.attached_browser_pid,
+        )
+    };
+    let browser_pid = browser_pid.ok_or("--leave-open close requires an exact browser PID")?;
+    let runtime = read_runtime_state(profile_name)
+        .map_err(|_| "--leave-open close could not read the managed runtime identity")?
+        .ok_or("--leave-open close has no managed runtime identity")?;
+    if runtime.runtime_profile != profile_name
+        || runtime.browser_pid != browser_pid
+        || !pid_is_running(browser_pid)
+    {
+        return Err("--leave-open close managed runtime PID changed".to_string());
+    }
+    if let Some(profile_path) = browser.browser_user_data_dir() {
+        let launched_profile = profile_path
+            .canonicalize()
+            .map_err(|_| "--leave-open close managed runtime profile is unreadable")?;
+        let recorded_profile = std::path::Path::new(&runtime.user_data_dir)
+            .canonicalize()
+            .map_err(|_| "--leave-open close recorded profile is unreadable")?;
+        if launched_profile != recorded_profile {
+            return Err("--leave-open close managed runtime profile changed".to_string());
+        }
+    } else {
+        let endpoint = browser.get_cdp_url();
+        let port = endpoint
+            .strip_prefix("ws://127.0.0.1:")
+            .and_then(|rest| rest.split_once('/'))
+            .and_then(|(port, _)| port.parse::<u16>().ok());
+        if port.is_none()
+            || port
+                != runtime
+                    .devtools_port
+                    .or_else(|| read_devtools_port(std::path::Path::new(&runtime.user_data_dir)))
+        {
+            return Err("--leave-open close managed runtime endpoint changed".to_string());
+        }
+    }
+    Ok(())
+}
+
+async fn handle_close_request(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    if cmd.get("leaveOpen").and_then(Value::as_bool) == Some(true) {
+        verify_explicit_close_detach(state)?;
+        state.close_behavior = CloseBehavior::Detach;
+    }
+    handle_close(state).await
 }
 
 async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
@@ -13103,6 +14158,90 @@ async fn remote_view_open_acquire_tab(
     Ok(opened)
 }
 
+fn remote_view_open_acquire_exact_retained_tab(
+    cmd: &Value,
+    state: &DaemonState,
+    service_state: &ServiceState,
+    browser_id: &str,
+    session_id: &str,
+) -> Result<Value, String> {
+    let handoff_id = optional_command_string(cmd, "remoteViewHandoffId")
+        .ok_or_else(|| "strict_retained_recovery_requires_handoff_id".to_string())?;
+    let identity = durable_handoff_recovery_identity(service_state, &handoff_id)?;
+    if identity.browser_id != browser_id || identity.session_name != session_id {
+        return Err("strict_retained_recovery_route_mismatch".to_string());
+    }
+    let manager = state
+        .browser
+        .as_ref()
+        .ok_or_else(|| "strict_retained_recovery_browser_missing".to_string())?;
+    let live_pid = manager.browser_pid().or(state.attached_browser_pid);
+    if live_pid != Some(identity.browser_pid)
+        || manager.connected_cdp_endpoint() != identity.cdp_endpoint
+        || state.attached_runtime_profile.as_deref() != Some(identity.profile_id.as_str())
+    {
+        return Err("strict_retained_recovery_browser_identity_mismatch".to_string());
+    }
+    let pages = manager
+        .pages_list()
+        .into_iter()
+        .filter(|page| page.target_id == identity.target_id)
+        .collect::<Vec<_>>();
+    if pages.len() != 1 {
+        return Err("strict_retained_recovery_target_missing_or_ambiguous".to_string());
+    }
+    let page = &pages[0];
+    let tab = service_state
+        .tabs
+        .values()
+        .find(|tab| {
+            tab.target_id.as_deref() == Some(identity.target_id.as_str())
+                && tab.browser_id == identity.browser_id
+                && tab.owner_session_id.as_deref() == Some(identity.session_name.as_str())
+        })
+        .ok_or_else(|| "strict_retained_recovery_tab_record_missing".to_string())?;
+    let service_tab_handle = tab
+        .service_tab_handle
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| format!("strict_retained_recovery_tab_handle_invalid: {error}"))?
+        .unwrap_or_else(|| {
+            json!({
+                "browserId": identity.browser_id,
+                "sessionName": identity.session_name,
+                "tabId": tab.id,
+                "targetId": identity.target_id,
+                "url": page.url,
+                "title": page.title,
+                "profileId": identity.profile_id,
+                "profileOrigin": "agent_browser_owned",
+                "leaseId": identity.session_name,
+                "leaseState": "shared",
+                "cleanupPolicy": "detach",
+                "leaseHeartbeatExpected": true,
+                "ownerSessionId": identity.session_name,
+                "valid": true,
+            })
+        });
+    Ok(json!({
+        "targetId": identity.target_id,
+        "url": page.url,
+        "title": page.title,
+        "browserId": identity.browser_id,
+        "sessionId": identity.session_name,
+        "profileId": identity.profile_id,
+        "serviceTabHandle": service_tab_handle,
+        "reusedExistingTarget": true,
+        "tabAcquisitionDecision": "recovered_exact_retained_target",
+        "targetReadiness": route_bound_handoff_target_url_readiness(
+            cmd.get("url").and_then(Value::as_str),
+            Some(page.url.as_str()),
+        ),
+        "duplicateTargetCleanup": no_duplicate_target_cleanup(),
+    }))
+}
+
 fn service_tab_profile_id(cmd: &Value, manager_runtime_profile: Option<&str>) -> Value {
     runtime_profile_from_sources(cmd, false)
         .or_else(|| manager_runtime_profile.map(str::to_string))
@@ -14783,6 +15922,10 @@ fn remote_view_open_persist_request_route_pool(
 
 async fn handle_remote_view_open(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let mut intent = normalize_remote_view_open_intent(cmd)?;
+    let strict_retained_recovery = cmd
+        .get("strictRetainedRecovery")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let handoff_id = optional_command_string(cmd, "remoteViewHandoffId")
         .or_else(|| optional_command_string(cmd, "serviceJobId"));
     let browser_id = intent
@@ -14858,6 +16001,16 @@ async fn handle_remote_view_open(cmd: &Value, state: &mut DaemonState) -> Result
         ));
     }
 
+    let reused_current_browser = remote_view_open_should_reuse_current_browser(
+        &acquisition_plan,
+        state,
+        &browser_id,
+        &session_id,
+    );
+    if strict_retained_recovery && !reused_current_browser {
+        return Err("strict_retained_recovery_owner_not_prepared".to_string());
+    }
+
     remote_view_open_persist_request_route_pool(&repository, &inline_route_pool_entries)?;
     let observed_at = service_remote_view_timestamp();
     let acquisition_lease = begin_route_bound_handoff_plan_acquisition(
@@ -14886,12 +16039,6 @@ async fn handle_remote_view_open(cmd: &Value, state: &mut DaemonState) -> Result
             return Err(format!("{}; cleanup={}", error, failure.summary));
         }
     };
-    let reused_current_browser = remote_view_open_should_reuse_current_browser(
-        &acquisition_plan,
-        state,
-        &browser_id,
-        &session_id,
-    );
     let launch = if reused_current_browser {
         route_bound_handoff_reused_browser_launch_result(&route_binding, &browser_id, &session_id)
     } else {
@@ -14916,16 +16063,26 @@ async fn handle_remote_view_open(cmd: &Value, state: &mut DaemonState) -> Result
             }
         }
     };
-    let tab = match remote_view_open_acquire_tab(
-        &tab_command,
-        state,
-        &service_state,
-        &browser_id,
-        &session_id,
-        reused_current_browser,
-    )
-    .await
-    {
+    let tab_result = if strict_retained_recovery {
+        remote_view_open_acquire_exact_retained_tab(
+            &tab_command,
+            state,
+            &service_state,
+            &browser_id,
+            &session_id,
+        )
+    } else {
+        remote_view_open_acquire_tab(
+            &tab_command,
+            state,
+            &service_state,
+            &browser_id,
+            &session_id,
+            reused_current_browser,
+        )
+        .await
+    };
+    let tab = match tab_result {
         Ok(tab) => tab,
         Err(error) => {
             let failure_context = route_bound_handoff_tab_open_failure();
@@ -15167,10 +16324,12 @@ async fn handle_service_remote_view_handoff_resolve(
     let opened = match handle_remote_view_open(&resolution_command, state).await {
         Ok(opened) => opened,
         Err(error) => {
-            if let Some(fallback) =
-                remote_view_handoff_provider_fallback(&service_state, &handoff, &error)
-            {
-                return Ok(fallback);
+            if allow_reopen_closed {
+                if let Some(fallback) =
+                    remote_view_handoff_provider_fallback(&service_state, &handoff, &error)
+                {
+                    return Ok(fallback);
+                }
             }
             return Err(error);
         }
@@ -20335,6 +21494,14 @@ async fn handle_service_browser_repair(cmd: &Value) -> Result<Value, String> {
             err
         }
     })?;
+    if cmd.get("reverifyRetainedByop").and_then(Value::as_bool) == Some(true)
+        || cmd
+            .pointer("/params/reverifyRetainedByop")
+            .and_then(Value::as_bool)
+            == Some(true)
+    {
+        return repository.mutate(|state| reverify_retained_byop_in_state(state, browser_id));
+    }
     let (browser, incident) = repository.mutate(|state| {
         let health = state
             .browsers
@@ -20374,6 +21541,110 @@ async fn handle_service_browser_repair(cmd: &Value) -> Result<Value, String> {
         "repaired": true,
         "browser": browser,
         "incident": incident,
+    }))
+}
+
+/// Restore an omitted PID only from the exact saved BYOP proof and the same
+/// currently leased browser/session. No browser or tab lifecycle action runs.
+fn reverify_retained_byop_in_state(
+    state: &mut ServiceState,
+    browser_id: &str,
+) -> Result<Value, String> {
+    let browser = state
+        .browsers
+        .get(browser_id)
+        .ok_or("retained BYOP browser record missing")?;
+    let profile = browser
+        .profile_id
+        .as_deref()
+        .and_then(|id| state.profiles.get(id))
+        .ok_or("retained BYOP profile record missing")?;
+    let proof = browser
+        .browser_build_proof
+        .as_ref()
+        .ok_or("retained BYOP build proof missing")?;
+    let pid = proof
+        .get("browserPid")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|pid| *pid > 0)
+        .ok_or("retained BYOP proof has no valid PID")?;
+    let endpoint = browser
+        .cdp_endpoint
+        .as_deref()
+        .ok_or("retained BYOP endpoint missing")?;
+    if external_byop_build_proof(state, profile, Some(pid), endpoint)?.as_ref() != Some(proof) {
+        return Err("retained BYOP registry or build proof changed".into());
+    }
+    reverify_retained_byop_in_state_with(
+        state,
+        browser_id,
+        super::service_health::verified_external_byop_pid,
+    )
+}
+
+fn reverify_retained_byop_in_state_with(
+    state: &mut ServiceState,
+    browser_id: &str,
+    verify_process: impl Fn(&BrowserProcess, &BrowserProfile) -> Result<u32, String>,
+) -> Result<Value, String> {
+    let session_id = browser_id
+        .strip_prefix("session:")
+        .filter(|value| !value.is_empty())
+        .ok_or("retained BYOP repair requires an exact session browser ID")?;
+    let browser = state
+        .browsers
+        .get(browser_id)
+        .ok_or("retained BYOP browser record missing")?;
+    let profile_id = browser
+        .profile_id
+        .clone()
+        .ok_or("retained BYOP profile missing")?;
+    let profile = state
+        .profiles
+        .get(&profile_id)
+        .ok_or("retained BYOP profile record missing")?;
+    let session = state
+        .sessions
+        .get(session_id)
+        .ok_or("retained BYOP session record missing")?;
+    if browser.active_session_ids.as_slice() != [session_id]
+        || session.id != session_id
+        || session.profile_id.as_deref() != Some(profile_id.as_str())
+        || session.lease != LeaseState::Exclusive
+        || session.cleanup != SessionCleanupPolicy::Detach
+        || !session.browser_ids.iter().any(|id| id == browser_id)
+        || state.sessions.values().any(|other| {
+            other.id != session_id
+                && other.profile_id.as_deref() == Some(profile_id.as_str())
+                && other.lease == LeaseState::Exclusive
+        })
+        || !browser.tab_handles.iter().any(|handle| {
+            handle.valid
+                && handle.browser_id == browser_id
+                && handle.owner_session_id.as_deref() == Some(session_id)
+                && handle.profile_id.as_deref() == Some(profile_id.as_str())
+        })
+    {
+        return Err("retained BYOP browser, tab, session, or exclusive lease changed".into());
+    }
+    let pid = verify_process(browser, profile)?;
+    let already_bound = browser.pid == Some(pid);
+    state
+        .browsers
+        .get_mut(browser_id)
+        .expect("browser exists under the same state lock")
+        .pid = Some(pid);
+    Ok(json!({
+        "repaired": !already_bound,
+        "alreadyBound": already_bound,
+        "repairKind": "reverify_retained_byop_pid",
+        "browserId": browser_id,
+        "sessionName": session_id,
+        "profileId": profile_id,
+        "browserPid": pid,
+        "browserProcessPreserved": true,
+        "tabsPreserved": true,
     }))
 }
 
@@ -25376,6 +26647,259 @@ fn error_response(id: &str, error: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn os_click_step_requires_bounded_coordinates_without_caller_window() {
+        assert!(validate_service_ui_step(
+            &json!({"type":"os_click","viewportX":200,"viewportY":140})
+        )
+        .is_ok());
+        assert!(validate_service_ui_step(
+            &json!({"type":"os_click","viewportX":-1,"viewportY":140})
+        )
+        .is_err());
+        assert!(validate_service_ui_step(
+            &json!({"type":"os_click","viewportX":200,"viewportY":140,"windowId":"42"})
+        )
+        .is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn os_click_recovers_only_matching_proven_byop_pid_after_handoff() {
+        let proof = json!({"browserPid": 1829010});
+        assert_eq!(os_click_proven_browser_pid(None, &proof).unwrap(), 1829010);
+        assert_eq!(
+            os_click_proven_browser_pid(Some(1829010), &proof).unwrap(),
+            1829010
+        );
+        assert!(os_click_proven_browser_pid(Some(42), &proof).is_err());
+        assert!(os_click_proven_browser_pid(None, &json!({})).is_err());
+        assert!(os_click_proven_browser_pid(None, &json!({"browserPid": 0})).is_err());
+        assert!(os_click_proven_browser_pid(None, &json!({"browserPid": 4294967296_u64})).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn os_click_display_requires_exact_or_fully_scrubbed_process_environment() {
+        assert_eq!(
+            os_click_process_display_evidence(b"PATH=/usr/bin\0DISPLAY=:180\0", ":180"),
+            Ok("process_environ")
+        );
+        assert_eq!(
+            os_click_process_display_evidence(&[0; 64], ":180"),
+            Ok("scrubbed_process_environ_with_x11_proof")
+        );
+        for environment in [
+            b"PATH=/usr/bin\0DISPLAY=:11\0".as_slice(),
+            b"PATH=/usr/bin\0".as_slice(),
+            b"DISPLAY=:180\0DISPLAY=:11\0".as_slice(),
+            b"".as_slice(),
+        ] {
+            assert!(os_click_process_display_evidence(environment, ":180").is_err());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn os_click_image_alignment_requires_a_unique_featured_match() {
+        let page = image::RgbImage::from_fn(80, 60, |x, y| {
+            image::Rgb([
+                ((x * 11 + y * 3) % 256) as u8,
+                ((x * 7 + y * 13) % 256) as u8,
+                ((x * 19 + y * 5) % 256) as u8,
+            ])
+        });
+        let mut window = image::RgbImage::from_pixel(130, 95, image::Rgb([240, 240, 240]));
+        for y in 0..60 {
+            for x in 0..80 {
+                window.put_pixel(x + 25, y + 17, *page.get_pixel(x, y));
+            }
+        }
+        let page = image::DynamicImage::ImageRgb8(page);
+        let window = image::DynamicImage::ImageRgb8(window);
+        assert_eq!(match_viewport_origin(&page, &window).unwrap(), (25, 17));
+        let blank = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            80,
+            60,
+            image::Rgb([255, 255, 255]),
+        ));
+        assert!(match_viewport_origin(&blank, &window).is_err());
+    }
+
+    #[test]
+    fn external_byop_governed_build_fails_closed_without_process_and_registry_proof() {
+        let profile = BrowserProfile {
+            id: "external-stealth".to_string(),
+            user_data_dir: Some("/tmp/external-stealth".to_string()),
+            browser_build: Some(BrowserBuild::StealthcdpChromium),
+            ..Default::default()
+        };
+        let state = ServiceState::default();
+        let endpoint = "ws://127.0.0.1:9222/devtools/browser/test-id";
+        assert_eq!(
+            external_byop_build_proof(&state, &profile, None, endpoint).unwrap_err(),
+            "external_byop_adopt governed build requires browserPid"
+        );
+        assert!(
+            external_byop_build_proof(&state, &profile, Some(std::process::id()), endpoint)
+                .unwrap_err()
+                .contains("could not verify exact executable digest")
+        );
+        let ungoverned = BrowserProfile {
+            browser_build: None,
+            ..profile
+        };
+        assert!(
+            external_byop_build_proof(&state, &ungoverned, None, endpoint)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn registered_custom_runtime_attach_clears_unverified_build_identity() {
+        let profile_id = format!("missing-runtime-{}", uuid::Uuid::new_v4());
+        let session_id = "custom-runtime-attach";
+        let browser_id = service_browser_id(session_id);
+        let mut state = ServiceState::default();
+        state.profiles.insert(
+            profile_id.clone(),
+            BrowserProfile {
+                id: profile_id.clone(),
+                browser_build: Some(BrowserBuild::StealthcdpChromium),
+                user_data_dir: Some("/tmp/not-a-live-managed-profile".to_string()),
+                ..Default::default()
+            },
+        );
+        state.sessions.insert(
+            session_id.to_string(),
+            BrowserSession {
+                id: session_id.to_string(),
+                profile_id: Some(profile_id.clone()),
+                browser_ids: vec![browser_id.clone()],
+                ..Default::default()
+            },
+        );
+        let endpoint = "ws://127.0.0.1:9222/devtools/browser/test-id";
+        state.browsers.insert(
+            browser_id.clone(),
+            BrowserProcess {
+                id: browser_id.clone(),
+                profile_id: Some(profile_id.clone()),
+                browser_build: Some(BrowserBuild::StealthcdpChromium),
+                executable_path: Some("/tmp/not-a-verified-browser".to_string()),
+                pid: Some(std::process::id()),
+                cdp_endpoint: Some(endpoint.to_string()),
+                active_session_ids: vec![session_id.to_string()],
+                ..Default::default()
+            },
+        );
+
+        refresh_registered_runtime_attach_proof(
+            &mut state,
+            session_id,
+            &profile_id,
+            Some(std::process::id()),
+            Some(endpoint),
+        );
+
+        let browser = &state.browsers[&browser_id];
+        assert_eq!(browser.browser_build, None);
+        assert_eq!(browser.executable_path, None);
+        assert_eq!(
+            browser.browser_build_proof.as_ref().unwrap()["applied"],
+            false
+        );
+        assert_eq!(
+            state.sessions[session_id]
+                .browser_capability_launch
+                .as_ref()
+                .unwrap()["applied"],
+            false
+        );
+
+        state.browsers.get_mut(&browser_id).unwrap().browser_build =
+            Some(BrowserBuild::StealthcdpChromium);
+        state.browsers.get_mut(&browser_id).unwrap().cdp_endpoint =
+            Some("ws://127.0.0.1:9333/devtools/browser/changed".to_string());
+        refresh_registered_runtime_attach_proof(
+            &mut state,
+            session_id,
+            &profile_id,
+            Some(std::process::id()),
+            Some(endpoint),
+        );
+        let browser = &state.browsers[&browser_id];
+        assert_eq!(browser.browser_build, None);
+        assert_eq!(
+            browser.browser_build_proof.as_ref().unwrap()["verificationReason"],
+            "managed runtime browser binding changed"
+        );
+    }
+
+    #[test]
+    fn external_byop_attach_does_not_require_managed_runtime_state() {
+        let profile_id = "external-byop-no-runtime-state";
+        let session_id = "external-byop-handoff";
+        let browser_id = service_browser_id(session_id);
+        let proof = json!({
+            "applied": true,
+            "reason": "verified_external_byop_process",
+            "browserBuild": "stealthcdp_chromium",
+            "profileId": profile_id,
+            "browserPid": 1234,
+            "cdpEndpoint": "ws://127.0.0.1:9222/devtools/browser/exact",
+            "executablePath": "/opt/verified/chrome"
+        });
+        let mut state = ServiceState::default();
+        state.profiles.insert(
+            profile_id.to_string(),
+            BrowserProfile {
+                id: profile_id.to_string(),
+                profile_origin: ProfileOrigin::ExternalByop,
+                browser_build: Some(BrowserBuild::StealthcdpChromium),
+                ..Default::default()
+            },
+        );
+        state.browsers.insert(
+            browser_id.clone(),
+            BrowserProcess {
+                id: browser_id.clone(),
+                profile_id: Some(profile_id.to_string()),
+                browser_build: Some(BrowserBuild::StealthcdpChromium),
+                executable_path: Some("/opt/verified/chrome".to_string()),
+                browser_build_proof: Some(proof.clone()),
+                ..Default::default()
+            },
+        );
+        state.sessions.insert(
+            session_id.to_string(),
+            BrowserSession {
+                id: session_id.to_string(),
+                profile_id: Some(profile_id.to_string()),
+                browser_capability_launch: Some(proof.clone()),
+                browser_ids: vec![browser_id.clone()],
+                ..Default::default()
+            },
+        );
+        refresh_registered_runtime_attach_proof(
+            &mut state,
+            session_id,
+            profile_id,
+            None,
+            Some("ws://127.0.0.1:9222/devtools/browser/exact"),
+        );
+        assert_eq!(
+            state.browsers[&browser_id].browser_build_proof,
+            Some(proof.clone())
+        );
+        assert_eq!(
+            state.sessions[session_id].browser_capability_launch,
+            Some(proof)
+        );
+    }
+
     use crate::native::service_health::{
         close_health_from_outcome, recovery_policy_for_next_attempt, stale_browser_process_record,
     };
@@ -28199,6 +29723,22 @@ mod tests {
         assert!(state.browser.is_none());
     }
 
+    #[tokio::test]
+    async fn retained_reconnect_rejects_missing_identity_before_browser_effects() {
+        let mut state = DaemonState::new();
+        let command = json!({
+            "action": "launch",
+            "retainedReconnectOnly": true,
+            "runtimeAttachManaged": true,
+            "leaveOpen": true,
+            "runtimeProfile": "qa",
+            "cdpPort": 9222,
+        });
+        let error = handle_launch(&command, &mut state).await.unwrap_err();
+        assert!(error.contains("expected browser PID"));
+        assert!(state.browser.is_none());
+    }
+
     #[test]
     fn test_apply_auto_launch_command_hints_uses_only_explicit_request_args() {
         let command = json!({
@@ -30481,6 +32021,7 @@ mod tests {
         for action in [
             "runtime_handoff_prepare",
             "runtime_handoff_resume",
+            "retained_owner_prepare",
             "service_status",
             "task_authority_issue",
             "task_authority_reconcile",
@@ -39692,6 +41233,86 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
     }
 
+    #[test]
+    fn test_reverify_retained_byop_pid_changes_only_exact_ready_browser() {
+        let browser_id = "session:exact-byop";
+        let profile_id = "exact-profile";
+        let mut state = ServiceState {
+            browsers: BTreeMap::from([(
+                browser_id.into(),
+                BrowserProcess {
+                    id: browser_id.into(),
+                    profile_id: Some(profile_id.into()),
+                    host: ServiceBrowserHost::AttachedExisting,
+                    health: ServiceBrowserHealth::Ready,
+                    active_session_ids: vec!["exact-byop".into()],
+                    tab_handles: vec![ServiceTabHandle {
+                        browser_id: browser_id.into(),
+                        profile_id: Some(profile_id.into()),
+                        owner_session_id: Some("exact-byop".into()),
+                        valid: true,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )]),
+            profiles: BTreeMap::from([(
+                profile_id.into(),
+                BrowserProfile {
+                    id: profile_id.into(),
+                    profile_origin: ProfileOrigin::ExternalByop,
+                    ..Default::default()
+                },
+            )]),
+            sessions: BTreeMap::from([(
+                "exact-byop".into(),
+                BrowserSession {
+                    id: "exact-byop".into(),
+                    profile_id: Some(profile_id.into()),
+                    lease: LeaseState::Exclusive,
+                    cleanup: SessionCleanupPolicy::Detach,
+                    browser_ids: vec![browser_id.into()],
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        let before = state.clone();
+        let repaired =
+            reverify_retained_byop_in_state_with(&mut state, browser_id, |_, _| Ok(1234)).unwrap();
+        assert_eq!(repaired["repaired"], true);
+        assert_eq!(repaired["browserProcessPreserved"], true);
+        assert_eq!(state.browsers[browser_id].pid, Some(1234));
+        let mut expected = before.clone();
+        expected.browsers.get_mut(browser_id).unwrap().pid = Some(1234);
+        assert_eq!(state, expected);
+        assert_eq!(
+            reverify_retained_byop_in_state_with(&mut state, browser_id, |_, _| Ok(1234)).unwrap()
+                ["alreadyBound"],
+            true
+        );
+
+        let mut wrong_lease = before.clone();
+        wrong_lease.sessions.get_mut("exact-byop").unwrap().lease = LeaseState::Released;
+        let unchanged = wrong_lease.clone();
+        assert!(
+            reverify_retained_byop_in_state_with(&mut wrong_lease, browser_id, |_, _| {
+                panic!("process verification must not run without the exclusive lease")
+            })
+            .is_err()
+        );
+        assert_eq!(wrong_lease, unchanged);
+
+        let mut failed_proof = before.clone();
+        assert!(
+            reverify_retained_byop_in_state_with(&mut failed_proof, browser_id, |_, _| {
+                Err("process changed".into())
+            })
+            .is_err()
+        );
+        assert_eq!(failed_proof, before);
+    }
+
     #[tokio::test]
     async fn test_service_browser_close_rejects_non_active_browser_without_launch() {
         let mut daemon_state = DaemonState::new();
@@ -40533,6 +42154,17 @@ mod tests {
             close_behavior_for_attached_browser(true, true),
             CloseBehavior::Detach
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_leave_open_close_refuses_unproven_runtime_without_mutating_state() {
+        let mut state = DaemonState::new();
+        state.close_behavior = CloseBehavior::CloseBrowser;
+        let error = handle_close_request(&json!({"leaveOpen": true}), &mut state)
+            .await
+            .unwrap_err();
+        assert!(error.contains("requires an attached managed runtime browser"));
+        assert_eq!(state.close_behavior, CloseBehavior::CloseBrowser);
     }
 
     #[test]

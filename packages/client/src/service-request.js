@@ -363,7 +363,7 @@ export function createServiceCdpFreeLaunchRequest(input) {
  */
 export function createServiceExternalByopAdoptRequest(input) {
   assertPlainObject(input, 'external BYOP adopt request');
-  const { profileId, runtimeProfile, cdpUrl, cdpPort, url, params, ...request } = input;
+  const { profileId, runtimeProfile, cdpUrl, cdpPort, browserPid, url, params, ...request } = input;
   const effectiveProfileId = runtimeProfile ?? profileId;
   if (typeof effectiveProfileId !== 'string' || effectiveProfileId.trim().length === 0) {
     throw new TypeError('external BYOP adopt request requires runtimeProfile or profileId');
@@ -373,6 +373,9 @@ export function createServiceExternalByopAdoptRequest(input) {
   }
   if (cdpPort !== undefined && (!Number.isInteger(cdpPort) || cdpPort < 1)) {
     throw new TypeError('external BYOP adopt request cdpPort must be a positive integer');
+  }
+  if (browserPid !== undefined && (!Number.isInteger(browserPid) || browserPid < 1)) {
+    throw new TypeError('external BYOP adopt request browserPid must be a positive integer');
   }
   const hasCdpUrl = typeof cdpUrl === 'string' && cdpUrl.trim().length > 0;
   const hasCdpPort = cdpPort !== undefined;
@@ -392,6 +395,7 @@ export function createServiceExternalByopAdoptRequest(input) {
     ...(profileId !== undefined ? { profileId } : {}),
     ...(hasCdpUrl ? { cdpUrl } : {}),
     ...(hasCdpPort ? { cdpPort } : {}),
+    ...(browserPid !== undefined ? { browserPid } : {}),
     ...(url !== undefined ? { url } : {}),
     ...(params !== undefined ? { params } : {}),
   });

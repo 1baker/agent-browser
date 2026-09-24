@@ -237,7 +237,7 @@
     "uiAction": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Provider-neutral UI recipe for action=ui_action. The object must include a bounded steps array. Supported step types are find, click, fill, type, select, menu_select, wait, focus, clear, and dialog. Dialog accept or dismiss requires an allowedDialogLabels match."
+      "description": "Provider-neutral UI recipe for action=ui_action. The object must include a bounded steps array. Supported step types are find, click, os_click, fill, type, select, menu_select, wait, focus, clear, and dialog. os_click requires viewportX and viewportY from a fresh CDP screenshot and an explicitly isolated, proven Linux/X11 external BYOP browser. Dialog accept or dismiss requires an allowedDialogLabels match."
     },
     "networkCapture": {
       "type": "object",

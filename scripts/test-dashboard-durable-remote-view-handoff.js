@@ -26,8 +26,20 @@ assert.match(
 
 assert.match(
   dashboardPage,
-  /Remote view unavailable[\s\S]*resolveHandoff\(false\)[\s\S]*Retry/,
-  'a transient provider reacquisition failure must keep the durable handoff retryable',
+  /Remote view unavailable[\s\S]*resolveHandoff\(false\)[\s\S]*Recover and take control/,
+  'a retained-owner failure must expose an explicit recovery action',
+);
+
+assert.match(
+  dashboardPage,
+  /cause\?: string \| null;[\s\S]*recourse\?: string \| null;[\s\S]*requestDispatched\?: boolean;/,
+  'typed recovery failures must expose cause, recourse, and dispatch state',
+);
+
+assert.match(
+  dashboardPage,
+  /payload\.error[\s\S]*payload\.recourse[\s\S]*filter\(Boolean\)\.join\(" "\)/,
+  'the recovery screen must present operator recourse returned by the service',
 );
 
 assert.match(
@@ -36,10 +48,10 @@ assert.match(
   'successful handoff resolution must preserve the intended view provider and open workspace control',
 );
 
-assert.match(
+assert.doesNotMatch(
   dashboardPage,
-  /nextResolution\.providerFallbackUrl[\s\S]*window\.location\.assign\(nextResolution\.providerFallbackUrl\)/,
-  'a retained RDP provider fallback must remain reachable when the original browser daemon is gone',
+  /window\.location\.assign\(nextResolution\.providerFallbackUrl\)/,
+  'exact recovery must not redirect to a raw provider fallback URL',
 );
 
 assert.match(

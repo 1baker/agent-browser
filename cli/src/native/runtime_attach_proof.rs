@@ -3,6 +3,8 @@
 
 use super::service_lifecycle::ServiceLaunchMetadata;
 use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::io::Read;
 
 fn installed_chrome_for_process(
     pid: u32,
@@ -161,6 +163,15 @@ fn apply_with_proc_root(
     let Some(proof) = metadata.browser_capability_launch.as_mut() else {
         return;
     };
+    // An external BYOP browser has its own registry and live-process proof.
+    // A later managed-runtime refresh must not replace it with a stock Chrome
+    // runtime-state check, because BYOP has no managed runtime-state file.
+    if matches!(
+        proof["reason"].as_str(),
+        Some("verified_external_byop_process" | "verified_registered_runtime_attach_process")
+    ) {
+        return;
+    }
     // Keep registry refusals and non-stock builds closed. An applied preference
     // is only a launch selection; it must also be verified for an attachment.
     let eligible = proof["browserBuild"] == "stock_chrome"
@@ -286,6 +297,151 @@ fn verify(
     Err("process_proof_unsupported")
 }
 
+/// Physical evidence for an externally owned Linux browser. The registry and
+/// its build label are checked by the caller; this only binds the live process
+/// to the exact executable, profile, and loopback DevTools listener.
+#[cfg(target_os = "linux")]
+pub(super) fn verify_external_byop_process(
+    pid: u32,
+    endpoint: &str,
+    profile: &str,
+    executable: &std::path::Path,
+) -> Result<u64, &'static str> {
+    let port = endpoint
+        .strip_prefix("ws://127.0.0.1:")
+        .and_then(|rest| rest.split_once("/devtools/browser/"))
+        .and_then(|(port, id)| {
+            (!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+                .then(|| port.parse::<u16>().ok())
+                .flatten()
+        })
+        .ok_or("endpoint_mismatch")?;
+    verify_process(
+        pid,
+        endpoint,
+        profile,
+        executable,
+        std::path::Path::new("/proc"),
+        port,
+        false,
+    )
+    .map(|verified| verified.start_ticks)
+}
+
+/// Revalidate a retained service-browser proof without depending on the
+/// runtime-profile state file. This is the narrow recovery path used when the
+/// browser survived its daemon: it observes the exact process, executable,
+/// profile, process-start token, DevTools endpoint, and listener again.
+pub(super) fn verify_persisted_retained_process(
+    browser: &super::service_model::BrowserProcess,
+    profile: &super::service_model::BrowserProfile,
+    expected_pid: u32,
+    expected_endpoint: &str,
+) -> Result<u64, &'static str> {
+    let proof = browser
+        .browser_build_proof
+        .as_ref()
+        .ok_or("build_proof_missing")?;
+    let profile_path = profile
+        .user_data_dir
+        .as_deref()
+        .ok_or("profile_path_missing")?;
+    let executable = browser
+        .executable_path
+        .as_deref()
+        .ok_or("executable_path_missing")?;
+    let expected_start_ticks = proof
+        .get("processStartTicks")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("process_start_missing")?;
+    let browser_build = browser.browser_build.ok_or("browser_build_missing")?;
+    let proof_build = proof
+        .get("browserBuild")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok());
+    let accepted_reason = matches!(
+        proof.get("reason").and_then(serde_json::Value::as_str),
+        Some(
+            "verified_external_byop_process"
+                | "verified_registered_runtime_attach_process"
+                | "verified_installed_chrome_runtime_attach"
+        )
+    );
+    let expected_sha256 = proof
+        .get("executableSha256")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| value.len() == 64);
+    if browser_build != super::service_model::BrowserBuild::StockChrome && expected_sha256.is_none()
+    {
+        return Err("executable_digest_missing");
+    }
+
+    if proof.get("applied").and_then(serde_json::Value::as_bool) != Some(true)
+        || !accepted_reason
+        || proof_build != Some(browser_build)
+        || profile
+            .browser_build
+            .is_some_and(|profile_build| profile_build != browser_build)
+        || !matches!(
+            browser.host,
+            super::service_model::BrowserHost::LocalHeaded
+                | super::service_model::BrowserHost::RemoteHeaded
+                | super::service_model::BrowserHost::AttachedExisting
+        )
+        || browser.pid != Some(expected_pid)
+        || browser.cdp_endpoint.as_deref() != Some(expected_endpoint)
+        || browser.profile_id.as_deref() != Some(profile.id.as_str())
+        || proof.get("profileId").and_then(serde_json::Value::as_str) != Some(profile.id.as_str())
+        || proof.get("browserPid").and_then(serde_json::Value::as_u64)
+            != Some(u64::from(expected_pid))
+        || proof.get("cdpEndpoint").and_then(serde_json::Value::as_str) != Some(expected_endpoint)
+        || proof.get("userDataDir").and_then(serde_json::Value::as_str) != Some(profile_path)
+        || proof
+            .get("executablePath")
+            .and_then(serde_json::Value::as_str)
+            != Some(executable)
+    {
+        return Err("persisted_proof_mismatch");
+    }
+
+    if let Some(expected_sha256) = expected_sha256 {
+        let mut file = std::fs::File::open(executable).map_err(|_| "executable_unreadable")?;
+        let mut hasher = Sha256::new();
+        let mut chunk = [0_u8; 64 * 1024];
+        loop {
+            let size = file.read(&mut chunk).map_err(|_| "executable_unreadable")?;
+            if size == 0 {
+                break;
+            }
+            hasher.update(&chunk[..size]);
+        }
+        if format!("{:x}", hasher.finalize()) != expected_sha256 {
+            return Err("executable_digest_mismatch");
+        }
+    }
+
+    let observed_start_ticks = verify_external_byop_process(
+        expected_pid,
+        expected_endpoint,
+        profile_path,
+        std::path::Path::new(executable),
+    )?;
+    if observed_start_ticks != expected_start_ticks {
+        return Err("process_start_mismatch");
+    }
+    Ok(observed_start_ticks)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn verify_external_byop_process(
+    _pid: u32,
+    _endpoint: &str,
+    _profile: &str,
+    _executable: &std::path::Path,
+) -> Result<u64, &'static str> {
+    Err("process_proof_unsupported")
+}
+
 #[cfg(target_os = "linux")]
 fn verify(
     runtime: &crate::runtime_profile::RuntimeState,
@@ -296,7 +452,6 @@ fn verify(
     installed: &std::path::Path,
     proc_root: &std::path::Path,
 ) -> Result<VerifiedProcess, &'static str> {
-    use std::{fs, os::unix::fs::MetadataExt, path::Path};
     if pid == 0 || runtime.browser_pid != pid || runtime.runtime_profile != runtime_profile {
         return Err("runtime_identity_mismatch");
     }
@@ -309,24 +464,39 @@ fn verify(
     {
         return Err("endpoint_mismatch");
     }
-    let profile = Path::new(profile)
-        .canonicalize()
-        .map_err(|_| "profile_unreadable")?;
-    if Path::new(&runtime.user_data_dir)
+    if std::path::Path::new(&runtime.user_data_dir)
         .canonicalize()
         .ok()
-        .as_ref()
-        != Some(&profile)
+        != std::path::Path::new(profile).canonicalize().ok()
     {
         return Err("profile_path_mismatch");
     }
-    let active_port = fs::read_to_string(profile.join("DevToolsActivePort"))
-        .map_err(|_| "active_port_unreadable")?;
-    let mut lines = active_port.lines();
-    if lines.next().and_then(|p| p.parse::<u16>().ok()) != Some(port)
-        || lines.next() != endpoint.strip_prefix(&format!("ws://127.0.0.1:{port}"))
-    {
-        return Err("active_port_mismatch");
+    verify_process(pid, endpoint, profile, installed, proc_root, port, true)
+}
+
+#[cfg(target_os = "linux")]
+fn verify_process(
+    pid: u32,
+    endpoint: &str,
+    profile: &str,
+    installed: &std::path::Path,
+    proc_root: &std::path::Path,
+    port: u16,
+    require_active_port: bool,
+) -> Result<VerifiedProcess, &'static str> {
+    use std::{fs, os::unix::fs::MetadataExt, path::Path};
+    let profile = Path::new(profile)
+        .canonicalize()
+        .map_err(|_| "profile_unreadable")?;
+    if require_active_port {
+        let active_port = fs::read_to_string(profile.join("DevToolsActivePort"))
+            .map_err(|_| "active_port_unreadable")?;
+        let mut lines = active_port.lines();
+        if lines.next().and_then(|p| p.parse::<u16>().ok()) != Some(port)
+            || lines.next() != endpoint.strip_prefix(&format!("ws://127.0.0.1:{port}"))
+        {
+            return Err("active_port_mismatch");
+        }
     }
     let process = proc_root.join(pid.to_string());
     let start_ticks = process_start_ticks(&process)?;
@@ -380,10 +550,23 @@ fn verify(
             return Err("process_arguments_ambiguous");
         }
         arguments = title.split(' ').filter(|arg| !arg.is_empty()).collect();
-        // Only switch=value tokens are unambiguous in a rewritten title.
-        // In particular, do not truncate a spaced profile path at its first
-        // space and accept its prefix as the requested profile.
-        if arguments.iter().skip(1).any(|arg| !arg.starts_with("--")) {
+        // Chrome may include one launch URL among its switches. Keep that
+        // positional argument unambiguous in a rewritten title; in particular,
+        // never accept a truncated spaced profile path.
+        let positional = arguments
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter(|(_, arg)| !arg.starts_with("--"))
+            .collect::<Vec<_>>();
+        let valid_launch_url = positional.len() == 1
+            && url::Url::parse(positional[0].1).is_ok_and(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+            });
+        if !positional.is_empty() && !valid_launch_url {
             return Err("process_arguments_ambiguous");
         }
     }
@@ -402,6 +585,28 @@ fn verify(
         || Path::new(directories[0]).canonicalize().ok().as_ref() != Some(&profile)
     {
         return Err("process_profile_mismatch");
+    }
+    if !require_active_port {
+        let expected = format!("--remote-debugging-port={port}");
+        let fixed = arguments.iter().filter(|arg| **arg == expected).count() == 1;
+        let ephemeral = arguments
+            .iter()
+            .filter(|arg| **arg == "--remote-debugging-port=0")
+            .count()
+            == 1;
+        if fixed == ephemeral {
+            return Err("process_debug_port_mismatch");
+        }
+        if ephemeral {
+            let active_port = fs::read_to_string(profile.join("DevToolsActivePort"))
+                .map_err(|_| "active_port_unreadable")?;
+            let mut lines = active_port.lines();
+            if lines.next().and_then(|p| p.parse::<u16>().ok()) != Some(port)
+                || lines.next() != endpoint.strip_prefix(&format!("ws://127.0.0.1:{port}"))
+            {
+                return Err("active_port_mismatch");
+            }
+        }
     }
     // /proc/PID/net/tcp is namespace-wide. Require the listener inode to also
     // be present in this exact process's descriptors, not merely in its namespace.
@@ -533,6 +738,32 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn managed_refresh_preserves_verified_external_byop_proof() {
+        let fixture = Fixture::new();
+        let proof = json!({
+            "applied": true,
+            "reason": "verified_external_byop_process",
+            "browserBuild": "stock_chrome",
+            "browserPid": 123,
+            "cdpEndpoint": fixture.runtime.ws_url,
+        });
+        let mut metadata = ServiceLaunchMetadata {
+            profile_id: Some("qa".into()),
+            user_data_dir: Some(fixture.runtime.user_data_dir.clone()),
+            browser_capability_launch: Some(proof.clone()),
+            ..Default::default()
+        };
+        apply_with_proc_root(
+            &mut metadata,
+            "qa",
+            Some(123),
+            fixture.runtime.ws_url.as_deref(),
+            &fixture.root.join("proc"),
+        );
+        assert_eq!(metadata.browser_capability_launch, Some(proof));
     }
 
     #[test]
@@ -907,11 +1138,23 @@ mod tests {
         let cmdline = fixture.root.join("proc/123/cmdline");
         fs::write(&cmdline, format!("{title}\0")).unwrap();
         assert!(fixture.verify().is_ok());
+        for valid in [
+            format!("{title} https://chatgpt.com/"),
+            format!("{title} https://chatgpt.com/ --no-sandbox"),
+        ] {
+            fs::write(&cmdline, format!("{valid}\0")).unwrap();
+            assert!(fixture.verify().is_ok(), "{valid}");
+        }
         for invalid in [
             title.replace(
                 " --remote-debugging-port",
                 " suffix --remote-debugging-port",
             ),
+            format!("{title} https://chatgpt.com/ https://example.com/"),
+            format!("{title} not-a-url"),
+            format!("{title} https://user:pass@chatgpt.com/"),
+            format!("{title} https://chatgpt.com/a b"),
+            format!("{title} https://chatgpt.com/ --bad='quoted value'"),
             format!("{title} --type=renderer"),
             format!("{title} --user-data-dir={}", fixture.runtime.user_data_dir),
             title.replace("--user-data-dir=", "--user-data-dir-prefix="),
@@ -932,6 +1175,44 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fixture.verify().err(), Some("profile_lock_mismatch"));
+    }
+
+    #[test]
+    fn joined_launch_url_preserves_external_browser_proof() {
+        let fixture = Fixture::new();
+        symlink(
+            "fixture-host-123",
+            fixture.root.join("profile/SingletonLock"),
+        )
+        .unwrap();
+        let title = format!(
+            "{} --remote-debugging-port=0 --user-data-dir={} https://chatgpt.com/ --no-sandbox",
+            fixture.installed.display(),
+            fixture.runtime.user_data_dir
+        );
+        let cmdline = fixture.root.join("proc/123/cmdline");
+        fs::write(&cmdline, format!("{title}\0")).unwrap();
+        let verify_external = || {
+            verify_process(
+                123,
+                fixture.runtime.ws_url.as_deref().unwrap(),
+                &fixture.runtime.user_data_dir,
+                &fixture.installed,
+                &fixture.root.join("proc"),
+                9222,
+                false,
+            )
+        };
+        assert!(verify_external().is_ok());
+        fs::write(
+            &cmdline,
+            format!(
+                "{}\0",
+                title.replace("--remote-debugging-port=0", "--remote-debugging-port=9223")
+            ),
+        )
+        .unwrap();
+        assert_eq!(verify_external().err(), Some("process_debug_port_mismatch"));
     }
 
     #[test]

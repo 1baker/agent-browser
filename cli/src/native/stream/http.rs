@@ -16,7 +16,9 @@ use crate::flags::{launch_config_status, parse_flags};
 use crate::native::publication_status::{
     local_dashboard_publication_status, LOCAL_DASHBOARD_PUBLICATION_HTTP_ROUTE,
 };
-use crate::native::remote_view_handoff::apply_remote_view_handoff_route_hints;
+use crate::native::remote_view_handoff::{
+    apply_remote_view_handoff_route_hints, durable_handoff_owner_prepare_command,
+};
 use crate::native::service_access::{
     apply_shared_profile_route_hints_for_service_request, parse_service_access_plan_query,
     service_access_plan_for_state,
@@ -355,6 +357,77 @@ pub(super) async fn handle_http_request(
                     return;
                 }
             };
+            if cmd.get("action").and_then(Value::as_str)
+                == Some("service_remote_view_handoff_resolve")
+            {
+                if let Err(response) = dashboard_auth::require_superuser(&headers, secure_cookie) {
+                    let _ = stream.write_all(&response.into_http_bytes()).await;
+                    return;
+                }
+                let handoff_id = cmd
+                    .get("handoffId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if let Err(err) =
+                    reject_conflicting_handoff_route_selectors(body_str, &service_state, handoff_id)
+                {
+                    write_durable_handoff_recovery_failure(
+                        &mut stream,
+                        DurableHandoffRecoveryFailure::before_dispatch(
+                            "caller_route_conflict",
+                            err,
+                            "409 Conflict",
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+                let allow_reopen = cmd
+                    .get("allowReopenClosed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !allow_reopen {
+                    let prepare = match durable_handoff_owner_prepare_command(
+                        &service_state,
+                        handoff_id,
+                        &cmd,
+                    ) {
+                        Ok(command) => command,
+                        Err(err) => {
+                            write_durable_handoff_recovery_failure(
+                                &mut stream,
+                                DurableHandoffRecoveryFailure::before_dispatch(
+                                    "owner_identity_invalid",
+                                    err,
+                                    "409 Conflict",
+                                ),
+                            )
+                            .await;
+                            return;
+                        }
+                    };
+                    let relay_session_name = prepare
+                        .get("sessionName")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let preparation =
+                        prepare_durable_handoff_owner(&relay_session_name, prepare).await;
+                    match resolve_durable_handoff_after_preparation(preparation, || {
+                        relay_service_command(&relay_session_name, cmd)
+                    })
+                    .await
+                    {
+                        Ok(response) => {
+                            write_json_result(&mut stream, Ok(response), "502 Bad Gateway").await
+                        }
+                        Err(failure) => {
+                            write_durable_handoff_recovery_failure(&mut stream, failure).await
+                        }
+                    }
+                    return;
+                }
+            }
             let relay_session_name = service_request_relay_session(session_name, body_str, &cmd);
             if service_request_requires_relay_session_recovery(
                 session_name,
@@ -2177,6 +2250,7 @@ fn service_request_command_with_state(
         "profileClass",
         "cdpUrl",
         "cdpPort",
+        "browserPid",
         "browserId",
         "sessionName",
         "targetId",
@@ -2291,6 +2365,54 @@ fn service_request_requires_relay_session_recovery(
     relay_session != default_session
         && command.get("action").and_then(Value::as_str)
             == Some("service_remote_view_handoff_resolve")
+}
+
+fn reject_conflicting_handoff_route_selectors(
+    body: &str,
+    state: &ServiceState,
+    handoff_id: &str,
+) -> Result<(), String> {
+    let request: Value = serde_json::from_str(body)
+        .map_err(|error| format!("invalid service request JSON: {error}"))?;
+    let handoff = state
+        .remote_view_handoffs
+        .get(handoff_id)
+        .ok_or_else(|| "durable_handoff_not_found".to_string())?;
+    let expected_session = handoff
+        .session_name
+        .as_deref()
+        .ok_or_else(|| "durable_handoff_session_missing".to_string())?;
+    let expected_browser = handoff
+        .browser_id
+        .as_deref()
+        .ok_or_else(|| "durable_handoff_browser_missing".to_string())?;
+    for value in [
+        request.pointer("/params/sessionName"),
+        request.pointer("/sessionName"),
+        request.pointer("/params/daemonSession"),
+        request.pointer("/daemonSession"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    {
+        if value != expected_session {
+            return Err("durable_handoff_route_selector_conflict".to_string());
+        }
+    }
+    for value in [
+        request.pointer("/params/browserId"),
+        request.pointer("/browserId"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    {
+        if value != expected_browser {
+            return Err("durable_handoff_route_selector_conflict".to_string());
+        }
+    }
+    Ok(())
 }
 
 pub(super) async fn ensure_service_daemon_session(session_name: &str) -> Result<(), String> {
@@ -4621,6 +4743,106 @@ async fn relay_service_command(session_name: &str, cmd: Value) -> Result<String,
     relay_command_to_daemon(session_name, &body).await
 }
 
+async fn relay_service_command_checked(session_name: &str, cmd: Value) -> Result<Value, String> {
+    let response = relay_service_command(session_name, cmd).await?;
+    let value: Value = serde_json::from_str(&response)
+        .map_err(|error| format!("Invalid daemon preparation response: {error}"))?;
+    if value.get("success").and_then(Value::as_bool) != Some(true) {
+        return Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("Daemon refused retained owner preparation")
+            .to_string());
+    }
+    Ok(value)
+}
+
+#[derive(Debug)]
+struct DurableHandoffRecoveryFailure {
+    cause: &'static str,
+    error: String,
+    status: &'static str,
+    request_dispatched: bool,
+}
+
+impl DurableHandoffRecoveryFailure {
+    fn before_dispatch(cause: &'static str, error: String, status: &'static str) -> Self {
+        Self {
+            cause,
+            error,
+            status,
+            request_dispatched: false,
+        }
+    }
+}
+
+fn durable_handoff_recovery_failure_response(failure: &DurableHandoffRecoveryFailure) -> Value {
+    json!({
+        "success": false,
+        "error": format!("durable_handoff_owner_prepare_failed: {}", failure.error),
+        "cause": failure.cause,
+        "recourse": "Restore the exact retained browser owner evidence, then retry from this durable handoff URL.",
+        "requestDispatched": failure.request_dispatched,
+    })
+}
+
+async fn write_durable_handoff_recovery_failure(
+    stream: &mut tokio::net::TcpStream,
+    failure: DurableHandoffRecoveryFailure,
+) {
+    let status = failure.status;
+    write_json_value(
+        stream,
+        status,
+        durable_handoff_recovery_failure_response(&failure),
+    )
+    .await;
+}
+
+async fn prepare_durable_handoff_owner(
+    session_name: &str,
+    prepare: Value,
+) -> Result<(), DurableHandoffRecoveryFailure> {
+    ensure_service_daemon_session(session_name)
+        .await
+        .map_err(|error| {
+            DurableHandoffRecoveryFailure::before_dispatch(
+                "owner_daemon_unavailable",
+                error,
+                "502 Bad Gateway",
+            )
+        })?;
+    relay_service_command_checked(session_name, prepare)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            DurableHandoffRecoveryFailure::before_dispatch(
+                "owner_preparation_failed",
+                error,
+                "409 Conflict",
+            )
+        })
+}
+
+async fn resolve_durable_handoff_after_preparation<F, Fut>(
+    preparation: Result<(), DurableHandoffRecoveryFailure>,
+    resolver: F,
+) -> Result<String, DurableHandoffRecoveryFailure>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    preparation?;
+    resolver()
+        .await
+        .map_err(|error| DurableHandoffRecoveryFailure {
+            cause: "handoff_resolution_failed",
+            error,
+            status: "502 Bad Gateway",
+            request_dispatched: true,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5810,6 +6032,17 @@ mod tests {
     }
 
     #[test]
+    fn service_request_command_preserves_retained_byop_reverification_flag() {
+        let command = service_request_command(
+            r#"{"action":"service_browser_repair","params":{"browserId":"session:exact-byop","reverifyRetainedByop":true},"serviceName":"AuraCall","agentName":"codex","taskName":"repairRetainedBrowser"}"#,
+        )
+        .unwrap();
+        assert_eq!(command["action"], "service_browser_repair");
+        assert_eq!(command["browserId"], "session:exact-byop");
+        assert_eq!(command["reverifyRetainedByop"], true);
+    }
+
+    #[test]
     fn service_request_command_maps_remote_view_open_params() {
         let command = service_request_command(
             r##"{"action":"remote_view_open","params":{"url":"https://www.linkedin.com/","routePoolEntryId":"pool-a","dryRun":true,"routeDescriptor":{"dashboardEmbedUrl":"https://dashboard.example/guacamole/#/client/route-a"}},"serviceName":"AuraCall","agentName":"codex","taskName":"authenticateLinkedIn","runtimeProfile":"stealthcdp-default","manualLoginLaunch":true}"##,
@@ -5872,6 +6105,82 @@ mod tests {
             "original-lane",
             &command
         ));
+    }
+
+    #[test]
+    fn service_request_handoff_resolution_rejects_conflicting_caller_route() {
+        let state = ServiceState {
+            remote_view_handoffs: std::collections::BTreeMap::from([(
+                "job-handoff-a".to_string(),
+                crate::native::service_model::RemoteViewHandoff {
+                    id: "job-handoff-a".to_string(),
+                    browser_id: Some("session:original-lane".to_string()),
+                    session_name: Some("original-lane".to_string()),
+                    ..crate::native::service_model::RemoteViewHandoff::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+
+        assert_eq!(
+            reject_conflicting_handoff_route_selectors(
+                r#"{"action":"service_remote_view_handoff_resolve","sessionName":"other-lane"}"#,
+                &state,
+                "job-handoff-a",
+            )
+            .unwrap_err(),
+            "durable_handoff_route_selector_conflict"
+        );
+        reject_conflicting_handoff_route_selectors(
+            r#"{"action":"service_remote_view_handoff_resolve","browserId":"session:original-lane"}"#,
+            &state,
+            "job-handoff-a",
+        )
+        .expect("matching caller hint should remain accepted");
+    }
+
+    #[tokio::test]
+    async fn durable_handoff_preparation_failure_never_dispatches_resolver() {
+        let resolver_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_calls = resolver_calls.clone();
+        let failure = DurableHandoffRecoveryFailure::before_dispatch(
+            "owner_preparation_failed",
+            "fixture preparation refusal".to_string(),
+            "409 Conflict",
+        );
+
+        let result = resolve_durable_handoff_after_preparation(Err(failure), move || async move {
+            observed_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok("unexpected resolver response".to_string())
+        })
+        .await;
+
+        let failure = result.expect_err("preparation refusal must fail closed");
+        assert_eq!(failure.cause, "owner_preparation_failed");
+        assert!(!failure.request_dispatched);
+        assert_eq!(resolver_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let response = durable_handoff_recovery_failure_response(&failure);
+        assert_eq!(response["requestDispatched"], false);
+        assert_eq!(response["cause"], "owner_preparation_failed");
+        assert!(response["recourse"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn durable_handoff_successful_preparation_dispatches_resolver_once() {
+        let resolver_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_calls = resolver_calls.clone();
+
+        let response = resolve_durable_handoff_after_preparation(Ok(()), move || async move {
+            observed_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok("resolver response".to_string())
+        })
+        .await
+        .expect("successful preparation should dispatch the resolver");
+
+        assert_eq!(response, "resolver response");
+        assert_eq!(resolver_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -6287,6 +6596,15 @@ mod tests {
             command["probe"]["recordFreshness"]["accountId"],
             "acct@example.test"
         );
+    }
+
+    #[test]
+    fn external_byop_adopt_preserves_top_level_browser_pid() {
+        let command = service_request_command(
+            r#"{"action":"external_byop_adopt","runtimeProfile":"external-work","cdpPort":9222,"browserPid":12345}"#,
+        )
+        .unwrap();
+        assert_eq!(command["browserPid"], 12345);
     }
 
     #[test]

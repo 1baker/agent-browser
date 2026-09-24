@@ -581,6 +581,19 @@ fn handle_jsonrpc_line_with_launch_config(
     if let (Some(flags), Ok(message)) = (flags, serde_json::from_str::<Value>(line)) {
         if message.get("id").is_some()
             && message["method"] == "tools/call"
+            && message["params"]["name"] == "service_managed_runtime_reconnect"
+        {
+            let result =
+                call_service_managed_runtime_reconnect(&message["params"]["arguments"], flags);
+            return Some(match result {
+                Ok(result) => json!({"jsonrpc": "2.0", "id": message["id"], "result": result}),
+                Err(error) => {
+                    jsonrpc_error(message["id"].clone(), error.code, error.message, error.data)
+                }
+            });
+        }
+        if message.get("id").is_some()
+            && message["method"] == "tools/call"
             && message["params"]["name"] == "service_request"
         {
             let result = call_service_request_with_flags(
@@ -1163,6 +1176,25 @@ fn service_mcp_tools() -> Vec<Value> {
                     }
                 },
                 "required": ["jobId"]
+            }
+        }),
+        json!({
+            "name": "service_managed_runtime_reconnect",
+            "title": "Reconnect exact retained browser",
+            "description": "Explicitly reconnect the selected daemon session to its already-live browser after fresh profile, PID, CDP endpoint, and build-proof checks. Never launches or replaces Chrome and never replays the prior request.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "browserId": {"type": "string", "description": "Exact retained browser id from the no-launch access plan."},
+                    "sessionName": {"type": "string", "description": "Exact retained daemon session from the no-launch access plan."},
+                    "runtimeProfile": {"type": "string", "description": "Exact managed runtime profile selected by the access plan."},
+                    "expectedBrowserPid": {"type": "integer", "minimum": 1, "description": "Current browser PID from retained browser status."},
+                    "serviceName": {"type": "string"},
+                    "agentName": {"type": "string"},
+                    "taskName": {"type": "string"}
+                },
+                "required": ["browserId", "sessionName", "runtimeProfile", "expectedBrowserPid"]
             }
         }),
         json!({
@@ -6495,6 +6527,184 @@ fn call_service_request(
     call_service_request_with_flags(arguments, session, configured_service_state, None)
 }
 
+/// Explicitly restore only a previously proven daemon connection. This never
+/// dispatches the caller's failed browser command and cannot cold-launch Chrome.
+fn call_service_managed_runtime_reconnect(
+    arguments: &Value,
+    flags: &crate::flags::Flags,
+) -> Result<Value, JsonRpcError> {
+    use crate::connection::{ensure_daemon, DaemonOptions};
+    use crate::native::service_store::ServiceStateRepository;
+    use crate::runtime_profile::runtime_status_with_user_data_dir;
+    use std::path::Path;
+
+    let required = |field: &str| {
+        arguments
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                JsonRpcError::invalid_params(&format!(
+                    "service_managed_runtime_reconnect requires {field}"
+                ))
+            })
+    };
+    let browser_id = required("browserId")?;
+    let session = required("sessionName")?;
+    let profile_id = required("runtimeProfile")?;
+    let expected_pid = arguments
+        .get("expectedBrowserPid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params(
+                "service_managed_runtime_reconnect requires expectedBrowserPid",
+            )
+        })?;
+    if browser_id != format!("session:{session}") {
+        return Err(JsonRpcError::invalid_params(
+            "Retained reconnect browserId must match sessionName",
+        ));
+    }
+    let service_name = optional_string_argument(arguments, "serviceName")?;
+    let agent_name = optional_string_argument(arguments, "agentName")?;
+    let task_name = optional_string_argument(arguments, "taskName")?;
+    let trace = service_tool_trace(service_name, agent_name, task_name);
+    let refusal = |message: String| JsonRpcError {
+        code: -32603,
+        message: "Retained browser reconnect refused",
+        data: Some(json!({
+            "message": message,
+            "browserId": browser_id,
+            "sessionName": session,
+            "runtimeProfile": profile_id,
+            "trace": trace,
+        })),
+    };
+    let repository = crate::native::service_store::LockedServiceStateRepository::default_json()
+        .map_err(|error| refusal(error.to_string()))?;
+    let state = repository
+        .load_snapshot()
+        .map_err(|error| refusal(error.to_string()))?;
+    let mut plan_fields = vec![("runtimeProfile".to_string(), profile_id.to_string())];
+    if let Some(service_name) = service_name {
+        plan_fields.push(("serviceName".to_string(), service_name.to_string()));
+    }
+    let plan_query =
+        parse_service_access_plan_query(plan_fields).map_err(|error| refusal(error.to_string()))?;
+    let plan = service_access_plan_for_state(&state, plan_query);
+    if plan["decision"]["profileReuse"]["reusableBrowserId"] != browser_id
+        || plan["decision"]["profileReuse"]["reusableSessionName"] != session
+    {
+        return Err(refusal(
+            "No-launch access plan does not recommend the exact retained browser".to_string(),
+        ));
+    }
+    let profile_path = state
+        .profiles
+        .get(profile_id)
+        .and_then(|profile| profile.user_data_dir.as_deref())
+        .ok_or_else(|| refusal("Retained profile path is unavailable".to_string()))?;
+    let status = runtime_status_with_user_data_dir(profile_id, Some(Path::new(profile_path)))
+        .map_err(refusal)?;
+    if status.browser_pid != Some(expected_pid) {
+        return Err(refusal("Retained browser PID changed".to_string()));
+    }
+    let endpoint =
+        crate::retained_reconnect_endpoint(session, profile_id, &status).map_err(refusal)?;
+    let port = status
+        .devtools_port
+        .ok_or_else(|| refusal("Retained browser DevTools port is unavailable".to_string()))?;
+    let opts = DaemonOptions {
+        headed: true,
+        debug: flags.debug,
+        leave_open: true,
+        executable_path: None,
+        executable_path_source: None,
+        extensions: &[],
+        args: None,
+        user_agent: None,
+        runtime_profile: Some(profile_id),
+        proxy: None,
+        proxy_bypass: None,
+        proxy_username: None,
+        proxy_password: None,
+        ignore_https_errors: false,
+        allow_file_access: false,
+        profile: None,
+        state: None,
+        provider: None,
+        device: None,
+        session_name: None,
+        download_path: None,
+        allowed_domains: flags.allowed_domains.as_deref(),
+        action_policy: flags.action_policy.as_deref(),
+        confirm_actions: flags.confirm_actions.as_deref(),
+        engine: Some("chrome"),
+        use_real_keychain: false,
+        keychain_password: None,
+        auto_connect: false,
+        idle_timeout: flags.idle_timeout.as_deref(),
+        service_reconcile_interval_ms: flags.service_reconcile_interval_ms,
+        service_job_timeout_ms: flags.service_job_timeout_ms,
+        service_monitor_interval_ms: flags.service_monitor_interval_ms,
+        service_recovery_retry_budget: flags.service_recovery_retry_budget,
+        service_recovery_base_backoff_ms: flags.service_recovery_base_backoff_ms,
+        service_recovery_max_backoff_ms: flags.service_recovery_max_backoff_ms,
+        service_recovery_retry_budget_source: flags.service_recovery_retry_budget_source.as_str(),
+        service_recovery_base_backoff_ms_source: flags
+            .service_recovery_base_backoff_ms_source
+            .as_str(),
+        service_recovery_max_backoff_ms_source: flags
+            .service_recovery_max_backoff_ms_source
+            .as_str(),
+        default_timeout: flags.default_timeout,
+        cdp: None,
+        runtime_attach_managed: false,
+        no_auto_dialog: flags.no_auto_dialog,
+        allow_stale_daemon_handoff: false,
+    };
+    ensure_daemon(session, &opts).map_err(refusal)?;
+    let command = json!({
+        "id": crate::commands::gen_id(),
+        "action": "retained_owner_prepare",
+        "browserId": browser_id,
+        "sessionName": session,
+        "cdpPort": port,
+        "runtimeProfile": profile_id,
+        "expectedBrowserPid": expected_pid,
+        "expectedCdpEndpoint": endpoint,
+        "serviceName": service_name,
+        "agentName": agent_name,
+        "taskName": task_name,
+    });
+    let response = send_command(command, session).map_err(refusal)?;
+    if !response.success {
+        return Err(refusal(response.error.unwrap_or_else(|| {
+            "Retained reconnect command failed".to_string()
+        })));
+    }
+    let post_status = runtime_status_with_user_data_dir(profile_id, Some(Path::new(profile_path)))
+        .map_err(refusal)?;
+    if post_status.browser_pid != Some(expected_pid)
+        || crate::retained_reconnect_endpoint(session, profile_id, &post_status)
+            .ok()
+            .as_deref()
+            != Some(endpoint.as_str())
+    {
+        return Err(refusal(
+            "Retained reconnect post-check failed; browser was preserved".to_string(),
+        ));
+    }
+    Ok(tool_response_from_daemon(
+        "service_managed_runtime_reconnect",
+        session,
+        trace,
+        response,
+    ))
+}
+
 fn call_service_request_with_flags(
     arguments: &Value,
     session: &str,
@@ -11439,6 +11649,40 @@ mod tests {
         assert!(cold_launch_config_eligible(&arguments, false, true));
         assert!(!cold_launch_config_eligible(&arguments, true, true));
         assert!(!cold_launch_config_eligible(&arguments, false, false));
+    }
+
+    #[test]
+    fn retained_reconnect_mcp_requires_exact_explicit_route() {
+        let tools = service_mcp_tools();
+        let reconnect = tools
+            .iter()
+            .find(|tool| tool["name"] == "service_managed_runtime_reconnect")
+            .expect("retained reconnect tool must be advertised");
+        assert_eq!(
+            reconnect["inputSchema"]["required"],
+            json!([
+                "browserId",
+                "sessionName",
+                "runtimeProfile",
+                "expectedBrowserPid"
+            ])
+        );
+        let flags = crate::flags::parse_flags(&[]);
+        let error = call_service_managed_runtime_reconnect(
+            &json!({
+                "browserId": "session:other",
+                "sessionName": "qa",
+                "runtimeProfile": "qa-profile",
+                "expectedBrowserPid": 123,
+            }),
+            &flags,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, -32602);
+        assert_eq!(
+            error.data.unwrap()["message"],
+            "Retained reconnect browserId must match sessionName"
+        );
     }
 
     #[test]

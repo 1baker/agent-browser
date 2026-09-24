@@ -910,7 +910,13 @@ login hosts for that service, so agents can switch to detached `runtime login`.
 Use the attachable manual-login flow only for sites where DevTools during login
 is accepted. Set `launch.leaveOpen` or pass `--leave-open` when you want
 `close` to detach from a managed runtime-profile browser instead of shutting it
-down. Set `preferences.defaultViewport` to a `WIDTHxHEIGHT` value, such as
+down. For an already-running managed browser, pass `--leave-open` on the
+`close` invocation itself to request a one-time detach; the command refuses
+that override unless the live browser matches its recorded runtime identity.
+An attached registered `stealthcdp_chromium` browser is recognized only after
+its profile, PID, loopback DevTools listener, executable digest, and registry
+evidence are verified again. A missing or changed proof fails closed without
+closing the browser. Set `preferences.defaultViewport` to a `WIDTHxHEIGHT` value, such as
 `960x640`, when a runtime profile should resize the browser content area after
 launch and before the requested command runs.
 
@@ -1090,6 +1096,33 @@ can then return `reuse_existing_browser` with `browserId` and `sessionName`
 route hints. `external_observed` profiles are still process evidence only and
 are not reusable identity lanes.
 
+When the registered profile sets `browserBuild`, adoption also requires
+`browserPid`. On Linux it proves the live process against an exact local
+browser-capability registry executable (`executablePath` and SHA-256), a passed
+CDP validation row, profile compatibility, the profile directory, and the
+loopback CDP listener. Missing or ambiguous proof rejects adoption before
+replacing the daemon's attached browser. A build-free external profile still
+adopts as an unproven build and cannot satisfy an exact-build follow-up request.
+For a separately isolated Linux/X11 BYOP lane, a `ui_action` step of type
+`os_click` accepts `viewportX` and `viewportY` in fresh CDP screenshot pixels.
+Set `AGENT_BROWSER_OS_CLICK_ISOLATED_DISPLAY` to the exact private `DISPLAY`
+when starting its daemon, and make `xdotool` and ImageMagick `import` available
+to that daemon. Local dashboard publication carries the private display and
+OS-click opt-in only into that session's replacement daemon; other sessions do
+not inherit the publisher shell's display. Keep `xdotool` on the replacement
+daemon's normal `PATH`. The step rechecks the retained process and exact X11 window,
+aligns fresh CDP and X11 images in memory, then sends one OS mouse click only
+when the alignment is unique. An unproven build, shared or unapproved display,
+wrong window, or ambiguous image fails before clicking. This is not proof of
+provider login, password entry, or challenge completion.
+When Chromium has fully scrubbed its readable process environment, the step
+records `displayBindingEvidence: "scrubbed_process_environ_with_x11_proof"`
+and still requires the exact process, sole visible X11 window PID, and unique
+fresh image alignment. A readable but different `DISPLAY` remains a hard stop.
+`browser_clear` and `ui_action` `clear` also clear contenteditable fields using
+the browser editing command and return an error if text remains. Verify a draft
+is empty before submitting or retaining the tab.
+
 When a client has explicit auth evidence from a bounded probe, it can attach
 freshness metadata to the same registration call. `readinessState`,
 `readinessEvidence`, `lastVerifiedAt`, and `freshnessExpiresAt` generate
@@ -1223,6 +1256,9 @@ agent-browser --runtime-profile work runtime login https://app.example.com/login
 
 agent-browser runtime attach work
 
+# After an attached session daemon stops, reconnect only its proven live browser
+agent-browser --session work --runtime-profile work runtime reconnect work
+
 # Leave the managed runtime-profile browser running when you close the session
 agent-browser --runtime-profile work --leave-open open https://app.example.com
 
@@ -1245,6 +1281,14 @@ browser or establish sign-in readiness. Missing or conflicting evidence leaves
 build-sensitive broker reuse blocked; custom builds and other platforms do not
 gain installer proof from attachment. Use `--leave-open` to retain the browser
 when detaching its automation session.
+
+`runtime reconnect` is narrower than `runtime attach`: it requires a live,
+reachable browser and an exact retained session, profile, PID, CDP endpoint,
+and applied build proof. It starts only that session's daemon and refuses an
+occupied daemon or changed browser. MCP callers can use
+`service_managed_runtime_reconnect` with the same access-plan browser and
+session IDs plus the current browser PID, then retry a read deliberately. The
+reconnect tool does not replay a failed command or launch Chrome.
 
 This resolves to a persistent profile directory under `~/.agent-browser/runtime-profiles/<name>/user-data`, unless `runtimeProfiles.<name>.userDataDir` overrides it in config. Use `agent-browser runtime list` to inspect the merged view from config plus on-disk managed profiles.
 
@@ -2822,7 +2866,9 @@ after reviewing that dry-run. Apply mode re-reads process identity before
 termination, sends SIGTERM first, uses SIGKILL only for a still-matching
 candidate, and appends compact service-event counts. The Service dashboard shows
 candidate count and estimated candidate RSS but does not expose one-click
-destructive cleanup. Resource warnings include
+destructive cleanup. An uncorrelated Xvfb display stays observed for manual
+review: missing service ownership alone does not prove that it has no live
+browser clients, so it is never an automatic GC candidate. Resource warnings include
 `duplicate_live_browsers_for_profile` and `duplicate_active_profile_leases`
 when retained state shows avoidable duplicate pressure for one profile; install
 doctor reports those as `service_duplicate_profile_pressure`.
@@ -2845,7 +2891,7 @@ Use `service repair-retained` before abandoned-session cleanup when legacy inert
 
 The Service dashboard shows a retained-state cleanup workflow when persisted state grows large. It queues `service_prune_retained` and `service_repair_retained` through `POST /api/service/request`, runs dry-runs first, includes orphaned custom and managed one-time profile candidates in the reviewed prune result, and only enables apply after the operator has a reviewed candidate result in view.
 
-Browser row remedies also use `POST /api/service/request`. `service_browser_close` politely closes the active service browser identified by `params.browserId` and records the same shutdown health used by CLI close. `service_browser_repair` makes one degraded or faulted retained browser record retryable again after operator review. Dashboard row buttons enable these actions only when `GET /api/service/contracts` advertises support and the selected browser state matches the action.
+Browser row remedies also use `POST /api/service/request`. `service_browser_close` politely closes the active service browser identified by `params.browserId` and records the same shutdown health used by CLI close. `service_browser_repair` makes one degraded or faulted retained browser record retryable again after operator review. For a ready `attached_existing` browser whose PID projection is missing, submit `service_browser_repair` with the exact `params.browserId` and `params.reverifyRetainedByop: true`. This rechecks the saved executable hash, process start identity, profile, DevTools listener, and exclusive session lease before restoring only the PID field; it neither opens a tab nor replaces Chrome. A mismatch leaves state unchanged. Dashboard row buttons enable the standard close and retry actions only when `GET /api/service/contracts` advertises support and the selected browser state matches the action.
 
 Use `service access-plan` before browser work when an operator, agent, or software client needs the same no-launch broker recommendation as HTTP `GET /api/service/access-plan` and MCP `service_access_plan`. Text output includes the selected profile, manual-seeding posture, monitor freshness recommendation, service request availability, and compact `browser_build_summary` explaining which browser build won. Access-plan JSON also includes `decision.profileReuse`, which reports whether the selected profile should reuse an existing compatible live browser, wait for the profile lease with `profileLeasePolicy: "wait"`, or launch a new browser because no compatible account, site, browser-build, host, view-stream, control-input, and display-isolation lane exists. Retained browser records expose `browserBuild`, `executablePath`, and `browserBuildProof`; when the plan requires a build, reuse requires an exact proven build and treats missing legacy proof as incompatible. A mismatch is reported as `retained_browser_build_mismatch_or_missing_proof`, preserves the existing process, and cannot silently dispatch a command or launch a duplicate profile lane. A fresh `stealthcdp_chromium` launch also stops before browser start unless the capability resolver applies a validated executable binding, so a ready manifest alone cannot silently fall back to another Chromium build. When the recommendation is `reuse_existing_browser`, the copied `decision.serviceRequest.request` includes top-level `browserId` and `sessionName` route hints so HTTP `POST /api/service/request`, MCP `service_request`, and generated client helpers route ordinary tab and browser commands to the existing daemon lane instead of the service daemon. Duplicate live browsers or duplicate active leases for the selected profile are surfaced as `duplicatePressure` so clients can queue instead of cloning equivalent runtime profiles. Dashboard launcher eligibility rows use the same `decision.profileReuse` advisory as the row reason when access-plan data has been fetched.
 
@@ -3268,9 +3314,12 @@ Successful non-dry-run opens return an authenticated durable URL in
 current provider connection. Opening the durable URL after dashboard login
 queues `service_remote_view_handoff_resolve`, prefers the originally retained
 browser tab, and reacquires expired Guacamole route state with the original view
-stream and control-input posture. Missing targets remain recoverable. A tab
-recorded as deliberately closed stays closed until the operator explicitly
-chooses **Reopen tab**.
+stream and control-input posture. If that browser daemon disappeared, the
+authenticated **Recover and take control** action reattaches only the immutable
+PID, profile, CDP endpoint, build proof, and target recorded with the handoff;
+missing, changed, legacy, or ambiguous evidence fails without launching Chrome
+or selecting another tab. A tab recorded as deliberately closed stays closed
+until the operator explicitly chooses **Reopen tab**.
 Software clients should call `requestServiceRemoteViewHandoff()` when they
 need a link for a user. It returns only `handoffId` and `handoffUrl`, so callers
 cannot accidentally publish the current Guacamole connection URL.
