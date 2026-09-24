@@ -565,6 +565,7 @@ async function recoverIncompletePublication({
     report.retainedBrowserExpectation = cloneJson(retainedBrowserExpectation);
   }
   report.service.before = adapters.serviceStatus();
+  let partialSourceRecoveryVerified = false;
   try {
     const discoveredHandoffs = adapters.discoverPreparedRuntimeHandoffs(
       Array.isArray(journalRecord.candidateSessions) ? journalRecord.candidateSessions : [],
@@ -580,10 +581,26 @@ async function recoverIncompletePublication({
     if (!knownPreHandoffFailure && (journalRecord.handoffOutcomeUncertain || journalRecord.phase === 'handoff_admitted' || journalRecord.failedAtPhase === 'handoff_admitted')) {
       const expected = journalRecord.handoffSessions ?? journalRecord.candidateSessions ?? [];
       const observed = report.handoffs.prepared.map(handoff => handoff.sessionName);
-      if (!expected.length || new Set(observed).size !== observed.length ||
-          JSON.stringify([...expected].sort()) !== JSON.stringify([...observed].sort())) {
+      const exactHandoffSet = expected.length > 0
+        && new Set(observed).size === observed.length
+        && JSON.stringify([...expected].sort()) === JSON.stringify([...observed].sort());
+      const partialSourceRecovery = !exactHandoffSet
+        && journalRecord.handoffOutcomeUncertain === true
+        && journalRecord.failedAtPhase === 'handoff_admitted'
+        && /^Daemon session '[A-Za-z0-9._-]+' did not exit for executable handoff$/.test(journalRecord.failure ?? '')
+        && artifactEvidence.replacement == null
+        && artifactEvidence.backup?.verified === true
+        && artifactEvidence.source?.sha256 === artifactEvidence.backup.sha256
+        && await adapters.verifyPartialSourceHandoffInventory?.({
+          expectedSessions: expected,
+          preparedSessions: observed,
+          sourceSha256: artifactEvidence.source.sha256,
+          installBin,
+        }) === true;
+      if (!exactHandoffSet && !partialSourceRecovery) {
         throw new Error('Publication handoff outcome is uncertain; inspect the exact sessions before recovery');
       }
+      partialSourceRecoveryVerified = partialSourceRecovery;
     }
 
     if (!adapters.pathExists(installBin)) {
@@ -787,9 +804,19 @@ async function recoverIncompletePublication({
     }
     if (workstationProvenance) {
       await adapters.verifyWorkstationProvenance(workstationProvenance, { selection: 'source', installBin });
-      report.installDoctor = await adapters.verifyInstalledDoctor(installBin, {
-        journalRecord, allowSourceRollbackDegraded: knownPreHandoffFailure,
-      });
+      try {
+        report.installDoctor = await adapters.verifyInstalledDoctor(installBin, {
+          journalRecord, allowSourceRollbackDegraded: knownPreHandoffFailure,
+        });
+      } catch (error) {
+        if (!partialSourceRecoveryVerified) throw error;
+        report.installDoctor = await adapters.inspectRollbackDoctorDegradation?.({
+          installBin,
+          journalRecord,
+          expectedSha256: installedSha256,
+        });
+        if (report.installDoctor?.degraded !== true) throw error;
+      }
     }
     commit('recovered_rolled_back', {
       artifactEvidence: cloneJson(artifactEvidence),
@@ -801,6 +828,7 @@ async function recoverIncompletePublication({
     report.recovery = {
       transactionId: journalRecord.transactionId,
       result: 'recovered_rolled_back',
+      degraded: report.installDoctor?.degraded === true,
       installedSha256,
     };
   } finally {

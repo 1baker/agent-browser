@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import './test-local-dashboard-session-display-environment.js';
+import './test-local-dashboard-partial-source-handoff.js';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,

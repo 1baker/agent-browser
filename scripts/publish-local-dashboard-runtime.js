@@ -53,8 +53,17 @@ import {
   writeRetainedBrowserRequirement,
 } from './lib/local-dashboard-retained-browser-requirement.js';
 import { resolveRuntimeSocketDir } from './lib/runtime-socket-dir.js';
+import { verifyPartialSourceHandoffInventory } from './lib/local-dashboard-partial-source-handoff.js';
+import {
+  readSessionDisplayEnvironment,
+  withSessionDisplayEnvironment,
+} from './lib/local-dashboard-session-display-environment.js';
 import { retirePreparedDaemon } from './lib/prepared-daemon-retirement.js';
-import { waitForRuntimeDaemonExit, verifyRuntimeSessionsRetired } from './lib/runtime-daemon-exit.js';
+import {
+  isProcessLive as browserProcessIsLive,
+  waitForRuntimeDaemonExit,
+  verifyRuntimeSessionsRetired,
+} from './lib/runtime-daemon-exit.js';
 import {
   resolveRuntimeDaemonClientBinary as runtimeDaemonClientBinary,
 } from './lib/runtime-daemon-client-binary.js';
@@ -477,6 +486,40 @@ async function run() {
           installedSha256: sha256File(installBin), verifyListenerEvidence,
         });
       },
+      inspectRollbackDoctorDegradation: ({ installBin, journalRecord, expectedSha256 }) => {
+        const result = spawnSync(installBin, ['install', 'doctor', '--json'], {
+          encoding: 'utf8', timeout: 90000, maxBuffer: 8 * 1024 * 1024, cwd: homedir(),
+        });
+        if (result.error || result.status !== 1) return null;
+        let value;
+        try {
+          value = JSON.parse(result.stdout);
+        } catch {
+          return null;
+        }
+        const issueCodes = value.data?.issues?.map((issue) => issue?.code).sort();
+        const status = value.data?.localDashboardPublication;
+        if (value.success !== false
+          || JSON.stringify(issueCodes) !== JSON.stringify([
+            'dashboard_publication_active', 'service_resource_candidates_ready',
+          ])
+          || value.data?.serviceResources?.readinessImpactingCandidates !== 1
+          || value.data?.currentExecutable?.sha256 !== expectedSha256
+          || value.data?.workstationPayload?.ready !== true
+          || value.data?.liveDashboardRuntime?.ready !== true
+          || status?.transaction?.transactionId !== journalRecord.transactionId
+          || status?.lock?.ownerPid !== process.pid
+          || status?.lock?.live !== true) return null;
+        return {
+          degraded: true,
+          rawSuccess: false,
+          transactionScoped: true,
+          repairRequired: true,
+          issueCodes,
+          readinessImpactingCandidateCount: 1,
+          workstationPayloadReady: true,
+        };
+      },
       serviceStatus,
       backupInstalledBinary,
       quiesceDashboardForRuntimeHandoff,
@@ -486,6 +529,27 @@ async function run() {
       verifyRuntimeSessionsRetired: () => verifyRuntimeSessionsRetired({
         sessionNames: runtimeSessionNames(), readRuntimePid, isProcessLive: browserProcessIsLive,
       }),
+      verifyPartialSourceHandoffInventory: ({ expectedSessions, preparedSessions, sourceSha256, installBin }) => {
+        if (sha256File(installBin) !== sourceSha256) return false;
+        const state = JSON.parse(readFileSync(join(homedir(), '.agent-browser', 'service', 'state.json'), 'utf8'));
+        const sourceStat = statSync(installBin);
+        return verifyPartialSourceHandoffInventory({
+          expectedSessions,
+          preparedSessions,
+          readBrowser: (sessionName) => state.browsers?.[`session:${sessionName}`] ?? null,
+          readDaemonPid: readRuntimePid,
+          isProcessLive: browserProcessIsLive,
+          hasHandoffRecord: (sessionName) => existsSync(join(runtimeSocketDir(), `${sessionName}.handoff.json`)),
+          sameSourceExecutable: (pid) => {
+            try {
+              const executable = statSync(`/proc/${pid}/exe`);
+              return executable.dev === sourceStat.dev && executable.ino === sourceStat.ino;
+            } catch {
+              return false;
+            }
+          },
+        });
+      },
       installBinaryAtomically,
       syncReferenceBinaries,
       resumeRuntimeHandoffs,
@@ -586,6 +650,7 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin, expectedSessions = null)
     if (expectedSessions) requireExpectedPublicationSessions(expectedSessions, sessions);
     for (const sessionName of sessions) {
       const daemonPid = readRuntimePid(sessionName);
+      const displayEnvironment = readSessionDisplayEnvironment(daemonPid);
       const daemonClientBin = runtimeDaemonClientBinary(daemonPid, rollbackBin);
       const prepared = runAgentJson(clientBin, sessionName, ['handoff', 'prepare']);
       if (prepared.status === 0 && prepared.json?.success === true) {
@@ -599,6 +664,7 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin, expectedSessions = null)
             runtimeProfile: data.runtimeProfile ?? null,
             host: data.host ?? null,
             handoffPath: data.handoffPath ?? null,
+            displayEnvironment,
             strandedDaemonTermination: null,
           };
           report.handoffs.prepared.push(preparedHandoff);
@@ -673,7 +739,12 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin, expectedSessions = null)
     }
   } catch (error) {
     for (const prepared of report.handoffs.prepared) {
-      const resumed = runAgentJson(rollbackBin, prepared.sessionName, ['handoff', 'resume']);
+      const resumed = runAgentJson(
+        rollbackBin,
+        prepared.sessionName,
+        ['handoff', 'resume'],
+        prepared.displayEnvironment,
+      );
       report.handoffs.rollbackResumed.push({
         sessionName: prepared.sessionName,
         success: resumed.status === 0 && resumed.json?.success === true,
@@ -686,6 +757,13 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin, expectedSessions = null)
 
 function resumeRuntimeHandoffs(installBin) {
   for (const prepared of report.handoffs.prepared) {
+    if (prepared.host === 'attached_existing'
+      && prepared.browserPid != null
+      && prepared.displayEnvironment === undefined) {
+      throw new Error(
+        `Retained external browser session '${prepared.sessionName}' lacks display environment custody`,
+      );
+    }
     // Capture daemon existence before the service-state readback. The readback
     // command can start an otherwise idle daemon for this session, and that
     // newly spawned process is not evidence that handoff resume completed.
@@ -694,6 +772,7 @@ function resumeRuntimeHandoffs(installBin) {
       installBin,
       prepared.sessionName,
       prepared,
+      prepared.displayEnvironment,
     );
     if (
       prepared.host === 'attached_existing'
@@ -765,7 +844,7 @@ function resumeRuntimeHandoffs(installBin) {
     }
     let resumed;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      resumed = runAgentJson(installBin, prepared.sessionName, ['handoff', 'resume']);
+      resumed = runAgentJson(installBin, prepared.sessionName, ['handoff', 'resume'], prepared.displayEnvironment);
       if (resumed.status === 0 && resumed.json?.success === true) break;
       if (attempt < 3) sleep(250);
     }
@@ -847,10 +926,12 @@ function discoverPreparedRuntimeHandoffs(candidateSessions) {
   return handoffs;
 }
 
-function runAgentJson(binary, sessionName, commandArgs) {
+function runAgentJson(binary, sessionName, commandArgs, displayEnvironment = undefined) {
   const result = spawnSync(binary, ['--json', '--session', sessionName, ...commandArgs], {
     cwd: rootDir,
-    env: process.env,
+    env: displayEnvironment === undefined
+      ? process.env
+      : withSessionDisplayEnvironment(process.env, displayEnvironment),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 16 * 1024 * 1024,
@@ -869,8 +950,8 @@ function runAgentJson(binary, sessionName, commandArgs) {
   };
 }
 
-function serviceBrowserForSession(binary, sessionName, expectedBrowser = null) {
-  const result = runAgentJson(binary, sessionName, ['service', 'browsers']);
+function serviceBrowserForSession(binary, sessionName, expectedBrowser = null, displayEnvironment = undefined) {
+  const result = runAgentJson(binary, sessionName, ['service', 'browsers'], displayEnvironment);
   const browsers = result.json?.data?.browsers || [];
   const selection = selectRuntimeHandoffBrowser({
     browsers,
@@ -1136,16 +1217,6 @@ function readRuntimePid(sessionName) {
     return Number.isInteger(value) && value > 0 ? value : null;
   } catch {
     return null;
-  }
-}
-
-function browserProcessIsLive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
   }
 }
 

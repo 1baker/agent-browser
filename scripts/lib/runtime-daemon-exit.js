@@ -1,3 +1,29 @@
+import { readFileSync } from 'node:fs';
+
+/** A zombie still accepts kill(pid, 0), but it cannot own a daemon socket. */
+export function isProcessLive(pid, {
+  kill = process.kill,
+  readProcStat = readFileSync,
+  platform = process.platform,
+} = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    kill(pid, 0);
+  } catch {
+    return false;
+  }
+  if (platform === 'linux') {
+    try {
+      const stat = readProcStat(`/proc/${pid}/stat`, 'utf8');
+      const commandEnd = stat.lastIndexOf(')');
+      if (commandEnd >= 0 && ['Z', 'X'].includes(stat[commandEnd + 2])) return false;
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+    }
+  }
+  return true;
+}
+
 // Process retirement and session vacancy are different observations. A stale
 // PID file must not prolong retirement, and a new owner must never be signaled.
 export function waitForRuntimeDaemonExit(sessionName, priorPid, {

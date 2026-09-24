@@ -1,8 +1,21 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { waitForRuntimeDaemonExit, verifyRuntimeSessionsRetired } from './lib/runtime-daemon-exit.js';
+import {
+  isProcessLive,
+  waitForRuntimeDaemonExit,
+  verifyRuntimeSessionsRetired,
+} from './lib/runtime-daemon-exit.js';
 
 const priorPid = 101;
+assert.equal(isProcessLive(priorPid, {
+  kill: () => {}, readProcStat: () => '101 (agent-browser) Z 1 101 101', platform: 'linux',
+}), false);
+assert.equal(isProcessLive(priorPid, {
+  kill: () => {}, readProcStat: () => '101 (agent-browser) S 1 101 101', platform: 'linux',
+}), true);
+assert.equal(isProcessLive(priorPid, {
+  kill: () => {}, readProcStat: () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); }, platform: 'linux',
+}), false);
 for (const recordedPid of [null, priorPid, 303]) {
   waitForRuntimeDaemonExit('fixture', priorPid, {
     readRuntimePid: () => recordedPid,
