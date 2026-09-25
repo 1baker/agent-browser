@@ -908,7 +908,7 @@ agent-browser --runtime-profile work runtime login https://app.example.com/login
 agent-browser --runtime-profile work runtime login https://app.example.com/login --attachable
 agent-browser --runtime-profile work --leave-open open https://app.example.com
 agent-browser runtime attach work
-agent-browser --session work --runtime-profile work runtime reconnect work
+agent-browser --session work --runtime-profile work runtime reconnect work --target-id A1B2C3D4
 agent-browser runtime list
 agent-browser --runtime-profile work open https://app.example.com
 ```
@@ -929,10 +929,13 @@ Other platforms and custom builds do not gain installer proof from this path.
 After a retained session daemon stops, use the no-launch access plan and exact
 browser/session/profile evidence. `runtime reconnect` or MCP
 `service_managed_runtime_reconnect` starts only that daemon after checking the
-live PID, profile, CDP endpoint, and applied build proof. The MCP tool also
-requires `expectedBrowserPid` from a fresh browser-status read. It refuses a
-missing or changed browser or an occupied daemon; it never launches Chrome or
-replays the failed command. Reissue a read only after reconnect succeeds.
+live PID, profile, CDP endpoint, exact page target, and applied build proof.
+Use `--target-id` from the fresh status read when more than one ready page is
+retained; omission is accepted only for a single ready owned page. The MCP tool
+requires both `expectedBrowserPid` and `expectedTargetId` from fresh status. It
+refuses a missing target, changed browser, or occupied daemon; it never launches
+Chrome or replays the failed command. Reissue a read only after reconnect
+succeeds.
 
 `runtime list` merges config-declared runtime profiles with on-disk managed
 profiles. If `runtimeProfiles.<name>.userDataDir` is set in config, both

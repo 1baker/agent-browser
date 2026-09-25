@@ -2518,6 +2518,7 @@ fn service_profile_lease_metadata_for_command(command: &Value) -> Option<Service
                     action,
                     "runtime_handoff_prepare"
                         | "runtime_handoff_resume"
+                        | "retained_owner_prepare"
                         | "task_authority_issue"
                         | "task_authority_reconcile"
                         | "task_authority_revoke"
@@ -6094,6 +6095,49 @@ struct RetainedReconnectAdmission {
     target_url: Option<String>,
 }
 
+/// Select the exact retained page target admitted for daemon-only reconnect.
+/// A multi-tab browser requires an explicit target id; a missing, duplicated,
+/// closed, foreign, or session-unowned target always fails closed.
+pub(crate) fn select_retained_reconnect_target(
+    service_state: &ServiceState,
+    browser_id: &str,
+    daemon_session: &str,
+    expected_target_id: Option<&str>,
+) -> Result<(String, Option<String>), String> {
+    let session = service_state
+        .sessions
+        .get(daemon_session)
+        .ok_or("Retained reconnect requires the exact session record")?;
+    let mut targets = service_state
+        .tabs
+        .values()
+        .filter(|tab| {
+            tab.browser_id == browser_id
+                && tab.owner_session_id.as_deref() == Some(daemon_session)
+                && tab.lifecycle == TabLifecycle::Ready
+                && tab.target_id.is_some()
+                && session.tab_ids.iter().any(|tab_id| tab_id == &tab.id)
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(expected_target_id) = expected_target_id {
+        targets.retain(|tab| tab.target_id.as_deref() == Some(expected_target_id));
+        if targets.len() != 1 {
+            return Err("Retained reconnect expected target is missing or ambiguous".to_string());
+        }
+    } else if targets.len() != 1 {
+        return Err(
+            "Retained reconnect target is ambiguous; provide an explicit target id".to_string(),
+        );
+    }
+
+    let target = targets[0];
+    Ok((
+        target.target_id.clone().expect("filtered target id"),
+        target.url.clone(),
+    ))
+}
+
 /// Admit only one exact, physically re-observed retained browser. This helper
 /// deliberately does not depend on the runtime-profile state file because that
 /// projection may disappear while Chrome and durable Service custody survive.
@@ -6150,16 +6194,6 @@ fn retained_reconnect_admission(
                 .sessions
                 .get(daemon_session)
                 .ok_or("Retained reconnect requires the exact session record")?;
-            let targets = service_state
-                .tabs
-                .values()
-                .filter(|tab| {
-                    tab.browser_id == browser_id
-                        && tab.owner_session_id.as_deref() == Some(daemon_session)
-                        && tab.lifecycle == TabLifecycle::Ready
-                        && tab.target_id.is_some()
-                })
-                .collect::<Vec<_>>();
             if browser.health != ServiceBrowserHealth::Ready
                 || browser.profile_id.as_deref() != Some(runtime_profile)
                 || session.profile_id.as_deref() != Some(runtime_profile)
@@ -6169,17 +6203,26 @@ fn retained_reconnect_admission(
                     .active_session_ids
                     .iter()
                     .any(|value| value == daemon_session)
-                || targets.len() != 1
             {
                 return Err("Retained reconnect identity or target is ambiguous".to_string());
             }
+            let expected_target_id = cmd
+                .get("expectedTargetId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty());
+            let (target_id, target_url) = select_retained_reconnect_target(
+                &service_state,
+                &browser_id,
+                daemon_session,
+                expected_target_id,
+            )?;
             (
                 browser_id,
                 runtime_profile.to_string(),
                 pid,
                 endpoint.to_string(),
-                targets[0].target_id.clone().unwrap(),
-                targets[0].url.clone(),
+                target_id,
+                target_url,
             )
         };
     let port = endpoint
@@ -6204,6 +6247,11 @@ fn retained_reconnect_admission(
         || cmd.get("runtimeProfile").and_then(Value::as_str) != Some(runtime_profile.as_str())
         || strict_handoff.is_some()
             && cmd.get("expectedTargetId").and_then(Value::as_str) != Some(target_id.as_str())
+        || cmd
+            .get("expectedTargetId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .is_some_and(|value| value != target_id)
     {
         return Err(
             "Retained reconnect command conflicts with immutable handoff identity".to_string(),
@@ -29737,6 +29785,66 @@ mod tests {
         let error = handle_launch(&command, &mut state).await.unwrap_err();
         assert!(error.contains("expected browser PID"));
         assert!(state.browser.is_none());
+    }
+
+    #[test]
+    fn retained_reconnect_selects_exact_target_in_multi_tab_session() {
+        let browser_id = "session:qa";
+        let service_state = ServiceState {
+            sessions: BTreeMap::from([(
+                "qa".to_string(),
+                BrowserSession {
+                    id: "qa".to_string(),
+                    tab_ids: vec!["target:a".to_string(), "target:b".to_string()],
+                    ..BrowserSession::default()
+                },
+            )]),
+            tabs: BTreeMap::from([
+                (
+                    "target:a".to_string(),
+                    BrowserTab {
+                        id: "target:a".to_string(),
+                        browser_id: browser_id.to_string(),
+                        target_id: Some("a".to_string()),
+                        lifecycle: TabLifecycle::Ready,
+                        owner_session_id: Some("qa".to_string()),
+                        url: Some("https://example.com/a".to_string()),
+                        ..BrowserTab::default()
+                    },
+                ),
+                (
+                    "target:b".to_string(),
+                    BrowserTab {
+                        id: "target:b".to_string(),
+                        browser_id: browser_id.to_string(),
+                        target_id: Some("b".to_string()),
+                        lifecycle: TabLifecycle::Ready,
+                        owner_session_id: Some("qa".to_string()),
+                        url: Some("https://example.com/b".to_string()),
+                        ..BrowserTab::default()
+                    },
+                ),
+            ]),
+            ..ServiceState::default()
+        };
+
+        assert_eq!(
+            select_retained_reconnect_target(&service_state, browser_id, "qa", Some("b")).unwrap(),
+            ("b".to_string(), Some("https://example.com/b".to_string()))
+        );
+        assert!(
+            select_retained_reconnect_target(&service_state, browser_id, "qa", None)
+                .unwrap_err()
+                .contains("provide an explicit target id")
+        );
+        assert!(select_retained_reconnect_target(
+            &service_state,
+            browser_id,
+            "qa",
+            Some("missing")
+        )
+        .unwrap_err()
+        .contains("missing or ambiguous"));
     }
 
     #[test]

@@ -1257,7 +1257,7 @@ agent-browser --runtime-profile work runtime login https://app.example.com/login
 agent-browser runtime attach work
 
 # After an attached session daemon stops, reconnect only its proven live browser
-agent-browser --session work --runtime-profile work runtime reconnect work
+agent-browser --session work --runtime-profile work runtime reconnect work --target-id A1B2C3D4
 
 # Leave the managed runtime-profile browser running when you close the session
 agent-browser --runtime-profile work --leave-open open https://app.example.com
@@ -1284,11 +1284,15 @@ when detaching its automation session.
 
 `runtime reconnect` is narrower than `runtime attach`: it requires a live,
 reachable browser and an exact retained session, profile, PID, CDP endpoint,
-and applied build proof. It starts only that session's daemon and refuses an
-occupied daemon or changed browser. MCP callers can use
+page target, and applied build proof. Supply `--target-id` from a fresh runtime
+status read whenever the retained browser has multiple ready pages; reconnect
+still accepts an omitted target only when exactly one ready owned page exists.
+It starts only that session's daemon and refuses an occupied daemon, missing
+target, or changed browser. MCP callers use
 `service_managed_runtime_reconnect` with the same access-plan browser and
-session IDs plus the current browser PID, then retry a read deliberately. The
-reconnect tool does not replay a failed command or launch Chrome.
+session IDs plus the current browser PID and `expectedTargetId`, then retry a
+read deliberately. The reconnect tool does not replay a failed command or
+launch Chrome.
 
 This resolves to a persistent profile directory under `~/.agent-browser/runtime-profiles/<name>/user-data`, unless `runtimeProfiles.<name>.userDataDir` overrides it in config. Use `agent-browser runtime list` to inspect the merged view from config plus on-disk managed profiles.
 

@@ -49,14 +49,22 @@ use runtime_profile::{
     list_runtime_profiles, runtime_status_with_user_data_dir, RuntimeProfileSummary, RuntimeStatus,
 };
 
+/// Exact retained identity proven before a daemon-only reconnect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedReconnectIdentity {
+    pub endpoint: String,
+    pub target_id: String,
+}
+
 /// Admission for an explicit daemon-only reconnect. A saved session name is
 /// not authority to launch or replace a browser: its retained record must
-/// still bind the exact live profile, process, endpoint, and proven build.
-pub(crate) fn retained_reconnect_endpoint(
+/// still bind the exact live profile, process, endpoint, target, and build.
+pub(crate) fn retained_reconnect_identity(
     session: &str,
     runtime_profile: &str,
     status: &RuntimeStatus,
-) -> Result<String, String> {
+    expected_target_id: Option<&str>,
+) -> Result<RetainedReconnectIdentity, String> {
     use native::service_store::{LockedServiceStateRepository, ServiceStateRepository};
 
     let pid = status
@@ -85,6 +93,12 @@ pub(crate) fn retained_reconnect_endpoint(
         .profiles
         .get(runtime_profile)
         .ok_or("Retained reconnect requires the exact profile record")?;
+    let (target_id, _) = native::actions::select_retained_reconnect_target(
+        &state,
+        &browser_id,
+        session,
+        expected_target_id,
+    )?;
     let endpoint = browser
         .cdp_endpoint
         .as_deref()
@@ -115,7 +129,19 @@ pub(crate) fn retained_reconnect_endpoint(
     {
         return Err("Retained reconnect active endpoint changed".to_string());
     }
-    Ok(endpoint.to_string())
+    if status
+        .targets
+        .iter()
+        .filter(|target| target.id == target_id)
+        .count()
+        != 1
+    {
+        return Err("Retained reconnect live target changed".to_string());
+    }
+    Ok(RetainedReconnectIdentity {
+        endpoint: endpoint.to_string(),
+        target_id,
+    })
 }
 use upgrade::run_upgrade;
 
@@ -1087,9 +1113,14 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                 };
 
             let attach_to_existing = status.browser_alive && status.devtools_port.is_some();
-            let reconnect_endpoint = if reconnect_only {
-                match retained_reconnect_endpoint(&flags.session, &runtime_name, &status) {
-                    Ok(endpoint) => Some(endpoint),
+            let reconnect_identity = if reconnect_only {
+                match retained_reconnect_identity(
+                    &flags.session,
+                    &runtime_name,
+                    &status,
+                    flags.target_id.as_deref(),
+                ) {
+                    Ok(identity) => Some(identity),
                     Err(error) => {
                         if flags.json {
                             print_json_error(error);
@@ -1201,7 +1232,8 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                     "cdpPort": status.devtools_port,
                     "runtimeProfile": runtime_name,
                     "expectedBrowserPid": status.browser_pid,
-                    "expectedCdpEndpoint": reconnect_endpoint,
+                    "expectedCdpEndpoint": reconnect_identity.as_ref().map(|identity| &identity.endpoint),
+                    "expectedTargetId": reconnect_identity.as_ref().map(|identity| &identity.target_id),
                 })
             } else if let Some(port) = status.devtools_port {
                 json!({
@@ -1224,19 +1256,29 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
 
             match send_command(launch_cmd, &flags.session) {
                 Ok(resp) if resp.success => {
-                    if reconnect_only
-                        && retained_reconnect_endpoint(&flags.session, &runtime_name, &status)
-                            .ok()
-                            .as_deref()
-                            != reconnect_endpoint.as_deref()
-                    {
-                        let error = "Retained reconnect post-check failed; browser was preserved";
-                        if flags.json {
-                            print_json_error(error);
-                        } else {
-                            eprintln!("{} {}", color::error_indicator(), error);
+                    if reconnect_only {
+                        let post_status = runtime_status_with_user_data_dir(
+                            &runtime_name,
+                            configured_user_data_dir,
+                        );
+                        let post_identity = post_status.and_then(|post_status| {
+                            retained_reconnect_identity(
+                                &flags.session,
+                                &runtime_name,
+                                &post_status,
+                                flags.target_id.as_deref(),
+                            )
+                        });
+                        if post_identity.ok().as_ref() != reconnect_identity.as_ref() {
+                            let error =
+                                "Retained reconnect post-check failed; browser was preserved";
+                            if flags.json {
+                                print_json_error(error);
+                            } else {
+                                eprintln!("{} {}", color::error_indicator(), error);
+                            }
+                            exit(1);
                         }
-                        exit(1);
                     }
                     if flags.json {
                         print_json_value(json!({
@@ -1246,6 +1288,7 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                             "reusedDaemon": daemon_result.already_running,
                             "attachedToExistingBrowser": attach_to_existing,
                             "devtoolsPort": status.devtools_port,
+                            "targetId": reconnect_identity.as_ref().map(|identity| &identity.target_id),
                         }));
                     } else {
                         println!(

@@ -5499,6 +5499,7 @@ mod tests {
             executable_path_source: None,
             extensions: Vec::new(),
             cdp: None,
+            target_id: None,
             profile: None,
             state: None,
             proxy: None,

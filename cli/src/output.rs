@@ -6189,7 +6189,7 @@ Usage:
   agent-browser runtime status [name]
   agent-browser runtime login [url] [--attachable]
   agent-browser runtime attach [name]
-  agent-browser runtime reconnect [name]
+  agent-browser runtime reconnect [name] [--target-id <id>]
 
 Commands:
   create [name]         Create a named runtime profile and persist it to user config
@@ -6197,7 +6197,7 @@ Commands:
   status [name]         Show PID, profile path, DevTools reachability, and targets
   login [url]           Launch a detached headed browser for manual sign-in
   attach [name]         Bind the current automation session to a runtime profile
-  reconnect [name]      Reconnect only the exact proven live browser; never launch or replace Chrome
+  reconnect [name]      Reconnect only the exact proven live browser and target; never launch or replace Chrome
 
 Attachment build evidence:
   Repository legacy publisher: --prebuilt-bin <absolute-path> --expected-sha256 <sha256>
@@ -6244,6 +6244,7 @@ Locked profiles:
 Global Options:
   --json                        Output as JSON
   --runtime-profile <name>      Select runtime profile name
+  --target-id <id>              Select the exact retained page target for reconnect
   --profile <path>              Use a custom persistent user-data-dir path
   --leave-open                  Detach on close instead of shutting down a managed runtime-profile browser
   --executable-path <path>      Custom browser executable
@@ -6261,7 +6262,7 @@ Examples:
   agent-browser runtime login https://accounts.google.com
   agent-browser runtime login https://example.com --attachable
   agent-browser runtime attach work
-  agent-browser --session work --runtime-profile work runtime reconnect work
+  agent-browser --session work --runtime-profile work runtime reconnect work --target-id A1B2C3D4
   agent-browser --runtime-profile work runtime login https://app.example.com
 
 Google and similar SSO setup:

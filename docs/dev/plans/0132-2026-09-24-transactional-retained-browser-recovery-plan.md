@@ -78,3 +78,20 @@ live after its daemon/session route disappeared.
   change is required to preserve.
 - No browser, profile, daemon, route, credential store, or retained service was
   started, stopped, replaced, or republished during validation.
+
+## 2026-09-25 Multi-Tab Recovery Addendum
+
+A production-shaped no-launch check found one remaining ambiguity: the exact
+retained browser and session were proven, but two ready owned page targets made
+the generic reconnect admission refuse recovery. Recovery now accepts an exact
+CLI `--target-id` and MCP `expectedTargetId`. The shared selector requires that
+target to be ready, owned by the exact session, present in that session's tab
+inventory, and still present in the live CDP target inventory. CLI omission is
+kept only for the unambiguous single-ready-page case; MCP requires the target.
+
+Validation proved that omitted and nonexistent targets fail before daemon
+startup. Supplying the retained ChatGPT page target then restored only the
+missing daemon, returned the expected ChatGPT URL and title, preserved browser
+PID `3044531`, and left both original page targets live. The source daemon was
+retained as the recovered owner. The installed binary and browser process were
+not replaced.

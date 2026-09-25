@@ -1181,7 +1181,7 @@ fn service_mcp_tools() -> Vec<Value> {
         json!({
             "name": "service_managed_runtime_reconnect",
             "title": "Reconnect exact retained browser",
-            "description": "Explicitly reconnect the selected daemon session to its already-live browser after fresh profile, PID, CDP endpoint, and build-proof checks. Never launches or replaces Chrome and never replays the prior request.",
+            "description": "Explicitly reconnect the selected daemon session to one exact target in its already-live browser after fresh profile, PID, CDP endpoint, target, and build-proof checks. Never launches or replaces Chrome and never replays the prior request.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1190,11 +1190,12 @@ fn service_mcp_tools() -> Vec<Value> {
                     "sessionName": {"type": "string", "description": "Exact retained daemon session from the no-launch access plan."},
                     "runtimeProfile": {"type": "string", "description": "Exact managed runtime profile selected by the access plan."},
                     "expectedBrowserPid": {"type": "integer", "minimum": 1, "description": "Current browser PID from retained browser status."},
+                    "expectedTargetId": {"type": "string", "minLength": 1, "description": "Exact ready page target id from the retained browser status."},
                     "serviceName": {"type": "string"},
                     "agentName": {"type": "string"},
                     "taskName": {"type": "string"}
                 },
-                "required": ["browserId", "sessionName", "runtimeProfile", "expectedBrowserPid"]
+                "required": ["browserId", "sessionName", "runtimeProfile", "expectedBrowserPid", "expectedTargetId"]
             }
         }),
         json!({
@@ -6552,6 +6553,7 @@ fn call_service_managed_runtime_reconnect(
     let browser_id = required("browserId")?;
     let session = required("sessionName")?;
     let profile_id = required("runtimeProfile")?;
+    let expected_target_id = required("expectedTargetId")?;
     let expected_pid = arguments
         .get("expectedBrowserPid")
         .and_then(Value::as_u64)
@@ -6579,6 +6581,7 @@ fn call_service_managed_runtime_reconnect(
             "browserId": browser_id,
             "sessionName": session,
             "runtimeProfile": profile_id,
+            "expectedTargetId": expected_target_id,
             "trace": trace,
         })),
     };
@@ -6611,8 +6614,9 @@ fn call_service_managed_runtime_reconnect(
     if status.browser_pid != Some(expected_pid) {
         return Err(refusal("Retained browser PID changed".to_string()));
     }
-    let endpoint =
-        crate::retained_reconnect_endpoint(session, profile_id, &status).map_err(refusal)?;
+    let identity =
+        crate::retained_reconnect_identity(session, profile_id, &status, Some(expected_target_id))
+            .map_err(refusal)?;
     let port = status
         .devtools_port
         .ok_or_else(|| refusal("Retained browser DevTools port is unavailable".to_string()))?;
@@ -6674,7 +6678,8 @@ fn call_service_managed_runtime_reconnect(
         "cdpPort": port,
         "runtimeProfile": profile_id,
         "expectedBrowserPid": expected_pid,
-        "expectedCdpEndpoint": endpoint,
+        "expectedCdpEndpoint": identity.endpoint,
+        "expectedTargetId": identity.target_id,
         "serviceName": service_name,
         "agentName": agent_name,
         "taskName": task_name,
@@ -6688,10 +6693,15 @@ fn call_service_managed_runtime_reconnect(
     let post_status = runtime_status_with_user_data_dir(profile_id, Some(Path::new(profile_path)))
         .map_err(refusal)?;
     if post_status.browser_pid != Some(expected_pid)
-        || crate::retained_reconnect_endpoint(session, profile_id, &post_status)
-            .ok()
-            .as_deref()
-            != Some(endpoint.as_str())
+        || crate::retained_reconnect_identity(
+            session,
+            profile_id,
+            &post_status,
+            Some(expected_target_id),
+        )
+        .ok()
+        .as_ref()
+            != Some(&identity)
     {
         return Err(refusal(
             "Retained reconnect post-check failed; browser was preserved".to_string(),
@@ -11664,16 +11674,33 @@ mod tests {
                 "browserId",
                 "sessionName",
                 "runtimeProfile",
-                "expectedBrowserPid"
+                "expectedBrowserPid",
+                "expectedTargetId"
             ])
         );
         let flags = crate::flags::parse_flags(&[]);
+        let missing_target = call_service_managed_runtime_reconnect(
+            &json!({
+                "browserId": "session:qa",
+                "sessionName": "qa",
+                "runtimeProfile": "qa-profile",
+                "expectedBrowserPid": 123,
+            }),
+            &flags,
+        )
+        .unwrap_err();
+        assert_eq!(missing_target.code, -32602);
+        assert_eq!(
+            missing_target.data.unwrap()["message"],
+            "service_managed_runtime_reconnect requires expectedTargetId"
+        );
         let error = call_service_managed_runtime_reconnect(
             &json!({
                 "browserId": "session:other",
                 "sessionName": "qa",
                 "runtimeProfile": "qa-profile",
                 "expectedBrowserPid": 123,
+                "expectedTargetId": "target-1",
             }),
             &flags,
         )
