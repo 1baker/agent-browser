@@ -28,14 +28,19 @@ import {
   createServiceViewerLeaseHeartbeatRequest,
   createServiceViewerLeaseReleaseRequest,
   createServiceViewerLeaseRequest,
+  cleanupServiceTaskAuthorityConfirmations,
+  decideServiceTaskAuthorityConfirmation,
   evaluateServiceTab,
   getServiceTabHandle,
   getServiceTabDiagnostics,
+  getServiceTaskAuthorities,
+  getServiceTaskAuthority,
   getServiceRemoteViewHandoffUrl,
   getServiceRemoteViewOpenOperatorVisible,
   heartbeatServiceViewerLease,
   isServiceCdpFreeActionAvailable,
   isServiceRemoteViewOpenOperatorVisibleReady,
+  issueServiceTaskAuthority,
   postServiceRequest,
   probeServiceTab,
   requestServiceFileTransfer,
@@ -45,6 +50,8 @@ import {
   runServiceUiAction,
   releaseServiceTabHandle,
   releaseServiceViewerLease,
+  reconcileServiceTaskAuthority,
+  revokeServiceTaskAuthority,
   requireServiceTabHandle,
   requestServiceCdpAttach,
   requestServiceCdpDetach,
@@ -322,6 +329,9 @@ async function main() {
     loginIds: ['acs', 'google'],
     profile: 'journal-acs',
     action: 'navigate',
+    taskAuthority: { id: 'authority-1', planSha256: 'abc' },
+    taskStepId: 'authority-1:step-0',
+    taskEvidenceBytes: 4096,
     displayIsolation: 'private_virtual_display',
     params: {
       url: 'https://example.com',
@@ -347,6 +357,9 @@ async function main() {
     loginIds: ['acs', 'google'],
     profile: 'journal-acs',
     action: 'navigate',
+    taskAuthority: { id: 'authority-1', planSha256: 'abc' },
+    taskStepId: 'authority-1:step-0',
+    taskEvidenceBytes: 4096,
     displayIsolation: 'private_virtual_display',
     params: {
       url: 'https://example.com',
@@ -2819,6 +2832,129 @@ async function main() {
     viewerLeaseId: 'viewer-a',
   });
   assert.equal(releaseWorkflow.calls[0].body.action, 'service_viewer_lease_release');
+
+  const authorityWorkflow = createFetchRecorder({ success: true, data: { state: 'active' } });
+  await issueServiceTaskAuthority({
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: authorityWorkflow.fetch,
+    sessionName: 'retained-lane',
+    taskName: 'inspect-source',
+    serviceName: 'concierge',
+    agentName: 'codex',
+    expectedTargetId: 'target-1',
+    expectedUrl: 'https://example.com/',
+    approvalReference: 'plan-106',
+    expiresInSeconds: 300,
+    steps: [{ action: 'title', evidenceBytes: 1024 }],
+  });
+  assert.equal(
+    new URL(authorityWorkflow.calls[0].url).pathname,
+    '/api/service/task-authorities/issue',
+  );
+  assert.equal(authorityWorkflow.calls[0].body.sessionName, 'retained-lane');
+
+  await getServiceTaskAuthorities({
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: authorityWorkflow.fetch,
+    sessionName: 'retained-lane',
+  });
+  assert.equal(
+    new URL(authorityWorkflow.calls[1].url).searchParams.get('sessionName'),
+    'retained-lane',
+  );
+  await getServiceTaskAuthority('authority-1', {
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: authorityWorkflow.fetch,
+  });
+  assert.equal(
+    new URL(authorityWorkflow.calls[2].url).pathname,
+    '/api/service/task-authorities/authority-1',
+  );
+  await reconcileServiceTaskAuthority({
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: authorityWorkflow.fetch,
+    sessionName: 'retained-lane',
+    authorityId: 'authority-1',
+    reconciliationId: 'reconcile-1',
+    unresolvedStepId: 'authority-1:step-0',
+    taskName: 'inspect-source',
+    serviceName: 'concierge',
+    agentName: 'codex',
+    expectedTargetId: 'target-1',
+    expectedUrl: 'https://example.com/',
+    approvalReference: 'plan-109',
+    expiresInSeconds: 300,
+    steps: [{ action: 'title', evidenceBytes: 1024 }],
+  });
+  assert.equal(
+    new URL(authorityWorkflow.calls[3].url).pathname,
+    '/api/service/task-authorities/authority-1/reconcile',
+  );
+  assert.equal(authorityWorkflow.calls[3].body.reconciliationId, 'reconcile-1');
+  await decideServiceTaskAuthorityConfirmation({
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: authorityWorkflow.fetch,
+    sessionName: 'retained-lane',
+    confirmationId: 'reconcile-approval-1',
+    expectedAction: 'task_authority_reconcile',
+    decision: 'confirm',
+  });
+  assert.equal(
+    new URL(authorityWorkflow.calls[4].url).pathname,
+    '/api/service/task-authorities/confirmation',
+  );
+  assert.deepEqual(authorityWorkflow.calls[4].body, {
+    sessionName: 'retained-lane',
+    confirmationId: 'reconcile-approval-1',
+    expectedAction: 'task_authority_reconcile',
+    decision: 'confirm',
+  });
+  await assert.rejects(
+    decideServiceTaskAuthorityConfirmation({
+      baseUrl: 'http://127.0.0.1:4849',
+      fetch: authorityWorkflow.fetch,
+      confirmationId: 'reconcile-approval-1',
+      expectedAction: 'task_authority_reconcile',
+      decision: 'approve',
+    }),
+    /confirm or deny/,
+  );
+  await revokeServiceTaskAuthority({
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: authorityWorkflow.fetch,
+    sessionName: 'retained-lane',
+    authorityId: 'authority-1',
+    reason: 'complete',
+  });
+  assert.equal(
+    new URL(authorityWorkflow.calls[5].url).pathname,
+    '/api/service/task-authorities/authority-1/revoke',
+  );
+  assert.equal(authorityWorkflow.calls[5].body.reason, 'complete');
+  assert.equal(authorityWorkflow.calls[0].body.issuer, undefined);
+  assert.equal(authorityWorkflow.calls[3].body.issuer, undefined);
+  assert.equal(authorityWorkflow.calls[4].body.decidedBy, undefined);
+  assert.equal(authorityWorkflow.calls[5].body.revokedBy, undefined);
+  await cleanupServiceTaskAuthorityConfirmations({
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: authorityWorkflow.fetch,
+    sessionName: 'retained-lane',
+    retainCount: 100,
+    minAgeSeconds: 86400,
+  });
+  assert.equal(
+    new URL(authorityWorkflow.calls[6].url).pathname,
+    '/api/service/task-authorities/confirmations/cleanup',
+  );
+  assert.equal(authorityWorkflow.calls[6].body.apply, false);
+  await assert.rejects(
+    cleanupServiceTaskAuthorityConfirmations({
+      baseUrl: 'http://127.0.0.1:4849',
+      fetch: authorityWorkflow.fetch,
+      apply: true,
+    }),
+    /requires reviewSha256/,
+  );
 
   console.log('Service request client helper tests passed');
 }

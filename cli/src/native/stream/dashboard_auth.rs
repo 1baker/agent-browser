@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const AUTH_FILE_ENV: &str = "AGENT_BROWSER_DASHBOARD_AUTH_FILE";
+const TAILSCALE_AUTH_ENV: &str = "AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH";
+const TAILSCALE_ALLOWED_LOGINS_ENV: &str = "AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS";
 const AUTH_FILE_NAME: &str = "dashboard-auth.json";
 const BOOTSTRAP_CREDENTIAL_FILE_NAME: &str = "dashboard-auth.env";
 const PBKDF2_ITERATIONS: u32 = 120_000;
@@ -84,9 +86,8 @@ impl DashboardAuthResponse {
 /// Ensure the dashboard has a private user-scoped auth store before it serves
 /// operator APIs or exposes a forward-auth endpoint for component routes.
 pub(super) fn ensure_dashboard_auth_config() -> Result<DashboardAuthPaths, String> {
-    let auth_dir = dashboard_auth_dir()?;
+    let (auth_dir, auth_file) = dashboard_auth_paths()?;
     ensure_private_dir(&auth_dir)?;
-    let auth_file = dashboard_auth_file(&auth_dir);
     let bootstrap_credential_file = auth_dir.join(BOOTSTRAP_CREDENTIAL_FILE_NAME);
     let now = now_rfc3339();
 
@@ -352,14 +353,86 @@ pub(super) fn require_superuser(
 pub(super) fn authenticate_headers(
     headers: &[(String, String)],
 ) -> Result<Option<DashboardAuthIdentity>, String> {
-    let Some(cookie_header) = header_value(headers, "cookie") else {
-        return Ok(None);
-    };
-    let Some(token) = cookie_value(cookie_header, SESSION_COOKIE) else {
-        return Ok(None);
-    };
+    if let Some(token) = header_value(headers, "cookie")
+        .and_then(|cookie_header| cookie_value(cookie_header, SESSION_COOKIE))
+    {
+        let store = load_auth_store()?;
+        if let Some(identity) = verify_session_token(&store, &token)? {
+            return Ok(Some(identity));
+        }
+    }
+
+    let tailscale_auth_enabled = std::env::var(TAILSCALE_AUTH_ENV)
+        .map(|value| env_value_is_true(&value))
+        .unwrap_or(false);
+    let allowed_logins = std::env::var(TAILSCALE_ALLOWED_LOGINS_ENV).unwrap_or_default();
+    Ok(tailscale_identity_from_config(
+        headers,
+        tailscale_auth_enabled,
+        &allowed_logins,
+    ))
+}
+
+/// Mint a short-lived, signed cookie for the dashboard's loopback service
+/// backend after the outer dashboard listener has authenticated the request.
+/// The backend verifies the signature against the same private auth store.
+pub(super) fn internal_proxy_cookie(identity: &DashboardAuthIdentity) -> Result<String, String> {
     let store = load_auth_store()?;
-    verify_session_token(&store, &token)
+    let token = create_session_token(&store, identity)?;
+    Ok(format!("{SESSION_COOKIE}={token}"))
+}
+
+/// Accept Tailscale Serve identity only for an explicitly enabled, HTTPS,
+/// tailnet-hosted request whose login appears in the operator allowlist.
+///
+/// The dashboard must remain bound to localhost in this mode. Tailscale Serve
+/// strips caller-supplied identity headers before adding its authenticated
+/// values, but another reverse proxy reaching the same listener would not
+/// provide that guarantee.
+fn tailscale_identity_from_config(
+    headers: &[(String, String)],
+    enabled: bool,
+    allowed_logins: &str,
+) -> Option<DashboardAuthIdentity> {
+    if !enabled || !request_is_secure(headers) {
+        return None;
+    }
+    let forwarded_host = header_value(headers, "x-forwarded-host")
+        .or_else(|| header_value(headers, "host"))?
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if !forwarded_host.ends_with(".ts.net") {
+        return None;
+    }
+    let login = header_value(headers, "tailscale-user-login")?.trim();
+    if login.is_empty()
+        || !allowed_logins
+            .split(',')
+            .map(str::trim)
+            .filter(|candidate| !candidate.is_empty())
+            .any(|candidate| candidate.eq_ignore_ascii_case(login))
+    {
+        return None;
+    }
+    let display_name = header_value(headers, "tailscale-user-name")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(login);
+    Some(DashboardAuthIdentity {
+        username: login.to_string(),
+        display_name: display_name.to_string(),
+        role: DASHBOARD_ROLE_SUPERUSER.to_string(),
+    })
+}
+
+fn env_value_is_true(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 pub(super) fn request_is_secure(headers: &[(String, String)]) -> bool {
@@ -379,21 +452,34 @@ pub(super) fn parse_headers(header_str: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn dashboard_auth_dir() -> Result<PathBuf, String> {
-    dirs::home_dir()
+fn dashboard_auth_paths() -> Result<(PathBuf, PathBuf), String> {
+    let default_dir = dirs::home_dir()
         .map(|home| home.join(".agent-browser"))
-        .ok_or_else(|| "Cannot resolve the user-scoped agent-browser directory".to_string())
+        .ok_or_else(|| "Cannot resolve the user-scoped agent-browser directory".to_string())?;
+    Ok(resolve_dashboard_auth_paths(
+        &default_dir,
+        std::env::var(AUTH_FILE_ENV).ok().as_deref(),
+    ))
 }
 
-fn dashboard_auth_file(auth_dir: &Path) -> PathBuf {
-    std::env::var(AUTH_FILE_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| auth_dir.join(AUTH_FILE_NAME))
+fn resolve_dashboard_auth_paths(
+    default_dir: &Path,
+    configured_file: Option<&str>,
+) -> (PathBuf, PathBuf) {
+    let Some(configured_file) = configured_file.filter(|value| !value.trim().is_empty()) else {
+        return (default_dir.to_path_buf(), default_dir.join(AUTH_FILE_NAME));
+    };
+    let auth_file = PathBuf::from(configured_file);
+    let auth_dir = auth_file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(default_dir)
+        .to_path_buf();
+    (auth_dir, auth_file)
 }
 
 fn load_auth_store() -> Result<DashboardAuthStore, String> {
-    let auth_dir = dashboard_auth_dir()?;
-    let auth_file = dashboard_auth_file(&auth_dir);
+    let (_, auth_file) = dashboard_auth_paths()?;
     if !auth_file.exists() {
         let _ = ensure_dashboard_auth_config()?;
     }
@@ -843,6 +929,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn configured_auth_file_relocates_generated_credentials_with_the_store() {
+        let default_dir = Path::new("/home/operator/.agent-browser");
+        let (auth_dir, auth_file) = resolve_dashboard_auth_paths(
+            default_dir,
+            Some("/tmp/disposable-agent-browser/dashboard-auth.json"),
+        );
+
+        assert_eq!(auth_dir, Path::new("/tmp/disposable-agent-browser"));
+        assert_eq!(
+            auth_file,
+            Path::new("/tmp/disposable-agent-browser/dashboard-auth.json")
+        );
+        assert_eq!(
+            auth_dir.join(BOOTSTRAP_CREDENTIAL_FILE_NAME),
+            Path::new("/tmp/disposable-agent-browser/dashboard-auth.env")
+        );
+    }
+
+    #[test]
     fn password_hash_round_trips() {
         let hash = hash_password("correct horse battery staple").unwrap();
 
@@ -889,6 +994,49 @@ mod tests {
             ),
             Some("abc.def".to_string())
         );
+    }
+
+    #[test]
+    fn tailscale_identity_requires_opt_in_https_tailnet_host_and_exact_login() {
+        let headers = vec![
+            ("x-forwarded-proto".to_string(), "https".to_string()),
+            (
+                "x-forwarded-host".to_string(),
+                "desktop.example.ts.net".to_string(),
+            ),
+            (
+                "tailscale-user-login".to_string(),
+                "operator@example.com".to_string(),
+            ),
+            (
+                "tailscale-user-name".to_string(),
+                "Remote Operator".to_string(),
+            ),
+        ];
+
+        let identity = tailscale_identity_from_config(
+            &headers,
+            true,
+            "other@example.com, operator@example.com",
+        )
+        .expect("allowlisted Tailscale identity should authenticate");
+        assert_eq!(identity.username, "operator@example.com");
+        assert_eq!(identity.display_name, "Remote Operator");
+        assert_eq!(identity.role, DASHBOARD_ROLE_SUPERUSER);
+        assert!(tailscale_identity_from_config(&headers, false, "operator@example.com").is_none());
+
+        let mut insecure = headers.clone();
+        insecure[0].1 = "http".to_string();
+        assert!(tailscale_identity_from_config(&insecure, true, "operator@example.com").is_none());
+
+        let mut public_host = headers.clone();
+        public_host[1].1 = "browser.example.com".to_string();
+        assert!(
+            tailscale_identity_from_config(&public_host, true, "operator@example.com").is_none()
+        );
+
+        assert!(tailscale_identity_from_config(&headers, true, "different@example.com").is_none());
+        assert!(tailscale_identity_from_config(&headers, true, "").is_none());
     }
 
     #[test]

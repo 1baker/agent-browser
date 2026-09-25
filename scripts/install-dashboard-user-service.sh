@@ -75,6 +75,7 @@ Environment=PATH=$PATH
 Environment=AGENT_BROWSER_BIN=$AGENT_BROWSER_BIN
 Environment=PNPM_BIN=$PNPM_BIN
 Environment=AGENT_BROWSER_ROUTE_DISPLAY_AGENT_BROWSER_CMD=$AGENT_BROWSER_BIN
+ExecStartPre=$PNPM_BIN --silent check:local-dashboard-retained-browser
 ExecStart=$FLOCK_BIN --nonblock $INTERLOCK_LOCK $PNPM_BIN --silent converge:local-runtime -- --apply --skip-publish --json
 TimeoutStartSec=5min
 

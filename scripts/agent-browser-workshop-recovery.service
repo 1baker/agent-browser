@@ -1,0 +1,20 @@
+[Unit]
+Description=Recover the explicitly armed Workshop conversation once per boot
+After=agent-browser-dashboard.service
+Wants=agent-browser-dashboard.service
+
+[Service]
+Type=oneshot
+# Keep recovered children in this unit after the helper exits successfully.
+# Stopping this service deliberately terminates those children; stop the timer
+# alone to disable future recovery without closing the retained browser.
+RemainAfterExit=yes
+KillMode=control-group
+Environment=NODE_OPTIONS=
+Environment=NODE_PATH=
+Environment=HOME=%h
+ExecStart=%h/.local/bin/node %h/.local/lib/agent-browser-workshop-recovery/workshop-boot-recovery.mjs --run
+TimeoutStartSec=20min
+UMask=0077
+# A failed/uncertain attempt is deliberately not retried.
+Restart=no

@@ -638,6 +638,8 @@ fn query_windows_firewall_state(port: u16) -> serde_json::Value {
     let output = Command::new(&powershell)
         .args([
             "-NoProfile",
+            "-WindowStyle",
+            "Hidden",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
@@ -678,10 +680,10 @@ fn query_windows_firewall_state(port: u16) -> serde_json::Value {
 
 fn find_windows_powershell() -> Option<PathBuf> {
     [
-        PathBuf::from("/mnt/c/Program Files/PowerShell/7/pwsh.exe"),
-        PathBuf::from("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
         PathBuf::from("powershell.exe"),
         PathBuf::from("pwsh.exe"),
+        PathBuf::from("/mnt/c/Program Files/PowerShell/7/pwsh.exe"),
+        PathBuf::from("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
     ]
     .into_iter()
     .find(|path| path.is_file() || path.components().count() == 1)

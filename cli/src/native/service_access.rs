@@ -14,13 +14,14 @@ use sha2::{Digest, Sha256};
 use super::service_contracts::SERVICE_REQUEST_ACTIONS;
 use super::service_lifecycle::{select_service_profile_for_request, ProfileSelectionRequest};
 use super::service_model::{
-    builtin_site_policy, service_profile_seeding_handoff, service_site_policy_id_for_url,
-    BrowserBuild, BrowserHealth, BrowserHost, BrowserProcess, BrowserProfile, BrowserSession,
-    Challenge, ChallengeKind, ChallengePolicy, ChallengeState, ControlInputProvider,
-    InteractionMode, LeaseState, ProfileOrigin, ProfileSelectionReason, ProviderCapability,
-    ServiceEntitySource, ServiceIncidentEscalation, ServiceIncidentState, ServiceProvider,
-    ServiceState, SitePolicy, ViewStreamProvider, SERVICE_JOB_NAMING_WARNING_MISSING_AGENT_NAME,
-    SERVICE_JOB_NAMING_WARNING_MISSING_SERVICE_NAME, SERVICE_JOB_NAMING_WARNING_MISSING_TASK_NAME,
+    browser_matches_required_build, builtin_site_policy, service_profile_seeding_handoff,
+    service_site_policy_id_for_url, BrowserBuild, BrowserHealth, BrowserHost, BrowserProcess,
+    BrowserProfile, BrowserSession, Challenge, ChallengeKind, ChallengePolicy, ChallengeState,
+    ControlInputProvider, InteractionMode, LeaseState, ProfileOrigin, ProfileSelectionReason,
+    ProviderCapability, ServiceEntitySource, ServiceIncidentEscalation, ServiceIncidentState,
+    ServiceProvider, ServiceState, SitePolicy, ViewStreamProvider,
+    SERVICE_JOB_NAMING_WARNING_MISSING_AGENT_NAME, SERVICE_JOB_NAMING_WARNING_MISSING_SERVICE_NAME,
+    SERVICE_JOB_NAMING_WARNING_MISSING_TASK_NAME,
 };
 
 /// Parsed access-plan selector shared by HTTP and MCP resources.
@@ -178,11 +179,12 @@ pub(crate) fn service_access_plan_for_state(
                 .and_then(|selection| service_state.profiles.get(&selection.profile_id))
                 .cloned()
         });
-    let readiness_id = request.readiness_profile_id.clone().or_else(|| {
-        selection
-            .as_ref()
-            .map(|selection| selection.profile_id.clone())
-    });
+    // Readiness must follow the effective runtime profile, not a different
+    // automatically ranked profile. An explicit diagnostic override still wins.
+    let readiness_id = request
+        .readiness_profile_id
+        .clone()
+        .or_else(|| selected_profile.as_ref().map(|profile| profile.id.clone()));
     let readiness_profile = readiness_id
         .as_deref()
         .and_then(|profile_id| service_state.profiles.get(profile_id));
@@ -1249,7 +1251,7 @@ fn profile_reuse_decision(
             .browsers
             .iter()
             .filter(|(_id, browser)| {
-                browser.profile_id.as_deref() == Some(profile.id.as_str())
+                browser.effective_profile_id() == Some(profile.id.as_str())
                     && browser_has_live_health(browser)
             })
             .map(|(id, _browser)| id.clone())
@@ -1285,8 +1287,12 @@ fn profile_reuse_decision(
     let display_isolation = launch_posture
         .get("displayIsolation")
         .and_then(Value::as_str);
-    let reusable_browser_host = if profile.profile_origin == ProfileOrigin::ExternalByop
-        && request.browser_host.is_none()
+    let required_browser_build = launch_posture
+        .get("browserBuild")
+        .and_then(|value| serde_json::from_value::<BrowserBuild>(value.clone()).ok());
+    let reusable_browser_host = if launch_posture.get("source").and_then(Value::as_str)
+        == Some("service_default")
+        || (profile.profile_origin == ProfileOrigin::ExternalByop && request.browser_host.is_none())
     {
         None
     } else {
@@ -1297,7 +1303,8 @@ fn profile_reuse_decision(
         .browsers
         .iter()
         .filter(|(_id, browser)| {
-            browser.profile_id.as_deref() == Some(profile.id.as_str())
+            browser.effective_profile_id() == Some(profile.id.as_str())
+                && browser_matches_required_build(browser, required_browser_build)
                 && browser_is_reusable_for_posture(
                     browser,
                     reusable_browser_host,
@@ -1315,7 +1322,7 @@ fn profile_reuse_decision(
         .browsers
         .iter()
         .filter(|(_id, browser)| {
-            browser.profile_id.as_deref() == Some(profile.id.as_str())
+            browser.effective_profile_id() == Some(profile.id.as_str())
                 && browser_has_live_health(browser)
         })
         .map(|(id, _browser)| id.clone())
@@ -1346,6 +1353,19 @@ fn profile_reuse_decision(
         reasons.push("no_compatible_live_browser");
     } else {
         reasons.push("compatible_live_browser_available");
+    }
+    if required_browser_build.is_some()
+        && same_profile_live_browser_ids.iter().any(|browser_id| {
+            service_state
+                .browsers
+                .get(browser_id)
+                .is_some_and(|browser| {
+                    browser.browser_build.is_none()
+                        || !browser_matches_required_build(browser, required_browser_build)
+                })
+        })
+    {
+        reasons.push("retained_browser_build_mismatch_or_missing_proof");
     }
     if active_lease_session_ids.is_empty() {
         reasons.push("no_active_profile_lease_conflict");
@@ -1411,13 +1431,14 @@ fn profile_reuse_decision(
         "reusableBrowserId": reusable_browser_id,
         "reusableSessionName": reusable_session_name,
         "reusableBrowserIds": reusable_browser_ids,
-        "compatibleLiveBrowserCount": same_profile_live_browser_ids.len(),
+        "compatibleLiveBrowserCount": reusable_browser_ids.len(),
         "sameProfileLiveBrowserIds": same_profile_live_browser_ids,
         "activeLeaseSessionIds": active_lease_session_ids,
         "activeLeaseCount": active_lease_session_ids.len(),
         "duplicatePressure": same_profile_live_browser_ids.len() > 1 || active_lease_session_ids.len() > 1,
         "profileLeasePolicy": "wait",
         "browserHost": browser_host,
+        "requiredBrowserBuild": required_browser_build,
         "viewStreamProvider": view_stream_provider,
         "controlInputProvider": control_input_provider,
         "displayIsolation": display_isolation,
@@ -3997,6 +4018,53 @@ mod tests {
     }
 
     #[test]
+    fn service_access_plan_runtime_override_uses_its_own_readiness() {
+        let state = ServiceState {
+            profiles: BTreeMap::from([
+                (
+                    "automatic".to_string(),
+                    BrowserProfile {
+                        id: "automatic".to_string(),
+                        shared_service_ids: vec!["AuraCall".to_string()],
+                        target_service_ids: vec!["chatgpt".to_string()],
+                        manual_login_preferred: true,
+                        ..BrowserProfile::default()
+                    },
+                ),
+                (
+                    "retained".to_string(),
+                    BrowserProfile {
+                        id: "retained".to_string(),
+                        target_service_ids: vec!["chatgpt".to_string()],
+                        authenticated_service_ids: vec!["chatgpt".to_string()],
+                        ..BrowserProfile::default()
+                    },
+                ),
+            ]),
+            ..ServiceState::default()
+        };
+        let request = ServiceAccessPlanRequest {
+            service_name: Some("AuraCall".to_string()),
+            runtime_profile: Some("retained".to_string()),
+            ..ServiceAccessPlanRequest::default()
+        };
+        let plan = service_access_plan_for_state(&state, request.clone());
+        assert_eq!(plan["selectedProfile"]["id"], "retained");
+        assert_eq!(plan["readiness"]["profileId"], "retained");
+        assert_eq!(plan["decision"]["manualActionRequired"], false);
+
+        let diagnostic = service_access_plan_for_state(
+            &state,
+            ServiceAccessPlanRequest {
+                readiness_profile_id: Some("automatic".to_string()),
+                ..request
+            },
+        );
+        assert_eq!(diagnostic["readiness"]["profileId"], "automatic");
+        assert_eq!(diagnostic["decision"]["manualActionRequired"], true);
+    }
+
+    #[test]
     fn service_access_plan_uses_url_derived_target_and_account_match() {
         let state = ServiceState {
             profiles: BTreeMap::from([(
@@ -4129,6 +4197,7 @@ mod tests {
                     BrowserProcess {
                         id: "browser-primary".to_string(),
                         profile_id: Some("acs".to_string()),
+                        browser_build: Some(BrowserBuild::StealthcdpChromium),
                         host: BrowserHost::RemoteHeaded,
                         health: BrowserHealth::Ready,
                         display_isolation: Some("private_virtual_display".to_string()),
@@ -4146,6 +4215,7 @@ mod tests {
                     BrowserProcess {
                         id: "browser-duplicate".to_string(),
                         profile_id: Some("acs".to_string()),
+                        browser_build: Some(BrowserBuild::StealthcdpChromium),
                         host: BrowserHost::RemoteHeaded,
                         health: BrowserHealth::Ready,
                         display_isolation: Some("private_virtual_display".to_string()),
@@ -4166,6 +4236,8 @@ mod tests {
             &state,
             ServiceAccessPlanRequest {
                 target_service_ids: vec!["acs".to_string()],
+                browser_build: Some(BrowserBuild::StealthcdpChromium),
+                browser_build_explicit: true,
                 browser_host: Some(BrowserHost::RemoteHeaded),
                 view_stream_provider: Some(ViewStreamProvider::RdpGateway),
                 control_input_provider: Some(ControlInputProvider::ManualAttachedDesktop),
@@ -4206,6 +4278,59 @@ mod tests {
     }
 
     #[test]
+    fn service_access_plan_rejects_wrong_or_unproven_retained_browser_build() {
+        for retained_build in [None, Some(BrowserBuild::StockChrome)] {
+            let state = ServiceState {
+                profiles: BTreeMap::from([(
+                    "work".to_string(),
+                    BrowserProfile {
+                        id: "work".to_string(),
+                        name: "Work".to_string(),
+                        target_service_ids: vec!["example".to_string()],
+                        authenticated_service_ids: vec!["example".to_string()],
+                        ..BrowserProfile::default()
+                    },
+                )]),
+                browsers: BTreeMap::from([(
+                    "browser-work".to_string(),
+                    BrowserProcess {
+                        id: "browser-work".to_string(),
+                        profile_id: Some("work".to_string()),
+                        browser_build: retained_build,
+                        health: BrowserHealth::Ready,
+                        active_session_ids: vec!["work-session".to_string()],
+                        ..BrowserProcess::default()
+                    },
+                )]),
+                ..ServiceState::default()
+            };
+
+            let plan = service_access_plan_for_state(
+                &state,
+                ServiceAccessPlanRequest {
+                    target_service_ids: vec!["example".to_string()],
+                    browser_build: Some(BrowserBuild::StealthcdpChromium),
+                    browser_build_explicit: true,
+                    ..ServiceAccessPlanRequest::default()
+                },
+            );
+
+            assert_eq!(
+                plan["decision"]["profileReuse"]["recommendedAction"],
+                "launch_new_browser"
+            );
+            assert_eq!(
+                plan["decision"]["profileReuse"]["reusableBrowserIds"],
+                json!([])
+            );
+            assert!(plan["decision"]["profileReuse"]["reasons"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("retained_browser_build_mismatch_or_missing_proof")));
+        }
+    }
+
+    #[test]
     fn service_request_route_hints_reuse_compatible_live_browser() {
         let state = ServiceState {
             profiles: BTreeMap::from([(
@@ -4222,6 +4347,7 @@ mod tests {
                 BrowserProcess {
                     id: "browser-x".to_string(),
                     profile_id: Some("x-social".to_string()),
+                    browser_build: Some(BrowserBuild::StockChrome),
                     host: BrowserHost::RemoteHeaded,
                     health: BrowserHealth::Ready,
                     display_isolation: Some("private_virtual_display".to_string()),
@@ -4240,6 +4366,7 @@ mod tests {
             "action": "tab_new",
             "runtimeProfile": "x-social",
             "siteId": "x",
+            "browserBuild": "stock_chrome",
             "browserHost": "remote_headed",
             "viewStreamProvider": "rdp_gateway",
             "controlInputProvider": "manual_attached_desktop",
@@ -4321,6 +4448,7 @@ mod tests {
                 BrowserProcess {
                     id: "browser-byop".to_string(),
                     profile_id: Some("byop".to_string()),
+                    browser_build: Some(BrowserBuild::StockChrome),
                     host: BrowserHost::AttachedExisting,
                     health: BrowserHealth::Ready,
                     view_streams: vec![ViewStream {
@@ -4395,6 +4523,87 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("external_byop_browser_host_unconstrained")));
+    }
+
+    #[test]
+    fn service_access_plan_routes_to_managed_attached_browser_when_host_is_only_a_default() {
+        let state = ServiceState {
+            profiles: BTreeMap::from([(
+                "chatgpt-pro".to_string(),
+                BrowserProfile {
+                    id: "chatgpt-pro".to_string(),
+                    name: "ChatGPT Pro".to_string(),
+                    target_service_ids: vec!["chatgpt".to_string()],
+                    authenticated_service_ids: vec!["chatgpt".to_string()],
+                    shared_service_ids: vec!["AuraCall".to_string()],
+                    ..BrowserProfile::default()
+                },
+            )]),
+            browsers: BTreeMap::from([(
+                "session:auracall-chatgpt-broker-v7".to_string(),
+                BrowserProcess {
+                    id: "session:auracall-chatgpt-broker-v7".to_string(),
+                    // The stored projection is stale, but the exact retained
+                    // attach proof binds the live browser to chatgpt-pro.
+                    profile_id: Some("default".to_string()),
+                    browser_build: Some(BrowserBuild::StockChrome),
+                    executable_path: Some("/opt/agent-browser/chrome".to_string()),
+                    browser_build_proof: Some(serde_json::json!({
+                        "applied": true,
+                        "browserBuild": "stock_chrome",
+                        "profileId": "chatgpt-pro",
+                        "executablePath": "/opt/agent-browser/chrome",
+                        "cdpEndpoint": "ws://127.0.0.1:9222/devtools/browser/exact",
+                        "browserPid": 1234,
+                    })),
+                    host: BrowserHost::AttachedExisting,
+                    health: BrowserHealth::Ready,
+                    cdp_endpoint: Some("ws://127.0.0.1:9222/devtools/browser/exact".to_string()),
+                    view_streams: vec![ViewStream {
+                        provider: ViewStreamProvider::CdpScreencast,
+                        control_input: Some(ControlInputProvider::CdpInput),
+                        ..ViewStream::default()
+                    }],
+                    active_session_ids: vec!["auracall-chatgpt-broker-v7".to_string()],
+                    ..BrowserProcess::default()
+                },
+            )]),
+            sessions: BTreeMap::from([(
+                "auracall-chatgpt-broker-v7".to_string(),
+                BrowserSession {
+                    id: "auracall-chatgpt-broker-v7".to_string(),
+                    profile_id: Some("chatgpt-pro".to_string()),
+                    browser_ids: vec!["session:auracall-chatgpt-broker-v7".to_string()],
+                    lease: LeaseState::Exclusive,
+                    ..BrowserSession::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+
+        let plan = service_access_plan_for_state(
+            &state,
+            ServiceAccessPlanRequest {
+                service_name: Some("AuraCall".to_string()),
+                target_service_ids: vec!["chatgpt".to_string()],
+                runtime_profile: Some("chatgpt-pro".to_string()),
+                ..ServiceAccessPlanRequest::default()
+            },
+        );
+
+        assert_eq!(
+            plan["decision"]["profileReuse"]["recommendedAction"],
+            "reuse_existing_browser"
+        );
+        assert_eq!(plan["decision"]["profileReuse"]["activeLeaseCount"], 0);
+        assert_eq!(
+            plan["decision"]["serviceRequest"]["request"]["browserId"],
+            "session:auracall-chatgpt-broker-v7"
+        );
+        assert_eq!(
+            plan["decision"]["serviceRequest"]["request"]["sessionName"],
+            "auracall-chatgpt-broker-v7"
+        );
     }
 
     #[test]
@@ -4516,7 +4725,7 @@ mod tests {
         );
         assert_eq!(
             plan["decision"]["profileReuse"]["compatibleLiveBrowserCount"],
-            1
+            0
         );
         assert_eq!(
             plan["decision"]["profileReuse"]["reusableBrowserIds"]
@@ -5407,14 +5616,11 @@ mod tests {
             plan["decision"]["launchPosture"]["attachableAfterSeeding"],
             false
         );
-        assert_eq!(
-            plan["decision"]["launchPosture"]["rationale"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|reason| reason == "site_policy_requires_cdp_free"),
-            true
-        );
+        assert!(plan["decision"]["launchPosture"]["rationale"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "site_policy_requires_cdp_free"));
     }
 
     #[test]

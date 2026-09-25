@@ -5,6 +5,7 @@ mod chat;
 mod color;
 mod commands;
 mod connection;
+mod electron_relay;
 mod flags;
 mod install;
 mod mcp;
@@ -23,6 +24,7 @@ mod workstation_install;
 use serde_json::json;
 use std::env;
 use std::fs;
+use std::path::Path;
 use std::process::exit;
 
 #[cfg(windows)]
@@ -46,6 +48,114 @@ use output::{
 use runtime_profile::{
     list_runtime_profiles, runtime_status_with_user_data_dir, RuntimeProfileSummary, RuntimeStatus,
 };
+
+// `dependent_batch` executes one fully prepared command future from inside the
+// outer batch command. The command dispatcher is intentionally broad and its
+// nested poll path exceeds Tokio's 2 MiB default worker stack in release builds.
+// Nested batches are rejected, so one bounded level of nesting is the maximum.
+const DAEMON_RUNTIME_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+fn build_daemon_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(DAEMON_RUNTIME_THREAD_STACK_SIZE)
+        .build()
+}
+
+/// Exact retained identity proven before a daemon-only reconnect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedReconnectIdentity {
+    pub endpoint: String,
+    pub target_id: String,
+}
+
+/// Admission for an explicit daemon-only reconnect. A saved session name is
+/// not authority to launch or replace a browser: its retained record must
+/// still bind the exact live profile, process, endpoint, target, and build.
+pub(crate) fn retained_reconnect_identity(
+    session: &str,
+    runtime_profile: &str,
+    status: &RuntimeStatus,
+    expected_target_id: Option<&str>,
+) -> Result<RetainedReconnectIdentity, String> {
+    use native::service_store::{LockedServiceStateRepository, ServiceStateRepository};
+
+    let pid = status
+        .browser_pid
+        .ok_or("Retained reconnect requires a browser PID")?;
+    let port = status
+        .devtools_port
+        .ok_or("Retained reconnect requires a DevTools port")?;
+    if !status.browser_alive || !status.devtools_reachable {
+        return Err("Retained reconnect requires a live reachable browser".to_string());
+    }
+    let state = LockedServiceStateRepository::default_json()
+        .map_err(|err| err.to_string())?
+        .load_snapshot()
+        .map_err(|err| err.to_string())?;
+    let browser_id = format!("session:{session}");
+    let browser = state
+        .browsers
+        .get(&browser_id)
+        .ok_or("Retained reconnect requires the exact browser record")?;
+    let retained_session = state
+        .sessions
+        .get(session)
+        .ok_or("Retained reconnect requires the exact session record")?;
+    let profile = state
+        .profiles
+        .get(runtime_profile)
+        .ok_or("Retained reconnect requires the exact profile record")?;
+    let (target_id, _) = native::actions::select_retained_reconnect_target(
+        &state,
+        &browser_id,
+        session,
+        expected_target_id,
+    )?;
+    let endpoint = browser
+        .cdp_endpoint
+        .as_deref()
+        .ok_or("Retained reconnect requires a recorded CDP endpoint")?;
+    let expected_prefix = format!("ws://127.0.0.1:{port}/devtools/browser/");
+    if browser.profile_id.as_deref() != Some(runtime_profile)
+        || browser.pid != Some(pid)
+        || browser.browser_build.is_none()
+        || browser
+            .browser_build_proof
+            .as_ref()
+            .is_none_or(|proof| proof["applied"] != true)
+        || retained_session.profile_id.as_deref() != Some(runtime_profile)
+        || retained_session.browser_ids.as_slice() != [browser_id.as_str()]
+        || !browser.active_session_ids.iter().any(|id| id == session)
+        || profile.user_data_dir.as_deref() != Some(status.user_data_dir.as_str())
+        || !endpoint.starts_with(&expected_prefix)
+        || endpoint == expected_prefix
+    {
+        return Err("Retained reconnect identity or build proof changed".to_string());
+    }
+    let active_port =
+        fs::read_to_string(Path::new(&status.user_data_dir).join("DevToolsActivePort"))
+            .map_err(|_| "Retained reconnect active endpoint is unreadable")?;
+    let mut lines = active_port.lines();
+    if lines.next().and_then(|value| value.parse::<u16>().ok()) != Some(port)
+        || lines.next() != endpoint.strip_prefix(&format!("ws://127.0.0.1:{port}"))
+    {
+        return Err("Retained reconnect active endpoint changed".to_string());
+    }
+    if status
+        .targets
+        .iter()
+        .filter(|target| target.id == target_id)
+        .count()
+        != 1
+    {
+        return Err("Retained reconnect live target changed".to_string());
+    }
+    Ok(RetainedReconnectIdentity {
+        endpoint: endpoint.to_string(),
+        target_id,
+    })
+}
 use upgrade::run_upgrade;
 
 fn serialize_json_value(value: &serde_json::Value) -> String {
@@ -239,9 +349,35 @@ fn set_launch_cmd_string_if_absent(
     cmd[field] = json!(value);
 }
 
+fn apply_browser_build_to_prestart_launch(
+    launch_cmd: &mut serde_json::Value,
+    browser_build: Option<&str>,
+) {
+    set_launch_cmd_string_if_absent(
+        launch_cmd,
+        "browserBuild",
+        browser_build.map(str::to_string),
+    );
+}
+
 fn apply_remote_headed_launch_env_hints(launch_cmd: &mut serde_json::Value) {
     if !launch_cmd_requests_remote_headed(launch_cmd) {
         return;
+    }
+
+    // A remote-headed browser must run on the host that owns the selected X11
+    // display. Allow a Linux workstation to override an automatically selected
+    // WSL-mounted Windows executable without changing the default browser used
+    // by ordinary local or broker-owned sessions. Explicit non-manifest
+    // executable selections remain authoritative.
+    if let Some(executable_path) = non_empty_env_var("AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH")
+    {
+        let current_path = launch_cmd_string(launch_cmd, "executablePath");
+        let current_source = launch_cmd_string(launch_cmd, "executablePathSource");
+        if current_path.is_none() || current_source.as_deref() == Some("manifest") {
+            launch_cmd["executablePath"] = json!(executable_path);
+            launch_cmd["executablePathSource"] = json!("remote_headed_env");
+        }
     }
 
     set_launch_cmd_string_if_absent(
@@ -620,15 +756,100 @@ fn live_runtime_status_for_flags(flags: &Flags) -> Option<RuntimeStatus> {
 fn daemon_profile_for_launch<'a>(
     profile: Option<&'a str>,
     live_runtime_status: Option<&RuntimeStatus>,
+    external_cdp: bool,
 ) -> Option<&'a str> {
-    // A live managed runtime profile is reached by CDP. Forwarding its
-    // user-data-dir as AGENT_BROWSER_PROFILE makes the daemon validate an
-    // impossible "CDP attach plus local profile launch" combination.
-    if live_runtime_status.is_some() {
+    // A live managed runtime profile or an explicitly supplied CDP endpoint is
+    // reached by CDP. Forwarding a user-data-dir as AGENT_BROWSER_PROFILE makes
+    // the daemon validate an impossible "CDP attach plus local profile launch"
+    // combination.
+    if live_runtime_status.is_some() || external_cdp {
         None
     } else {
         profile
     }
+}
+
+/// Bootstrap only an admitted cold MCP lane, using the ordinary configured
+/// daemon options. Attaching an existing runtime is never cold admission.
+fn start_cold_mcp_daemon(
+    flags: &Flags,
+    session: &str,
+    runtime_profile_override: Option<&str>,
+    profile_override: Option<&str>,
+) -> Result<(), String> {
+    let runtime_profile = runtime_profile_override
+        .map(str::to_string)
+        .or_else(|| runtime_profile_name_for_launch(flags));
+    let profile = profile_override.or(flags.profile.as_deref());
+    let selected_runtime_live = runtime_profile.as_ref().is_some_and(|name| {
+        runtime_status_with_user_data_dir(name, profile.map(Path::new)).is_ok_and(|status| {
+            status.browser_alive && status.devtools_port.is_some() && status.devtools_reachable
+        })
+    });
+    if flags.cdp.is_some()
+        || flags.auto_connect
+        || flags.provider.is_some()
+        || selected_runtime_live
+    {
+        return Err(
+            "Cold MCP startup cannot attach or acquire an existing runtime/provider".to_string(),
+        );
+    }
+    let proxy = flags.proxy.as_deref().map(parse_proxy);
+    let keychain_password = env::var("AGENT_BROWSER_KEYCHAIN_PASSWORD").ok();
+    let use_real_keychain = env::var("AGENT_BROWSER_USE_REAL_KEYCHAIN")
+        .is_ok_and(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | ""))
+        || keychain_password.is_some();
+    let opts = DaemonOptions {
+        headed: flags.headed,
+        debug: flags.debug,
+        leave_open: flags.leave_open,
+        executable_path: flags.executable_path.as_deref(),
+        executable_path_source: flags.executable_path_source.as_deref(),
+        extensions: &flags.extensions,
+        args: flags.args.as_deref(),
+        user_agent: flags.user_agent.as_deref(),
+        runtime_profile: runtime_profile.as_deref(),
+        proxy: proxy.as_ref().map(|value| value.server.as_str()),
+        proxy_bypass: flags.proxy_bypass.as_deref(),
+        proxy_username: proxy.as_ref().and_then(|value| value.username.as_deref()),
+        proxy_password: proxy.as_ref().and_then(|value| value.password.as_deref()),
+        ignore_https_errors: flags.ignore_https_errors,
+        allow_file_access: flags.allow_file_access,
+        profile,
+        state: flags.state.as_deref(),
+        provider: flags.provider.as_deref(),
+        device: flags.device.as_deref(),
+        session_name: flags.session_name.as_deref(),
+        download_path: flags.download_path.as_deref(),
+        allowed_domains: flags.allowed_domains.as_deref(),
+        action_policy: flags.action_policy.as_deref(),
+        confirm_actions: flags.confirm_actions.as_deref(),
+        engine: flags.engine.as_deref(),
+        use_real_keychain,
+        keychain_password: keychain_password.as_deref(),
+        auto_connect: flags.auto_connect,
+        idle_timeout: flags.idle_timeout.as_deref(),
+        service_reconcile_interval_ms: flags.service_reconcile_interval_ms,
+        service_job_timeout_ms: flags.service_job_timeout_ms,
+        service_monitor_interval_ms: flags.service_monitor_interval_ms,
+        service_recovery_retry_budget: flags.service_recovery_retry_budget,
+        service_recovery_base_backoff_ms: flags.service_recovery_base_backoff_ms,
+        service_recovery_max_backoff_ms: flags.service_recovery_max_backoff_ms,
+        service_recovery_retry_budget_source: flags.service_recovery_retry_budget_source.as_str(),
+        service_recovery_base_backoff_ms_source: flags
+            .service_recovery_base_backoff_ms_source
+            .as_str(),
+        service_recovery_max_backoff_ms_source: flags
+            .service_recovery_max_backoff_ms_source
+            .as_str(),
+        default_timeout: flags.default_timeout,
+        cdp: None,
+        runtime_attach_managed: false,
+        no_auto_dialog: flags.no_auto_dialog,
+        allow_stale_daemon_handoff: false,
+    };
+    connection::ensure_cold_daemon(session, &opts).map(|_| ())
 }
 
 fn run_runtime_command(clean: &[String], flags: &Flags) {
@@ -883,7 +1104,8 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                 }
             }
         }
-        Some("attach") => {
+        Some("attach" | "reconnect") => {
+            let reconnect_only = clean.get(1).is_some_and(|command| command == "reconnect");
             let runtime_name = selected_runtime_name(clean, flags, 2);
             let configured_user_data_dir = flags
                 .configured_runtime_profiles
@@ -904,6 +1126,26 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                 };
 
             let attach_to_existing = status.browser_alive && status.devtools_port.is_some();
+            let reconnect_identity = if reconnect_only {
+                match retained_reconnect_identity(
+                    &flags.session,
+                    &runtime_name,
+                    &status,
+                    flags.target_id.as_deref(),
+                ) {
+                    Ok(identity) => Some(identity),
+                    Err(error) => {
+                        if flags.json {
+                            print_json_error(error);
+                        } else {
+                            eprintln!("{} {}", color::error_indicator(), error);
+                        }
+                        exit(1);
+                    }
+                }
+            } else {
+                None
+            };
             if status.browser_alive && status.devtools_port.is_none() {
                 let msg = format!(
                     "Runtime profile '{}' has a live browser without a DevTools port. Close that browser before attaching automation, or relaunch manual login with `agent-browser runtime login --attachable`.",
@@ -972,8 +1214,12 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                     .service_recovery_max_backoff_ms_source
                     .as_str(),
                 default_timeout: flags.default_timeout,
-                cdp: cdp_port_str.as_deref(),
-                runtime_attach_managed: attach_to_existing,
+                cdp: if reconnect_only {
+                    None
+                } else {
+                    cdp_port_str.as_deref()
+                },
+                runtime_attach_managed: attach_to_existing && !reconnect_only,
                 no_auto_dialog: flags.no_auto_dialog,
                 allow_stale_daemon_handoff: false,
             };
@@ -990,7 +1236,19 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                 }
             };
 
-            let launch_cmd = if let Some(port) = status.devtools_port {
+            let launch_cmd = if reconnect_only {
+                json!({
+                    "id": gen_id(),
+                    "action": "retained_owner_prepare",
+                    "browserId": format!("session:{}", flags.session),
+                    "sessionName": flags.session,
+                    "cdpPort": status.devtools_port,
+                    "runtimeProfile": runtime_name,
+                    "expectedBrowserPid": status.browser_pid,
+                    "expectedCdpEndpoint": reconnect_identity.as_ref().map(|identity| &identity.endpoint),
+                    "expectedTargetId": reconnect_identity.as_ref().map(|identity| &identity.target_id),
+                })
+            } else if let Some(port) = status.devtools_port {
                 json!({
                     "id": gen_id(),
                     "action": "launch",
@@ -1011,6 +1269,30 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
 
             match send_command(launch_cmd, &flags.session) {
                 Ok(resp) if resp.success => {
+                    if reconnect_only {
+                        let post_status = runtime_status_with_user_data_dir(
+                            &runtime_name,
+                            configured_user_data_dir,
+                        );
+                        let post_identity = post_status.and_then(|post_status| {
+                            retained_reconnect_identity(
+                                &flags.session,
+                                &runtime_name,
+                                &post_status,
+                                flags.target_id.as_deref(),
+                            )
+                        });
+                        if post_identity.ok().as_ref() != reconnect_identity.as_ref() {
+                            let error =
+                                "Retained reconnect post-check failed; browser was preserved";
+                            if flags.json {
+                                print_json_error(error);
+                            } else {
+                                eprintln!("{} {}", color::error_indicator(), error);
+                            }
+                            exit(1);
+                        }
+                    }
                     if flags.json {
                         print_json_value(json!({
                             "attached": true,
@@ -1019,6 +1301,7 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                             "reusedDaemon": daemon_result.already_running,
                             "attachedToExistingBrowser": attach_to_existing,
                             "devtoolsPort": status.devtools_port,
+                            "targetId": reconnect_identity.as_ref().map(|identity| &identity.target_id),
                         }));
                     } else {
                         println!(
@@ -1488,11 +1771,38 @@ fn force_close_session_from_metadata(session: &str) -> bool {
 }
 
 fn main() {
+    // Dedicated local binding service; never enters browser daemon routing or
+    // environment credential loading. Arguments contain paths, never secrets.
+    let private_args: Vec<String> = env::args().collect();
+    if private_args.get(1).map(String::as_str) == Some("private-controller") {
+        if private_args.len() != 4 {
+            print_json_error("private_controller_arguments_invalid");
+            exit(1);
+        }
+        match native::private_controller_socket::run(
+            std::path::Path::new(&private_args[3]),
+            &private_args[2],
+        ) {
+            Ok(()) => print_json_value(json!({"success":true,"renewalEnabled":false})),
+            Err(_) => {
+                print_json_error("private_controller_failed_closed");
+                exit(1);
+            }
+        }
+        return;
+    }
+
     // Rust ignores SIGPIPE by default, causing println! to panic on broken pipes.
     // Reset to SIG_DFL so the OS terminates the process cleanly instead.
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
+    // Internal WSL-only helper. It owns a private loopback relay for one exact
+    // Windows Chromium DevTools endpoint and never enters ordinary CLI parsing.
+    if let Some(code) = native::cdp::chrome::run_wsl_windows_cdp_relay_from_env() {
+        std::process::exit(code);
     }
 
     // Prevent MSYS/Git Bash path translation from mangling arguments
@@ -1517,7 +1827,7 @@ fn main() {
             libc::signal(libc::SIGPIPE, libc::SIG_IGN);
         }
         let session = env::var("AGENT_BROWSER_SESSION").unwrap_or_else(|_| "default".to_string());
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let rt = build_daemon_runtime().expect("Failed to create tokio runtime");
         rt.block_on(native::daemon::run_daemon(&session));
         return;
     }
@@ -1566,10 +1876,19 @@ fn main() {
         return;
     }
 
+    if clean.first().map(String::as_str) == Some("electron") {
+        let code = electron_relay::run_command(&clean, flags.json);
+        std::process::exit(if code == std::process::ExitCode::SUCCESS {
+            0
+        } else {
+            1
+        });
+    }
+
     // Handle install separately
     if clean.first().map(|s| s.as_str()) == Some("install") {
         if clean.get(1).map(|s| s.as_str()) == Some("doctor") {
-            run_install_doctor(&flags);
+            run_install_doctor(&flags, &clean);
             return;
         }
         if clean.get(1).map(|s| s.as_str()) == Some("workstation") {
@@ -1708,6 +2027,7 @@ fn main() {
             flags.json,
             &flags.session,
             &flags.configured_service_state,
+            &flags,
         ));
     }
 
@@ -1723,6 +2043,10 @@ fn main() {
         Some("close") | Some("quit") | Some("exit")
     ) && clean.iter().any(|a| a == "--all")
     {
+        if flags.cli_leave_open && flags.leave_open {
+            eprintln!("--leave-open close --all is not supported; detach one verified managed runtime session at a time");
+            exit(2);
+        }
         run_close_all(&flags);
         return;
     }
@@ -1756,6 +2080,11 @@ fn main() {
             exit(1);
         }
     };
+
+    // Remote-view commands construct their route-bound browser launch inside
+    // the daemon, so carry workstation-specific launch hints on the command
+    // itself as well as on the ordinary client-side prestart launch below.
+    apply_remote_headed_launch_env_hints(&mut cmd);
 
     // Handle --password-stdin for auth save
     if cmd.get("action").and_then(|v| v.as_str()) == Some("auth_save") {
@@ -1992,10 +2321,15 @@ fn main() {
         .as_ref()
         .and_then(|status| status.devtools_port)
         .map(|port| port.to_string());
-    let daemon_runtime_profile = live_runtime_status
-        .as_ref()
-        .map(|status| status.runtime_profile.as_str())
-        .or(selected_runtime_profile.as_deref());
+    let external_cdp = flags.cdp.is_some();
+    let daemon_runtime_profile = if external_cdp {
+        None
+    } else {
+        live_runtime_status
+            .as_ref()
+            .map(|status| status.runtime_profile.as_str())
+            .or(selected_runtime_profile.as_deref())
+    };
     let daemon_opts = DaemonOptions {
         headed: flags.headed,
         debug: flags.debug,
@@ -2012,7 +2346,11 @@ fn main() {
         proxy_password: proxy_password.as_deref(),
         ignore_https_errors: flags.ignore_https_errors,
         allow_file_access: flags.allow_file_access,
-        profile: daemon_profile_for_launch(flags.profile.as_deref(), live_runtime_status.as_ref()),
+        profile: daemon_profile_for_launch(
+            flags.profile.as_deref(),
+            live_runtime_status.as_ref(),
+            external_cdp,
+        ),
         state: flags.state.as_deref(),
         provider: flags.provider.as_deref(),
         device: flags.device.as_deref(),
@@ -2408,7 +2746,15 @@ fn main() {
     let should_send_prestart_launch = launch_config_requested
         && (!daemon_result.already_running
             || explicit_cli_launch_config_requested
-            || live_runtime_status.is_some());
+            || live_runtime_status.is_some())
+        && !read_uses_daemon_acquisition(
+            &cmd,
+            explicit_cli_launch_config_requested
+                || flags.cli_browser_build
+                || flags.cli_proxy_bypass
+                || flags.cli_leave_open,
+            live_runtime_status.is_some(),
+        );
 
     // Launch headed browser or configure browser options (without CDP or provider).
     if !command_skips_browser_launch_for_prestart(&cmd)
@@ -2426,6 +2772,7 @@ fn main() {
         if flags.cli_headed {
             launch_cmd["headlessExplicit"] = json!(true);
         }
+        apply_browser_build_to_prestart_launch(&mut launch_cmd, flags.browser_build.as_deref());
 
         let cmd_obj = launch_cmd
             .as_object_mut()
@@ -2929,6 +3276,22 @@ fn run_dependent_batch(flags: &Flags, bail: bool, commands: &[Vec<String>]) {
     }
 }
 
+// Implicit read commands must reach the daemon's retained-session acquisition
+// before any launch request. DaemonOptions already carry configured defaults.
+// Explicit launch choices and managed-runtime attachment retain their old path.
+fn read_uses_daemon_acquisition(
+    cmd: &serde_json::Value,
+    explicit_launch: bool,
+    managed_attach: bool,
+) -> bool {
+    !explicit_launch
+        && !managed_attach
+        && matches!(
+            cmd.get("action").and_then(serde_json::Value::as_str),
+            Some("tab_list" | "browser_pid" | "cdp_url")
+        )
+}
+
 fn command_skips_browser_launch_for_prestart(cmd: &serde_json::Value) -> bool {
     crate::native::actions::action_skips_browser_launch(
         cmd.get("action").and_then(|v| v.as_str()).unwrap_or(""),
@@ -2963,8 +3326,54 @@ fn command_targets_existing_daemon_before_prestart(cmd: &serde_json::Value) -> b
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn implicit_reads_preserve_daemon_acquisition() {
+        for action in ["tab_list", "browser_pid", "cdp_url"] {
+            let cmd = serde_json::json!({"action": action});
+            assert!(super::read_uses_daemon_acquisition(&cmd, false, false));
+            assert!(!super::read_uses_daemon_acquisition(&cmd, true, false));
+            assert!(!super::read_uses_daemon_acquisition(&cmd, false, true));
+        }
+        for action in [
+            "launch", "navigate", "click", "fill", "evaluate", "batch", "tab_new",
+        ] {
+            assert!(!super::read_uses_daemon_acquisition(
+                &serde_json::json!({"action": action}),
+                false,
+                false
+            ));
+        }
+    }
     use super::*;
     use crate::test_utils::EnvGuard;
+
+    #[test]
+    fn daemon_runtime_worker_handles_dependent_batch_without_stack_overflow() {
+        let runtime = build_daemon_runtime().expect("daemon runtime should build");
+        let result = runtime.block_on(async {
+            tokio::spawn(async {
+                let mut state = crate::native::actions::DaemonState::new();
+                crate::native::actions::execute_command(
+                    &serde_json::json!({
+                        "id": "daemon-stack-regression",
+                        "action": "dependent_batch",
+                        "bail": true,
+                        "commands": [
+                            { "id": "step-1", "action": "__test_sleep", "ms": 1 }
+                        ]
+                    }),
+                    &mut state,
+                )
+                .await
+            })
+            .await
+            .expect("dependent batch worker should stay alive")
+        });
+
+        assert_eq!(result["success"], true);
+        assert_eq!(result["data"]["completed"], 1);
+        assert_eq!(result["data"]["hadError"], false);
+    }
 
     #[test]
     fn test_parse_proxy_simple() {
@@ -3116,8 +3525,21 @@ mod tests {
     }
 
     #[test]
+    fn test_prestart_launch_preserves_explicit_browser_build() {
+        let mut launch = json!({
+            "action": "launch",
+            "profile": "/tmp/profile"
+        });
+
+        apply_browser_build_to_prestart_launch(&mut launch, Some("stealthcdp_chromium"));
+
+        assert_eq!(launch["browserBuild"], "stealthcdp_chromium");
+    }
+
+    #[test]
     fn test_apply_remote_headed_launch_env_hints_carries_view_contract() {
         let guard = EnvGuard::new(&[
+            "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH",
             "AGENT_BROWSER_REMOTE_HEADED_DISPLAY",
             "AGENT_BROWSER_REMOTE_VIEW_URL",
             "AGENT_BROWSER_REMOTE_VIEW_FRAME_URL",
@@ -3128,6 +3550,10 @@ mod tests {
             "AGENT_BROWSER_REMOTE_VIEW_PROVIDER",
             "AGENT_BROWSER_REMOTE_CONTROL_INPUT_PROVIDER",
         ]);
+        guard.set(
+            "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH",
+            "/opt/agent-browser/chrome",
+        );
         guard.set("AGENT_BROWSER_REMOTE_HEADED_DISPLAY", ":10");
         guard.set("AGENT_BROWSER_REMOTE_VIEW_URL", "/guacamole/#/client/test");
         guard.set(
@@ -3148,12 +3574,16 @@ mod tests {
         );
         let mut cmd = json!({
             "action": "launch",
-            "browserHost": "remote_headed"
+            "browserHost": "remote_headed",
+            "executablePath": "/mnt/c/Chromium/chrome.exe",
+            "executablePathSource": "manifest"
         });
 
         apply_remote_headed_launch_env_hints(&mut cmd);
 
         assert_eq!(cmd["remoteHeadedDisplay"], ":10");
+        assert_eq!(cmd["executablePath"], "/opt/agent-browser/chrome");
+        assert_eq!(cmd["executablePathSource"], "remote_headed_env");
         assert_eq!(cmd["remoteViewUrl"], "/guacamole/#/client/test");
         assert_eq!(cmd["frameUrl"], "/guacamole/#/client/test-frame");
         assert_eq!(cmd["externalUrl"], "/guacamole/#/client/test-external");
@@ -3167,6 +3597,7 @@ mod tests {
     #[test]
     fn test_apply_remote_headed_launch_env_hints_preserves_explicit_values() {
         let guard = EnvGuard::new(&[
+            "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH",
             "AGENT_BROWSER_REMOTE_HEADED_DISPLAY",
             "AGENT_BROWSER_REMOTE_VIEW_URL",
             "AGENT_BROWSER_REMOTE_VIEW_FRAME_URL",
@@ -3177,6 +3608,10 @@ mod tests {
             "AGENT_BROWSER_REMOTE_VIEW_PROVIDER",
             "AGENT_BROWSER_REMOTE_CONTROL_INPUT_PROVIDER",
         ]);
+        guard.set(
+            "AGENT_BROWSER_REMOTE_HEADED_EXECUTABLE_PATH",
+            "/opt/agent-browser/env-chrome",
+        );
         guard.set("AGENT_BROWSER_REMOTE_HEADED_DISPLAY", ":10");
         guard.set("AGENT_BROWSER_REMOTE_VIEW_URL", "/guacamole/#/client/env");
         guard.set("AGENT_BROWSER_REMOTE_VIEW_PROVIDER", "rdp_gateway");
@@ -3187,6 +3622,8 @@ mod tests {
         let mut cmd = json!({
             "action": "launch",
             "browserHost": "remote_headed",
+            "executablePath": "/opt/agent-browser/explicit-chrome",
+            "executablePathSource": "config",
             "remoteHeadedDisplay": ":95",
             "remoteViewUrl": "/guacamole/#/client/explicit",
             "viewStreamProvider": "external_url",
@@ -3196,6 +3633,8 @@ mod tests {
         apply_remote_headed_launch_env_hints(&mut cmd);
 
         assert_eq!(cmd["remoteHeadedDisplay"], ":95");
+        assert_eq!(cmd["executablePath"], "/opt/agent-browser/explicit-chrome");
+        assert_eq!(cmd["executablePathSource"], "config");
         assert_eq!(cmd["remoteViewUrl"], "/guacamole/#/client/explicit");
         assert_eq!(cmd["viewStreamProvider"], "external_url");
         assert_eq!(cmd["controlInputProvider"], "cdp_input");
@@ -3219,11 +3658,15 @@ mod tests {
         };
 
         assert_eq!(
-            daemon_profile_for_launch(Some("/tmp/profile"), None),
+            daemon_profile_for_launch(Some("/tmp/profile"), None, false),
             Some("/tmp/profile")
         );
         assert_eq!(
-            daemon_profile_for_launch(Some("/tmp/profile"), Some(&status)),
+            daemon_profile_for_launch(Some("/tmp/profile"), Some(&status), false),
+            None
+        );
+        assert_eq!(
+            daemon_profile_for_launch(Some("/tmp/profile"), None, true),
             None
         );
     }

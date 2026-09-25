@@ -13,7 +13,12 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::connection::resolve_port;
 use crate::connection::{attach_daemon_auth_token, daemon_ready, get_socket_dir};
 use crate::flags::{launch_config_status, parse_flags};
-use crate::native::remote_view_handoff::apply_remote_view_handoff_route_hints;
+use crate::native::publication_status::{
+    local_dashboard_publication_status, LOCAL_DASHBOARD_PUBLICATION_HTTP_ROUTE,
+};
+use crate::native::remote_view_handoff::{
+    apply_remote_view_handoff_route_hints, durable_handoff_owner_prepare_command,
+};
 use crate::native::service_access::{
     apply_shared_profile_route_hints_for_service_request, parse_service_access_plan_query,
     service_access_plan_for_state,
@@ -22,7 +27,9 @@ use crate::native::service_config::refresh_persisted_profile_seeding_handoffs;
 use crate::native::service_contracts::{
     service_contracts_metadata, SERVICE_BROWSER_CAPABILITY_PREFLIGHT_HTTP_ROUTE,
     SERVICE_BROWSER_CAPABILITY_REGISTRY_HTTP_ROUTE, SERVICE_REMOTE_VIEW_ROUTE_PREFLIGHT_HTTP_ROUTE,
-    SERVICE_REQUEST_ACTIONS, SERVICE_REQUEST_HTTP_ROUTE,
+    SERVICE_REQUEST_ACTIONS, SERVICE_REQUEST_HTTP_ROUTE, SERVICE_TASK_AUTHORITIES_HTTP_ROUTE,
+    SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_HTTP_ROUTE,
+    SERVICE_TASK_AUTHORITY_CONFIRMATION_HTTP_ROUTE, SERVICE_TASK_AUTHORITY_ISSUE_HTTP_ROUTE,
 };
 use crate::native::service_lifecycle::{
     discover_service_profiles, ProfileDiscoveryRequest, ProfileSelectionRequest,
@@ -208,6 +215,7 @@ pub(super) async fn handle_http_request(
                 || path == APP_INTELLIGENCE_OPERATOR_CONFIRM_HTTP_ROUTE
                 || path == "/api/sessions"
                 || path == "/api/command"
+                || path.starts_with(SERVICE_TASK_AUTHORITIES_HTTP_ROUTE)
                 || path.starts_with("/api/browser/"))
         {
             let body = r#"{"error":"Request body too large"}"#;
@@ -349,6 +357,77 @@ pub(super) async fn handle_http_request(
                     return;
                 }
             };
+            if cmd.get("action").and_then(Value::as_str)
+                == Some("service_remote_view_handoff_resolve")
+            {
+                if let Err(response) = dashboard_auth::require_superuser(&headers, secure_cookie) {
+                    let _ = stream.write_all(&response.into_http_bytes()).await;
+                    return;
+                }
+                let handoff_id = cmd
+                    .get("handoffId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if let Err(err) =
+                    reject_conflicting_handoff_route_selectors(body_str, &service_state, handoff_id)
+                {
+                    write_durable_handoff_recovery_failure(
+                        &mut stream,
+                        DurableHandoffRecoveryFailure::before_dispatch(
+                            "caller_route_conflict",
+                            err,
+                            "409 Conflict",
+                        ),
+                    )
+                    .await;
+                    return;
+                }
+                let allow_reopen = cmd
+                    .get("allowReopenClosed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !allow_reopen {
+                    let prepare = match durable_handoff_owner_prepare_command(
+                        &service_state,
+                        handoff_id,
+                        &cmd,
+                    ) {
+                        Ok(command) => command,
+                        Err(err) => {
+                            write_durable_handoff_recovery_failure(
+                                &mut stream,
+                                DurableHandoffRecoveryFailure::before_dispatch(
+                                    "owner_identity_invalid",
+                                    err,
+                                    "409 Conflict",
+                                ),
+                            )
+                            .await;
+                            return;
+                        }
+                    };
+                    let relay_session_name = prepare
+                        .get("sessionName")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let preparation =
+                        prepare_durable_handoff_owner(&relay_session_name, prepare).await;
+                    match resolve_durable_handoff_after_preparation(preparation, || {
+                        relay_service_command(&relay_session_name, cmd)
+                    })
+                    .await
+                    {
+                        Ok(response) => {
+                            write_json_result(&mut stream, Ok(response), "502 Bad Gateway").await
+                        }
+                        Err(failure) => {
+                            write_durable_handoff_recovery_failure(&mut stream, failure).await
+                        }
+                    }
+                    return;
+                }
+            }
             let relay_session_name = service_request_relay_session(session_name, body_str, &cmd);
             if service_request_requires_relay_session_recovery(
                 session_name,
@@ -360,6 +439,125 @@ pub(super) async fn handle_http_request(
                     return;
                 }
             }
+            let result = relay_service_command(&relay_session_name, cmd).await;
+            write_json_result(&mut stream, result, "502 Bad Gateway").await;
+            return;
+        }
+
+        if path == SERVICE_TASK_AUTHORITY_ISSUE_HTTP_ROUTE {
+            let identity = match dashboard_auth::require_superuser(&headers, secure_cookie) {
+                Ok(identity) => identity,
+                Err(response) => {
+                    let _ = stream.write_all(&response.into_http_bytes()).await;
+                    return;
+                }
+            };
+            let (relay_session_name, cmd) =
+                match task_authority_issue_command(session_name, body_str, &identity.username) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        write_json_result(&mut stream, Err(err), "400 Bad Request").await;
+                        return;
+                    }
+                };
+            let result = relay_service_command(&relay_session_name, cmd).await;
+            write_json_result(&mut stream, result, "502 Bad Gateway").await;
+            return;
+        }
+
+        if path == SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_HTTP_ROUTE {
+            let identity = match dashboard_auth::require_superuser(&headers, secure_cookie) {
+                Ok(identity) => identity,
+                Err(response) => {
+                    let _ = stream.write_all(&response.into_http_bytes()).await;
+                    return;
+                }
+            };
+            let (relay_session_name, cmd) = match task_authority_confirmation_cleanup_command(
+                session_name,
+                body_str,
+                &identity.username,
+            ) {
+                Ok(value) => value,
+                Err(err) => {
+                    write_json_result(&mut stream, Err(err), "400 Bad Request").await;
+                    return;
+                }
+            };
+            let result = relay_service_command(&relay_session_name, cmd).await;
+            write_json_result(&mut stream, result, "502 Bad Gateway").await;
+            return;
+        }
+
+        if path == SERVICE_TASK_AUTHORITY_CONFIRMATION_HTTP_ROUTE {
+            let identity = match dashboard_auth::require_superuser(&headers, secure_cookie) {
+                Ok(identity) => identity,
+                Err(response) => {
+                    let _ = stream.write_all(&response.into_http_bytes()).await;
+                    return;
+                }
+            };
+            let (relay_session_name, cmd) = match task_authority_confirmation_command(
+                session_name,
+                body_str,
+                &identity.username,
+            ) {
+                Ok(value) => value,
+                Err(err) => {
+                    write_json_result(&mut stream, Err(err), "400 Bad Request").await;
+                    return;
+                }
+            };
+            let result = relay_service_command(&relay_session_name, cmd).await;
+            write_json_result(&mut stream, result, "502 Bad Gateway").await;
+            return;
+        }
+
+        if let Some(authority_id) = task_authority_reconcile_id(path) {
+            let identity = match dashboard_auth::require_superuser(&headers, secure_cookie) {
+                Ok(identity) => identity,
+                Err(response) => {
+                    let _ = stream.write_all(&response.into_http_bytes()).await;
+                    return;
+                }
+            };
+            let (relay_session_name, cmd) = match task_authority_reconcile_command(
+                session_name,
+                authority_id,
+                body_str,
+                &identity.username,
+            ) {
+                Ok(value) => value,
+                Err(err) => {
+                    write_json_result(&mut stream, Err(err), "400 Bad Request").await;
+                    return;
+                }
+            };
+            let result = relay_service_command(&relay_session_name, cmd).await;
+            write_json_result(&mut stream, result, "502 Bad Gateway").await;
+            return;
+        }
+
+        if let Some(authority_id) = task_authority_revoke_id(path) {
+            let identity = match dashboard_auth::require_superuser(&headers, secure_cookie) {
+                Ok(identity) => identity,
+                Err(response) => {
+                    let _ = stream.write_all(&response.into_http_bytes()).await;
+                    return;
+                }
+            };
+            let (relay_session_name, cmd) = match task_authority_revoke_command(
+                session_name,
+                authority_id,
+                body_str,
+                &identity.username,
+            ) {
+                Ok(value) => value,
+                Err(err) => {
+                    write_json_result(&mut stream, Err(err), "400 Bad Request").await;
+                    return;
+                }
+            };
             let result = relay_service_command(&relay_session_name, cmd).await;
             write_json_result(&mut stream, result, "502 Bad Gateway").await;
             return;
@@ -643,8 +841,38 @@ pub(super) async fn handle_http_request(
         return;
     }
 
+    if method == "GET" && path == LOCAL_DASHBOARD_PUBLICATION_HTTP_ROUTE {
+        match local_dashboard_publication_status() {
+            Ok(data) => {
+                write_json_value(
+                    &mut stream,
+                    "200 OK",
+                    json!({
+                        "success": true,
+                        "data": data,
+                    }),
+                )
+                .await;
+            }
+            Err(error) => {
+                write_json_result(&mut stream, Err(error), "500 Internal Server Error").await;
+            }
+        }
+        return;
+    }
+
     if method == "GET" && path == "/api/service/status" {
         let result = relay_service_command(session_name, service_status_command(query)).await;
+        write_json_result(&mut stream, result, "502 Bad Gateway").await;
+        return;
+    }
+
+    if method == "GET"
+        && (path == SERVICE_TASK_AUTHORITIES_HTTP_ROUTE || task_authority_status_id(path).is_some())
+    {
+        let relay_session_name = task_authority_query_session(session_name, query);
+        let cmd = task_authority_status_command(task_authority_status_id(path));
+        let result = relay_service_command(&relay_session_name, cmd).await;
         write_json_result(&mut stream, result, "502 Bad Gateway").await;
         return;
     }
@@ -1614,6 +1842,268 @@ fn browser_body_command(action: &str, id_prefix: &str, body: &str) -> Result<Val
     Ok(command)
 }
 
+fn task_authority_body(body: &str, label: &str) -> Result<Map<String, Value>, String> {
+    let value = serde_json::from_str::<Value>(body)
+        .map_err(|err| format!("Invalid {label} JSON: {err}"))?;
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| format!("{label} body must be a JSON object"))
+}
+
+fn task_authority_body_session(
+    default_session: &str,
+    body: &Map<String, Value>,
+) -> Result<String, String> {
+    match body.get("sessionName") {
+        Some(Value::String(value)) => normalize_service_request_session_name(value)
+            .ok_or("task authority sessionName is invalid".to_string()),
+        Some(_) => Err("task authority sessionName must be a string".to_string()),
+        None => Ok(default_session.to_string()),
+    }
+}
+
+fn task_authority_issue_command(
+    default_session: &str,
+    body: &str,
+    authenticated_username: &str,
+) -> Result<(String, Value), String> {
+    let mut request = task_authority_body(body, "task authority issue")?;
+    let relay_session = task_authority_body_session(default_session, &request)?;
+    request.remove("sessionName");
+    bind_task_authority_http_actor(&mut request, "issuer", authenticated_username)?;
+    let task_name = request
+        .get("taskName")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("task authority issue requires taskName")?;
+    let mut command = json!({
+        "id": format!("http-task-authority-issue-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_issue",
+        "taskName": task_name,
+        "request": request,
+    });
+    for field in ["serviceName", "agentName"] {
+        if let Some(value) = command["request"].get(field) {
+            command[field] = value.clone();
+        }
+    }
+    Ok((relay_session, command))
+}
+
+/// Bind an operator decision to one exact session, confirmation ID, and
+/// task-authority action before relaying it to the daemon.
+fn task_authority_confirmation_command(
+    default_session: &str,
+    body: &str,
+    authenticated_username: &str,
+) -> Result<(String, Value), String> {
+    let mut request = task_authority_body(body, "task authority confirmation")?;
+    let relay_session = task_authority_body_session(default_session, &request)?;
+    bind_task_authority_http_actor(&mut request, "decidedBy", authenticated_username)?;
+    let confirmation_id = request
+        .get("confirmationId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("task authority confirmation requires confirmationId")?;
+    let decision = request
+        .get("decision")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "confirm" | "deny"))
+        .ok_or("task authority confirmation decision must be confirm or deny")?;
+    let expected_action = request
+        .get("expectedAction")
+        .and_then(Value::as_str)
+        .filter(|value| {
+            matches!(
+                *value,
+                "task_authority_issue" | "task_authority_reconcile" | "task_authority_revoke"
+            )
+        })
+        .ok_or("task authority confirmation requires a task authority expectedAction")?;
+    let decided_by = request
+        .get("decidedBy")
+        .and_then(Value::as_object)
+        .filter(|actor| {
+            actor
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| matches!(kind, "operator" | "service"))
+                && actor
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.trim().is_empty())
+        })
+        .ok_or("task authority confirmation requires a valid decidedBy actor")?;
+    Ok((
+        relay_session,
+        json!({
+            "id": format!("http-task-authority-{decision}-{}", uuid::Uuid::new_v4()),
+            "action": decision,
+            "confirmationId": confirmation_id,
+            "expectedAction": expected_action,
+            "decidedBy": decided_by,
+        }),
+    ))
+}
+
+fn bind_task_authority_http_actor(
+    request: &mut Map<String, Value>,
+    field: &str,
+    authenticated_username: &str,
+) -> Result<(), String> {
+    let actor = json!({"kind": "operator", "id": authenticated_username});
+    if let Some(claimed) = request.get(field) {
+        if claimed != &actor {
+            return Err(format!(
+                "task authority {field} must match the authenticated dashboard principal"
+            ));
+        }
+    }
+    request.insert(field.to_string(), actor);
+    Ok(())
+}
+
+fn task_authority_confirmation_cleanup_command(
+    default_session: &str,
+    body: &str,
+    authenticated_username: &str,
+) -> Result<(String, Value), String> {
+    let request = task_authority_body(body, "task authority confirmation cleanup")?;
+    let relay_session = task_authority_body_session(default_session, &request)?;
+    let mut command = json!({
+        "id": format!("http-task-authority-confirmation-cleanup-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_confirmation_cleanup",
+        "requestedBy": {"kind": "operator", "id": authenticated_username},
+    });
+    for field in ["retainCount", "minAgeSeconds", "apply", "reviewSha256"] {
+        if let Some(value) = request.get(field) {
+            command[field] = value.clone();
+        }
+    }
+    if command.get("apply").and_then(Value::as_bool) == Some(true)
+        && command
+            .get("reviewSha256")
+            .and_then(Value::as_str)
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .is_none()
+    {
+        return Err("task authority confirmation cleanup apply requires reviewSha256".to_string());
+    }
+    Ok((relay_session, command))
+}
+
+fn task_authority_revoke_id(path: &str) -> Option<&str> {
+    let suffix = path.strip_prefix("/api/service/task-authorities/")?;
+    let authority_id = suffix.strip_suffix("/revoke")?;
+    (!authority_id.is_empty() && !authority_id.contains('/')).then_some(authority_id)
+}
+
+fn task_authority_reconcile_id(path: &str) -> Option<&str> {
+    let suffix = path.strip_prefix("/api/service/task-authorities/")?;
+    let authority_id = suffix.strip_suffix("/reconcile")?;
+    (!authority_id.is_empty() && !authority_id.contains('/')).then_some(authority_id)
+}
+
+fn task_authority_status_id(path: &str) -> Option<&str> {
+    let authority_id = path.strip_prefix("/api/service/task-authorities/")?;
+    (!authority_id.is_empty() && !authority_id.contains('/')).then_some(authority_id)
+}
+
+fn task_authority_revoke_command(
+    default_session: &str,
+    authority_id: &str,
+    body: &str,
+    authenticated_username: &str,
+) -> Result<(String, Value), String> {
+    let mut request = task_authority_body(body, "task authority revoke")?;
+    let relay_session = task_authority_body_session(default_session, &request)?;
+    if let Some(claimed) = request.get("revokedBy") {
+        if claimed.as_str() != Some(authenticated_username) {
+            return Err(
+                "task authority revokedBy must match the authenticated dashboard principal"
+                    .to_string(),
+            );
+        }
+    }
+    request.insert("revokedBy".to_string(), json!(authenticated_username));
+    let revoked_by = request
+        .get("revokedBy")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("task authority revoke requires revokedBy")?;
+    let reason = request
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("task authority revoke requires reason")?;
+    Ok((
+        relay_session,
+        json!({
+            "id": format!("http-task-authority-revoke-{}", uuid::Uuid::new_v4()),
+            "action": "task_authority_revoke",
+            "authorityId": authority_id,
+            "revokedBy": revoked_by,
+            "reason": reason,
+        }),
+    ))
+}
+
+fn task_authority_reconcile_command(
+    default_session: &str,
+    authority_id: &str,
+    body: &str,
+    authenticated_username: &str,
+) -> Result<(String, Value), String> {
+    let mut request = task_authority_body(body, "task authority reconcile")?;
+    let relay_session = task_authority_body_session(default_session, &request)?;
+    request.remove("sessionName");
+    bind_task_authority_http_actor(&mut request, "issuer", authenticated_username)?;
+    let task_name = request
+        .get("taskName")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("task authority reconcile requires taskName")?;
+    let mut command = json!({
+        "id": format!("http-task-authority-reconcile-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_reconcile",
+        "authorityId": authority_id,
+        "taskName": task_name,
+        "request": request,
+    });
+    for field in ["serviceName", "agentName"] {
+        if let Some(value) = command["request"].get(field) {
+            command[field] = value.clone();
+        }
+    }
+    Ok((relay_session, command))
+}
+
+fn task_authority_status_command(authority_id: Option<&str>) -> Value {
+    let mut command = json!({
+        "id": format!("http-task-authority-status-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_status",
+    });
+    if let Some(authority_id) = authority_id {
+        command["authorityId"] = json!(authority_id);
+    }
+    command
+}
+
+fn task_authority_query_session(default_session: &str, query: Option<&str>) -> String {
+    for (key, value) in query_params(query) {
+        if matches!(
+            key.as_str(),
+            "sessionName" | "session-name" | "session_name"
+        ) {
+            if let Some(session) = normalize_service_request_session_name(&value) {
+                return session;
+            }
+        }
+    }
+    default_session.to_string()
+}
+
 fn service_request_command(body: &str) -> Result<Value, String> {
     service_request_command_with_state(body, None)
 }
@@ -1739,6 +2229,9 @@ fn service_request_command_with_state(
         "serviceName",
         "agentName",
         "taskName",
+        "taskAuthority",
+        "taskStepId",
+        "taskEvidenceBytes",
         "targetServiceId",
         "targetService",
         "targetServiceIds",
@@ -1757,6 +2250,7 @@ fn service_request_command_with_state(
         "profileClass",
         "cdpUrl",
         "cdpPort",
+        "browserPid",
         "browserId",
         "sessionName",
         "targetId",
@@ -1871,6 +2365,54 @@ fn service_request_requires_relay_session_recovery(
     relay_session != default_session
         && command.get("action").and_then(Value::as_str)
             == Some("service_remote_view_handoff_resolve")
+}
+
+fn reject_conflicting_handoff_route_selectors(
+    body: &str,
+    state: &ServiceState,
+    handoff_id: &str,
+) -> Result<(), String> {
+    let request: Value = serde_json::from_str(body)
+        .map_err(|error| format!("invalid service request JSON: {error}"))?;
+    let handoff = state
+        .remote_view_handoffs
+        .get(handoff_id)
+        .ok_or_else(|| "durable_handoff_not_found".to_string())?;
+    let expected_session = handoff
+        .session_name
+        .as_deref()
+        .ok_or_else(|| "durable_handoff_session_missing".to_string())?;
+    let expected_browser = handoff
+        .browser_id
+        .as_deref()
+        .ok_or_else(|| "durable_handoff_browser_missing".to_string())?;
+    for value in [
+        request.pointer("/params/sessionName"),
+        request.pointer("/sessionName"),
+        request.pointer("/params/daemonSession"),
+        request.pointer("/daemonSession"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    {
+        if value != expected_session {
+            return Err("durable_handoff_route_selector_conflict".to_string());
+        }
+    }
+    for value in [
+        request.pointer("/params/browserId"),
+        request.pointer("/browserId"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_str)
+    {
+        if value != expected_browser {
+            return Err("durable_handoff_route_selector_conflict".to_string());
+        }
+    }
+    Ok(())
 }
 
 pub(super) async fn ensure_service_daemon_session(session_name: &str) -> Result<(), String> {
@@ -4201,6 +4743,106 @@ async fn relay_service_command(session_name: &str, cmd: Value) -> Result<String,
     relay_command_to_daemon(session_name, &body).await
 }
 
+async fn relay_service_command_checked(session_name: &str, cmd: Value) -> Result<Value, String> {
+    let response = relay_service_command(session_name, cmd).await?;
+    let value: Value = serde_json::from_str(&response)
+        .map_err(|error| format!("Invalid daemon preparation response: {error}"))?;
+    if value.get("success").and_then(Value::as_bool) != Some(true) {
+        return Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("Daemon refused retained owner preparation")
+            .to_string());
+    }
+    Ok(value)
+}
+
+#[derive(Debug)]
+struct DurableHandoffRecoveryFailure {
+    cause: &'static str,
+    error: String,
+    status: &'static str,
+    request_dispatched: bool,
+}
+
+impl DurableHandoffRecoveryFailure {
+    fn before_dispatch(cause: &'static str, error: String, status: &'static str) -> Self {
+        Self {
+            cause,
+            error,
+            status,
+            request_dispatched: false,
+        }
+    }
+}
+
+fn durable_handoff_recovery_failure_response(failure: &DurableHandoffRecoveryFailure) -> Value {
+    json!({
+        "success": false,
+        "error": format!("durable_handoff_owner_prepare_failed: {}", failure.error),
+        "cause": failure.cause,
+        "recourse": "Restore the exact retained browser owner evidence, then retry from this durable handoff URL.",
+        "requestDispatched": failure.request_dispatched,
+    })
+}
+
+async fn write_durable_handoff_recovery_failure(
+    stream: &mut tokio::net::TcpStream,
+    failure: DurableHandoffRecoveryFailure,
+) {
+    let status = failure.status;
+    write_json_value(
+        stream,
+        status,
+        durable_handoff_recovery_failure_response(&failure),
+    )
+    .await;
+}
+
+async fn prepare_durable_handoff_owner(
+    session_name: &str,
+    prepare: Value,
+) -> Result<(), DurableHandoffRecoveryFailure> {
+    ensure_service_daemon_session(session_name)
+        .await
+        .map_err(|error| {
+            DurableHandoffRecoveryFailure::before_dispatch(
+                "owner_daemon_unavailable",
+                error,
+                "502 Bad Gateway",
+            )
+        })?;
+    relay_service_command_checked(session_name, prepare)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            DurableHandoffRecoveryFailure::before_dispatch(
+                "owner_preparation_failed",
+                error,
+                "409 Conflict",
+            )
+        })
+}
+
+async fn resolve_durable_handoff_after_preparation<F, Fut>(
+    preparation: Result<(), DurableHandoffRecoveryFailure>,
+    resolver: F,
+) -> Result<String, DurableHandoffRecoveryFailure>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    preparation?;
+    resolver()
+        .await
+        .map_err(|error| DurableHandoffRecoveryFailure {
+            cause: "handoff_resolution_failed",
+            error,
+            status: "502 Bad Gateway",
+            request_dispatched: true,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5226,6 +5868,96 @@ mod tests {
     }
 
     #[test]
+    fn task_authority_http_commands_preserve_exact_session_and_caller() {
+        let (session, issue) = task_authority_issue_command(
+            "dashboard",
+            r#"{"sessionName":"retained-lane","taskName":"inspect","serviceName":"concierge","agentName":"codex","expectedTargetId":"target-1","expectedUrl":"https://example.com/","issuer":{"kind":"operator","id":"user"},"approvalReference":"plan-106","expiresInSeconds":300,"steps":[{"action":"title"}]}"#,
+            "user",
+        )
+        .unwrap();
+        assert_eq!(session, "retained-lane");
+        assert_eq!(issue["action"], "task_authority_issue");
+        assert_eq!(issue["taskName"], "inspect");
+        assert_eq!(issue["serviceName"], "concierge");
+        assert_eq!(issue["request"]["sessionName"], Value::Null);
+
+        let (session, reconcile) = task_authority_reconcile_command(
+            "dashboard",
+            "authority-1",
+            r#"{"sessionName":"retained-lane","reconciliationId":"reconcile-1","unresolvedStepId":"authority-1:step-0","taskName":"inspect","serviceName":"concierge","agentName":"codex","expectedTargetId":"target-1","expectedUrl":"https://example.com/","issuer":{"kind":"operator","id":"user"},"approvalReference":"plan-109","expiresInSeconds":300,"steps":[{"action":"title"}]}"#,
+            "user",
+        )
+        .unwrap();
+        assert_eq!(session, "retained-lane");
+        assert_eq!(reconcile["action"], "task_authority_reconcile");
+        assert_eq!(reconcile["authorityId"], "authority-1");
+        assert_eq!(reconcile["serviceName"], "concierge");
+        assert_eq!(reconcile["request"]["sessionName"], Value::Null);
+
+        let (session, confirmation) = task_authority_confirmation_command(
+            "dashboard",
+            r#"{"sessionName":"retained-lane","confirmationId":"reconcile-approval-1","expectedAction":"task_authority_reconcile","decision":"confirm","decidedBy":{"kind":"operator","id":"user"}}"#,
+            "user",
+        )
+        .unwrap();
+        assert_eq!(session, "retained-lane");
+        assert_eq!(confirmation["action"], "confirm");
+        assert_eq!(confirmation["confirmationId"], "reconcile-approval-1");
+        assert_eq!(confirmation["expectedAction"], "task_authority_reconcile");
+        assert_eq!(confirmation["decidedBy"]["id"], "user");
+        assert!(task_authority_confirmation_command(
+            "dashboard",
+            r#"{"confirmationId":"reconcile-approval-1","expectedAction":"task_authority_reconcile","decision":"approve","decidedBy":{"kind":"operator","id":"user"}}"#,
+            "user",
+        )
+        .unwrap_err()
+        .contains("confirm or deny"));
+
+        let (session, revoke) = task_authority_revoke_command(
+            "dashboard",
+            "authority-1",
+            r#"{"sessionName":"retained-lane","revokedBy":"user","reason":"done"}"#,
+            "user",
+        )
+        .unwrap();
+        assert_eq!(session, "retained-lane");
+        assert_eq!(revoke["action"], "task_authority_revoke");
+        assert_eq!(revoke["authorityId"], "authority-1");
+
+        assert!(task_authority_issue_command(
+            "dashboard",
+            r#"{"taskName":"inspect","expectedTargetId":"target-1","expectedUrl":"https://example.com/","issuer":{"kind":"operator","id":"forged"},"approvalReference":"plan-112","expiresInSeconds":300,"steps":[{"action":"title"}]}"#,
+            "user",
+        )
+        .unwrap_err()
+        .contains("authenticated dashboard principal"));
+    }
+
+    #[test]
+    fn task_authority_http_status_is_no_launch_and_paths_fail_closed() {
+        assert_eq!(
+            task_authority_status_id("/api/service/task-authorities/authority-1"),
+            Some("authority-1")
+        );
+        assert_eq!(
+            task_authority_revoke_id("/api/service/task-authorities/authority-1/revoke"),
+            Some("authority-1")
+        );
+        assert_eq!(
+            task_authority_reconcile_id("/api/service/task-authorities/authority-1/reconcile"),
+            Some("authority-1")
+        );
+        assert_eq!(
+            task_authority_status_id("/api/service/task-authorities/a/b"),
+            None
+        );
+        assert_eq!(
+            task_authority_status_command(None)["action"],
+            "task_authority_status"
+        );
+    }
+
+    #[test]
     fn browser_api_command_maps_named_get_routes() {
         let url = browser_api_command(
             "GET",
@@ -5264,7 +5996,7 @@ mod tests {
     #[test]
     fn service_request_command_maps_request_object() {
         let command = service_request_command(
-            r##"{"action":"navigate","params":{"url":"https://example.com","action":"ignored","id":"ignored"},"serviceName":"JournalDownloader","agentName":"codex","taskName":"probeACSwebsite","siteId":"acs","loginIds":["orcid"],"browserBuild":"stealthcdp_chromium","displayIsolation":"private_virtual_display","runtimeProfile":"acs-profile","profile":"/tmp/acs-profile","profileClass":"durable_named","browserId":"session:acs-browser","sessionName":"acs-browser","allowDuplicateProfileLane":true,"args":["--no-sandbox"],"jobTimeoutMs":1000,"profileLeasePolicy":"wait","profileLeaseWaitTimeoutMs":2500}"##,
+            r##"{"action":"navigate","params":{"url":"https://example.com","action":"ignored","id":"ignored"},"serviceName":"JournalDownloader","agentName":"codex","taskName":"probeACSwebsite","taskAuthority":{"id":"authority-1","taskName":"probeACSwebsite","allowedOrigins":["https://example.com"],"targetBinding":{"targetId":"target-1","initialUrl":"https://example.com/"},"evidenceBudget":{"maxActions":4,"maxEvidenceBytes":16384},"consequenceCeiling":"read_only","expiresAt":"2099-01-01T00:00:00Z"},"taskStepId":"authority-1:step-0","taskEvidenceBytes":4096,"siteId":"acs","loginIds":["orcid"],"browserBuild":"stealthcdp_chromium","displayIsolation":"private_virtual_display","runtimeProfile":"acs-profile","profile":"/tmp/acs-profile","profileClass":"durable_named","browserId":"session:acs-browser","sessionName":"acs-browser","allowDuplicateProfileLane":true,"args":["--no-sandbox"],"jobTimeoutMs":1000,"profileLeasePolicy":"wait","profileLeaseWaitTimeoutMs":2500}"##,
         )
         .unwrap();
 
@@ -5276,6 +6008,13 @@ mod tests {
         assert_eq!(command["serviceName"], "JournalDownloader");
         assert_eq!(command["agentName"], "codex");
         assert_eq!(command["taskName"], "probeACSwebsite");
+        assert_eq!(command["taskAuthority"]["id"], "authority-1");
+        assert_eq!(
+            command["taskAuthority"]["targetBinding"]["targetId"],
+            "target-1"
+        );
+        assert_eq!(command["taskEvidenceBytes"], 4096);
+        assert_eq!(command["taskStepId"], "authority-1:step-0");
         assert_eq!(command["siteId"], "acs");
         assert_eq!(command["loginIds"][0], "orcid");
         assert_eq!(command["browserBuild"], "stealthcdp_chromium");
@@ -5290,6 +6029,17 @@ mod tests {
         assert_eq!(command["jobTimeoutMs"], 1000);
         assert_eq!(command["profileLeasePolicy"], "wait");
         assert_eq!(command["profileLeaseWaitTimeoutMs"], 2500);
+    }
+
+    #[test]
+    fn service_request_command_preserves_retained_byop_reverification_flag() {
+        let command = service_request_command(
+            r#"{"action":"service_browser_repair","params":{"browserId":"session:exact-byop","reverifyRetainedByop":true},"serviceName":"AuraCall","agentName":"codex","taskName":"repairRetainedBrowser"}"#,
+        )
+        .unwrap();
+        assert_eq!(command["action"], "service_browser_repair");
+        assert_eq!(command["browserId"], "session:exact-byop");
+        assert_eq!(command["reverifyRetainedByop"], true);
     }
 
     #[test]
@@ -5358,6 +6108,82 @@ mod tests {
     }
 
     #[test]
+    fn service_request_handoff_resolution_rejects_conflicting_caller_route() {
+        let state = ServiceState {
+            remote_view_handoffs: std::collections::BTreeMap::from([(
+                "job-handoff-a".to_string(),
+                crate::native::service_model::RemoteViewHandoff {
+                    id: "job-handoff-a".to_string(),
+                    browser_id: Some("session:original-lane".to_string()),
+                    session_name: Some("original-lane".to_string()),
+                    ..crate::native::service_model::RemoteViewHandoff::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+
+        assert_eq!(
+            reject_conflicting_handoff_route_selectors(
+                r#"{"action":"service_remote_view_handoff_resolve","sessionName":"other-lane"}"#,
+                &state,
+                "job-handoff-a",
+            )
+            .unwrap_err(),
+            "durable_handoff_route_selector_conflict"
+        );
+        reject_conflicting_handoff_route_selectors(
+            r#"{"action":"service_remote_view_handoff_resolve","browserId":"session:original-lane"}"#,
+            &state,
+            "job-handoff-a",
+        )
+        .expect("matching caller hint should remain accepted");
+    }
+
+    #[tokio::test]
+    async fn durable_handoff_preparation_failure_never_dispatches_resolver() {
+        let resolver_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_calls = resolver_calls.clone();
+        let failure = DurableHandoffRecoveryFailure::before_dispatch(
+            "owner_preparation_failed",
+            "fixture preparation refusal".to_string(),
+            "409 Conflict",
+        );
+
+        let result = resolve_durable_handoff_after_preparation(Err(failure), move || async move {
+            observed_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok("unexpected resolver response".to_string())
+        })
+        .await;
+
+        let failure = result.expect_err("preparation refusal must fail closed");
+        assert_eq!(failure.cause, "owner_preparation_failed");
+        assert!(!failure.request_dispatched);
+        assert_eq!(resolver_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let response = durable_handoff_recovery_failure_response(&failure);
+        assert_eq!(response["requestDispatched"], false);
+        assert_eq!(response["cause"], "owner_preparation_failed");
+        assert!(response["recourse"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn durable_handoff_successful_preparation_dispatches_resolver_once() {
+        let resolver_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_calls = resolver_calls.clone();
+
+        let response = resolve_durable_handoff_after_preparation(Ok(()), move || async move {
+            observed_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok("resolver response".to_string())
+        })
+        .await
+        .expect("successful preparation should dispatch the resolver");
+
+        assert_eq!(response, "resolver response");
+        assert_eq!(resolver_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn service_request_relay_session_routes_view_focus_to_requested_daemon_session() {
         let body = r##"{"action":"view_focus","params":{"sessionName":"odollo-carrier-ups","targetId":"target-1"},"serviceName":"agent-browser-dashboard"}"##;
         let command = service_request_command(body).unwrap();
@@ -5420,8 +6246,8 @@ mod tests {
         use std::collections::BTreeMap;
 
         use crate::native::service_model::{
-            BrowserHealth, BrowserHost, BrowserProcess, ControlInputProvider, ViewStream,
-            ViewStreamProvider,
+            BrowserBuild, BrowserHealth, BrowserHost, BrowserProcess, ControlInputProvider,
+            ViewStream, ViewStreamProvider,
         };
 
         let state = ServiceState {
@@ -5439,6 +6265,7 @@ mod tests {
                 BrowserProcess {
                     id: "browser-social".to_string(),
                     profile_id: Some("shared-social".to_string()),
+                    browser_build: Some(BrowserBuild::StockChrome),
                     host: BrowserHost::RemoteHeaded,
                     health: BrowserHealth::Ready,
                     display_isolation: Some("private_virtual_display".to_string()),
@@ -5453,7 +6280,7 @@ mod tests {
             )]),
             ..ServiceState::default()
         };
-        let body = r##"{"action":"tab_new","runtimeProfile":"shared-social","siteId":"x","browserHost":"remote_headed","viewStreamProvider":"rdp_gateway","controlInputProvider":"manual_attached_desktop","displayIsolation":"private_virtual_display"}"##;
+        let body = r##"{"action":"tab_new","runtimeProfile":"shared-social","siteId":"x","browserBuild":"stock_chrome","browserHost":"remote_headed","viewStreamProvider":"rdp_gateway","controlInputProvider":"manual_attached_desktop","displayIsolation":"private_virtual_display"}"##;
 
         let command = service_request_command_with_state(body, Some(&state)).unwrap();
 
@@ -5769,6 +6596,15 @@ mod tests {
             command["probe"]["recordFreshness"]["accountId"],
             "acct@example.test"
         );
+    }
+
+    #[test]
+    fn external_byop_adopt_preserves_top_level_browser_pid() {
+        let command = service_request_command(
+            r#"{"action":"external_byop_adopt","runtimeProfile":"external-work","cdpPort":9222,"browserPid":12345}"#,
+        )
+        .unwrap();
+        assert_eq!(command["browserPid"], 12345);
     }
 
     #[test]

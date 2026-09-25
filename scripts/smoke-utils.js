@@ -18,6 +18,10 @@ export function createSmokeContext({ prefix, session, sessionPrefix, socketDir: 
     ? customSocketDir({ agentHome, tempHome })
     : join(tempHome, socketSubdir);
 
+  // Privacy-gate storage rejects group- or world-writable ancestors. Create
+  // the synthetic agent home with the same private posture as production
+  // before service-state helpers can materialize it using the ambient umask.
+  mkdirSync(agentHome, { recursive: true, mode: 0o700 });
   mkdirSync(socketDir, { recursive: true });
 
   const env = {
@@ -1238,7 +1242,10 @@ export function sendRawCommand(context, command) {
 }
 
 export function createMcpStdioClient({ context, args, onFatal }) {
-  const child = spawn('cargo', cargoArgs(args), {
+  // Match runCli: explicit fixture binaries exercise the selected generation,
+  // rather than silently testing the checkout through Cargo after replacement.
+  const installedCommand = context.env.AGENT_BROWSER_SMOKE_AGENT_BROWSER_CMD;
+  const child = spawn(installedCommand || 'cargo', installedCommand ? args : cargoArgs(args), {
     cwd: rootDir,
     env: context.env,
     stdio: ['pipe', 'pipe', 'pipe'],

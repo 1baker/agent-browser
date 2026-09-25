@@ -1,14 +1,82 @@
 # Security
 
+Legacy publisher maintenance can consume a reviewed embedded-dashboard binary
+with <code>--prebuilt-bin</code>, <code>--expected-sha256</code> and an exact
+<code>--expected-sessions</code> list. It requires
+<code>--skip-reference-sync --skip-browser</code>; builds are skipped, but HTTP
+and manifest validation are not. Copied bytes are hashed before replacement.
+Generation-selector symlinks are refused. Session-name checks are bounded
+observations, not an admission fence against independent clients.
+
+Publication pauses the exact runtime-interlock timer and holds its configured
+filesystem lock without stopping a running oneshot. Timer restoration is verified.
+Legacy flock and exact native reconcile commands are supported. Native custody
+uses a crash-persistent non-PID marker with receipt-bound file identity. Unknown
+root overrides and foreign lock files are refused, never reclaimed by PID.
+Uncertain handoff outcomes keep the timer stopped and retain a private custody
+receipt beside the journal. Exact-ID recovery requires a dead prior publisher;
+incomplete handoff evidence remains blocked. Do not delete that receipt or rearm
+the timer as a workaround. This legacy mechanism is not a generation-based upgrade
+transaction and does not authorize credentials or renewal.
+For same-version workstation installs, the publisher verifies retained support
+assets and journals exact original and candidate installation-record snapshots.
+The executable and matching record are recovered together before service restart.
+Rollback restores the original record bytes. The transaction-scoped doctor checks
+the exact owning journal and lock, followed by a strict doctor after custody is
+released. Only a proven idle, browser-free dashboard backend may disappear during
+service stop; unrelated session or PID changes refuse handoff. A source rollback
+may report verified deleted-inode controllers as degraded, never ready. Unknown
+binary, record, asset changes or unrelated doctor issues refuse recovery.
+
+Metadata-preserving Linux handoff rechecks the retained browser's build proof
+inside the health transaction, before deriving attachability. The exact session,
+profile, PID and endpoint must agree before process verification can update proof.
+Failed process verification clears stale build and executable projections without
+changing profile, tab or display custody. This is not authentication readiness.
+
+Retained-browser verification treats the optional human-readable slug in a
+strict HTTPS ChatGPT project-conversation URL as non-authoritative. Project ID,
+conversation UUID, browser session, profile, and target must still agree.
+Credentials, ports, query strings, fragments, or other URL variants are not
+normalized. Other URLs use exact equality. Private requirement digests and
+authority-rotation safeguards are unchanged.
+
 agent-browser includes security features to protect against credential exposure, prompt injection via untrusted page content, and unauthorized browser actions.
 
-All security features are opt-in. By default, agent-browser imposes no restrictions on navigation, actions, or output. Enable these features as needed for your deployment -- existing workflows are unaffected until you explicitly activate a feature.
+The Linux-only <code>private-controller setup /absolute/private/root</code> and
+<code>private-controller serve /absolute/private/root</code> commands create a
+separate owner-only authentication key and Unix socket service. The authenticated
+protocol accepts only probes and immutable approved-plan bindings; it cannot
+accept credentials, run browser actions or enable renewal. Fresh challenges bind
+both request and response authentication. LitScout commits one-shot approval
+before connecting, so lost replies never authorize retries. Existing sockets
+and unsafe key files fail closed; no automatic key rotation or stale-socket
+deletion occurs. The Python client defaults to
+<code>~/.agent-browser/private-controller</code>. Never print the key. Account
+owner and root access are outside this protection boundary.
+
+The Linux browser daemon has a separate opt-in
+<code>AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT</code> setting for
+<code>executor.sock</code>. Unset means disabled. Its existing private root/key
+and immutable <code>execution.json</code> must be independently provisioned from
+an approved plan and reviewed four-stage recipe; requests cannot create authority.
+The trusted source coordinator authenticates fresh broker preflight before
+credential extraction, executes once, verifies cleanup and uses authenticated
+guarded LitScout installation. Existing sockets, expired approval, changed recipe
+or target, and ambiguous outcomes fail closed. No browser launch/replacement,
+credential retry, privacy release or recurring scheduler is provided. Synthetic
+test recipes must never become production authority. This opt-in source path
+does not by itself establish installed or live renewal readiness.
+
+Navigation, action-policy and output-boundary controls below are opt-in. The
+Linux/macOS cooperative CDP privacy gate also validates its runtime filesystem
+and records pending command receipts automatically; unsafe paths fail closed.
 
 ## Threat Model
 
 These features are designed to mitigate the following threats when an LLM-based agent drives a browser:
 
-- **Credential exposure** -- Passwords stored in the auth vault are never included in LLM context. The CLI handles vault operations locally; credentials do not pass through the daemon's IPC channel.
+- **Credential exposure**: vault encryption protects stored credentials, but ordinary ingestion and browser capture paths are not an end-to-end private credential transaction. Do not treat password-stdin, fill or evaluate as trace-private secret transport.
 - **Prompt injection via page content** -- Malicious pages can embed text that looks like tool output or system instructions. Content boundary markers (`--content-boundaries`) let the orchestrator distinguish trusted tool output from untrusted page content.
 - **Unauthorized navigation / data exfiltration** -- A compromised or manipulated agent could navigate to attacker-controlled domains to exfiltrate data. The domain allowlist (`--allowed-domains`) blocks navigations, sub-resource requests, WebSocket connections, EventSource streams, and `sendBeacon` calls to non-allowed domains.
 - **Unauthorized destructive actions** -- Action policy (`--action-policy`) and confirmation gating (`--confirm-actions`) prevent the agent from performing dangerous operations (eval, downloads, uploads) without explicit approval.
@@ -19,12 +87,60 @@ These features are designed to mitigate the following threats when an LLM-based 
 - **WebSocket/EventSource blocking is best-effort.** It works by overriding browser constructors via an init script. If the `eval` action category is allowed, page scripts could theoretically restore the original constructors. Deny `eval` via `--action-policy` for maximum protection.
 - **Domain filter timing on remote connections.** When connecting to a pre-existing browser via CDP or a cloud provider, pages may have already loaded content before the domain filter is installed. agent-browser navigates disallowed pages to `about:blank` after the filter is active, but resources loaded before that point are not retroactively blocked.
 - **Content boundaries are defense-in-depth.** They rely on the LLM and orchestrator respecting the structural markers. A sufficiently capable adversarial page could attempt to mimic the boundary format, though the per-process CSPRNG nonce makes this impractical to predict.
-- **Confirmation timeout.** Pending confirmations auto-deny after 60 seconds. Orchestrators must respond within that window.
+- **Confirmation timeout.** Pending confirmations expire after 60 seconds. Orchestrators must respond within that window.
 - **Non-TTY auto-deny.** When `--confirm-interactive` is set but stdin is not a terminal (e.g., piped input), actions are automatically denied to prevent accidental approval in non-interactive contexts.
 
 ## Authentication Vault
 
-Store credentials locally and reference them by name. The LLM never sees passwords.
+### Private broker implementation checkpoint
+
+Cooperative Linux/macOS clients sharing one normalized CDP endpoint and runtime
+home share durable receipts under <code>private-gates</code>. Pending commands
+are recorded before dispatch; cancellation and process death leave receipts.
+Private admission excludes in-flight public leases. Once admitted, the lock
+survives permit drop and restart, suppresses raw/event observation, and refuses
+ordinary commands and viewer replay/input. Inspect replacement waits for tracked
+proxy connections to terminate. A matching command response does not prove that
+deferred page scripts or navigation have finished.
+
+There is no public private-login command or unlock API yet. Do not delete receipt
+files to force recovery. Endpoint aliases, tunnels, external CDP clients and
+RDP/OS capture are not unified by this cooperative gate. Fresh exact-target
+validation at execution and private input/output integration are still required
+before live secrets. Internal permit-bound reconnect and page cleanup do not
+unlock observation. Old connection generations stay revoked after cleanup,
+recovery sockets remain permanently private, and private dispatch requires the
+persisted target scope plus a matching CDP session. Broker alias mapping and the
+live cleanup coordinator are not yet integrated. Owned mode-0755 runtime homes are allowed,
+but symlinked or other-user-writable paths and userinfo WebSocket URLs reject;
+private gate directories require mode 0700. Other platforms keep ordinary CDP
+support without private admission.
+
+The source-checkout helper <code>python3 scripts/setup-private-slack.py</code>
+bootstraps the explicitly approved SAM Slack connection through hidden terminal
+input on Linux/WSL. It checks only Slack authentication identity and granted
+scopes, not channel messages. It binds the Cochran Group workspace containing
+the approved private channel, requires <code>groups:history</code>, and permits
+only the additionally approved canvas read/write scopes. Its create-new
+<code>~/.config/agent-browser/private-slack/</code> connection file is owner-only
+plaintext, not encrypted operation storage. It cannot protect against the account
+owner or root. Never publish or print that file. <code>--status</code> is a local
+metadata-only check, not live channel authorization or SAM login proof.
+
+For private phone control, keep the dashboard and Guacamole listeners on
+loopback and expose only the dashboard through Tailscale Serve. With
+<code>AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH=1</code> and an exact
+<code>AGENT_BROWSER_DASHBOARD_TAILSCALE_ALLOWED_LOGINS</code> allowlist, the
+dashboard accepts the authenticated Tailscale identity only on HTTPS
+<code>.ts.net</code> requests. Its authenticated <code>/guacamole/*</code>
+proxy removes caller identity headers and dashboard cookies before injecting
+the configured local Guacamole user. Do not combine this trust mode with
+Funnel or another proxy reaching the same listener, and do not expose the
+loopback Guacamole port directly.
+
+Store credentials locally and reference them by name. Keep credential values out
+of prompts and inspect the actual ingestion/capture boundary before using live
+secrets; naming an encrypted vault entry alone does not establish that boundary.
 
 ```bash
 # Save credentials (encrypted if AGENT_BROWSER_ENCRYPTION_KEY is set)
@@ -177,11 +293,11 @@ Auth vault operations (`auth save`, `auth login`, `auth list`, `auth show`, `aut
 
 ## Action Confirmation
 
-For actions that require explicit approval, use `--confirm-actions` to specify categories that require confirmation:
+For actions that require explicit approval, use `--confirm-actions` with exact actions or stable consequence categories. Categories are `read_only`, `navigation`, `page_mutation`, `external_mutation`, `file_transfer`, `credentials`, `script_execution`, `browser_lifecycle`, and `control_plane`; `mutation` selects the combined mutation-sensitive group.
 
 ```bash
 # Orchestrator mode: returns confirmation_required response
-agent-browser --confirm-actions eval,download eval "document.title"
+agent-browser --confirm-actions script_execution,file_transfer eval "document.title"
 
 # Then approve or deny:
 agent-browser confirm c_8f3a1234
@@ -191,13 +307,100 @@ agent-browser deny c_8f3a1234
 For interactive (human-in-the-loop) confirmation:
 
 ```bash
-agent-browser --confirm-actions eval,download --confirm-interactive eval "document.title"
+agent-browser --confirm-actions script_execution,file_transfer --confirm-interactive eval "document.title"
 # Prompts: Allow? [y/N]
 ```
 
-Pending confirmations auto-deny after 60 seconds.
+Pending confirmations expire after 60 seconds and require the exact confirmation ID. Each request records the active target ID and URL; approval fails closed if either changed. A second approval request cannot replace an unexpired pending action.
 
 > **Non-TTY behavior:** When `--confirm-interactive` is set but stdin is not a TTY (e.g., piped input or running inside an automated pipeline), actions are automatically denied. This prevents accidental approval in non-interactive contexts.
+
+## Durable Task Authority
+
+Action confirmation protects one consequence at a time. A `taskAuthority`
+envelope adds a durable boundary around the whole agentic task. It names the
+exact caller task and retained target, limits navigation to explicit HTTP(S)
+origins, caps admitted actions and reserved evidence bytes, sets the highest
+consequence allowed without fresh confirmation, and expires at an RFC 3339
+timestamp.
+
+The daemon hashes the complete envelope and, for v2 broker issuance, binds it
+to the complete ordered plan hash. Each approved occurrence has a unique step
+ID, exact expected pre-action URL, optional requested URL, and fixed evidence
+reservation. A command must name the exact next `taskStepId`; the daemon writes
+a command-bound step receipt and advances the cursor atomically before
+dispatch. Reusing an authority after restart therefore continues the same
+position and rejects replay. Target, task, origin, URL, action, order, expiry,
+and evidence checks all occur before execution.
+
+After dispatch, every ordered step crosses one terminal finalizer before its
+response is published. The receipt gains `completed` or `failed`, a digest and
+byte count for the exact response, post-action target and URL evidence, and the
+finalization time. If the process dies after admission but before that write,
+status reports the step as `indeterminate`; the cursor remains advanced and the
+step cannot be replayed. A finalization write failure fails closed instead of
+publishing an unreceipted success.
+
+Issue authority through `POST /api/service/task-authorities/issue` or MCP
+`service_task_authority_issue`. The broker accepts explicit bounded plan steps,
+derives the ordered step IDs, exact URLs and evidence reservations, unique
+action/origin sets, aggregate compatibility budgets, and plan hash; it pins the
+live target and caller labels and requires fresh target-bound confirmation
+before persisting the record. Read issuer, approval, ordered plan, next step,
+admitted receipts, completed, failed, and indeterminate outcomes, expiry,
+revocation, usage, and remaining allowance through the no-launch HTTP status endpoints or
+`service_task_authority_status`; revoke with the confirmation-gated HTTP route
+or `service_task_authority_revoke`.
+
+An issued plan is never edited in place. For exactly one indeterminate receipt,
+use `POST /api/service/task-authorities/<id>/reconcile` or
+`service_task_authority_reconcile` with the exact unresolved step, a stable
+reconciliation ID, fresh target ID and URL, and an explicit replacement plan.
+The broker durably revokes the predecessor first, resumes identical retries to
+the same deterministic replacement, binds predecessor lineage into the new
+envelope, and rejects changed evidence. Other replans still require explicit
+revocation and newly confirmed issuance.
+
+The Service dashboard Authorities workspace shows status, durable outcomes,
+reconciliation state, and lineage for the selected daemon session. Its recovery
+preview derives only unconsumed planned steps and remains disabled unless one
+indeterminate receipt and one exact live target are present. Staging does not
+approve the transaction. Confirm or deny its exact target evidence through
+`POST /api/service/task-authorities/confirmation` or
+`service_task_authority_confirmation`. The required `expectedAction` must match
+the pending issue, reconcile, or revoke action, preventing this surface from
+approving another pending control. HTTP binds requester and decider evidence to
+the authenticated dashboard superuser; MCP binds it to the OS-owned stdio
+transport principal. A conflicting structured identity claim fails closed.
+Pending issue, reconcile, and revoke controls
+are privately persisted with their exact session, action, target, URL,
+requester, request digest, and expiry. The broker archives a single-use
+decision before dispatch. A restart preserves pending evidence; a crash after
+decision commit is shown as indeterminate and never auto-confirms, replays, or
+restages the control. Closing the staged dashboard flow sends denial so an
+undisclosed pending action is not left behind.
+
+Use `POST /api/service/task-authorities/confirmations/cleanup` or
+`service_task_authority_confirmation_cleanup` to preview terminal receipt
+retention. Apply requires the exact preview `reviewSha256`. Cleanup writes a
+bounded active retired-ID manifest before removing bulky receipts and moves
+older exact IDs into fixed-capacity immutable hash-chained segments. Preview
+returns candidate receipt hashes, the authenticated requester, exact review
+digest, and verified segment capacity, count, head, and active digest. Missing,
+modified, reordered, duplicate, count-mismatched, or head-mismatched evidence
+fails closed. Cleanup never removes pending or confirmed/dispatched
+indeterminate evidence and never makes a confirmation ID reusable. The
+dashboard Authorities workspace displays this proof and requires an explicit
+exact-digest alert-dialog decision before apply.
+
+Enable fail-closed admission with `AGENT_BROWSER_REQUIRE_TASK_AUTHORITY=1` and
+optionally relocate the ledger with `AGENT_BROWSER_TASK_AUTHORITY_DIR`. This
+mode is intended for retained daemons driven through HTTP, MCP, or service
+requests that can carry the structured envelope. It does not turn the envelope
+into a credential or authorization signature; protect the daemon transport and
+ledger directory separately. Only `confirm`, `deny`, and the broker's
+issue/reconcile/revoke/status control operations bypass pre-existing authority
+admission.
 
 ## Output Length Limits
 

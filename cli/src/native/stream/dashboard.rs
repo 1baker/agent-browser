@@ -11,6 +11,9 @@ use tokio::time::{timeout, Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::connection::get_socket_dir;
+use crate::native::publication_status::{
+    local_dashboard_publication_status, LOCAL_DASHBOARD_PUBLICATION_HTTP_ROUTE,
+};
 
 use super::super::remote_view::route_display_content;
 #[cfg(test)]
@@ -31,6 +34,8 @@ use super::http::{
 };
 
 const DASHBOARD_SERVICE_BACKEND_SESSION: &str = "dashboard-service-backend";
+const DASHBOARD_GUACAMOLE_PORT_ENV: &str = "AGENT_BROWSER_GUACAMOLE_HTTP_PORT";
+const DASHBOARD_GUACAMOLE_HEADER_USER_ENV: &str = "AGENT_BROWSER_GUACAMOLE_HEADER_USER";
 const DASHBOARD_LOCAL_PROXY_TIMEOUT: Duration = Duration::from_secs(2);
 const DASHBOARD_REMOTE_VIEW_HANDOFF_PROXY_TIMEOUT: Duration = Duration::from_secs(60);
 const DASHBOARD_STREAM_FRAME_PROXY_TIMEOUT: Duration = Duration::from_secs(7);
@@ -190,14 +195,46 @@ async fn handle_dashboard_connection(mut stream: tokio::net::TcpStream) {
         return;
     }
 
+    if path == "/guacamole" || path.starts_with("/guacamole/") {
+        let identity = match dashboard_auth::authenticate_headers(&headers) {
+            Ok(Some(identity)) => identity,
+            Ok(None) => {
+                let mut forwarded_headers = headers.clone();
+                forwarded_headers.push(("x-forwarded-uri".to_string(), raw_path.to_string()));
+                let response =
+                    dashboard_auth::verify_forward_auth_response(&forwarded_headers, secure_cookie);
+                let _ = stream.write_all(&response.into_http_bytes()).await;
+                return;
+            }
+            Err(err) => {
+                write_json_error(&mut stream, "500 Internal Server Error", &err).await;
+                return;
+            }
+        };
+        if let Err(err) =
+            proxy_authenticated_guacamole_request(&mut stream, &buf[..n], raw_path, &identity).await
+        {
+            write_json_error_with_code(
+                &mut stream,
+                "502 Bad Gateway",
+                &err.message,
+                Some(err.code),
+                err.details,
+            )
+            .await;
+        }
+        return;
+    }
+
     if method == "GET" && path == "/api/runtime/manifest" {
         write_json_value(&mut stream, "200 OK", runtime_manifest_json()).await;
         return;
     }
 
+    let mut authenticated_api_identity = None;
     if path.starts_with("/api/") {
         match dashboard_auth::authenticate_headers(&headers) {
-            Ok(Some(_)) => {}
+            Ok(Some(identity)) => authenticated_api_identity = Some(identity),
             Ok(None) => {
                 let response = dashboard_auth::unauthorized_api_response(secure_cookie);
                 let _ = stream.write_all(&response.into_http_bytes()).await;
@@ -308,13 +345,51 @@ async fn handle_dashboard_connection(mut stream: tokio::net::TcpStream) {
         return;
     }
 
+    if method == "GET" && path == LOCAL_DASHBOARD_PUBLICATION_HTTP_ROUTE {
+        match local_dashboard_publication_status() {
+            Ok(data) => {
+                write_json_value(
+                    &mut stream,
+                    "200 OK",
+                    json!({
+                        "success": true,
+                        "data": data,
+                    }),
+                )
+                .await;
+            }
+            Err(error) => {
+                write_json_error(&mut stream, "500 Internal Server Error", &error).await;
+            }
+        }
+        return;
+    }
+
     if path == "/api/service" || path.starts_with("/api/service/") {
         let body_str = if matches!(method, "POST" | "PUT" | "PATCH" | "DELETE") {
             read_post_body(&mut stream, &buf, n).await
         } else {
             String::new()
         };
-        handle_service_api_request(&mut stream, method, raw_path, &body_str).await;
+        let proxy_cookie = match authenticated_api_identity
+            .as_ref()
+            .map(dashboard_auth::internal_proxy_cookie)
+            .transpose()
+        {
+            Ok(cookie) => cookie,
+            Err(err) => {
+                write_json_error(&mut stream, "500 Internal Server Error", &err).await;
+                return;
+            }
+        };
+        handle_service_api_request(
+            &mut stream,
+            method,
+            raw_path,
+            &body_str,
+            proxy_cookie.as_deref(),
+        )
+        .await;
         return;
     }
 
@@ -444,6 +519,219 @@ async fn handle_dashboard_connection(mut stream: tokio::net::TcpStream) {
     let _ = stream.write_all(&body).await;
 }
 
+fn dashboard_guacamole_port() -> Result<u16, DashboardReadinessError> {
+    match env::var(DASHBOARD_GUACAMOLE_PORT_ENV) {
+        Ok(value) => value.trim().parse::<u16>().map_err(|_| {
+            DashboardReadinessError::new(
+                "invalid_guacamole_port",
+                format!("{DASHBOARD_GUACAMOLE_PORT_ENV} must be a valid TCP port"),
+            )
+        }),
+        Err(_) => Ok(8092),
+    }
+}
+
+fn dashboard_guacamole_header_user() -> Result<String, DashboardReadinessError> {
+    let value = env::var(DASHBOARD_GUACAMOLE_HEADER_USER_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            DashboardReadinessError::new(
+                "guacamole_header_user_missing",
+                format!("{DASHBOARD_GUACAMOLE_HEADER_USER_ENV} is not configured"),
+            )
+        })?;
+    if !value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || "._@-".contains(character))
+    {
+        return Err(DashboardReadinessError::new(
+            "invalid_guacamole_header_user",
+            format!("{DASHBOARD_GUACAMOLE_HEADER_USER_ENV} contains unsupported characters"),
+        ));
+    }
+    Ok(value)
+}
+
+fn guacamole_request_parts(
+    initial: &[u8],
+    raw_path: &str,
+    port: u16,
+    header_user: &str,
+) -> Result<(Vec<u8>, Vec<u8>, usize, bool), DashboardReadinessError> {
+    let header_end = initial
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4)
+        .ok_or_else(|| {
+            DashboardReadinessError::new(
+                "invalid_guacamole_request",
+                "Guacamole proxy request headers were incomplete",
+            )
+        })?;
+    let header_text = std::str::from_utf8(&initial[..header_end]).map_err(|_| {
+        DashboardReadinessError::new(
+            "invalid_guacamole_request",
+            "Guacamole proxy request headers were not UTF-8",
+        )
+    })?;
+    let mut lines = header_text.split("\r\n");
+    let request_line = lines.next().unwrap_or("GET /guacamole/ HTTP/1.1");
+    let method = request_line.split_whitespace().next().unwrap_or("GET");
+    let mut content_length = 0usize;
+    let mut websocket_upgrade = false;
+    let mut preserved = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let lower = name.trim().to_ascii_lowercase();
+        let value = value.trim();
+        if lower == "content-length" {
+            content_length = value.parse::<usize>().unwrap_or(0);
+        }
+        if lower == "upgrade" && value.eq_ignore_ascii_case("websocket") {
+            websocket_upgrade = true;
+        }
+        if matches!(
+            lower.as_str(),
+            "host" | "remote-user" | "remote-name" | "remote-groups" | "cookie"
+        ) || lower.starts_with("tailscale-")
+        {
+            continue;
+        }
+        if lower == "connection" && !websocket_upgrade {
+            continue;
+        }
+        preserved.push(format!("{}: {}\r\n", name.trim(), value));
+    }
+    let connection = if websocket_upgrade {
+        "Connection: Upgrade\r\n"
+    } else {
+        "Connection: close\r\n"
+    };
+    let request = format!(
+        "{method} {raw_path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nRemote-User: {header_user}\r\n{connection}{}\r\n",
+        preserved.concat(),
+    )
+    .into_bytes();
+    let body = initial[header_end..].to_vec();
+    Ok((request, body, content_length, websocket_upgrade))
+}
+
+/// Proxy one dashboard-authenticated Guacamole request to the loopback
+/// provider while replacing all caller identity with the configured local
+/// Guacamole principal. WebSocket upgrades remain a byte-for-byte tunnel after
+/// the authenticated request header is rewritten.
+async fn proxy_authenticated_guacamole_request(
+    client: &mut tokio::net::TcpStream,
+    initial: &[u8],
+    raw_path: &str,
+    _identity: &dashboard_auth::DashboardAuthIdentity,
+) -> Result<(), DashboardReadinessError> {
+    let port = dashboard_guacamole_port()?;
+    let header_user = dashboard_guacamole_header_user()?;
+    let (request, initial_body, content_length, websocket_upgrade) =
+        guacamole_request_parts(initial, raw_path, port, &header_user)?;
+    let mut backend = timeout(
+        DASHBOARD_LOCAL_PROXY_TIMEOUT,
+        tokio::net::TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    .map_err(|_| {
+        DashboardReadinessError::local_backend(
+            "backend_connect_timeout",
+            format!("timed out connecting to local Guacamole on port {port}"),
+            port,
+            raw_path,
+            "connect",
+        )
+    })?
+    .map_err(|err| {
+        DashboardReadinessError::local_backend(
+            "backend_unavailable",
+            format!("failed connecting to local Guacamole on port {port}: {err}"),
+            port,
+            raw_path,
+            "connect",
+        )
+    })?;
+    backend.write_all(&request).await.map_err(|err| {
+        DashboardReadinessError::local_backend(
+            "backend_unavailable",
+            format!("failed writing Guacamole proxy headers: {err}"),
+            port,
+            raw_path,
+            "write",
+        )
+    })?;
+    let initial_body_len = initial_body.len().min(content_length);
+    backend
+        .write_all(&initial_body[..initial_body_len])
+        .await
+        .map_err(|err| {
+            DashboardReadinessError::local_backend(
+                "backend_unavailable",
+                format!("failed writing Guacamole proxy body: {err}"),
+                port,
+                raw_path,
+                "write",
+            )
+        })?;
+    let mut remaining = content_length.saturating_sub(initial_body_len);
+    let mut body_buffer = vec![0u8; 8192];
+    while remaining > 0 {
+        let read_len = remaining.min(body_buffer.len());
+        let count = client
+            .read(&mut body_buffer[..read_len])
+            .await
+            .map_err(|err| {
+                DashboardReadinessError::new(
+                    "client_read_failed",
+                    format!("failed reading Guacamole request body: {err}"),
+                )
+            })?;
+        if count == 0 {
+            break;
+        }
+        backend
+            .write_all(&body_buffer[..count])
+            .await
+            .map_err(|err| {
+                DashboardReadinessError::local_backend(
+                    "backend_unavailable",
+                    format!("failed forwarding Guacamole request body: {err}"),
+                    port,
+                    raw_path,
+                    "write",
+                )
+            })?;
+        remaining = remaining.saturating_sub(count);
+    }
+    if websocket_upgrade {
+        tokio::io::copy_bidirectional(client, &mut backend)
+            .await
+            .map_err(|err| {
+                DashboardReadinessError::new(
+                    "guacamole_tunnel_failed",
+                    format!("Guacamole WebSocket tunnel failed: {err}"),
+                )
+            })?;
+    } else {
+        tokio::io::copy(&mut backend, client).await.map_err(|err| {
+            DashboardReadinessError::new(
+                "guacamole_response_failed",
+                format!("Guacamole proxy response failed: {err}"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
 fn stream_api_port(path: &str) -> Option<u16> {
     let rest = path.strip_prefix("/api/stream/")?;
     let raw_port = rest.split('/').next()?;
@@ -460,6 +748,7 @@ async fn handle_service_api_request(
     method: &str,
     path: &str,
     body: &str,
+    proxy_cookie: Option<&str>,
 ) {
     if method == "POST" {
         if let Some((session_name, command_body)) = service_request_focus_command_body(path, body) {
@@ -504,7 +793,16 @@ async fn handle_service_api_request(
 
     if let Some(port) = dashboard_service_backend_port() {
         let request_timeout = service_api_proxy_timeout(method, path, body);
-        match proxy_dashboard_service_api_request(port, method, path, body, request_timeout).await {
+        match proxy_dashboard_service_api_request(
+            port,
+            method,
+            path,
+            body,
+            request_timeout,
+            proxy_cookie,
+        )
+        .await
+        {
             Ok(response) => {
                 let status = http_response_status(&response).unwrap_or(0);
                 if !(200..300).contains(&status) {
@@ -855,6 +1153,25 @@ async fn proxy_local_http_api_request_with_timeout(
     body: &str,
     request_timeout: Duration,
 ) -> Result<Vec<u8>, DashboardReadinessError> {
+    proxy_local_http_api_request_with_timeout_and_cookie(
+        port,
+        method,
+        path,
+        body,
+        request_timeout,
+        None,
+    )
+    .await
+}
+
+async fn proxy_local_http_api_request_with_timeout_and_cookie(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: &str,
+    request_timeout: Duration,
+    proxy_cookie: Option<&str>,
+) -> Result<Vec<u8>, DashboardReadinessError> {
     let mut backend = timeout(
         request_timeout,
         tokio::net::TcpStream::connect(("127.0.0.1", port)),
@@ -878,8 +1195,11 @@ async fn proxy_local_http_api_request_with_timeout(
             "connect",
         )
     })?;
+    let cookie_header = proxy_cookie
+        .map(|cookie| format!("Cookie: {cookie}\r\n"))
+        .unwrap_or_default();
     let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\n{cookie_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     timeout(request_timeout, backend.write_all(request.as_bytes()))
@@ -920,14 +1240,16 @@ async fn proxy_dashboard_service_api_request(
     path: &str,
     body: &str,
     request_timeout: Duration,
+    proxy_cookie: Option<&str>,
 ) -> Result<Vec<u8>, DashboardReadinessError> {
     if !dashboard_service_status_cacheable(method, path) {
-        return proxy_local_http_api_request_with_timeout(
+        return proxy_local_http_api_request_with_timeout_and_cookie(
             port,
             method,
             path,
             body,
             request_timeout,
+            proxy_cookie,
         )
         .await;
     }
@@ -946,9 +1268,15 @@ async fn proxy_dashboard_service_api_request(
         }
     }
 
-    let response =
-        proxy_local_http_api_request_with_timeout(port, method, path, body, request_timeout)
-            .await?;
+    let response = proxy_local_http_api_request_with_timeout_and_cookie(
+        port,
+        method,
+        path,
+        body,
+        request_timeout,
+        proxy_cookie,
+    )
+    .await?;
     if http_response_status(&response).is_some_and(|status| (200..300).contains(&status)) {
         cache.port = Some(port);
         cache.path = Some(path.to_string());
@@ -2208,6 +2536,49 @@ mod tests {
     use super::*;
     use crate::test_utils::EnvGuard;
     use serde_json::json;
+
+    #[test]
+    fn guacamole_proxy_replaces_untrusted_identity_and_dashboard_cookie() {
+        let initial = b"POST /guacamole/api/tokens HTTP/1.1\r\nHost: desktop.example.ts.net\r\nTailscale-User-Login: attacker@example.com\r\nRemote-User: attacker\r\nCookie: agent_browser_dashboard_session=secret\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 3\r\nConnection: keep-alive\r\n\r\na=b";
+
+        let (request, body, content_length, websocket) =
+            guacamole_request_parts(initial, "/guacamole/api/tokens", 8092, "bak3r").unwrap();
+        let request = String::from_utf8(request).unwrap();
+
+        assert!(
+            request.starts_with("POST /guacamole/api/tokens HTTP/1.1\r\nHost: 127.0.0.1:8092\r\n")
+        );
+        assert!(request.contains("Remote-User: bak3r\r\n"));
+        assert!(request.contains("Connection: close\r\n"));
+        assert!(!request.contains("attacker"));
+        assert!(!request.to_ascii_lowercase().contains("cookie:"));
+        assert_eq!(body, b"a=b");
+        assert_eq!(content_length, 3);
+        assert!(!websocket);
+    }
+
+    #[test]
+    fn guacamole_proxy_preserves_websocket_upgrade_without_tailnet_headers() {
+        let initial = b"GET /guacamole/websocket-tunnel?token=opaque HTTP/1.1\r\nHost: desktop.example.ts.net\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: key\r\nTailscale-User-Login: operator@example.com\r\n\r\n";
+
+        let (request, body, content_length, websocket) = guacamole_request_parts(
+            initial,
+            "/guacamole/websocket-tunnel?token=opaque",
+            8092,
+            "bak3r",
+        )
+        .unwrap();
+        let request = String::from_utf8(request).unwrap();
+
+        assert!(request.contains("Connection: Upgrade\r\n"));
+        assert!(request.contains("Upgrade: websocket\r\n"));
+        assert!(request.contains("Sec-WebSocket-Key: key\r\n"));
+        assert!(request.contains("Remote-User: bak3r\r\n"));
+        assert!(!request.contains("operator@example.com"));
+        assert!(body.is_empty());
+        assert_eq!(content_length, 0);
+        assert!(websocket);
+    }
 
     #[test]
     fn dashboard_service_backend_prefers_dedicated_session() {

@@ -58,6 +58,10 @@ function runJson(command, commandArgs, label) {
     encoding: 'utf8',
     stdio: 'pipe',
     timeout: 120000,
+    // The service status is intentionally comprehensive. Retained browser and
+    // route history can exceed Node's 1 MiB spawnSync default without making
+    // the read unhealthy.
+    maxBuffer: 8 * 1024 * 1024,
   });
   if (result.status !== 0) {
     throw new Error(`${label} failed: ${command} ${commandArgs.join(' ')}\n${result.stdout}${result.stderr}`);

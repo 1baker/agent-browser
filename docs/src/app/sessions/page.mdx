@@ -30,6 +30,15 @@ Each session has its own:
 - Navigation history
 - Authentication state
 
+On Linux, interactive clients, noninteractive agents, and user services share
+one daemon namespace. <code>AGENT_BROWSER_SOCKET_DIR</code> remains the explicit
+override, followed by <code>XDG_RUNTIME_DIR</code>. If neither is exported,
+agent-browser uses the current user's private
+<code>/run/user/&lt;uid&gt;/agent-browser</code> directory when its ownership and mode
+are safe, then falls back to the home namespace. This prevents a tool shell from
+silently starting a second daemon when the intended session is already owned by
+a user service.
+
 ## Default runtime profile
 
 If you do not pass <code>--profile</code> or <code>--runtime-profile</code>, agent-browser uses a stable Chrome user-data-dir at <code>~/.agent-browser/runtime-profiles/default/user-data</code>. This keeps manual sign-in state across runs without any extra setup.

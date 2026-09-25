@@ -2309,6 +2309,10 @@ pub struct RemoteViewHandoff {
     pub session_name: Option<String>,
     pub tab_id: Option<String>,
     pub target_id: Option<String>,
+    /// Immutable browser/process/target identity captured when this handoff was
+    /// created. Exact retained recovery is unavailable for legacy handoffs
+    /// without this evidence; it must never infer identity from mutable rows.
+    pub recovery_identity: Option<RemoteViewRecoveryIdentity>,
     pub view_stream_provider: Option<ViewStreamProvider>,
     pub control_input: Option<ControlInputProvider>,
     pub last_route_id: Option<String>,
@@ -2320,10 +2324,34 @@ pub struct RemoteViewHandoff {
     pub last_resolution: Option<Value>,
 }
 
+/// Redacted, immutable identity needed to recover a retained browser without
+/// launching a replacement process or selecting a different tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteViewRecoveryIdentity {
+    pub browser_id: String,
+    pub session_name: String,
+    pub profile_id: String,
+    pub browser_pid: u32,
+    pub cdp_endpoint: String,
+    pub browser_build: BrowserBuild,
+    pub executable_path: String,
+    pub executable_sha256: Option<String>,
+    pub process_start_ticks: u64,
+    pub target_id: String,
+    pub target_url: Option<String>,
+    pub browser_build_proof: Value,
+}
+
 /// Top-level snapshot of the browser service control plane.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ServiceState {
+    /// Committed executable-handoff receipts remain authoritative while an
+    /// older custody-aware daemon still owns a retained browser. Keep this
+    /// opaque map even when the current build does not consume the receipt so
+    /// mixed-generation service-state writes cannot strand that daemon.
+    pub runtime_custody_receipts: BTreeMap<String, Value>,
     pub control_plane: Option<ControlPlaneSnapshot>,
     pub reconciliation: Option<ServiceReconciliationSnapshot>,
     pub events: Vec<ServiceEvent>,
@@ -4927,6 +4955,13 @@ pub enum ProfileReadinessState {
 pub struct BrowserProcess {
     pub id: String,
     pub profile_id: Option<String>,
+    /// Browser build selected by the governed launch path. Missing proof must
+    /// not satisfy a request that requires a specific build.
+    pub browser_build: Option<BrowserBuild>,
+    /// Exact executable selected by the launch resolver when it is known.
+    pub executable_path: Option<String>,
+    /// Durable, redacted launch-selection evidence used to audit retained reuse.
+    pub browser_build_proof: Option<serde_json::Value>,
     pub host: BrowserHost,
     pub health: BrowserHealth,
     pub display_isolation: Option<String>,
@@ -4948,6 +4983,9 @@ impl Default for BrowserProcess {
         Self {
             id: String::new(),
             profile_id: None,
+            browser_build: None,
+            executable_path: None,
+            browser_build_proof: None,
             host: BrowserHost::LocalHeaded,
             health: BrowserHealth::NotStarted,
             display_isolation: None,
@@ -4963,6 +5001,50 @@ impl Default for BrowserProcess {
             last_health_observation: None,
         }
     }
+}
+
+impl BrowserProcess {
+    /// Returns the profile that is safe to use for retained-browser matching.
+    ///
+    /// An attached browser has no local process owner, so a verified runtime
+    /// attach proof may be more authoritative than a stale service projection.
+    /// Keep that exception deliberately narrow: any mismatch in the governed
+    /// build, executable, or CDP endpoint falls back to the persisted row.
+    pub(crate) fn effective_profile_id(&self) -> Option<&str> {
+        self.verified_attached_proof_profile_id()
+            .or(self.profile_id.as_deref())
+    }
+
+    pub(crate) fn verified_attached_proof_profile_id(&self) -> Option<&str> {
+        if self.host != BrowserHost::AttachedExisting {
+            return None;
+        }
+        let proof = self.browser_build_proof.as_ref()?;
+        let verified_attach = proof.get("applied").and_then(Value::as_bool) == Some(true)
+            && proof
+                .get("browserBuild")
+                .and_then(|value| serde_json::from_value::<BrowserBuild>(value.clone()).ok())
+                == self.browser_build
+            && proof.get("executablePath").and_then(Value::as_str)
+                == self.executable_path.as_deref()
+            && proof.get("cdpEndpoint").and_then(Value::as_str) == self.cdp_endpoint.as_deref()
+            && (self.pid.is_none()
+                || proof.get("browserPid").and_then(Value::as_u64) == self.pid.map(u64::from));
+        if verified_attach {
+            proof.get("profileId").and_then(Value::as_str)
+        } else {
+            None
+        }
+    }
+}
+
+/// Returns true only when a retained browser proves the exact governed build.
+/// Unconstrained callers preserve legacy direct-attachment behavior.
+pub(crate) fn browser_matches_required_build(
+    browser: &BrowserProcess,
+    required_build: Option<BrowserBuild>,
+) -> bool {
+    required_build.is_none_or(|required| browser.browser_build == Some(required))
 }
 
 /// Service-owned remote display allocation for a browser workspace.
@@ -8051,6 +8133,7 @@ mod tests {
             session_name: Some("session-a".to_string()),
             tab_id: Some("tab-a".to_string()),
             target_id: Some("target-a".to_string()),
+            recovery_identity: None,
             view_stream_provider: Some(ViewStreamProvider::RdpGateway),
             control_input: Some(ControlInputProvider::ManualAttachedDesktop),
             last_route_id: Some("route-a".to_string()),

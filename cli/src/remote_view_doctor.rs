@@ -12,6 +12,7 @@ use crate::color;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DoctorArgs {
     allow_shared_target: bool,
+    compact: bool,
 }
 
 const DOCTOR_JSON_COMMAND_TIMEOUT: Duration = Duration::from_secs(45);
@@ -28,15 +29,21 @@ enum DoctorCommandResult {
 
 /// Run the read-only remote-view doctor. This command inventories existing
 /// install, Guacamole, XRDP, user, and route-display state before setup helpers
-/// are allowed to suggest creating users or mutating configuration.
+/// are allowed to suggest creating users or mutating configuration. `--compact`
+/// projects the same evidence into bounded agent-facing JSON.
 pub fn run_remote_view_doctor(clean: &[String], json_mode: bool) {
     let args = parse_doctor_args(clean);
     let report = remote_view_doctor_report(&args);
 
     if json_mode {
+        let output = if args.compact {
+            remote_view_doctor_compact_report(&report)
+        } else {
+            report
+        };
         println!(
             "{}",
-            serde_json::to_string_pretty(&report).unwrap_or_else(|_| {
+            serde_json::to_string_pretty(&output).unwrap_or_else(|_| {
                 r#"{"success":false,"error":"Failed to serialize remote-view doctor"}"#.to_string()
             })
         );
@@ -49,7 +56,62 @@ pub fn run_remote_view_doctor(clean: &[String], json_mode: bool) {
 fn parse_doctor_args(clean: &[String]) -> DoctorArgs {
     DoctorArgs {
         allow_shared_target: clean.iter().any(|arg| arg == "--allow-shared-target"),
+        compact: clean.iter().any(|arg| arg == "--compact"),
     }
+}
+
+fn remote_view_doctor_compact_report(report: &Value) -> Value {
+    let issues = report
+        .pointer("/data/issues")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let compact_issues = issues
+        .iter()
+        .take(20)
+        .map(compact_remote_view_issue)
+        .collect::<Vec<_>>();
+    let issue_codes = compact_issues
+        .iter()
+        .filter_map(|issue| issue.get("code").cloned())
+        .collect::<Vec<_>>();
+
+    json!({
+        "success": report.get("success").cloned().unwrap_or(Value::Bool(false)),
+        "data": {
+            "schemaVersion": "agent-browser.remote-view-doctor-summary.v1",
+            "status": report.pointer("/data/status").cloned().unwrap_or(Value::Null),
+            "readiness": {
+                "remoteControlReady": report.pointer("/data/remoteControl/ready").cloned().unwrap_or(Value::Null),
+                "remoteControlStatus": report.pointer("/data/remoteControl/status").cloned().unwrap_or(Value::Null),
+                "manyToManyStatus": report.pointer("/data/manyToMany/status").cloned().unwrap_or(Value::Null),
+                "viewerPrerequisitesReady": report.pointer("/data/viewerPrerequisites/ready").cloned().unwrap_or(Value::Null),
+                "runtimeConvergence": report.pointer("/data/runtimeConvergence/status").cloned().unwrap_or(Value::Null),
+                "runtimeCount": report.pointer("/data/runtimeInventory/runtimeCount").cloned().unwrap_or(Value::Null),
+                "staleRuntimeCount": report.pointer("/data/runtimeInventory/staleCount").cloned().unwrap_or(Value::Null),
+                "installDoctorReady": report.pointer("/data/remoteControl/installDoctorReady").cloned().unwrap_or(Value::Null),
+                "installReady": report.pointer("/data/remoteControl/installReady").cloned().unwrap_or(Value::Null),
+            },
+            "issueCount": issues.len(),
+            "issuesOmitted": issues.len().saturating_sub(compact_issues.len()),
+            "issueCodes": issue_codes,
+            "issues": compact_issues,
+            "nextAction": report.pointer("/data/nextAction").cloned().unwrap_or(Value::Null),
+            "nextCommand": {
+                "command": report.pointer("/data/nextCommand/command").cloned().unwrap_or(Value::Null),
+                "requiresInteractiveSudo": report.pointer("/data/nextCommand/requiresInteractiveSudo").cloned().unwrap_or(Value::Null),
+            },
+        }
+    })
+}
+
+fn compact_remote_view_issue(issue: &Value) -> Value {
+    json!({
+        "code": issue.get("code").cloned().unwrap_or(Value::Null),
+        "message": issue.get("message").cloned().unwrap_or(Value::Null),
+        "nextAction": issue.get("nextAction").cloned().unwrap_or(Value::Null),
+        "nextCommand": issue.get("nextCommand").cloned().unwrap_or(Value::Null),
+    })
 }
 
 fn remote_view_doctor_report(args: &DoctorArgs) -> Value {
@@ -2394,6 +2456,60 @@ fn display_value(value: &Value) -> String {
 mod tests {
     use super::*;
     use crate::test_utils::EnvGuard;
+
+    #[test]
+    fn doctor_args_accept_compact_projection() {
+        let args = parse_doctor_args(&[
+            "doctor".to_string(),
+            "remote-view".to_string(),
+            "--compact".to_string(),
+        ]);
+        assert!(args.compact);
+        assert!(!args.allow_shared_target);
+    }
+
+    #[test]
+    fn compact_remote_view_report_omits_route_and_host_inventory() {
+        let report = json!({
+            "success": true,
+            "data": {
+                "status": "ready",
+                "remoteControl": {
+                    "ready": true,
+                    "status": "ready",
+                    "installDoctorReady": true,
+                    "installReady": true,
+                },
+                "manyToMany": { "status": "ready", "routePool": "large-private-detail" },
+                "viewerPrerequisites": { "ready": true },
+                "runtimeConvergence": { "status": "converged" },
+                "runtimeInventory": { "runtimeCount": 3, "staleCount": 0 },
+                "rdpHost": { "users": ["private-user"] },
+                "issues": [{
+                    "code": "example_issue",
+                    "message": "example message",
+                    "nextAction": "inspect",
+                    "nextCommand": "agent-browser inspect",
+                }],
+                "nextAction": "run_many_to_many_live_gate",
+                "nextCommand": {
+                    "command": "pnpm test:rdp-guac-many-to-many-live",
+                    "requiresInteractiveSudo": false,
+                },
+            },
+        });
+
+        let compact = remote_view_doctor_compact_report(&report);
+
+        assert_eq!(compact["data"]["readiness"]["remoteControlReady"], true);
+        assert_eq!(compact["data"]["issueCount"], 1);
+        assert_eq!(compact["data"]["issuesOmitted"], 0);
+        assert_eq!(compact["data"]["issueCodes"][0], "example_issue");
+        let serialized = serde_json::to_string(&compact).unwrap();
+        assert!(!serialized.contains("large-private-detail"));
+        assert!(!serialized.contains("private-user"));
+        assert!(serialized.len() < 4_000);
+    }
 
     fn ready_rdp_gateway() -> Value {
         json!({

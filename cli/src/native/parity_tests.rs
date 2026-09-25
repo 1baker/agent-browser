@@ -52,6 +52,7 @@ const DOCUMENTED_ACTIONS: &[&str] = &[
     "url",
     "title",
     "content",
+    "read_page",
     "evaluate",
     "close",
     "snapshot",

@@ -520,10 +520,11 @@ fn classify_process(
             disposition = ResourceDisposition::Candidate;
             reasons.push("old_temporary_profile_process".to_string());
             gc_action = Some("terminate_process".to_string());
-        } else if kind == ResourceKind::RemoteDisplay && correlation.browser_id.is_none() {
-            disposition = ResourceDisposition::Candidate;
-            reasons.push("orphaned_remote_display_process".to_string());
-            gc_action = Some("terminate_process".to_string());
+        } else if kind == ResourceKind::RemoteDisplay {
+            // An externally attached browser can use an Xvfb process that is not
+            // represented by a service display allocation. Missing correlation
+            // alone cannot prove that the display has no live clients.
+            reasons.push("unowned_remote_display_requires_manual_review".to_string());
         } else if correlation.browser_id.is_none() && kind == ResourceKind::AgentBrowser {
             reasons.push("agent_browser_process_unowned_by_service_state".to_string());
         } else if temporary_profile_path(correlation.profile_path.as_deref()) {
@@ -1560,6 +1561,26 @@ mod tests {
         assert_eq!(
             response["resources"][0]["reasons"][0],
             "retained_display_allocation"
+        );
+    }
+
+    #[test]
+    fn resources_do_not_gc_uncorrelated_remote_display() {
+        let response = service_resources_response_from_samples(
+            &ServiceState::default(),
+            vec![sample(
+                506,
+                &["/usr/bin/Xvfb", ":180", "-screen", "0", "1280x800x24"],
+                Some(3600),
+            )],
+            Vec::new(),
+        );
+        assert_eq!(response["summary"]["candidateCount"], 0);
+        assert_eq!(response["resources"][0]["disposition"], "observed");
+        assert_eq!(response["resources"][0]["gcAction"], Value::Null);
+        assert_eq!(
+            response["resources"][0]["reasons"][0],
+            "unowned_remote_display_requires_manual_review"
         );
     }
 

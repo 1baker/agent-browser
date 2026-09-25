@@ -5,7 +5,8 @@ use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::oneshot;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::cdp::client::InspectProxyHandle;
@@ -22,7 +23,9 @@ static ATTACH_ID: AtomicI64 = AtomicI64::new(-1000);
 ///   `sessionId` so the DevTools frontend sees a page-level view
 pub struct InspectServer {
     port: u16,
-    _handle: tokio::task::JoinHandle<()>,
+    handle: Option<JoinHandle<Result<(), String>>>,
+    stop_tx: Option<oneshot::Sender<()>>,
+    shutdown_error: Option<String>,
 }
 
 impl InspectServer {
@@ -46,17 +49,21 @@ impl InspectServer {
 
         let proxy = Arc::new(proxy_handle);
 
+        let (stop_tx, stop_rx) = oneshot::channel();
         let handle = tokio::spawn(accept_loop(
             listener,
             proxy,
             target_id,
             chrome_host_port,
             port,
+            stop_rx,
         ));
 
         Ok(Self {
             port,
-            _handle: handle,
+            handle: Some(handle),
+            stop_tx: Some(stop_tx),
+            shutdown_error: None,
         })
     }
 
@@ -65,7 +72,32 @@ impl InspectServer {
     }
 
     pub fn shutdown(self) {
-        self._handle.abort();
+        // Drop is best-effort only. Privacy barriers must use shutdown_and_wait.
+    }
+
+    /// Stop accepting connections and verify that every proxy task has exited.
+    /// The handle remains owned while awaiting, so cancellation permits retry.
+    pub async fn shutdown_and_wait(&mut self) -> Result<(), String> {
+        if let Some(stop_tx) = self.stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
+        if let Some(handle) = self.handle.as_mut() {
+            let result = handle
+                .await
+                .unwrap_or_else(|_| Err("inspect_shutdown_unverified".to_string()));
+            self.shutdown_error = result.err();
+            self.handle.take();
+        }
+        self.shutdown_error.clone().map_or(Ok(()), Err)
+    }
+}
+
+impl Drop for InspectServer {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.handle {
+            // Aborting the owner drops its JoinSet, aborting all connections.
+            handle.abort();
+        }
     }
 }
 
@@ -75,22 +107,45 @@ async fn accept_loop(
     target_id: String,
     chrome_host_port: String,
     proxy_port: u16,
-) {
+    mut stop_rx: oneshot::Receiver<()>,
+) -> Result<(), String> {
+    let mut connections = JoinSet::new();
+    let mut task_failed = false;
     loop {
-        let (stream, _) = match listener.accept().await {
-            Ok(s) => s,
-            Err(_) => continue,
+        let (stream, _) = tokio::select! {
+            biased;
+            _ = &mut stop_rx => break,
+            joined = connections.join_next(), if !connections.is_empty() => {
+                task_failed |= joined.is_some_and(|result| result.is_err());
+                continue;
+            }
+            accepted = listener.accept() => match accepted {
+                Ok(s) => s,
+                Err(_) => continue,
+            },
         };
 
         let proxy = proxy.clone();
         let tid = target_id.clone();
         let chp = chrome_host_port.clone();
 
-        tokio::spawn(async move {
+        connections.spawn(async move {
             if let Err(e) = handle_connection(stream, proxy, tid, chp, proxy_port).await {
                 let _ = writeln!(std::io::stderr(), "[inspect] connection error: {}", e);
             }
         });
+    }
+    drop(listener);
+    connections.abort_all();
+    while let Some(result) = connections.join_next().await {
+        if let Err(error) = result {
+            task_failed |= !error.is_cancelled();
+        }
+    }
+    if task_failed {
+        Err("inspect_connection_cleanup_unverified".to_string())
+    } else {
+        Ok(())
     }
 }
 
@@ -221,15 +276,16 @@ async fn handle_ws_proxy(
     .map_err(|_| "Timed out waiting for attachToTarget response".to_string())?
     .map_err(|e| format!("Failed to create DevTools session: {}", e))?;
 
-    let (ws_tx, mut ws_rx) = ws_stream.split();
-    let ws_tx = Arc::new(Mutex::new(ws_tx));
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     let mut raw_rx = proxy.subscribe_raw();
-    let ws_tx_clone = ws_tx.clone();
     let session_id_clone = session_id.clone();
+    let proxy_for_output = proxy.clone();
 
     // Chrome -> DevTools: forward messages matching our session, strip sessionId
-    let mut chrome_to_devtools = tokio::spawn(async move {
+    // Keep forwarding futures inside the tracked connection task. Detached
+    // spawn handles would survive cancellation of their parent connection.
+    let chrome_to_devtools = async move {
         loop {
             let raw_msg = match raw_rx.recv().await {
                 Ok(msg) => msg,
@@ -248,19 +304,22 @@ async fn handle_ws_proxy(
                 continue;
             }
 
+            let Ok(_privacy_lease) = proxy_for_output.public_lease() else {
+                break;
+            };
+
             let stripped = strip_session_id(&raw_msg.text);
 
-            let mut tx = ws_tx_clone.lock().await;
-            if tx.send(Message::Text(stripped)).await.is_err() {
+            if ws_tx.send(Message::Text(stripped)).await.is_err() {
                 break;
             }
         }
-    });
+    };
 
     // DevTools -> Chrome: inject sessionId and forward
     let proxy_for_send = proxy.clone();
     let session_id_for_send = session_id.clone();
-    let mut devtools_to_chrome = tokio::spawn(async move {
+    let devtools_to_chrome = async move {
         while let Some(Ok(msg)) = ws_rx.next().await {
             let text = match msg {
                 Message::Text(t) => t,
@@ -273,15 +332,11 @@ async fn handle_ws_proxy(
                 break;
             }
         }
-    });
+    };
 
     tokio::select! {
-        _ = &mut chrome_to_devtools => {
-            devtools_to_chrome.abort();
-        },
-        _ = &mut devtools_to_chrome => {
-            chrome_to_devtools.abort();
-        },
+        _ = chrome_to_devtools => {},
+        _ = devtools_to_chrome => {},
     }
 
     // Clean up the CDP session so Chrome doesn't leak attached targets
@@ -322,7 +377,194 @@ fn strip_session_id(json: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::cdp::client::CdpClient;
     use super::*;
+    use serde_json::json;
+    use std::time::Duration;
+
+    async fn synthetic_proxy() -> (
+        crate::native::cdp::client::TestCdpEndpoint,
+        CdpClient,
+        JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(Message::Text(text))) = ws.next().await {
+                let request: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let result = if request["method"] == "Target.attachToTarget" {
+                    json!({"sessionId": "synthetic-inspect-session"})
+                } else {
+                    json!({"method": request["method"]})
+                };
+                let mut response = json!({"id": request["id"], "result": result});
+                if let Some(session_id) = request.get("sessionId") {
+                    response["sessionId"] = session_id.clone();
+                }
+                if ws.send(Message::Text(response.to_string())).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{addr}")).unwrap();
+        let client = fixture.connect().await.unwrap();
+        (fixture, client, peer)
+    }
+
+    #[tokio::test]
+    async fn shutdown_joins_connected_websocket_and_preserves_upstream() {
+        let (_endpoint_fixture, client, peer) = synthetic_proxy().await;
+        let mut server = InspectServer::start(
+            client.inspect_handle(),
+            "synthetic-target".into(),
+            "127.0.0.1:1".into(),
+        )
+        .await
+        .unwrap();
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/ws", server.port()))
+                .await
+                .unwrap();
+        ws.send(Message::Text(
+            json!({"id": 31, "method": "Runtime.enable"}).to_string(),
+        ))
+        .await
+        .unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(response.to_text().unwrap().contains("31"));
+        tokio::time::timeout(Duration::from_secs(2), server.shutdown_and_wait())
+            .await
+            .unwrap()
+            .unwrap();
+        server.shutdown_and_wait().await.unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap();
+        assert!(matches!(
+            closed,
+            None | Some(Err(_)) | Some(Ok(Message::Close(_)))
+        ));
+        assert!(tokio::net::TcpStream::connect(("127.0.0.1", server.port()))
+            .await
+            .is_err());
+        client
+            .send_command("Browser.getVersion", None, None)
+            .await
+            .unwrap();
+        peer.abort();
+        let _ = peer.await;
+    }
+
+    #[tokio::test]
+    async fn websocket_disconnect_finishes_forwarding_and_detaches_session() {
+        let (_endpoint_fixture, client, peer) = synthetic_proxy().await;
+        let mut server = InspectServer::start(
+            client.inspect_handle(),
+            "synthetic-target".into(),
+            "127.0.0.1:1".into(),
+        )
+        .await
+        .unwrap();
+        let mut raw_rx = client.subscribe_raw();
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/ws", server.port()))
+                .await
+                .unwrap();
+        ws.close(None).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let raw = raw_rx.recv().await.unwrap();
+                let response: serde_json::Value = serde_json::from_str(&raw.text).unwrap();
+                if response["result"]["method"] == "Target.detachFromTarget" {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        server.shutdown_and_wait().await.unwrap();
+        peer.abort();
+        let _ = peer.await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_joins_incomplete_http_connections() {
+        let (_endpoint_fixture, client, peer) = synthetic_proxy().await;
+        let mut server = InspectServer::start(
+            client.inspect_handle(),
+            "synthetic-target".into(),
+            "127.0.0.1:1".into(),
+        )
+        .await
+        .unwrap();
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", server.port()))
+            .await
+            .unwrap();
+        // Get the connection into the header reader without completing headers.
+        stream.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+        tokio::task::yield_now().await;
+        server.shutdown_and_wait().await.unwrap();
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut byte))
+            .await
+            .unwrap();
+        assert!(matches!(read, Ok(0) | Err(_)));
+        peer.abort();
+        let _ = peer.await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_failure_remains_fail_closed_on_retry() {
+        let (stop_tx, _stop_rx) = oneshot::channel();
+        let mut server = InspectServer {
+            port: 0,
+            handle: Some(tokio::spawn(async {
+                Err("synthetic_cleanup_failure".into())
+            })),
+            stop_tx: Some(stop_tx),
+            shutdown_error: None,
+        };
+        assert_eq!(
+            server.shutdown_and_wait().await.unwrap_err(),
+            "synthetic_cleanup_failure"
+        );
+        assert_eq!(
+            server.shutdown_and_wait().await.unwrap_err(),
+            "synthetic_cleanup_failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_shutdown_can_be_joined_again() {
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let (finish_tx, finish_rx) = oneshot::channel();
+        let mut server = InspectServer {
+            port: 0,
+            handle: Some(tokio::spawn(async move {
+                let _ = stop_rx.await;
+                let _ = finish_rx.await;
+                Ok(())
+            })),
+            stop_tx: Some(stop_tx),
+            shutdown_error: None,
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), server.shutdown_and_wait())
+                .await
+                .is_err()
+        );
+        assert!(server.handle.is_some());
+        finish_tx.send(()).unwrap();
+        server.shutdown_and_wait().await.unwrap();
+        assert!(server.handle.is_none());
+    }
 
     #[test]
     fn test_inject_session_id() {
