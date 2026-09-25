@@ -49,6 +49,19 @@ use runtime_profile::{
     list_runtime_profiles, runtime_status_with_user_data_dir, RuntimeProfileSummary, RuntimeStatus,
 };
 
+// `dependent_batch` executes one fully prepared command future from inside the
+// outer batch command. The command dispatcher is intentionally broad and its
+// nested poll path exceeds Tokio's 2 MiB default worker stack in release builds.
+// Nested batches are rejected, so one bounded level of nesting is the maximum.
+const DAEMON_RUNTIME_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+fn build_daemon_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(DAEMON_RUNTIME_THREAD_STACK_SIZE)
+        .build()
+}
+
 /// Exact retained identity proven before a daemon-only reconnect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedReconnectIdentity {
@@ -1814,7 +1827,7 @@ fn main() {
             libc::signal(libc::SIGPIPE, libc::SIG_IGN);
         }
         let session = env::var("AGENT_BROWSER_SESSION").unwrap_or_else(|_| "default".to_string());
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let rt = build_daemon_runtime().expect("Failed to create tokio runtime");
         rt.block_on(native::daemon::run_daemon(&session));
         return;
     }
@@ -3333,6 +3346,34 @@ mod tests {
     }
     use super::*;
     use crate::test_utils::EnvGuard;
+
+    #[test]
+    fn daemon_runtime_worker_handles_dependent_batch_without_stack_overflow() {
+        let runtime = build_daemon_runtime().expect("daemon runtime should build");
+        let result = runtime.block_on(async {
+            tokio::spawn(async {
+                let mut state = crate::native::actions::DaemonState::new();
+                crate::native::actions::execute_command(
+                    &serde_json::json!({
+                        "id": "daemon-stack-regression",
+                        "action": "dependent_batch",
+                        "bail": true,
+                        "commands": [
+                            { "id": "step-1", "action": "__test_sleep", "ms": 1 }
+                        ]
+                    }),
+                    &mut state,
+                )
+                .await
+            })
+            .await
+            .expect("dependent batch worker should stay alive")
+        });
+
+        assert_eq!(result["success"], true);
+        assert_eq!(result["data"]["completed"], 1);
+        assert_eq!(result["data"]["hadError"], false);
+    }
 
     #[test]
     fn test_parse_proxy_simple() {
