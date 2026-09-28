@@ -512,12 +512,23 @@ fn browser_capability_evidence_for_access_plan(
         })
         .cloned()
         .collect::<Vec<_>>();
+    let selected_executable_id = selected_preference_binding
+        .as_ref()
+        .and_then(|binding| string_field(binding, "preferredExecutableId"));
+    let selected_capability_id = selected_preference_binding
+        .as_ref()
+        .and_then(|binding| string_field(binding, "preferredCapabilityId"));
+    let selected_host_id = selected_preference_binding
+        .as_ref()
+        .and_then(|binding| string_field(binding, "preferredHostId"));
     let matching_executables = registry
         .browser_executables
         .iter()
         .filter(|executable| {
             browser_build_label.is_none_or(|label| {
                 string_field(executable, "buildLabel").is_some_and(|build| build == label)
+            }) && selected_executable_id.as_ref().is_none_or(|selected_id| {
+                string_field(executable, "id").is_some_and(|id| id == *selected_id)
             })
         })
         .cloned()
@@ -539,10 +550,24 @@ fn browser_capability_evidence_for_access_plan(
         .browser_capabilities
         .iter()
         .filter(|capability| {
-            string_field(capability, "executableId").is_some_and(|id| {
-                executable_ids.contains(&id) || executable_ids_from_bindings.contains(&id)
-            }) || string_field(capability, "id")
-                .is_some_and(|id| capability_ids_from_bindings.contains(&id))
+            selected_capability_id.as_ref().map_or_else(
+                || {
+                    string_field(capability, "executableId").is_some_and(|id| {
+                        executable_ids.contains(&id) || executable_ids_from_bindings.contains(&id)
+                    }) || string_field(capability, "id")
+                        .is_some_and(|id| capability_ids_from_bindings.contains(&id))
+                },
+                |selected_id| {
+                    string_field(capability, "id").is_some_and(|id| id == *selected_id)
+                        && selected_executable_id.as_ref().is_none_or(|executable_id| {
+                            string_field(capability, "executableId")
+                                .is_some_and(|id| id == *executable_id)
+                        })
+                        && selected_host_id.as_ref().is_none_or(|host_id| {
+                            string_field(capability, "hostId").is_some_and(|id| id == *host_id)
+                        })
+                },
+            )
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -572,11 +597,20 @@ fn browser_capability_evidence_for_access_plan(
                 string_field(compatibility, "profileId")
                     .is_some_and(|candidate| candidate == *profile_id)
             });
-            let browser_binding_matches = string_field(compatibility, "hostId")
-                .is_some_and(|id| host_ids.contains(&id))
-                || string_field(compatibility, "executableId").is_some_and(|id| {
-                    executable_ids.contains(&id) || executable_ids_from_bindings.contains(&id)
-                });
+            let compatibility_executable_id = string_field(compatibility, "executableId");
+            let compatibility_host_id = string_field(compatibility, "hostId");
+            let browser_binding_matches = if let Some(selected_id) = selected_executable_id.as_ref()
+            {
+                compatibility_executable_id.as_ref() == Some(selected_id)
+                    && selected_host_id
+                        .as_ref()
+                        .is_none_or(|host_id| compatibility_host_id.as_ref() == Some(host_id))
+            } else if let Some(executable_id) = compatibility_executable_id {
+                executable_ids.contains(&executable_id)
+                    || executable_ids_from_bindings.contains(&executable_id)
+            } else {
+                compatibility_host_id.is_some_and(|id| host_ids.contains(&id))
+            };
             profile_matches && browser_binding_matches
         })
         .cloned()
@@ -585,12 +619,22 @@ fn browser_capability_evidence_for_access_plan(
         .validation_evidence
         .iter()
         .filter(|evidence| {
-            string_field(evidence, "hostId").is_some_and(|id| host_ids.contains(&id))
-                || string_field(evidence, "executableId").is_some_and(|id| {
-                    executable_ids.contains(&id) || executable_ids_from_bindings.contains(&id)
-                })
-                || string_field(evidence, "capabilityId")
-                    .is_some_and(|id| capability_ids.contains(&id))
+            if let Some(selected_id) = selected_executable_id.as_ref() {
+                string_field(evidence, "executableId").as_ref() == Some(selected_id)
+                    && selected_host_id.as_ref().is_none_or(|host_id| {
+                        string_field(evidence, "hostId").as_ref() == Some(host_id)
+                    })
+                    && selected_capability_id.as_ref().is_none_or(|capability_id| {
+                        string_field(evidence, "capabilityId").as_ref() == Some(capability_id)
+                    })
+            } else {
+                string_field(evidence, "hostId").is_some_and(|id| host_ids.contains(&id))
+                    || string_field(evidence, "executableId").is_some_and(|id| {
+                        executable_ids.contains(&id) || executable_ids_from_bindings.contains(&id)
+                    })
+                    || string_field(evidence, "capabilityId")
+                        .is_some_and(|id| capability_ids.contains(&id))
+            }
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -5302,6 +5346,156 @@ mod tests {
             plan["decision"]["launchPosture"]["browserBuildSelection"]["profileCompatibility"]
                 ["status"],
             "not_declared"
+        );
+    }
+
+    #[test]
+    fn selected_binding_scopes_same_host_compatibility_and_validation_evidence() {
+        let state = ServiceState {
+            profiles: BTreeMap::from([(
+                "litscout-elsevier-stealth".to_string(),
+                BrowserProfile {
+                    id: "litscout-elsevier-stealth".to_string(),
+                    name: "LitScout Elsevier stealth".to_string(),
+                    shared_service_ids: vec!["LitScout".to_string()],
+                    target_service_ids: vec!["elsevier".to_string()],
+                    browser_build: Some(BrowserBuild::StealthcdpChromium),
+                    ..BrowserProfile::default()
+                },
+            )]),
+            browser_capability_registry: BrowserCapabilityRegistry {
+                browser_hosts: vec![json!({
+                    "id": "linux-local",
+                    "name": "Local Linux"
+                })],
+                browser_executables: vec![
+                    json!({
+                        "id": "fortress-litscout",
+                        "hostId": "linux-local",
+                        "buildLabel": "stealthcdp_chromium"
+                    }),
+                    json!({
+                        "id": "retired-fortress-test",
+                        "hostId": "linux-local",
+                        "buildLabel": "stealthcdp_chromium"
+                    }),
+                ],
+                browser_capabilities: vec![
+                    json!({
+                        "id": "fortress-litscout-cdp",
+                        "hostId": "linux-local",
+                        "executableId": "fortress-litscout",
+                        "cdpSupported": true
+                    }),
+                    json!({
+                        "id": "retired-fortress-cdp",
+                        "hostId": "linux-local",
+                        "executableId": "retired-fortress-test",
+                        "cdpSupported": true
+                    }),
+                ],
+                profile_compatibility: vec![
+                    json!({
+                        "id": "litscout-fortress-compatible",
+                        "profileId": "litscout-elsevier-stealth",
+                        "hostId": "linux-local",
+                        "executableId": "fortress-litscout",
+                        "compatible": true
+                    }),
+                    json!({
+                        "id": "litscout-retired-incompatible",
+                        "profileId": "litscout-elsevier-stealth",
+                        "hostId": "linux-local",
+                        "executableId": "retired-fortress-test",
+                        "compatible": false
+                    }),
+                ],
+                browser_preference_bindings: vec![json!({
+                    "id": "litscout-elsevier-primary",
+                    "scope": "service",
+                    "targetServiceIds": ["elsevier"],
+                    "serviceNames": ["LitScout"],
+                    "preferredHostId": "linux-local",
+                    "preferredExecutableId": "fortress-litscout",
+                    "preferredCapabilityId": "fortress-litscout-cdp",
+                    "browserBuild": "stealthcdp_chromium",
+                    "priority": 300
+                })],
+                validation_evidence: vec![
+                    json!({
+                        "id": "litscout-fortress-passed",
+                        "hostId": "linux-local",
+                        "executableId": "fortress-litscout",
+                        "capabilityId": "fortress-litscout-cdp",
+                        "kind": "launch",
+                        "state": "passed"
+                    }),
+                    json!({
+                        "id": "retired-fortress-failed",
+                        "hostId": "linux-local",
+                        "executableId": "retired-fortress-test",
+                        "capabilityId": "retired-fortress-cdp",
+                        "kind": "launch",
+                        "state": "failed"
+                    }),
+                ],
+                ..BrowserCapabilityRegistry::default()
+            },
+            ..ServiceState::default()
+        };
+
+        let plan = service_access_plan_for_state(
+            &state,
+            ServiceAccessPlanRequest {
+                service_name: Some("LitScout".to_string()),
+                target_service_ids: vec!["elsevier".to_string()],
+                browser_build: Some(BrowserBuild::StealthcdpChromium),
+                browser_build_explicit: true,
+                ..ServiceAccessPlanRequest::default()
+            },
+        );
+
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["selectedPreferenceBinding"]["id"],
+            "litscout-elsevier-primary"
+        );
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["browserExecutables"][0]["id"],
+            "fortress-litscout"
+        );
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["browserCapabilities"][0]["id"],
+            "fortress-litscout-cdp"
+        );
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["profileCompatibility"][0]["id"],
+            "litscout-fortress-compatible"
+        );
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["validationEvidence"][0]["id"],
+            "litscout-fortress-passed"
+        );
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["counts"]["browserExecutables"],
+            1
+        );
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["counts"]["profileCompatibility"],
+            1
+        );
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["counts"]["validationEvidence"],
+            1
+        );
+        assert_eq!(
+            plan["decision"]["launchPosture"]["browserBuildSelection"]["profileCompatibility"]
+                ["status"],
+            "compatible"
+        );
+        assert_eq!(
+            plan["decision"]["launchPosture"]["browserBuildSelection"]["validationEvidence"]
+                ["status"],
+            "passed"
         );
     }
 
