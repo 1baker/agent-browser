@@ -17,6 +17,7 @@ const options = {
   agentBrowserBin: process.env.AGENT_BROWSER_INSTALL_BIN
     || resolve(homedir(), '.local', 'bin', 'agent-browser'),
   agentName: 'codex',
+  browserId: '',
   browserBuild: 'stock_chrome',
   jobTimeoutMs: 120000,
   json: false,
@@ -36,10 +37,12 @@ for (let index = 0; index < process.argv.slice(2).length; index += 1) {
   if (arg === '--') continue;
   if (arg === '--agent-browser-bin') options.agentBrowserBin = requiredValue(args, ++index, arg);
   else if (arg === '--agent-name') options.agentName = requiredValue(args, ++index, arg);
+  else if (arg === '--browser-id') options.browserId = requiredValue(args, ++index, arg);
   else if (arg === '--browser-build') options.browserBuild = requiredValue(args, ++index, arg);
   else if (arg === '--job-timeout-ms') options.jobTimeoutMs = requiredValue(args, ++index, arg);
   else if (arg === '--json') options.json = true;
   else if (arg === '--runtime-profile') options.runtimeProfile = requiredValue(args, ++index, arg);
+  else if (arg === '--session-name') options.sessionName = requiredValue(args, ++index, arg);
   else if (arg === '--retained-requirement') options.retainedRequirement = requiredValue(args, ++index, arg);
   else if (arg === '--rotate-stale-requirement-sha256') {
     options.rotateStaleRequirementSha256 = requiredValue(args, ++index, arg);
@@ -154,6 +157,8 @@ Options:
   --url <url>                 Exact canonical URL to open and retain.
   --url-prefix <url>          Reviewed origin and path boundary containing the exact URL.
   --runtime-profile <id>      Required managed runtime profile.
+  --browser-id <id>           Reuse the exact service-owned browser selected by an access plan.
+  --session-name <name>       Reuse the exact service session selected by an access plan.
   --retained-requirement <path>
                               Private durable requirement path.
   --rotate-stale-requirement-sha256 <sha256>

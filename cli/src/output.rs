@@ -5095,7 +5095,7 @@ agent-browser install - Install browser binaries
 Usage: agent-browser install [--with-deps] [--with-remote-view-privileges]
        agent-browser install workstation <--dry-run|--apply> [--json] [--dashboard-port <port>] [--guacamole-port <port>]
        agent-browser install workstation retained-browser-status [--json]
-       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--rotate-stale-requirement-sha256 <sha256>] [--json]
+       agent-browser install workstation prepare-retained-browser --url <url> --url-prefix <prefix> --runtime-profile <profile> [--browser-id <id> --session-name <name>] [--rotate-stale-requirement-sha256 <sha256>] [--json]
        agent-browser install workstation reconcile [--json]
        agent-browser install workstation backup [--json]
        agent-browser install stealthcdp-chromium [--force]
@@ -5197,7 +5197,7 @@ Examples:
   agent-browser install workstation --dry-run --json
   agent-browser install workstation --apply --json
   agent-browser install workstation retained-browser-status --json
-  agent-browser install workstation prepare-retained-browser --url https://example.com/project/conversation --url-prefix https://example.com/project/ --runtime-profile work --json
+  agent-browser install workstation prepare-retained-browser --url https://example.com/project/conversation --url-prefix https://example.com/project/ --runtime-profile work --browser-id session:work --session-name work --json
   agent-browser install workstation prepare-retained-browser --url https://example.com/project/conversation --url-prefix https://example.com/project/ --runtime-profile work --rotate-stale-requirement-sha256 <sha256> --json
   agent-browser install workstation reconcile --json
   agent-browser install workstation backup --json

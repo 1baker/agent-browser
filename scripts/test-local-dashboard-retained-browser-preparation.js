@@ -12,15 +12,23 @@ const request = normalizeRetainedBrowserPreparationRequest({
   url: 'https://chatgpt.com/g/g-p-workshop/c/conversation-id',
   urlPrefix: 'https://chatgpt.com/g/g-p-workshop/',
   runtimeProfile: 'chatgpt-pro',
+  browserId: 'session:dashboard-service-backend',
+  sessionName: 'dashboard-service-backend',
 });
 const remoteArgs = buildRetainedBrowserRemoteViewArgs(request);
 assert.deepEqual(remoteArgs.slice(0, 6), [
   '--json',
   '--session',
-  'chatgpt-pro',
+  'dashboard-service-backend',
   'remote-view',
   'open',
   request.url,
+]);
+assert.deepEqual(remoteArgs.slice(-4), [
+  '--browser-id',
+  'session:dashboard-service-backend',
+  '--session-name',
+  'dashboard-service-backend',
 ]);
 for (const forbidden of ['click', 'type', 'fill', 'evaluate', 'send', 'submit']) {
   assert.equal(remoteArgs.includes(forbidden), false);
@@ -55,7 +63,7 @@ const payload = {
     status: 'opened',
     dryRun: false,
     browserId: 'session:workshop',
-    sessionName: 'chatgpt-pro',
+    sessionName: 'dashboard-service-backend',
     handoffUrl: 'https://desktop.example.test/remote-view/r1',
     intent: { url: request.url, runtimeProfile: 'chatgpt-pro' },
     operatorVisible: {
@@ -75,7 +83,7 @@ const payload = {
     sharedAcquisition: {
       browserId: 'session:workshop',
       profileId: 'chatgpt-pro',
-      sessionName: 'chatgpt-pro',
+      sessionName: 'dashboard-service-backend',
     },
   },
 };

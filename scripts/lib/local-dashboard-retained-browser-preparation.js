@@ -5,6 +5,7 @@ import {
 } from './local-dashboard-retained-browser-discovery.js';
 
 const SAFE_PROFILE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const SAFE_BROWSER_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]*$/;
 const SAFE_BROWSER_BUILDS = new Set(['stock_chrome', 'stealthcdp_chromium']);
 
 /**
@@ -35,11 +36,26 @@ export function normalizeRetainedBrowserPreparationRequest(input) {
       'The retained browser build must be stock_chrome or stealthcdp_chromium',
     );
   }
+  const browserId = String(input.browserId || '').trim();
+  if (browserId && !SAFE_BROWSER_ID.test(browserId)) {
+    throw preparationError(
+      'retained_browser_preparation_browser_id_invalid',
+      'A browser reuse hint must be a bounded browser id',
+    );
+  }
+  const sessionName = String(input.sessionName || runtimeProfile).trim();
+  if (!SAFE_PROFILE_ID.test(sessionName)) {
+    throw preparationError(
+      'retained_browser_preparation_session_name_invalid',
+      'A safe session name is required when reusing a browser',
+    );
+  }
   return {
     url: exactUrl,
     urlPrefix,
     runtimeProfile,
-    sessionName: runtimeProfile,
+    browserId: browserId || null,
+    sessionName,
     browserBuild,
     serviceName: boundedLabel(input.serviceName, 'AuraCall'),
     agentName: boundedLabel(input.agentName, 'codex'),
@@ -70,6 +86,8 @@ export function buildRetainedBrowserRemoteViewArgs(request) {
     request.taskName,
     '--job-timeout-ms',
     String(request.jobTimeoutMs),
+    ...(request.browserId ? ['--browser-id', request.browserId] : []),
+    ...(request.sessionName ? ['--session-name', request.sessionName] : []),
   ];
 }
 

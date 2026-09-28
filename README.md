@@ -1524,14 +1524,17 @@ agent-browser install workstation prepare-retained-browser \
   --url https://chatgpt.com/g/WORKSHOP_PROJECT_ID/c/CONVERSATION_ID \
   --url-prefix https://chatgpt.com/g/WORKSHOP_PROJECT_ID/ \
   --runtime-profile chatgpt-pro \
+  --browser-id session:dashboard-service-backend \
+  --session-name dashboard-service-backend \
   --json
 ```
 
 Preparation invokes only route-bound `remote-view open`, verifies the exact
 rendered URL, profile, target, browser, session, and operator-visible route,
 then requires one exact-URL and exact-profile discovery match before pinning.
-The daemon session is deterministically the runtime-profile id, preventing an
-older ambient `default` daemon or unrelated browser lane from being reused.
+When an access plan selected an existing browser, pass its `browserId` and
+`sessionName` hints so preparation reuses that exact lane instead of attempting
+a duplicate profile process.
 It exposes no click, type, fill, evaluate, upload, send, submit, or prompt
 action. Any URL, profile, identity, or uniqueness mismatch fails closed.
 The controller and its bounded libraries are versioned workstation support

@@ -113,12 +113,12 @@ authority file is written. The durable requirement records the discovered
 target's exact URL and stable identity, never the broader prefix.
 
 To remove the manual navigation handoff, run
-<code>agent-browser install workstation prepare-retained-browser --url EXACT_URL --url-prefix REVIEWED_PROJECT_PREFIX --runtime-profile PROFILE --json</code>.
+<code>agent-browser install workstation prepare-retained-browser --url EXACT_URL --url-prefix REVIEWED_PROJECT_PREFIX --runtime-profile PROFILE --browser-id BROWSER_ID --session-name SESSION_NAME --json</code> when the no-launch access plan selected an existing browser lane.
 The command uses only route-bound <code>remote-view open</code>, verifies exact
 rendered URL, profile, target, browser, session, and operator-visible route
 agreement, then requires one exact-URL and exact-profile discovery match before
-pinning. Its daemon session is the runtime-profile id, so an ambient default
-lane cannot satisfy preparation. It has no page interaction or prompt-submission action.
+pinning. The optional browser and session hints bind preparation to the exact
+selected lane and prevent a duplicate profile process. It has no page interaction or prompt-submission action.
 The preparation controller is included in the versioned source-free workstation
 support payload and does not require the repository checkout.
 

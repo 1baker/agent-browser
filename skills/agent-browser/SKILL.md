@@ -92,12 +92,12 @@ incomplete PID/profile identity, degraded health, or origin/path drift. It does
 not navigate, launch, attach, type, click, or send.
 
 When manual navigation itself is the handoff gap, use
-`agent-browser install workstation prepare-retained-browser --url <exact-url> --url-prefix <reviewed-origin-and-path-prefix> --runtime-profile <profile> --json`.
+`agent-browser install workstation prepare-retained-browser --url <exact-url> --url-prefix <reviewed-origin-and-path-prefix> --runtime-profile <profile> --browser-id <id> --session-name <name> --json` when its no-launch access plan selected an existing browser. Omit the reuse hints only for a new lane.
 It invokes only route-bound `remote-view open`, verifies exact rendered URL,
 profile, target, browser, session, and operator-visible route agreement, then
 requires one exact-URL and exact-profile discovery match before the same
-marker-first pin. The daemon session is deterministically the runtime-profile
-id, so an unrelated ambient daemon cannot satisfy the proof. It exposes no
+marker-first pin. When reuse hints are supplied, the controller binds the
+exact access-plan browser and session rather than creating an ambient lane. It exposes no
 click, type, fill, evaluate, upload, send,
 submit, or prompt action and fails closed on any mismatch or ambiguity.
 The installed versioned controller is source-free and does not depend on pnpm

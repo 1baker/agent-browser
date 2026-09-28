@@ -232,11 +232,11 @@ as a failed user-service run. Set
 alternate private path.
 
 When the operator should not need to navigate the managed desktop first, use
-<code>agent-browser install workstation prepare-retained-browser --url EXACT_URL --url-prefix REVIEWED_PREFIX --runtime-profile PROFILE --json</code>.
+<code>agent-browser install workstation prepare-retained-browser --url EXACT_URL --url-prefix REVIEWED_PREFIX --runtime-profile PROFILE --browser-id BROWSER_ID --session-name SESSION_NAME --json</code> when an access plan recommends reuse.
 The versioned source-free controller uses only route-bound navigation, verifies
 the exact rendered identity and profile, then uniquely rediscovers and
-marker-first pins that lane. It binds the daemon session to the runtime-profile
-id, exposes no page-interaction or prompt action,
+marker-first pins that lane. Optional reuse hints bind the exact browser and
+session selected by the access plan, expose no page-interaction or prompt action,
 and does not require a repository checkout.
 Add <code>--rotate-stale-requirement-sha256 CURRENT_SHA256</code> only when the
 native status command has proved the prior daemon is dead and the current
