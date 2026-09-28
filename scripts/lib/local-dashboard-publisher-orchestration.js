@@ -476,6 +476,15 @@ function validateOptions(options) {
   if (options.recoverReplacedRetainedBrowser && !options.recoverOnly) {
     throw new Error('--recover-replaced-retained-browser requires --recover-only');
   }
+  if (options.recoverToBackup && !options.recoverOnly) {
+    throw new Error('--recover-to-backup requires --recover-only');
+  }
+  if (options.recoverToBackup && !Array.isArray(options.expectedSessions)) {
+    throw new Error('--recover-to-backup requires --expected-sessions <comma-separated-names|none>');
+  }
+  if (options.recoverToBackup && (options.prebuiltBin || options.expectedSha256)) {
+    throw new Error('--recover-to-backup cannot be combined with a prebuilt candidate');
+  }
   if (!options.smokeBrowser && options.requireBrowserSmoke) {
     throw new Error('--skip-browser and --require-browser-smoke cannot be used together');
   }
@@ -565,6 +574,20 @@ async function recoverIncompletePublication({
     report.retainedBrowserExpectation = cloneJson(retainedBrowserExpectation);
   }
   report.service.before = adapters.serviceStatus();
+  if (options.recoverToBackup) {
+    await recoverReplacementToBackup({
+      adapters,
+      artifactEvidence,
+      commit,
+      installBin,
+      journalRecord,
+      options,
+      pinnedRetainedBrowserExpectation,
+      report,
+      workstationProvenance,
+    });
+    return;
+  }
   let partialSourceRecoveryVerified = false;
   try {
     const discoveredHandoffs = adapters.discoverPreparedRuntimeHandoffs(
@@ -833,6 +856,226 @@ async function recoverIncompletePublication({
     };
   } finally {
     report.service.after = adapters.serviceStatus();
+  }
+}
+
+async function recoverReplacementToBackup({
+  adapters,
+  artifactEvidence,
+  commit,
+  installBin,
+  journalRecord,
+  options,
+  pinnedRetainedBrowserExpectation,
+  report,
+  workstationProvenance,
+}) {
+  if (options.recoverToBackup !== journalRecord.transactionId) {
+    throw new Error('--recover-to-backup must name the exact incomplete transaction');
+  }
+  const retryingVerifiedRollback = journalRecord.phase === 'recovery_blocked'
+    && journalRecord.recoveryError === 'rollback_to_backup_failed';
+  if (journalRecord.phase !== 'publication_failed_replacement_retained'
+    && !retryingVerifiedRollback) {
+    throw new Error('--recover-to-backup requires a failed retained replacement or its exact rollback retry');
+  }
+  if (journalRecord.handoffOutcomeUncertain === true) {
+    throw new Error('Cannot roll back a replacement with uncertain prior handoff evidence');
+  }
+  const replacement = artifactEvidence?.replacement;
+  const backup = artifactEvidence?.backup;
+  if (replacement?.verified !== true || backup?.verified !== true
+    || typeof backup.path !== 'string' || !backup.path) {
+    throw new Error('Verified replacement and backup evidence are required for rollback recovery');
+  }
+  if (!adapters.pathExists(backup.path)
+    || adapters.sha256File(backup.path) !== backup.sha256) {
+    throw new Error('Verified publication backup is missing or changed');
+  }
+  if (adapters.sha256File(installBin) !== replacement.actualSha256) {
+    throw new Error('Installed runtime no longer matches the failed replacement');
+  }
+  if (!workstationProvenance) {
+    throw new Error('Workstation provenance snapshot is required for rollback recovery');
+  }
+
+  const priorPrepared = Array.isArray(journalRecord.handoffs)
+    ? journalRecord.handoffs.map((item) => item?.sessionName).filter(Boolean).sort()
+    : [];
+  const priorResumed = Array.isArray(journalRecord.resumedHandoffs)
+    ? journalRecord.resumedHandoffs.map((item) => item?.sessionName).filter(Boolean).sort()
+    : [];
+  if (priorPrepared.length === 0
+    || new Set(priorPrepared).size !== priorPrepared.length
+    || JSON.stringify(priorPrepared) !== JSON.stringify(priorResumed)) {
+    throw new Error('Every prior retained session must be proven resumed before rollback recovery');
+  }
+
+  requireExpectedPublicationSessions(options.expectedSessions, adapters.runtimeSessionNames());
+  if (pinnedRetainedBrowserExpectation) {
+    report.retainedBrowserExpectation.before =
+      await adapters.verifyRetainedBrowserExpectation(installBin, {
+        expectation: pinnedRetainedBrowserExpectation,
+        stage: 'rollback_recovery_preflight',
+      });
+  }
+
+  report.handoffs = {
+    prepared: [],
+    resumed: [],
+    rollbackResumed: [],
+    retiredIdleSessions: [],
+    unsupportedActiveSessions: [],
+  };
+  let dashboardQuiesced = false;
+  let replacementInstalled = true;
+  try {
+    const quiesceSessions = await adapters.prepareQuiesceSessions(options.expectedSessions);
+    commit('rollback_recovery_quiesce_admitted', {
+      rollbackRecovery: {
+        transactionId: journalRecord.transactionId,
+        expectedSessions: [...options.expectedSessions],
+        quiesceSessions: cloneJson(quiesceSessions),
+      },
+    });
+    await adapters.quiesceDashboardForRuntimeHandoff();
+    dashboardQuiesced = true;
+    const handoffSessions = quiesceSessions
+      ? await adapters.verifyQuiesceSessions(quiesceSessions)
+      : options.expectedSessions;
+    commit('rollback_recovery_quiesced', {
+      dashboardQuiesced: true,
+      rollbackRecoveryHandoffSessions: [...handoffSessions],
+    });
+    commit('rollback_recovery_handoff_admitted');
+    requireExpectedPublicationSessions(handoffSessions, adapters.runtimeSessionNames());
+    await adapters.prepareRuntimeHandoffs(backup.path, installBin, handoffSessions);
+    await adapters.verifyRuntimeSessionsRetired?.();
+    commit('rollback_recovery_handoffs_prepared', {
+      rollbackRecoveryHandoffs: cloneJson(report.handoffs.prepared),
+    });
+
+    commit('rollback_recovery_replacement_admitted');
+    await adapters.installBinaryAtomically(
+      backup.path,
+      installBin,
+      backup.mode ?? 0o755,
+      backup.sha256,
+    );
+    replacementInstalled = false;
+    const restoredSha256 = adapters.sha256File(installBin);
+    if (restoredSha256 !== backup.sha256) {
+      throw new Error('Rollback recovery installed binary hash mismatch');
+    }
+    artifactEvidence.restoration = {
+      path: installBin,
+      sourcePath: backup.path,
+      expectedSha256: backup.sha256,
+      actualSha256: restoredSha256,
+      status: 'verified',
+      verified: true,
+    };
+    commit('rollback_recovery_replacement_verified', {
+      artifactEvidence: cloneJson(artifactEvidence),
+    });
+
+    commit('rollback_recovery_provenance_admitted');
+    await adapters.applyWorkstationProvenance(workstationProvenance, {
+      selection: 'source',
+      installBin,
+    });
+    commit('rollback_recovery_provenance_installed');
+
+    commit('rollback_recovery_resume_admitted');
+    await adapters.resumeRuntimeHandoffs(installBin);
+    if (pinnedRetainedBrowserExpectation) {
+      report.retainedBrowserExpectation.afterHandoff =
+        await adapters.verifyRetainedBrowserExpectation(installBin, {
+          expectation: pinnedRetainedBrowserExpectation,
+          stage: 'rollback_recovery_post_handoff',
+        });
+    }
+    commit('rollback_recovery_handoffs_resumed', {
+      rollbackRecoveryHandoffs: cloneJson(report.handoffs.prepared),
+      rollbackRecoveryResumedHandoffs: cloneJson(report.handoffs.resumed),
+      retainedBrowserExpectation: cloneJson(report.retainedBrowserExpectation),
+    });
+
+    commit('rollback_recovery_dashboard_restart_admitted');
+    await adapters.restartOrStartDashboard(installBin, { restoring: true });
+    commit('rollback_recovery_dashboard_restarted');
+    report.smoke = await adapters.runHttpReadinessSmoke(installBin);
+    report.runtimeManifest = await adapters.verifyRuntimeManifestReadback(
+      installBin,
+      report.smoke.runtimeManifest,
+    );
+    if (pinnedRetainedBrowserExpectation) {
+      report.retainedBrowserExpectation.final =
+        await adapters.verifyRetainedBrowserExpectation(installBin, {
+          expectation: pinnedRetainedBrowserExpectation,
+          stage: 'rollback_recovery_final_readiness',
+        });
+    }
+    await adapters.verifyWorkstationProvenance(workstationProvenance, {
+      selection: 'source',
+      installBin,
+    });
+    report.installDoctor = await adapters.verifyInstalledDoctor(installBin, {
+      journalRecord: adapters.publicationJournal.read(),
+    });
+    commit('recovered_rolled_back', {
+      artifactEvidence: cloneJson(artifactEvidence),
+      retainedBrowserExpectation: cloneJson(report.retainedBrowserExpectation),
+      rollbackRecoveryHandoffs: cloneJson(report.handoffs.prepared),
+      rollbackRecoveryResumedHandoffs: cloneJson(report.handoffs.resumed),
+      readiness: {
+        smoke: cloneJson(report.smoke),
+        runtimeManifest: cloneJson(report.runtimeManifest),
+        installDoctor: cloneJson(report.installDoctor),
+      },
+    });
+    report.restoredBackup = true;
+    report.recovery = {
+      transactionId: journalRecord.transactionId,
+      result: 'recovered_rolled_back',
+      installedSha256: restoredSha256,
+    };
+  } catch (error) {
+    report.rollbackRecoveryError = errorMessage(error);
+    try {
+      const installedSha256 = adapters.sha256File(installBin);
+      const recoveryBin = installedSha256 === backup.sha256
+        ? installBin
+        : installedSha256 === replacement.actualSha256 ? installBin : null;
+      if (recoveryBin && report.handoffs.prepared.length > 0
+        && report.handoffs.resumed.length < report.handoffs.prepared.length) {
+        await adapters.resumeRuntimeHandoffs(recoveryBin);
+      }
+      if (dashboardQuiesced) {
+        await adapters.restartOrStartDashboard(installBin, { restoring: !replacementInstalled });
+      }
+      if (pinnedRetainedBrowserExpectation) {
+        report.retainedBrowserExpectation.final =
+          await adapters.verifyRetainedBrowserExpectation(installBin, {
+            expectation: pinnedRetainedBrowserExpectation,
+            stage: 'rollback_recovery_failure_readiness',
+          });
+      }
+    } catch (recoveryError) {
+      report.rollbackRecoverySecondaryError = errorMessage(recoveryError);
+    }
+    commit('recovery_blocked', {
+      recoveryError: 'rollback_to_backup_failed',
+      rollbackRecoveryError: report.rollbackRecoveryError,
+      rollbackRecoverySecondaryError: report.rollbackRecoverySecondaryError ?? null,
+      artifactEvidence: cloneJson(artifactEvidence),
+      rollbackRecoveryHandoffs: cloneJson(report.handoffs.prepared),
+      rollbackRecoveryResumedHandoffs: cloneJson(report.handoffs.resumed),
+      retainedBrowserExpectation: cloneJson(report.retainedBrowserExpectation),
+    });
+    throw error;
+  } finally {
+    if (dashboardQuiesced) report.service.after = adapters.serviceStatus();
   }
 }
 

@@ -100,6 +100,7 @@ const options = {
   recoverOnly: false,
   recoverInterlockReceipt: null,
   recoverReplacedRetainedBrowser: null,
+  recoverToBackup: null,
   retainedBrowserStatus: false,
   retainedRequirementPath: process.env.AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT
     || resolve(homedir(), '.agent-browser', 'publications', 'local-dashboard-retained-browser.json'),
@@ -165,6 +166,8 @@ for (let index = 0; index < args.length; index += 1) {
     options.recoverInterlockReceipt = requiredValue(args, ++index, arg);
   } else if (arg === '--recover-replaced-retained-browser') {
     options.recoverReplacedRetainedBrowser = requiredValue(args, ++index, arg);
+  } else if (arg === '--recover-to-backup') {
+    options.recoverToBackup = requiredValue(args, ++index, arg);
   } else if (arg === '--retained-browser-status') {
     options.retainedBrowserStatus = true;
   } else if (arg === '--retained-requirement') {
@@ -201,6 +204,12 @@ if (selectedOperations > 1) {
 }
 if (options.recoverReplacedRetainedBrowser && !options.recoverOnly) {
   fail('--recover-replaced-retained-browser requires --recover-only');
+}
+if (options.recoverToBackup && !options.recoverOnly) {
+  fail('--recover-to-backup requires --recover-only');
+}
+if (options.recoverToBackup && options.prebuiltBin) {
+  fail('--recover-to-backup cannot be combined with --prebuilt-bin');
 }
 try {
   const retainedExpectationRequested = [
@@ -683,7 +692,15 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin, expectedSessions = null)
         continue;
       }
 
-      const serviceReadback = serviceBrowserForSession(daemonClientBin, sessionName);
+      let serviceReadback = serviceBrowserForSession(daemonClientBin, sessionName);
+      // The daemon may exit between resolving /proc/<pid>/exe and spawning the
+      // ownership readback. Retry only that exact stale-process race through
+      // the already verified installed rollback client.
+      if (!serviceReadback.success
+        && daemonClientBin !== rollbackBin
+        && /\bENOENT\b/.test(serviceReadback.error || '')) {
+        serviceReadback = serviceBrowserForSession(rollbackBin, sessionName);
+      }
       if (!serviceReadback.success) {
         throw new Error(
           `Could not prove whether daemon session '${sessionName}' owns a browser before executable replacement: ` +
@@ -1668,6 +1685,10 @@ Options:
                               With --recover-only, explicitly acknowledge an exited retained
                               process after verifying one replacement target at the same session,
                               profile, and conversation URL. The identity loss remains journaled.
+  --recover-to-backup <transaction-id>
+                              With --recover-only, re-handoff the exact current sessions and
+                              restore the verified pre-publication binary and workstation record.
+                              Requires --expected-sessions with the fresh complete inventory.
   --prebuilt-bin <absolute-path>
                               Publish reviewed embedded-dashboard bytes without rebuilding.
   --expected-sha256 <sha256>  Required lowercase digest for --prebuilt-bin.
