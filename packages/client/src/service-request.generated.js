@@ -12,6 +12,7 @@ export const SERVICE_REQUEST_ACTIONS = [
   "probe",
   "tab_handle_refresh",
   "tab_handle_release",
+  "tab_reopen",
   "ui_action",
   "network_capture",
   "file_transfer",

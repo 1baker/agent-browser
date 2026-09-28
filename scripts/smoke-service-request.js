@@ -19,6 +19,7 @@ import {
   evaluateServiceTab,
   postServiceRequest,
   releaseServiceTabHandle,
+  reopenServiceTab,
   requestServiceTab,
 } from '../packages/client/src/service-request.js';
 import {
@@ -446,6 +447,7 @@ try {
     agentName,
     taskName: 'releaseFirstSharedTabSmoke',
     serviceTabHandle: firstSharedHandle,
+    requirePhysicalClose: true,
     jobTimeoutMs: 120000,
   });
   assert(releaseResponse.success === true, `shared tab release failed: ${JSON.stringify(releaseResponse)}`);
@@ -465,6 +467,52 @@ try {
     releaseResponse.data?.serviceTabHandle?.valid === false &&
       releaseResponse.data?.serviceTabHandle?.staleReason === 'tab_closed',
     `shared tab release did not return stale tab evidence: ${JSON.stringify(releaseResponse)}`,
+  );
+  const reopenResponse = await reopenServiceTab({
+    baseUrl: serviceBaseUrl,
+    serviceName,
+    agentName,
+    taskName: 'reopenFirstSharedTabSmoke',
+    browserId: firstSharedHandle.browserId,
+    sessionName: firstSharedHandle.sessionName,
+    tabId: firstSharedHandle.tabId,
+    jobTimeoutMs: 120000,
+  });
+  assert(reopenResponse.success === true, `shared tab reopen failed: ${JSON.stringify(reopenResponse)}`);
+  assert(
+    reopenResponse.data?.reopened === true &&
+      reopenResponse.data?.reopenedFromTabId === firstSharedHandle.tabId &&
+      reopenResponse.data?.reopenedAsTabId !== firstSharedHandle.tabId,
+    `shared tab reopen did not preserve history and create a fresh target: ${JSON.stringify(reopenResponse)}`,
+  );
+  const reopenedHandle = reopenResponse.data?.serviceTabHandle;
+  assert(
+    reopenedHandle?.valid === true &&
+      reopenedHandle.browserId === firstSharedHandle.browserId &&
+      reopenedHandle.sessionName === firstSharedHandle.sessionName &&
+      reopenedHandle.targetId !== firstSharedHandle.targetId,
+    `shared tab reopen did not return a fresh handle on the same route: ${JSON.stringify(reopenResponse)}`,
+  );
+  const reopenedUsable = await evaluateServiceTab({
+    baseUrl: serviceBaseUrl,
+    serviceName,
+    agentName,
+    taskName: 'reopenedSharedTabUsableSmoke',
+    serviceTabHandle: reopenedHandle,
+    script: 'document.title',
+    returnByValue: true,
+    timeoutMs: 5000,
+    maxReturnBytes: 128,
+    jobTimeoutMs: 120000,
+  });
+  assert(
+    reopenedUsable.success === true && reopenedUsable.data?.ok === true,
+    `reopened shared tab was not attachable: ${JSON.stringify(reopenedUsable)}`,
+  );
+  assert(
+    reopenedUsable.data?.result?.result?.value === 'Service Tab Request Smoke' ||
+      reopenedUsable.data?.result === 'Service Tab Request Smoke',
+    `reopened shared tab did not restore its recorded page: ${JSON.stringify(reopenedUsable)}`,
   );
   const plannedStillUsable = await evaluateServiceTab({
     baseUrl: serviceBaseUrl,

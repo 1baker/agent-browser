@@ -10,6 +10,8 @@ import { useAtomValue } from "jotai/react";
 import {
   Activity,
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   CheckCircle2,
   Clock3,
   Copy,
@@ -343,6 +345,7 @@ export type ServiceTab = {
   latestSnapshotId?: string | null;
   latestScreenshotId?: string | null;
   challengeId?: string | null;
+  serviceTabHandle?: Record<string, unknown> | null;
 };
 
 type SelectedViewStream = {
@@ -403,6 +406,18 @@ type ServiceBrowserCloseData = {
   browserId?: string;
   requestedBrowserId?: string;
   serviceOwned?: boolean;
+};
+
+type ServiceTabHandleReleaseData = {
+  tabReleased?: boolean;
+  physicalTabClosed?: boolean;
+  physicalTabCloseSkippedReason?: string | null;
+};
+
+type ServiceTabReopenData = {
+  reopened?: boolean;
+  reopenedFromTabId?: string;
+  reopenedAsTabId?: string;
 };
 
 type ServiceBrowserRepairData = {
@@ -935,6 +950,10 @@ function isHumanTakeoverSession(session: ServiceSession): boolean {
 function isActiveServiceTab(tab: ServiceTab): boolean {
   const lifecycle = (tab.lifecycle ?? "").toLowerCase();
   return lifecycle === "ready" || lifecycle === "loading" || lifecycle === "active";
+}
+
+function isClosedServiceTab(tab: ServiceTab): boolean {
+  return (tab.lifecycle ?? "").toLowerCase() === "closed";
 }
 
 function isBlankServiceTab(tab: ServiceTab): boolean {
@@ -5437,12 +5456,18 @@ function ServiceSessionRow({
 function ServiceTabRow({
   tab,
   viewStreamAvailable,
+  actionPending,
   onInspect,
+  onPark,
+  onReopen,
   onSelect,
 }: {
   tab: ServiceTab;
   viewStreamAvailable?: boolean;
+  actionPending?: boolean;
   onInspect?: (tab: ServiceTab) => void;
+  onPark?: (tab: ServiceTab) => void;
+  onReopen?: (tab: ServiceTab) => void;
   onSelect: (tab: ServiceTab) => void;
 }) {
   const tone = tab.lifecycle === "crashed" ? "bad" : tab.lifecycle === "ready" ? "good" : "neutral";
@@ -5477,6 +5502,34 @@ function ServiceTabRow({
         >
           <Eye className="size-3" />
           Control
+        </Button>
+      )}
+      {onPark && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 shrink-0 gap-1.5 px-2 text-[10px]"
+          disabled={actionPending}
+          title="Close this physical tab but keep its URL and ownership record so it can be reopened later. Unsaved page state is not preserved."
+          onClick={() => onPark(tab)}
+        >
+          {actionPending ? <Loader2 className="size-3 animate-spin" /> : <Archive className="size-3" />}
+          Park
+        </Button>
+      )}
+      {onReopen && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 shrink-0 gap-1.5 px-2 text-[10px]"
+          disabled={actionPending}
+          title="Open the recorded URL as a fresh tab in the same live browser/profile and attach a new service handle."
+          onClick={() => onReopen(tab)}
+        >
+          {actionPending ? <Loader2 className="size-3 animate-spin" /> : <ArchiveRestore className="size-3" />}
+          Reopen
         </Button>
       )}
     </div>
@@ -6440,6 +6493,7 @@ export function ServicePanel({
   const [profileConfigDeleting, setProfileConfigDeleting] = useState(false);
   const [profileConfigError, setProfileConfigError] = useState("");
   const [actingBrowserActionId, setActingBrowserActionId] = useState<string | null>(null);
+  const [actingTabActionId, setActingTabActionId] = useState<string | null>(null);
   const [retainedPruneAction, setRetainedPruneAction] = useState<"dry-run" | "apply" | null>(null);
   const [retainedPruneResult, setRetainedPruneResult] = useState<ServiceRetentionPruneData | null>(null);
   const profileAllocationLookupId = useRef(0);
@@ -6890,6 +6944,8 @@ export function ServicePanel({
   );
   const browserCloseSupported = serviceRequestActions.has("service_browser_close");
   const browserRepairSupported = serviceRequestActions.has("service_browser_repair");
+  const tabParkSupported = serviceRequestActions.has("tab_handle_release");
+  const tabReopenSupported = serviceRequestActions.has("tab_reopen");
   const control = status?.control_plane;
   const serviceJobTimeoutMs =
     control?.service_job_timeout_ms ?? serviceState?.controlPlane?.serviceJobTimeoutMs ?? null;
@@ -7660,6 +7716,81 @@ export function ServicePanel({
       setRetainedPruneAction(null);
     }
   }, [activePort, activeSession, canFetch, fetchService, operatorIdentity, selectWorkspaceTab, serviceState]);
+  const parkServiceTab = useCallback(async (tab: ServiceTab) => {
+    if (!canFetch || !tabParkSupported || !tab.id) return;
+    const handle = tab.serviceTabHandle;
+    if (!handle || handle.valid !== true) {
+      setError("This tab does not have an active service handle and cannot be parked safely.");
+      return;
+    }
+    setActingTabActionId(tab.id);
+    setError("");
+    try {
+      const resp = await fetch(`${serviceBase(activePort)}/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "tab_handle_release",
+          serviceName: "agent-browser-dashboard",
+          agentName: operatorIdentity.trim() || activeSession || "operator",
+          taskName: "park-service-tab",
+          browserId: typeof handle.browserId === "string" ? handle.browserId : tab.browserId,
+          sessionName: typeof handle.sessionName === "string"
+            ? handle.sessionName
+            : tab.sessionId ?? tab.ownerSessionId,
+          serviceTabHandle: handle,
+          params: { closePhysicalTab: true, requirePhysicalClose: true },
+          jobTimeoutMs: 10000,
+        }),
+      });
+      const json = (await resp.json()) as ApiResponse<ServiceTabHandleReleaseData>;
+      if (!json.success) throw new Error(json.error || "Tab park request failed");
+      if (json.data?.tabReleased !== true || json.data?.physicalTabClosed !== true) {
+        throw new Error(
+          `Tab was not parked${json.data?.physicalTabCloseSkippedReason ? `: ${json.data.physicalTabCloseSkippedReason}` : "."}`,
+        );
+      }
+      await fetchService(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Tab park request failed");
+    } finally {
+      setActingTabActionId(null);
+    }
+  }, [activePort, activeSession, canFetch, fetchService, operatorIdentity, tabParkSupported]);
+  const reopenServiceTab = useCallback(async (tab: ServiceTab) => {
+    if (!canFetch || !tabReopenSupported || !tab.id || !tab.browserId) return;
+    const sessionName = tab.sessionId ?? tab.ownerSessionId;
+    if (!sessionName) {
+      setError("This retained tab has no session route and cannot be reopened safely.");
+      return;
+    }
+    setActingTabActionId(tab.id);
+    setError("");
+    try {
+      const resp = await fetch(`${serviceBase(activePort)}/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "tab_reopen",
+          serviceName: "agent-browser-dashboard",
+          agentName: operatorIdentity.trim() || activeSession || "operator",
+          taskName: "reopen-retained-tab",
+          browserId: tab.browserId,
+          sessionName,
+          params: { tabId: tab.id },
+          jobTimeoutMs: 10000,
+        }),
+      });
+      const json = (await resp.json()) as ApiResponse<ServiceTabReopenData>;
+      if (!json.success) throw new Error(json.error || "Tab reopen request failed");
+      if (json.data?.reopened !== true) throw new Error("The retained tab was not reopened.");
+      await fetchService(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Tab reopen request failed");
+    } finally {
+      setActingTabActionId(null);
+    }
+  }, [activePort, activeSession, canFetch, fetchService, operatorIdentity, tabReopenSupported]);
   const inspectTabViewStream = useCallback(async (tab: ServiceTab) => {
     const browser = tab.browserId ? browserById.get(tab.browserId) : null;
     const stream = browserPrimaryViewStream(browser);
@@ -8603,15 +8734,31 @@ export function ServicePanel({
                         : "Only closed blank placeholder tabs are retained. Use search to inspect them."}
                   </p>
                 ) : (
-                  visibleTabRecords.map((tab, index) => (
-                    <ServiceTabRow
-                      key={tab.id || tab.targetId || `tab-${index}`}
-                      tab={tab}
-                      viewStreamAvailable={tab.browserId ? canOpenControlViewStream(browserPrimaryViewStream(browserById.get(tab.browserId))) : false}
-                      onInspect={inspectTabViewStream}
-                      onSelect={inspectTab}
-                    />
-                  ))
+                  visibleTabRecords.map((tab, index) => {
+                    const siblingTabs = tab.browserId ? browserTabsById.get(tab.browserId) ?? [] : [];
+                    const liveSiblingCount = siblingTabs.filter(isActiveServiceTab).length;
+                    const canPark = tabParkSupported
+                      && isActiveServiceTab(tab)
+                      && tab.serviceTabHandle?.valid === true
+                      && liveSiblingCount > 1;
+                    const canReopen = tabReopenSupported
+                      && isClosedServiceTab(tab)
+                      && Boolean(tab.browserId && (tab.sessionId || tab.ownerSessionId) && tab.url && !isBlankServiceTab(tab));
+                    return (
+                      <ServiceTabRow
+                        key={tab.id || tab.targetId || `tab-${index}`}
+                        tab={tab}
+                        viewStreamAvailable={isActiveServiceTab(tab) && tab.browserId
+                          ? canOpenControlViewStream(browserPrimaryViewStream(browserById.get(tab.browserId)))
+                          : false}
+                        actionPending={actingTabActionId === tab.id}
+                        onInspect={inspectTabViewStream}
+                        onPark={canPark ? parkServiceTab : undefined}
+                        onReopen={canReopen ? reopenServiceTab : undefined}
+                        onSelect={inspectTab}
+                      />
+                    );
+                  })
                 )}
               </div>
             </TabsContent>

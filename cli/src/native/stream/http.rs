@@ -2176,6 +2176,13 @@ fn service_request_command_with_state(
         request.get("serviceTabHandle"),
         request.get("repairPolicy"),
     )?;
+    reject_tab_reopen_request(
+        action,
+        request
+            .get("params")
+            .and_then(Value::as_object)
+            .and_then(|params| params.get("tabId")),
+    )?;
     reject_service_ui_action_request(
         action,
         request.get("serviceTabHandle"),
@@ -2792,6 +2799,21 @@ fn reject_tab_handle_refresh_request(
                     .to_string(),
             );
         }
+    }
+    Ok(())
+}
+
+fn reject_tab_reopen_request(action: &str, tab_id: Option<&Value>) -> Result<(), String> {
+    if action != "tab_reopen" {
+        return Ok(());
+    }
+    if tab_id
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return Err("tab_reopen requires params.tabId".to_string());
     }
     Ok(())
 }
@@ -6465,6 +6487,24 @@ mod tests {
     }
 
     #[test]
+    fn service_request_command_requires_retained_tab_id_for_reopen() {
+        let err = service_request_command(
+            r#"{"action":"tab_reopen","browserId":"session:default","sessionName":"default","params":{}}"#,
+        )
+        .expect_err("tab_reopen without retained tab id should fail");
+        assert!(err.contains("tab_reopen requires params.tabId"));
+
+        let command = service_request_command(
+            r#"{"action":"tab_reopen","browserId":"session:default","sessionName":"default","params":{"tabId":"target:closed-1"},"serviceName":"agent-browser-dashboard"}"#,
+        )
+        .expect("tab_reopen with an exact retained route should parse");
+        assert_eq!(command["action"], "tab_reopen");
+        assert_eq!(command["tabId"], "target:closed-1");
+        assert_eq!(command["browserId"], "session:default");
+        assert_eq!(command["sessionName"], "default");
+    }
+
+    #[test]
     fn service_request_command_forwards_tab_handle_refresh_options() {
         let command = service_request_command(
             r##"{"action":"tab_handle_refresh","serviceName":"JournalDownloader","agentName":"codex","taskName":"probeACSwebsite","serviceTabHandle":{"browserId":"session:default","sessionName":"default","tabId":"target:target-1","targetId":"target-1","profileOrigin":"agent_browser_owned","leaseHeartbeatExpected":true,"traceFilter":{"browserId":"session:default","profileId":null,"sessionId":"default"},"valid":true},"repairPolicy":"open_if_missing","url":"https://example.com/recover","desiredUrl":"https://example.com/desired"}"##,
@@ -6610,7 +6650,12 @@ mod tests {
     #[test]
     fn service_request_command_accepts_contract_actions() {
         for action in SERVICE_REQUEST_ACTIONS {
-            let body = if matches!(
+            let body = if *action == "tab_reopen" {
+                format!(
+                    r##"{{"action":"{}","params":{{"tabId":"target:closed-1"}},"browserId":"session:default","sessionName":"default","serviceName":"JournalDownloader","agentName":"codex","taskName":"probeACSwebsite"}}"##,
+                    action
+                )
+            } else if matches!(
                 *action,
                 "external_byop_adopt"
                     | "cdp_attach"

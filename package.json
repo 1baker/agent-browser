@@ -143,6 +143,7 @@
     "test:remote-view-target-attribution-live": "node scripts/smoke-remote-view-target-attribution-live.js",
     "test:service-dashboard-remote-control-ui-live": "node scripts/smoke-service-dashboard-remote-control-ui-live.js",
     "test:service-request-live": "node scripts/smoke-service-request.js",
+    "test:service-tab-parking-live": "node scripts/smoke-service-tab-parking-live.js",
     "test:service-status-no-launch": "node scripts/smoke-service-status-no-launch.js",
     "test:service-contracts-no-launch": "node scripts/smoke-service-contracts-no-launch.js",
     "test:service-remedies-cli-no-launch": "node scripts/smoke-service-remedies-cli-no-launch.js",

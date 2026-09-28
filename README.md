@@ -3170,7 +3170,15 @@ lifecycle remains owned by agent-browser rather than the caller. When a client
 is finished with its leased tab, call `releaseServiceTabHandle()` to best-effort
 close that exact physical target when the routed live browser owns it, mark only
 that retained tab closed in service state, and preserve the shared browser plus
-session route for other clients. Use
+session route for other clients. Pass `requirePhysicalClose: true` for a strict
+Park operation that leaves the handle active when the exact target cannot be
+closed. The retained history keeps the URL, title, browser, and session route.
+Call `reopenServiceTab()` with that retained tab ID and exact route to open the
+recorded URL as a fresh target in the same live browser/profile and receive a
+new handle. Profile cookies and authentication remain available, but volatile
+page state such as unsaved forms, pending uploads, and in-page drafts does not.
+The Service dashboard exposes the same guarded **Park** and **Reopen** actions
+and does not offer Park for the browser's last live tab. Use
 `evaluateServiceTab()` for bounded JavaScript reads against the same valid
 handle; it requires `timeoutMs` and `maxReturnBytes`, returns URL/title and
 truncation metadata, and refuses missing or stale handles before posting the

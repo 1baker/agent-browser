@@ -46,6 +46,8 @@ const displayIsolationSet = new Set([
  * @typedef {import('./service-request.generated.js').ServiceTabHandleRefreshOptions} ServiceTabHandleRefreshOptions
  * @typedef {import('./service-request.generated.js').ServiceTabHandleReleaseHttpOptions} ServiceTabHandleReleaseHttpOptions
  * @typedef {import('./service-request.generated.js').ServiceTabHandleReleaseOptions} ServiceTabHandleReleaseOptions
+ * @typedef {import('./service-request.generated.js').ServiceTabReopenHttpOptions} ServiceTabReopenHttpOptions
+ * @typedef {import('./service-request.generated.js').ServiceTabReopenOptions} ServiceTabReopenOptions
  * @typedef {import('./service-request.generated.js').ServiceTabAccessPlan} ServiceTabAccessPlan
  * @typedef {import('./service-request.generated.js').ServiceCdpFreeLaunchRequestHttpOptions} ServiceCdpFreeLaunchRequestHttpOptions
  * @typedef {import('./service-request.generated.js').ServiceCdpFreeLaunchRequestOptions} ServiceCdpFreeLaunchRequestOptions
@@ -810,18 +812,57 @@ export function createServiceTabHandleRefreshRequest(input) {
  */
 export function createServiceTabHandleReleaseRequest(input) {
   assertPlainObject(input, 'service tab handle release request');
-  const { serviceTabHandle, params, ...request } = input;
+  const { serviceTabHandle, params, closePhysicalTab, requirePhysicalClose, ...request } = input;
   const handle = requireRefreshableServiceTabHandle({ serviceTabHandle });
   if (params !== undefined) {
     assertPlainObject(params, 'service tab handle release request params');
   }
+  if (closePhysicalTab !== undefined && typeof closePhysicalTab !== 'boolean') {
+    throw new TypeError('service tab handle release request closePhysicalTab must be a boolean');
+  }
+  if (requirePhysicalClose !== undefined && typeof requirePhysicalClose !== 'boolean') {
+    throw new TypeError('service tab handle release request requirePhysicalClose must be a boolean');
+  }
   const routing = serviceTabHandleRouting(request, handle);
+  const releaseParams = {
+    ...(params ?? {}),
+    ...(closePhysicalTab !== undefined ? { closePhysicalTab } : {}),
+    ...(requirePhysicalClose !== undefined ? { requirePhysicalClose } : {}),
+  };
   return createServiceRequest({
     ...request,
     action: 'tab_handle_release',
     ...routing,
     serviceTabHandle: handle,
-    ...(params !== undefined ? { params } : {}),
+    ...(Object.keys(releaseParams).length > 0 ? { params: releaseParams } : {}),
+  });
+}
+
+/**
+ * Builds a request that reopens a retained closed tab in its exact live browser route.
+ *
+ * @param {ServiceTabReopenOptions} input
+ * @returns {ServiceRequest}
+ */
+export function createServiceTabReopenRequest(input) {
+  assertPlainObject(input, 'service tab reopen request');
+  const { tabId, params, ...request } = input;
+  if (typeof tabId !== 'string' || tabId.trim().length === 0) {
+    throw new TypeError('service tab reopen request tabId must be a nonempty string');
+  }
+  if (typeof request.browserId !== 'string' || request.browserId.trim().length === 0) {
+    throw new TypeError('service tab reopen request browserId must be a nonempty string');
+  }
+  if (typeof request.sessionName !== 'string' || request.sessionName.trim().length === 0) {
+    throw new TypeError('service tab reopen request sessionName must be a nonempty string');
+  }
+  if (params !== undefined) {
+    assertPlainObject(params, 'service tab reopen request params');
+  }
+  return createServiceRequest({
+    ...request,
+    action: 'tab_reopen',
+    params: { ...(params ?? {}), tabId: tabId.trim() },
   });
 }
 
@@ -1373,6 +1414,24 @@ export async function requestServiceTabHandleRelease({ baseUrl, fetch = globalTh
  */
 export async function releaseServiceTabHandle(options) {
   return requestServiceTabHandleRelease(options);
+}
+
+/**
+ * @param {ServiceTabReopenHttpOptions} options
+ * @returns {Promise<ServiceRequestResponse>}
+ */
+export async function requestServiceTabReopen({ baseUrl, fetch = globalThis.fetch, signal, ...request }) {
+  return postServiceRequest({
+    baseUrl,
+    fetch,
+    signal,
+    request: createServiceTabReopenRequest(request),
+  });
+}
+
+/** Reopen a retained closed tab and return its fresh service tab handle. */
+export async function reopenServiceTab(options) {
+  return requestServiceTabReopen(options);
 }
 
 /**

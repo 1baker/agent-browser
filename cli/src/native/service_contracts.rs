@@ -129,6 +129,7 @@ pub const SERVICE_REQUEST_ACTIONS: &[&str] = &[
     "probe",
     "tab_handle_refresh",
     "tab_handle_release",
+    "tab_reopen",
     "ui_action",
     "network_capture",
     "file_transfer",

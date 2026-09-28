@@ -664,6 +664,14 @@ access-plan attention fields for software logs and operator output. It reports
 whether the request can be sent immediately or should be reused after manual
 seeding, challenge approval, or provider work completes.
 
+The generic service request actions also define a retained-tab parking cycle.
+`tab_handle_release` accepts `params.requirePhysicalClose: true` when the caller
+must keep the handle valid unless the exact target physically closes. The
+closed record retains its URL, title, browser, and session route. `tab_reopen`
+accepts `params.tabId` plus the exact top-level `browserId` and `sessionName`,
+opens the recorded URL as a fresh target in that same live browser/profile, and
+returns a new `serviceTabHandle`. It never launches a replacement browser.
+
 `service-remote-view-route-preflight-response.v1.schema.json` describes the
 no-launch route readiness response returned by HTTP
 `GET /api/service/remote-view/route-preflight`, MCP

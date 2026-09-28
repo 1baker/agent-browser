@@ -752,7 +752,16 @@ When a client is finished with a leased shared-profile tab, use
 `releaseServiceTabHandle()` or service request `action: "tab_handle_release"`.
 Release best-effort closes that exact physical target when the routed live
 browser owns it, marks only that retained tab closed in service state, and
-preserves the browser process plus session route for other clients.
+preserves the browser process plus session route for other clients. For a
+strict Park operation, pass `requirePhysicalClose: true`; failure to close the
+exact target leaves the handle active. The dashboard hides Park for the last
+live tab so it cannot accidentally end the browser process. A parked record
+keeps its URL, title, browser, and session route. Use `reopenServiceTab()` or
+service request `action: "tab_reopen"` with the retained `tabId` and exact
+`browserId` plus `sessionName` to open that URL as a fresh target in the same
+live browser/profile and obtain a new handle. Authentication and profile
+cookies survive, but unsaved forms, pending uploads, and other volatile page
+state do not.
 After detached manual seeding closes, verify the profile through the service
 control plane rather than editing profile JSON. Use
 `agent-browser service profiles <profile-id> verify-seeding <target-service-id> --state fresh --evidence <probe-evidence>`

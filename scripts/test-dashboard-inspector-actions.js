@@ -226,6 +226,18 @@ assert.match(
 
 assert.match(
   servicePanel,
+  /\{onPark && \([\s\S]*onClick=\{\(\) => onPark\(tab\)\}[\s\S]*Park[\s\S]*\{onReopen && \([\s\S]*onClick=\{\(\) => onReopen\(tab\)\}[\s\S]*Reopen/,
+  'Service tab rows must expose explicit Park and Reopen actions',
+);
+
+assert.match(
+  servicePanel,
+  /action: "tab_handle_release"[\s\S]*requirePhysicalClose: true[\s\S]*action: "tab_reopen"[\s\S]*params: \{ tabId: tab\.id \}/,
+  'Dashboard Park must require an actual physical close and Reopen must target retained tab history by ID',
+);
+
+assert.match(
+  servicePanel,
   /export type ServiceSession = \{[\s\S]*cleanup\?: string \| null;[\s\S]*profileLeaseDisposition\?: string \| null;[\s\S]*profileLeaseConflictSessionIds\?: string\[\];[\s\S]*lastLeaseObservedAt\?: string \| null;/,
   'Service sessions must expose human takeover lease, cleanup, conflict, and observation fields to the dashboard',
 );

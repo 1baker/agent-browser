@@ -315,6 +315,7 @@ export interface ServiceTabHandleReleaseData {
   physicalTabCloseAttempted?: boolean;
   physicalTabClosed?: boolean;
   physicalTabCloseSkippedReason?: string | null;
+  physicalCloseRequired?: boolean;
   browserId: string;
   sessionName: string;
   tabId: string;
@@ -324,6 +325,24 @@ export interface ServiceTabHandleReleaseData {
   afterLifecycle?: string | null;
   serviceTabHandle?: ServiceTabHandle | null;
   releasedAt?: string;
+  [key: string]: unknown;
+}
+
+export interface ServiceTabReopenData {
+  ok: boolean;
+  action: "tab_reopen";
+  reopened: boolean;
+  reopenedFromTabId: string;
+  reopenedAsTabId: string;
+  reopenedAt: string;
+  browserId: string;
+  sessionName: string;
+  url: string;
+  freshPhysicalTarget: true;
+  browserProcessPreserved: true;
+  sessionRoutePreserved: true;
+  tab: ServiceTabNewData;
+  serviceTabHandle: ServiceTabHandle;
   [key: string]: unknown;
 }
 
@@ -1016,6 +1035,7 @@ export interface ServiceRequestActionDataMap {
   probe: ServiceProbeData;
   tab_handle_refresh: ServiceTabHandleRefreshData;
   tab_handle_release: ServiceTabHandleReleaseData;
+  tab_reopen: ServiceTabReopenData;
   ui_action: ServiceUiActionData;
   network_capture: ServiceNetworkCaptureData;
   file_transfer: ServiceFileTransferData;
@@ -1332,10 +1352,25 @@ export interface ServiceTabHandleRefreshHttpOptions extends ServiceTabHandleRefr
 
 export interface ServiceTabHandleReleaseOptions extends Omit<ServiceRequest, "action" | "params"> {
   serviceTabHandle: ServiceTabHandle;
+  closePhysicalTab?: boolean;
+  requirePhysicalClose?: boolean;
   params?: Record<string, unknown>;
 }
 
 export interface ServiceTabHandleReleaseHttpOptions extends ServiceTabHandleReleaseOptions {
+  baseUrl: string;
+  fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
+}
+
+export interface ServiceTabReopenOptions extends Omit<ServiceRequest, "action" | "params"> {
+  tabId: string;
+  browserId: string;
+  sessionName: string;
+  params?: Record<string, unknown>;
+}
+
+export interface ServiceTabReopenHttpOptions extends ServiceTabReopenOptions {
   baseUrl: string;
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
@@ -1620,6 +1655,9 @@ export declare function createServiceTabHandleRefreshRequest(
 export declare function createServiceTabHandleReleaseRequest(
   input: ServiceTabHandleReleaseOptions,
 ): ServiceRequestForAction<"tab_handle_release">;
+export declare function createServiceTabReopenRequest(
+  input: ServiceTabReopenOptions,
+): ServiceRequestForAction<"tab_reopen">;
 export declare function createServiceRemoteViewRoutePreflightRequest(
   input: ServiceRemoteViewRouteCheckoutOptions,
 ): ServiceRequestForAction<"service_remote_view_route_preflight">;
@@ -1721,6 +1759,12 @@ export declare function releaseServiceTabHandle(
 export declare function requestServiceTabHandleRelease(
   options: ServiceTabHandleReleaseHttpOptions,
 ): Promise<ServiceRequestResponse<ServiceTabHandleReleaseData>>;
+export declare function reopenServiceTab(
+  options: ServiceTabReopenHttpOptions,
+): Promise<ServiceRequestResponse<ServiceTabReopenData>>;
+export declare function requestServiceTabReopen(
+  options: ServiceTabReopenHttpOptions,
+): Promise<ServiceRequestResponse<ServiceTabReopenData>>;
 export declare function requestServiceRemoteViewRoutePreflight(
   options: ServiceRemoteViewRouteCheckoutHttpOptions,
 ): Promise<ServiceRequestResponse<ServiceRemoteViewRouteMutationData>>;

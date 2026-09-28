@@ -17,6 +17,7 @@ import {
   createServiceUiActionRequest,
   createServiceTabHandleRefreshRequest,
   createServiceTabHandleReleaseRequest,
+  createServiceTabReopenRequest,
   createServiceRemoteViewRouteCheckoutRequest,
   createServiceRemoteViewOpenRequest,
   createServiceRemoteViewRouteReleaseRequest,
@@ -49,6 +50,7 @@ import {
   refreshServiceTabHandle,
   runServiceUiAction,
   releaseServiceTabHandle,
+  reopenServiceTab,
   releaseServiceViewerLease,
   reconcileServiceTaskAuthority,
   revokeServiceTaskAuthority,
@@ -62,6 +64,7 @@ import {
   requestServiceProbe,
   requestServiceTabHandleRefresh,
   requestServiceTabHandleRelease,
+  requestServiceTabReopen,
   requestServiceRemoteViewRouteCheckout,
   requestServiceRemoteViewOpen,
   requestServiceRemoteViewHandoff,
@@ -1723,6 +1726,62 @@ async function main() {
     serviceTabHandle: tabHandle,
   });
   assert.equal(releaseAliasRecorder.calls[0].body.action, 'tab_handle_release');
+  assert.deepEqual(
+    createServiceTabHandleReleaseRequest({
+      serviceTabHandle: tabHandle,
+      requirePhysicalClose: true,
+    }),
+    {
+      action: 'tab_handle_release',
+      browserId: 'session:acs',
+      runtimeProfile: 'acs-work',
+      profileId: 'acs-work',
+      sessionName: 'acs',
+      targetId: 'target-1',
+      serviceTabHandle: tabHandle,
+      params: { requirePhysicalClose: true },
+    },
+  );
+  assert.deepEqual(
+    createServiceTabReopenRequest({
+      serviceName: 'JournalDownloader',
+      agentName: 'article-probe-agent',
+      taskName: 'reopenACSwebsite',
+      browserId: 'session:acs',
+      sessionName: 'acs',
+      tabId: 'target:target-1',
+    }),
+    {
+      serviceName: 'JournalDownloader',
+      agentName: 'article-probe-agent',
+      taskName: 'reopenACSwebsite',
+      browserId: 'session:acs',
+      sessionName: 'acs',
+      action: 'tab_reopen',
+      params: { tabId: 'target:target-1' },
+    },
+  );
+  const reopenRecorder = createFetchRecorder({
+    success: true,
+    data: { ok: true, action: 'tab_reopen', reopened: true },
+  });
+  await requestServiceTabReopen({
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: reopenRecorder.fetch,
+    browserId: 'session:acs',
+    sessionName: 'acs',
+    tabId: 'target:target-1',
+  });
+  assert.equal(reopenRecorder.calls[0].body.action, 'tab_reopen');
+  const reopenAliasRecorder = createFetchRecorder({ success: true, data: { ok: true } });
+  await reopenServiceTab({
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: reopenAliasRecorder.fetch,
+    browserId: 'session:acs',
+    sessionName: 'acs',
+    tabId: 'target:target-1',
+  });
+  assert.equal(reopenAliasRecorder.calls[0].body.action, 'tab_reopen');
   assert.deepEqual(tabRecorder.calls[0].body, {
     serviceName: 'JournalDownloader',
     agentName: 'article-probe-agent',

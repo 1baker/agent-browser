@@ -419,6 +419,7 @@ pub(crate) fn action_skips_browser_launch(action: &str) -> bool {
             | "service_events"
             | "tab_handle_refresh"
             | "tab_handle_release"
+            | "tab_reopen"
             | "file_transfer"
     )
 }
@@ -5424,6 +5425,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "tab_close" => handle_tab_close(cmd, state).await,
         "tab_handle_refresh" => handle_tab_handle_refresh(cmd, state).await,
         "tab_handle_release" => handle_tab_handle_release(cmd, state).await,
+        "tab_reopen" => handle_tab_reopen(cmd, state).await,
         "view_focus" => handle_view_focus(cmd, state).await,
         "view_takeover" => handle_view_takeover(cmd, state).await,
         "remote_view_open" => handle_remote_view_open(cmd, state).await,
@@ -5705,7 +5707,13 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
             // so screencasting always targets the correct page.
             if matches!(
                 action,
-                "tab_new" | "tab_switch" | "tab_close" | "open" | "navigate" | "view_focus"
+                "tab_new"
+                    | "tab_switch"
+                    | "tab_close"
+                    | "tab_reopen"
+                    | "open"
+                    | "navigate"
+                    | "view_focus"
             ) {
                 let session_id = mgr.active_session_id().ok().map(|s| s.to_string());
                 server.set_cdp_session_id(session_id).await;
@@ -13786,6 +13794,10 @@ async fn handle_tab_new(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
         let title = object.get("title").cloned().unwrap_or(Value::Null);
         let manager_runtime_profile = mgr.runtime_profile_name();
         let profile_id = service_tab_profile_id(cmd, manager_runtime_profile);
+        let profile_origin = cmd
+            .get("profileOrigin")
+            .cloned()
+            .unwrap_or_else(|| json!("agent_browser_owned"));
         if let Some(runtime_profile) = profile_id.as_str() {
             object.insert("runtimeProfile".to_string(), json!(runtime_profile));
             object.insert("profileId".to_string(), json!(runtime_profile));
@@ -13802,7 +13814,7 @@ async fn handle_tab_new(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
             "url": current_url,
             "title": title,
             "profileId": profile_id.clone(),
-            "profileOrigin": "agent_browser_owned",
+            "profileOrigin": profile_origin,
             "leaseId": state.session_id.clone(),
             "leaseState": "shared",
             "cleanupPolicy": "detach",
@@ -14974,6 +14986,19 @@ async fn handle_tab_handle_release(cmd: &Value, state: &mut DaemonState) -> Resu
     validate_service_tab_handle_route_for_current_session(handle, &state.session_id)?;
     let physical_tab_close =
         release_physical_tab_for_handle(handle, state, cmd.get("closePhysicalTab")).await;
+    let physical_close_required =
+        optional_command_or_params_bool(cmd, "requirePhysicalClose").unwrap_or(false);
+    if physical_close_required
+        && physical_tab_close.get("closed").and_then(Value::as_bool) != Some(true)
+    {
+        let reason = physical_tab_close
+            .get("skippedReason")
+            .and_then(Value::as_str)
+            .unwrap_or("physical_close_failed");
+        return Err(format!(
+            "Cannot park service tab because its physical target was not closed ({reason}); the retained handle remains active"
+        ));
+    }
     let released_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
@@ -14985,6 +15010,7 @@ async fn handle_tab_handle_release(cmd: &Value, state: &mut DaemonState) -> Resu
             &state.session_id,
             &released_at,
             &physical_tab_close,
+            physical_close_required,
         )
     })
 }
@@ -15068,6 +15094,7 @@ fn release_service_tab_handle_record(
     routed_session_id: &str,
     released_at: &str,
     physical_tab_close: &Value,
+    physical_close_required: bool,
 ) -> Result<Value, String> {
     let tab_id = handle
         .get("tabId")
@@ -15162,6 +15189,7 @@ fn release_service_tab_handle_record(
         "sessionRoutePreserved": true,
         "closeBrowserOnRelease": false,
         "physicalTabClose": physical_tab_close,
+        "physicalCloseRequired": physical_close_required,
         "physicalTabCloseAttempted": physical_tab_close
             .get("attempted")
             .cloned()
@@ -15183,6 +15211,127 @@ fn release_service_tab_handle_record(
         "afterLifecycle": if tab_released { json!("closed") } else { Value::Null },
         "serviceTabHandle": released_handle,
         "releasedAt": released_at,
+    }))
+}
+
+/// Reopens one retained closed tab as a fresh physical target in the same
+/// routed browser/profile while preserving the closed record as history.
+async fn handle_tab_reopen(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    let tab_id = optional_command_or_params_string(cmd, "tabId")
+        .ok_or_else(|| "tab_reopen requires tabId".to_string())?;
+    let repository = LockedServiceStateRepository::default_json()?;
+    let service_state = repository.load_snapshot()?;
+    let retained_tab = service_state
+        .tabs
+        .get(&tab_id)
+        .cloned()
+        .ok_or_else(|| format!("Cannot reopen retained tab '{tab_id}': tab was not found"))?;
+    if retained_tab.lifecycle != TabLifecycle::Closed {
+        return Err(format!(
+            "Cannot reopen retained tab '{tab_id}': lifecycle is {:?}, not closed",
+            retained_tab.lifecycle
+        ));
+    }
+
+    let expected_browser_id = service_browser_id(&state.session_id);
+    if retained_tab.browser_id != expected_browser_id {
+        return Err(format!(
+            "Cannot reopen retained tab '{tab_id}': routed browser '{}' does not match retained browser '{}'",
+            expected_browser_id, retained_tab.browser_id
+        ));
+    }
+    if retained_tab.session_id.as_deref() != Some(state.session_id.as_str())
+        && retained_tab.owner_session_id.as_deref() != Some(state.session_id.as_str())
+    {
+        return Err(format!(
+            "Cannot reopen retained tab '{tab_id}': routed session '{}' does not own the retained tab",
+            state.session_id
+        ));
+    }
+    let reopen_url = retained_tab
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty() && !is_blank_url(url))
+        .ok_or_else(|| {
+            format!("Cannot reopen retained tab '{tab_id}': no reusable URL was recorded")
+        })?
+        .to_string();
+
+    let mut reopen_command = cmd.clone();
+    reopen_command["action"] = json!("tab_new");
+    reopen_command["url"] = json!(reopen_url);
+    reopen_command["profileOrigin"] = service_state
+        .browsers
+        .get(&retained_tab.browser_id)
+        .and_then(|browser| browser.profile_id.as_ref())
+        .and_then(|profile_id| service_state.profiles.get(profile_id))
+        .and_then(|profile| serde_json::to_value(profile.profile_origin).ok())
+        .unwrap_or_else(|| json!("agent_browser_owned"));
+    let opened = handle_tab_new(&reopen_command, state).await?;
+    let reopened_tab_id = opened
+        .get("serviceTabHandle")
+        .and_then(|handle| handle.get("tabId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "tab_reopen opened a target without a service tab handle".to_string())?;
+    let reopened_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+    let service_name = optional_command_string(cmd, "serviceName");
+    let agent_name = optional_command_string(cmd, "agentName");
+    let task_name = optional_command_string(cmd, "taskName");
+    repository.mutate(|service_state| {
+        service_state.events.push(ServiceEvent {
+            id: format!("tab-reopen-{}-{}", tab_id.replace(':', "-"), reopened_at),
+            timestamp: reopened_at.clone(),
+            kind: ServiceEventKind::TabLifecycleChanged,
+            message: format!(
+                "Retained tab '{}' reopened as '{}'.",
+                tab_id, reopened_tab_id
+            ),
+            browser_id: Some(retained_tab.browser_id.clone()),
+            profile_id: opened
+                .get("profileId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            session_id: Some(state.session_id.clone()),
+            service_name,
+            agent_name,
+            task_name,
+            details: Some(json!({
+                "action": "tab_reopen",
+                "reopenedFromTabId": tab_id,
+                "reopenedAsTabId": reopened_tab_id,
+                "url": reopen_url,
+                "freshPhysicalTarget": true,
+                "browserProcessPreserved": true,
+                "sessionRoutePreserved": true,
+            })),
+            ..ServiceEvent::default()
+        });
+        if service_state.events.len() > 100 {
+            let excess = service_state.events.len() - 100;
+            service_state.events.drain(0..excess);
+        }
+        Ok(())
+    })?;
+
+    Ok(json!({
+        "ok": true,
+        "action": "tab_reopen",
+        "reopened": true,
+        "reopenedFromTabId": tab_id,
+        "reopenedAsTabId": reopened_tab_id,
+        "reopenedAt": reopened_at,
+        "browserId": retained_tab.browser_id,
+        "sessionName": state.session_id,
+        "url": reopen_url,
+        "freshPhysicalTarget": true,
+        "browserProcessPreserved": true,
+        "sessionRoutePreserved": true,
+        "tab": opened,
+        "serviceTabHandle": opened.get("serviceTabHandle").cloned().unwrap_or(Value::Null),
     }))
 }
 
@@ -28749,6 +28898,7 @@ mod tests {
                 "error": Value::Null,
                 "result": Value::Null,
             }),
+            false,
         )
         .expect("release should succeed");
 

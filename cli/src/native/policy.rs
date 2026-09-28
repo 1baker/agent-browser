@@ -102,7 +102,7 @@ pub fn action_consequence(action: &str) -> ActionConsequence {
         | "state_show" => ActionConsequence::ReadOnly,
         "task_authority_status" | "broker_attach" => ActionConsequence::ReadOnly,
         "task_authority_reconcile" => ActionConsequence::ControlPlane,
-        "navigate" | "back" | "forward" | "reload" | "tab_new" | "tab_switch" => {
+        "navigate" | "back" | "forward" | "reload" | "tab_new" | "tab_switch" | "tab_reopen" => {
             ActionConsequence::Navigation
         }
         "fill" | "type" | "clear" | "focus" | "hover" | "scroll" | "scrollintoview"
