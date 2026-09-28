@@ -875,9 +875,14 @@ async function recoverReplacementToBackup({
   }
   const retryingVerifiedRollback = journalRecord.phase === 'recovery_blocked'
     && journalRecord.recoveryError === 'rollback_to_backup_failed';
+  const failedRecoveryReadiness = journalRecord.phase === 'recovery_readiness_admitted';
   if (journalRecord.phase !== 'publication_failed_replacement_retained'
+    && !failedRecoveryReadiness
     && !retryingVerifiedRollback) {
-    throw new Error('--recover-to-backup requires a failed retained replacement or its exact rollback retry');
+    throw new Error(
+      '--recover-to-backup requires a failed retained replacement, '
+      + 'a failed replacement recovery smoke, or its exact rollback retry',
+    );
   }
   if (journalRecord.handoffOutcomeUncertain === true) {
     throw new Error('Cannot roll back a replacement with uncertain prior handoff evidence');

@@ -896,6 +896,38 @@ async function runExplicitBackupRecoveryScenarios() {
 
   {
     const fixture = createFixture({ prepareHandoff: true, retainedExpectation: true });
+    const record = configure(fixture);
+    fixture.input.adapters.applyWorkstationProvenance = (_value, context) => {
+      fixture.actions.push(`provenance:${context.selection}`);
+    };
+    fixture.input.adapters.verifyWorkstationProvenance = (_value, context) => {
+      fixture.actions.push(`provenance-verified:${context.selection}`);
+    };
+    fixture.input.options.recoverToBackup = null;
+    const runHttpReadinessSmoke = fixture.input.adapters.runHttpReadinessSmoke;
+    fixture.input.adapters.runHttpReadinessSmoke = () => {
+      fixture.actions.push('http-readiness:recovery-failed');
+      throw new Error('fault:recovery-readiness');
+    };
+
+    await assert.rejects(
+      runLocalDashboardPublisherOrchestration(fixture.input),
+      /fault:recovery-readiness/,
+    );
+    assert.equal(fixture.publicationJournal.read().phase, 'recovery_readiness_admitted');
+
+    fixture.input.options.recoverToBackup = record.transactionId;
+    fixture.input.adapters.runHttpReadinessSmoke = runHttpReadinessSmoke;
+    await runLocalDashboardPublisherOrchestration(fixture.input);
+
+    assert.equal(readFileSync(fixture.installBin, 'utf8'), 'original-runtime\n');
+    assert.equal(fixture.publicationJournal.read().phase, 'recovered_rolled_back');
+    assert.equal(fixture.report.recovery.transactionId, record.transactionId);
+    assert.equal(fixture.report.recovery.installedSha256, fixture.originalSha256);
+  }
+
+  {
+    const fixture = createFixture({ prepareHandoff: true, retainedExpectation: true });
     configure(fixture);
     fixture.input.options.recoverToBackup = 'local-dashboard-wrong-transaction';
     await assert.rejects(
