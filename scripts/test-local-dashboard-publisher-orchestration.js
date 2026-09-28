@@ -71,6 +71,7 @@ try {
   await runRecoveryPreservesOriginalSkipBrowserPolicyScenario();
   await runRetainedGuardRecoveryFailureScenario();
   await runRetainedGuardReplacementRecoveryScenario();
+  await runExplicitBackupRecoveryScenarios();
   await runUnverifiedRecoveryScenario();
   await runRecoverOnlyNoopScenario();
 } finally {
@@ -811,6 +812,132 @@ async function runUnverifiedRecoveryScenario() {
   assert.equal(fixture.publicationJournal.read().phase, 'recovery_blocked');
   assert.equal(fixture.actions.includes('build-dashboard'), false);
   assert.equal(fixture.actions.some((action) => action.startsWith('restart:')), false);
+}
+
+async function runExplicitBackupRecoveryScenarios() {
+  const configure = (fixture) => {
+    const handoff = fixtureHandoff();
+    const record = seedIncompleteJournal(fixture, {
+      phase: 'publication_failed_replacement_retained',
+      installed: 'replacement',
+      handoffs: [handoff],
+      resumedHandoffs: [{ ...handoff, daemonPid: 2345 }],
+      retainedBrowserExpectation: fixtureRetainedExpectationRecord(),
+      smokePolicy: { skipSmoke: false, smokeBrowser: false, requireBrowserSmoke: false },
+    });
+    fixture.publicationJournal.acquire();
+    try {
+      fixture.publicationJournal.commit(fixture.publicationJournal.read(), record.phase, {
+        workstationProvenance: { fixture: true },
+        handoffOutcomeUncertain: false,
+      });
+    } finally {
+      fixture.publicationJournal.release();
+    }
+    let dashboardStopped = false;
+    Object.assign(fixture.input.options, {
+      recoverOnly: true,
+      recoverToBackup: record.transactionId,
+      expectedSessions: ['dashboard-service-backend', 'retained-fixture'],
+      smokeBrowser: false,
+    });
+    fixture.input.adapters.runtimeSessionNames = () => dashboardStopped
+      ? ['retained-fixture']
+      : ['dashboard-service-backend', 'retained-fixture'];
+    fixture.input.adapters.prepareQuiesceSessions = () => ({ fixture: true });
+    fixture.input.adapters.quiesceDashboardForRuntimeHandoff = () => {
+      fixture.actions.push('quiesce');
+      dashboardStopped = true;
+    };
+    fixture.input.adapters.verifyQuiesceSessions = () => ['retained-fixture'];
+    fixture.input.adapters.verifyRuntimeSessionsRetired = () => {
+      fixture.actions.push('sessions-retired');
+    };
+    fixture.input.adapters.applyWorkstationProvenance = (_value, context) => {
+      assert.equal(context.selection, 'source');
+      fixture.actions.push('provenance:source');
+    };
+    fixture.input.adapters.verifyWorkstationProvenance = (_value, context) => {
+      assert.equal(context.selection, 'source');
+      fixture.actions.push('provenance-verified:source');
+    };
+    fixture.input.adapters.verifyInstalledDoctor = (_path, context = {}) => {
+      if (!context.strict) {
+        assert.equal(
+          context.journalRecord.revision,
+          fixture.publicationJournal.read().revision,
+          'transaction doctor must receive the latest recovery checkpoint',
+        );
+      }
+      fixture.actions.push(context.strict ? 'doctor:strict' : 'doctor:transaction');
+      return { success: true };
+    };
+    return record;
+  };
+
+  {
+    const fixture = createFixture({ prepareHandoff: true, retainedExpectation: true });
+    const record = configure(fixture);
+    await runLocalDashboardPublisherOrchestration(fixture.input);
+    assert.equal(readFileSync(fixture.installBin, 'utf8'), 'original-runtime\n');
+    assert.equal(fixture.publicationJournal.read().phase, 'recovered_rolled_back');
+    assert.equal(fixture.report.recovery.transactionId, record.transactionId);
+    assert.equal(fixture.report.recovery.installedSha256, fixture.originalSha256);
+    assert.ok(fixture.actions.indexOf('quiesce') < fixture.actions.indexOf('prepare-handoffs'));
+    assert.ok(fixture.actions.indexOf('prepare-handoffs') < fixture.actions.indexOf('restore-backup'));
+    assert.ok(fixture.actions.indexOf('restore-backup') < fixture.actions.indexOf('resume-handoffs'));
+    assert.ok(fixture.actions.indexOf('resume-handoffs') < fixture.actions.indexOf('restart:rollback'));
+    assert.ok(fixture.actions.includes('retained-guard:rollback_recovery_preflight'));
+    assert.ok(fixture.actions.includes('retained-guard:rollback_recovery_post_handoff'));
+    assert.ok(fixture.actions.includes('retained-guard:rollback_recovery_final_readiness'));
+    assert.ok(fixture.actions.includes('doctor:transaction'));
+    assert.ok(fixture.actions.includes('doctor:strict'));
+  }
+
+  {
+    const fixture = createFixture({ prepareHandoff: true, retainedExpectation: true });
+    const record = configure(fixture);
+    fixture.input.adapters.applyWorkstationProvenance = (_value, context) => {
+      fixture.actions.push(`provenance:${context.selection}`);
+    };
+    fixture.input.adapters.verifyWorkstationProvenance = (_value, context) => {
+      fixture.actions.push(`provenance-verified:${context.selection}`);
+    };
+    fixture.input.options.recoverToBackup = null;
+    const runHttpReadinessSmoke = fixture.input.adapters.runHttpReadinessSmoke;
+    fixture.input.adapters.runHttpReadinessSmoke = () => {
+      fixture.actions.push('http-readiness:recovery-failed');
+      throw new Error('fault:recovery-readiness');
+    };
+
+    await assert.rejects(
+      runLocalDashboardPublisherOrchestration(fixture.input),
+      /fault:recovery-readiness/,
+    );
+    assert.equal(fixture.publicationJournal.read().phase, 'recovery_readiness_admitted');
+
+    fixture.input.options.recoverToBackup = record.transactionId;
+    fixture.input.adapters.runHttpReadinessSmoke = runHttpReadinessSmoke;
+    await runLocalDashboardPublisherOrchestration(fixture.input);
+
+    assert.equal(readFileSync(fixture.installBin, 'utf8'), 'original-runtime\n');
+    assert.equal(fixture.publicationJournal.read().phase, 'recovered_rolled_back');
+    assert.equal(fixture.report.recovery.transactionId, record.transactionId);
+    assert.equal(fixture.report.recovery.installedSha256, fixture.originalSha256);
+  }
+
+  {
+    const fixture = createFixture({ prepareHandoff: true, retainedExpectation: true });
+    configure(fixture);
+    fixture.input.options.recoverToBackup = 'local-dashboard-wrong-transaction';
+    await assert.rejects(
+      runLocalDashboardPublisherOrchestration(fixture.input),
+      /must name the exact incomplete transaction/,
+    );
+    assert.equal(readFileSync(fixture.installBin, 'utf8'), 'replacement-runtime\n');
+    assert.ok(!fixture.actions.includes('quiesce'));
+    assert.equal(fixture.publicationJournal.read().phase, 'publication_failed_replacement_retained');
+  }
 }
 
 function createFixture({

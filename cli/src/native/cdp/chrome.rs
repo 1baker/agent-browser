@@ -973,12 +973,13 @@ pub fn launch_chrome_detached(options: &LaunchOptions) -> Result<ManualChromeLau
     let pid = child.id();
     let mut child = child;
 
-    let devtools_port = if options.attachable {
+    let (devtools_port, ws_url) = if options.attachable {
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         match wait_for_devtools_active_port(&mut child, &user_data_dir, deadline) {
-            Ok(ws_url) => {
-                ws_debug_port(&ws_url).or_else(|| read_runtime_devtools_port(&user_data_dir))
-            }
+            Ok(ws_url) => (
+                ws_debug_port(&ws_url).or_else(|| read_runtime_devtools_port(&user_data_dir)),
+                Some(ws_url),
+            ),
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -990,7 +991,7 @@ pub fn launch_chrome_detached(options: &LaunchOptions) -> Result<ManualChromeLau
             }
         }
     } else {
-        None
+        (None, None)
     };
     drop(child);
 
@@ -1006,7 +1007,7 @@ pub fn launch_chrome_detached(options: &LaunchOptions) -> Result<ManualChromeLau
                 "manual".to_string()
             },
             devtools_port,
-            ws_url: None,
+            ws_url,
             launch_record: Some(RuntimeLaunchRecord {
                 target_url: options.args.first().cloned(),
                 browser_family: options.expected_browser_family.clone(),
@@ -3976,6 +3977,60 @@ mod tests {
             Some("guacamole:91")
         );
         assert!(manual_browser.remote_control_available);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_detached_attachable_launch_records_exact_devtools_endpoint() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let guard = EnvGuard::new(&["HOME", "DISPLAY"]);
+        let home = TempDir::new("manual-runtime-attachable-endpoint");
+        std::fs::create_dir_all(&*home).unwrap();
+        guard.set("HOME", home.to_str().unwrap());
+        guard.set("DISPLAY", ":91");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let devtools_port = listener.local_addr().unwrap().port();
+        let fake_chrome = home.join("fake-chrome");
+        std::fs::write(
+            &fake_chrome,
+            r#"#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    --user-data-dir=*) profile="${arg#*=}" ;;
+  esac
+done
+mkdir -p "$profile"
+printf 'TEST_DEVTOOLS_PORT\n/devtools/browser/abc-123\n' > "$profile/DevToolsActivePort"
+sleep 30
+"#
+            .replace("TEST_DEVTOOLS_PORT", &devtools_port.to_string()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_chrome, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let runtime_profile = "manual-attachable-endpoint";
+        let launch = launch_chrome_detached(&LaunchOptions {
+            headless: false,
+            executable_path: Some(fake_chrome.display().to_string()),
+            runtime_profile: Some(runtime_profile.to_string()),
+            manual_login: true,
+            attachable: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let state = crate::runtime_profile::read_runtime_state(runtime_profile)
+            .unwrap()
+            .unwrap();
+        let _ = unsafe { libc::kill(launch.pid as i32, libc::SIGKILL) };
+
+        assert_eq!(state.devtools_port, Some(devtools_port));
+        assert_eq!(
+            state.ws_url.as_deref(),
+            Some(format!("ws://127.0.0.1:{devtools_port}/devtools/browser/abc-123").as_str())
+        );
     }
 
     #[cfg(target_os = "linux")]
