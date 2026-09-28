@@ -1476,3 +1476,115 @@ Final source/artifact SHA-256:
 - LitScout `litscout/store/db.py`: `1765c1f8c014aebb50b0c147bab7e3428e6ff16632b5b7454aa819f1e806a77e`
 - LitScout `tests/test_credential_discovery_execution.py`: `d1c7ea6ca0e3bb624a9086a1ab2f6ddd3ea2c36657891879ba3fb770bcaacfb6`
 - Local validation wheel: `bbb46d3e52c34497661a302f6ad647963c3c3fd6c7c312e4a45842b6c8940a2d`
+
+### 2026-09-28: renewal scheduled; Slack Canvas extraction remains fail-closed
+
+The installed LitScout credential is currently usable rather than merely
+configured: bounded live probes for contract awards, assistance subawards and
+acquisition subawards each returned `probe_ok`. The recorded active-key expiry
+is `2026-11-25T00:00:00Z`; no standby key is present. The installed six-hour
+rollover timer is enabled and active, but it can only validate/promote a
+separately staged standby key. It does not acquire a replacement.
+
+Durable wake `wake_20260928_142041_3c34` is pending for
+`2026-11-10T00:15:00Z`, just inside the 15-day overlap. Its prompt requires a
+fresh no-launch access plan, exact retained-browser reuse, no duplicate key when
+a standby already exists, protected staging, preservation of the old key, and a
+fresh three-service consumer probe. Password, MFA, CAPTCHA, terms, plan, payment
+and account-owner decisions remain operator checkpoints. The wake is a scheduled
+attempt, not proof that future app-server dispatch or renewal will succeed.
+
+The dedicated Slack bot currently has exactly `groups:history`,
+`canvases:read`, and `canvases:write`. Current official Slack Web API
+documentation exposes `canvases.sections.lookup` under `canvases:read`, but the
+documented response supplies section identifiers rather than matching section
+text. `files.info` is a separate `files:read` method, and that scope is not in
+the approved connection. The implementation must not infer secret text through
+repeated `contains_text` probes, add an undocumented download path, broaden
+scopes, or use ordinary browser observation as a substitute for private
+transport. Consequently, the existing channel-history collector remains the
+only implemented private Slack source and Canvas-backed login extraction is
+blocked on a supported, reviewed private content boundary.
+
+No Canvas body, password, backup code, API-key value, ordinary browser output,
+retained-browser tab, or account state was read or changed in this checkpoint.
+Delegation receipt: `not_spawned`; current system policy prohibited proactive
+subagents, and this security-critical source/authority determination was kept
+on one tightly coupled path.
+
+### 2026-09-28: immutable local-importer intake graph
+
+The operator approved replacing the Slack Canvas dependency with a private
+local importer for the existing SAM.gov renewal scope. This approval does not
+authorize an early key rotation, a new browser/profile lane, broader Slack
+permissions, or unattended handling of password, MFA, CAPTCHA, terms, payment,
+or account-owner decisions.
+
+The immutable objective graph for this slice is:
+
+1. collect the Login.gov account, password and exactly one unused backup code from the operator's
+   controlling terminal with hidden input;
+2. persist the material only in an operating-system credential service, with no
+   plaintext file, command-line argument, environment variable, log or chat
+   representation;
+3. bind only a stable store identity and source revision into LitScout's
+   existing digest-bound one-shot discovery and broker path;
+4. revalidate the same source revision before private staging, consume one
+   backup code before browser dispatch, and preserve all existing exact browser,
+   expiry, installation and fresh-consumer gates;
+5. prove the new source path with synthetic/offline tests and a disposable
+   credential-store round trip, without reading live material, rotating the
+   current SAM key or disturbing retained browser ownership; and
+6. leave the already scheduled November 10 wake as the first permitted live
+   renewal attempt.
+
+This host has no Linux Secret Service, GNOME Keyring, KWallet, kernel keyring or
+TPM-backed systemd credential provider. Windows Credential Manager is available
+to WSL under the signed-in Windows account and is therefore the only admitted
+OS-backed provider for this slice. Direct Windows DPAPI calls from the WSL
+interop token return access denied; the implementation must use the Windows
+Credential Manager API and must fail closed when that provider is unavailable.
+There is no file-encryption or owner-only-plaintext fallback.
+
+Delegation receipt: `not_spawned`; current system policy prohibited proactive
+subagents. Independent review will use the retained ChatGPT Pro path only after
+the candidate and local validation packet exist, and it will not receive any
+credential value.
+
+### 2026-09-28: local-importer implementation and closed-world validation
+
+The local importer now uses direct descriptor I/O for `/dev/tty`; Python text
+update mode was rejected after a real terminal reproducer proved that a terminal
+is non-seekable. The helper disables echo before each response, restores the
+original terminal attributes, clears its mutable input buffer and fails with
+fixed diagnostics. Two pseudo-terminal regressions cover the descriptor helper
+and `prompt_material` itself, including its real `/dev/tty` open, all six
+prompts, terminal restoration and absent synthetic response echo.
+
+Credential plan and decision request models now inherit one private request
+base that converts constructor, object, JSON and string validation failures to
+the fixed `invalid_credential_request` error. Authenticated HTTP decision-route
+tests additionally prove the fixed 422 body, `Cache-Control: no-store`, absent
+marker data in the response and captured logs, and no database creation.
+
+Local validation passed 61 focused Agent Browser tests, 142 focused LitScout
+credential tests and the complete empty-home LitScout suite with 1,782 passed,
+34 skipped and 18 deselected. The actual Windows Credential Manager disposable
+smoke passed write, private read, revision binding, extraction and exact delete;
+2,560 bytes were accepted, 2,561 bytes failed closed, and the real fixed SAM
+slot remained empty. A fresh no-launch access plan continued to select the same
+retained ChatGPT profile, session and browser with `reuse_existing_browser`; its
+capability preflight reported `wouldLaunch: false`. The repo-scoped wake remains
+pending for `2026-11-10T00:15:00Z` with zero attempts.
+
+No credential value, current SAM key, retained browser owner or renewal state
+was changed. The source checkout is validated but not installed as a private
+runtime executor; live renewal remains gated on the November wake and all
+existing browser, delivery, installation and consumer probes.
+
+Independent review remains an external limitation rather than a release claim.
+Two file-backed review attempts failed to materialize the required review record.
+Their visible findings identified the non-seekable `/dev/tty` wrapper and the
+decision-validation disclosure boundary; both findings were resolved and covered
+by the local tests above. The already submitted inline review remained in
+progress at closeout, so it was not replayed, replaced or counted as approval.

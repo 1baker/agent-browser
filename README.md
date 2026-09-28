@@ -4377,6 +4377,35 @@ reports, chat, source control or ordinary broker requests. Use `--status` for a
 metadata-only local check. Token setup is not proof of channel membership, approved
 message access, private executor installation or SAM.gov authentication.
 
+### Local SAM credential importer (Windows/WSL source checkout)
+
+Run `python3 scripts/private-sam-local-credentials.py` in your own existing WSL
+terminal. The helper collects the Login.gov email, password and exactly one
+unused 12-hex-character backup code through hidden `/dev/tty` prompts and stores one generic credential
+in Windows Credential Manager for the signed-in Windows account. Credential
+values never enter command arguments, environment variables, ordinary Agent
+Browser commands, logs, chat or a plaintext Linux file. The helper reads the
+record back privately and verifies the exact bytes and provider revision before
+reporting fixed success. It never falls back to stdin when a controlling
+terminal is absent.
+
+This source is available only to the internal digest-bound SAM discovery and
+renewal coordinator. Consent binds the fixed
+`agent_browser_sam_login_gov_v1` store identity; discovery persists only the
+Windows Credential Manager write revision. The broker passes its persisted
+references into the trusted adapter, which compares them exactly with the
+retained discovery result before extraction and then refuses a changed live
+revision or account. There is no file-encryption or plaintext fallback. A
+missing or unavailable provider, non-controlling terminal, source revision
+change, confirmation mismatch or invalid material fails closed.
+
+Importing credentials does not approve a plan, launch or replace a browser,
+submit a password or backup code, renew or install an API key, or prove runtime
+activation. Do not run it until you intend to populate the protected slot. The
+scheduled SAM renewal still requires a fresh no-launch retained-browser plan,
+the exact approved recipe, one-shot backup-code reservation, protected delivery
+and fresh consumer probes.
+
 ## License
 
 Apache-2.0

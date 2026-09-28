@@ -2365,6 +2365,20 @@ channel, and writes a create-new owner-only plaintext bootstrap file under
 messages. `--status` is metadata-only; never print the connection file. Do not
 create helper tmux tabs. Additional scope or existing-file conflicts fail closed.
 
+For the Slack-independent SAM/Login.gov source on Windows/WSL, the operator may
+run `python3 scripts/private-sam-local-credentials.py` from the source checkout
+in the existing controlling terminal. The account, password and exactly one
+unused 12-hex-character backup-code prompts are hidden through `/dev/tty`. The helper stores one fixed generic
+credential in Windows Credential Manager for the signed-in Windows account and
+passes material to PowerShell only through stdin. Never put those values in
+arguments, environment variables, chat, clipboard tools, browser commands or
+Linux files. Consent binds `agent_browser_sam_login_gov_v1`; discovery records
+only the Windows write revision. The trusted adapter exact-compares the
+persisted references with the retained discovery result, then private extraction
+rechecks that revision and the approved account before releasing opaque in-process material. There is
+no plaintext or file-encryption fallback. Importing is not approval, browser
+login, backup-code use, renewal, key installation or activation proof.
+
 | Template                                                                 | Description                         |
 | ------------------------------------------------------------------------ | ----------------------------------- |
 | [templates/form-automation.sh](templates/form-automation.sh)             | Form filling with validation        |

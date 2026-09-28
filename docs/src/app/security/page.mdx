@@ -127,6 +127,19 @@ plaintext, not encrypted operation storage. It cannot protect against the accoun
 owner or root. Never publish or print that file. <code>--status</code> is a local
 metadata-only check, not live channel authorization or SAM login proof.
 
+The source-checkout helper <code>python3 scripts/private-sam-local-credentials.py</code>
+is the Slack-independent SAM/Login.gov importer for Windows/WSL. It accepts the
+email, password, and exactly one unused 12-hex-character backup code only through hidden <code>/dev/tty</code> prompts
+and stores one fixed generic credential in Windows Credential Manager under the
+signed-in Windows account. Values do not enter command arguments, environment
+variables, ordinary browser commands, logs, chat, or plaintext Linux files.
+The broker gives the internal adapter its persisted references. The adapter
+exact-compares them with the retained discovery result, then rechecks the fixed
+store identity and Windows write revision before private extraction. There is no plaintext fallback;
+an unavailable provider, changed revision, wrong account, or invalid material
+fails closed. Import success is not browser login, renewal, API-key installation,
+or runtime activation evidence.
+
 For private phone control, keep the dashboard and Guacamole listeners on
 loopback and expose only the dashboard through Tailscale Serve. With
 <code>AGENT_BROWSER_DASHBOARD_TAILSCALE_AUTH=1</code> and an exact

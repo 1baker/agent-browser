@@ -10649,6 +10649,53 @@ Scope: fix the workstation viewer blocker and finish live reconciliation.
   guarded installation and a fresh consumer probe remain required. Do not run
   live credential discovery through ad hoc imports to bypass those gates.
 
+### 2026-09-28: Slack-independent local SAM credential source
+
+- `python3 scripts/private-sam-local-credentials.py` is the operator-only
+  Windows/WSL importer. It uses hidden `/dev/tty` prompts for the account,
+  password and exactly one unused 12-hex-character backup code, and sends credential
+  bytes to the Windows Credential Manager helper only through stdin.
+- The fixed generic-credential target is represented in consent as
+  `agent_browser_sam_login_gov_v1`. LitScout stores only its provider kind,
+  stable store identity and Windows write revision. The broker supplies the
+  persisted references to the trusted adapter, which exact-compares them with
+  the retained discovery result before extraction. Discovery and extraction
+  reject provider, slot, revision, account or reference-kind drift.
+- `scripts/private-sam-discovery.py` selects Slack history or the local OS source
+  only from the approved manifest. The local branch never opens Slack. The
+  renewal coordinator accepts only the exact local source scope and still
+  requires its immutable four-step authority, authenticated executor socket,
+  one-shot code reservation, protected result delivery and LitScout validation.
+- Windows Credential Manager was proven with a disposable synthetic write,
+  private read and revision check, and exact deletion. The real SAM slot was not
+  populated. Linux Secret Service, GNOME Keyring, KWallet, kernel keyring and a
+  TPM-backed systemd credential provider are absent on this host; there is no
+  plaintext or file-encryption fallback.
+- A real terminal regression found that Python text update mode cannot wrap
+  non-seekable `/dev/tty`. The importer now reads and writes the terminal by
+  descriptor, restores the original terminal attributes, and clears its mutable
+  input buffer. One pseudo-terminal test verifies the descriptor helper and a
+  second forked test verifies that `prompt_material` opens the actual controlling
+  terminal. Both complete all six prompts without echoing synthetic material.
+- Credential plan and decision request models now share one fixed validation
+  error boundary. Direct constructor, object, JSON and string validation plus
+  the authenticated decision API return only `invalid_credential_request` for
+  malformed secret-like input; the HTTP response is non-cacheable and the
+  supplied marker does not appear in response or captured logs.
+- Final local validation passed 61 focused Agent Browser tests, 142 focused
+  LitScout credential tests, and the 1,782-test empty-home LitScout suite with
+  34 skipped and 18 deselected. The disposable Windows store smoke also proved
+  the 2,560-byte maximum and rejected 2,561 bytes before deleting every test
+  slot. CodeGraph refreshed the two changed Agent Browser files.
+- Import success is not a live browser sign-in or key renewal. Do not claim the
+  scheduled November renewal succeeded until the fresh retained-browser,
+  provider validation, installation and three-consumer probes all pass.
+- Independent review is not claimed for this checkpoint. Two file-backed review
+  attempts did not materialize their required review record. Their visible
+  findings led to the `/dev/tty` descriptor fix and the fixed decision-validation
+  boundary above. One existing inline review was still in progress at closeout;
+  it was not replayed, replaced or treated as approval.
+
 ### 2026-09-09: consent-to-private-discovery connection
 
 Follow-up: the approved extraction and exact-navigation checkpoint is recorded
@@ -10693,3 +10740,22 @@ renewal stays disabled and no live credential was used.
   `executablePath` loss in auto-launch plus a test-only privacy-mode mismatch.
   The rerun passed exact upload/download digest and filename provenance checks,
   and the complete Rust suite passed after the fix.
+
+### 2026-09-28: SAM renewal overlap wake and Canvas source boundary
+
+- LitScout live credential probes passed for all three configured SAM consumers.
+  Active expiry is `2026-11-25T00:00:00Z`; there is no standby key.
+- The installed six-hour rollover timer is enabled and active. It promotes only
+  a validated standby key; it does not acquire one from SAM.gov.
+- Durable LitScout wake `wake_20260928_142041_3c34` is pending for
+  `2026-11-10T00:15:00Z`. The wake requires no-launch retained-browser reuse,
+  protected staging, user-only authentication checkpoints, old-key preservation,
+  and post-stage consumer probes. Pending is scheduling evidence, not renewal.
+- The saved Slack connection has `groups:history`, `canvases:read`, and
+  `canvases:write`. Slack's documented `canvases.sections.lookup` response
+  returns identifiers, not the matching text; `files.info` separately requires
+  unapproved `files:read`. Do not extract secret text with repeated search probes,
+  undocumented endpoints, screenshots, ordinary CDP, or widened scopes.
+- Canvas-backed credential extraction remains blocked on a reviewed private
+  content boundary. No secret value, Canvas body, browser tab, or account state
+  was read or changed. Focused LitScout rollover regression: 24 passed.

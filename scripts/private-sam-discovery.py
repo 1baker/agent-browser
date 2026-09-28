@@ -17,6 +17,10 @@ _CONTROLLER_SPEC = importlib.util.spec_from_file_location(
     "_sam_controller", Path(__file__).with_name("private-controller-client.py"))
 _CONTROLLER = importlib.util.module_from_spec(_CONTROLLER_SPEC)
 _CONTROLLER_SPEC.loader.exec_module(_CONTROLLER)
+_LOCAL_SPEC = importlib.util.spec_from_file_location(
+    "_sam_local_credentials", Path(__file__).with_name("private-sam-local-credentials.py"))
+_LOCAL = importlib.util.module_from_spec(_LOCAL_SPEC)
+_LOCAL_SPEC.loader.exec_module(_LOCAL)
 
 
 def _connection():
@@ -52,6 +56,16 @@ def _resolve(ctx, plan_id, digest, retained):
 
         def collect(manifest):
             scope = manifest["authentication"]["discovery"]
+            if scope["kind"] == "local_os_credential":
+                authority = _LOCAL.LocalDiscoveryAuthority(
+                    store_id=scope["store_id"],
+                    account_email=manifest["account_email"].lower())
+                result = _LOCAL.discover(authority)
+                if retained is not None:
+                    retained.append((None, authority, result))
+                return public_references(result)
+            if scope["kind"] != "slack_channel":
+                raise ValueError("private_sam_discovery_source_rejected")
             authority = _DISCOVERY.DiscoveryAuthority(
                 team_id=scope["team_id"], channel_id=scope["channel_id"],
                 account_email=manifest["account_email"].lower(),
@@ -61,14 +75,7 @@ def _resolve(ctx, plan_id, digest, retained):
             result = _DISCOVERY.discover(connection, authority)
             if retained is not None:
                 retained.append((connection, authority, result))
-            return {
-                "credential_source": {"channel_id": result.credential_source.channel_id,
-                                      "message_ts": result.credential_source.message_ts},
-                "backup_code_source": {"channel_id": result.backup_code_source.channel_id,
-                                       "message_ts": result.backup_code_source.message_ts},
-                "scanned_messages": result.scanned_messages,
-                "scanned_pages": result.scanned_pages,
-            }
+            return public_references(result)
 
         return run_credential_discovery(ctx, plan_id, digest, collect)
     except Exception:
@@ -78,6 +85,36 @@ def _resolve(ctx, plan_id, digest, retained):
 def resolve_approved_sources(ctx, plan_id, digest):
     """Discovery-only public metadata receipt; preserves the original behavior."""
     return _resolve(ctx, plan_id, digest, None)
+
+
+def extract_private_material(connection, authority, result):
+    if isinstance(authority, _LOCAL.LocalDiscoveryAuthority):
+        return _LOCAL.extract(authority, result)
+    return _DISCOVERY.extract(connection, authority, result)
+
+
+def private_source_scope(reference):
+    if isinstance(reference, _LOCAL.LocalCredentialReference):
+        return _LOCAL.source_scope(reference)
+    return reference.channel_id + ":" + reference.message_ts
+
+
+def public_references(result):
+    if isinstance(result, _LOCAL.LocalDiscoveryResult):
+        credential = {"kind": "local_os_credential",
+                      "store_id": result.credential_source.store_id,
+                      "last_written_filetime": result.credential_source.last_written_filetime}
+        backup = {"kind": "local_os_credential",
+                  "store_id": result.backup_code_source.store_id,
+                  "last_written_filetime": result.backup_code_source.last_written_filetime}
+    else:
+        credential = {"channel_id": result.credential_source.channel_id,
+                      "message_ts": result.credential_source.message_ts}
+        backup = {"channel_id": result.backup_code_source.channel_id,
+                  "message_ts": result.backup_code_source.message_ts}
+    return {"credential_source": credential, "backup_code_source": backup,
+            "scanned_messages": result.scanned_messages,
+            "scanned_pages": result.scanned_pages}
 
 
 def execute_approved_sources(ctx, plan_id, digest, consumer):
@@ -93,11 +130,13 @@ def execute_approved_sources(ctx, plan_id, digest, consumer):
         from litscout.app.credential_broker import run_credential_broker
         _resolve(ctx, plan_id, digest, retained)
 
-        def handoff(manifest):
+        def handoff(manifest, persisted_references):
             if len(retained) != 1:
                 raise ValueError("private_sam_provenance_required")
             connection, authority, result = retained.pop()
-            material = _DISCOVERY.extract(connection, authority, result)
+            if persisted_references != public_references(result):
+                raise ValueError("private_sam_provenance_required")
+            material = extract_private_material(connection, authority, result)
             consumer(manifest, material)
 
         return run_credential_broker(ctx, plan_id, digest, handoff)
@@ -118,7 +157,8 @@ def bind_approved_controller(ctx, plan_id, digest, retained_identity):
     try:
         from litscout.app.credential_broker import run_credential_broker
         run_credential_broker(ctx, plan_id, digest,
-            lambda manifest: _CONTROLLER.bind(manifest, digest, retained_identity))
+            lambda manifest, references: _CONTROLLER.bind(
+                manifest, digest, retained_identity))
         return {"plan_id": plan_id, "state": "controller_binding_stored",
                 "renewal_enabled": False}
     except Exception:

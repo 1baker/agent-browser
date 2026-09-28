@@ -4326,6 +4326,11 @@ Linux/WSL only; hidden operator input, auth.test only, owner-only plaintext
 bootstrap file; never pass a token in arguments or chat. Use --status for local
 metadata. This helper does not read Slack messages or enable automated login.
 
+Source-checkout SAM credential import: python3 scripts/private-sam-local-credentials.py
+Windows/WSL only; hidden /dev/tty input and Windows Credential Manager storage.
+No plaintext fallback. Import success does not submit credentials, renew a key,
+or prove browser/runtime activation.
+
 Usage: agent-browser inspect
 
 Examples:

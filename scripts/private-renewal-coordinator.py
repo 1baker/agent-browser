@@ -125,9 +125,16 @@ def _validate(authority, manifest):
         raise ValueError(FAILED)
     scope = auth["discovery"]
     source = operations[1]["operation"]["source_scope"]
-    prefix = scope["channel_id"] + ":"
-    if (not source.startswith(prefix) or not re.fullmatch(r"[0-9]{10}\.[0-9]{6}", source[len(prefix):])
-            or not scope["oldest_ts"] <= source[len(prefix):] <= scope["latest_ts"]):
+    if scope["kind"] == "slack_channel":
+        prefix = scope["channel_id"] + ":"
+        valid_source = (source.startswith(prefix)
+            and re.fullmatch(r"[0-9]{10}\.[0-9]{6}", source[len(prefix):]) is not None
+            and scope["oldest_ts"] <= source[len(prefix):] <= scope["latest_ts"])
+    elif scope["kind"] == "local_os_credential":
+        valid_source = source == "local_os_credential:" + scope["store_id"]
+    else:
+        valid_source = False
+    if not valid_source:
         raise ValueError(FAILED)
 
 
@@ -215,13 +222,15 @@ def execute_approved_renewal(ctx, plan_id, digest, root):
         _validate(authority, _current(ctx, plan_id, digest, "approved"))
         _SAM._resolve(ctx, plan_id, digest, retained)
 
-        def handoff(manifest):
+        def handoff(manifest, persisted_references):
             _validate(authority, manifest)
             if len(retained) != 1:
                 raise ValueError(FAILED)
             connection, discovery_scope, result = retained.pop()
+            if persisted_references != _SAM.public_references(result):
+                raise ValueError(FAILED)
             source = result.backup_code_source
-            if authority["operations"][1]["operation"]["source_scope"] != source.channel_id + ":" + source.message_ts:
+            if authority["operations"][1]["operation"]["source_scope"] != _SAM.private_source_scope(source):
                 raise ValueError(FAILED)
             metadata = os.stat("executor.sock", dir_fd=directory, follow_symlinks=False)
             if (not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != os.geteuid()
@@ -246,7 +255,7 @@ def execute_approved_renewal(ctx, plan_id, digest, root):
                 identity = dict(authority["operations"][0]["service_tab_handle"],
                                 ready=True, endpoint=authority["endpoint"])
                 _SAM._CONTROLLER.bind(manifest, digest, identity, root)
-                material = _SAM._DISCOVERY.extract(connection, discovery_scope, result)
+                material = _SAM.extract_private_material(connection, discovery_scope, result)
                 if len(material.backup_codes) != 1 or material.email != manifest["account_email"].lower():
                     raise ValueError(FAILED)
                 # Private source revalidation may take time. Expiry or config
