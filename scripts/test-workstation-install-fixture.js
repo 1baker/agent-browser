@@ -271,7 +271,7 @@ try {
     `${installedPreparationHelp.stdout}${installedPreparationHelp.stderr}`,
     /source-free workstation preparation command/,
   );
-  const installedControllerHelp = spawnSync('node', [retainedPreparationScript, '--help'], {
+  const installedControllerHelp = spawnSync(process.execPath, [retainedPreparationScript, '--help'], {
     cwd: payloadRoot,
     encoding: 'utf8',
     env: {
