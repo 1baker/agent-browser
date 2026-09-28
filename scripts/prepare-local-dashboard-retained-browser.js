@@ -21,6 +21,7 @@ const options = {
   jobTimeoutMs: 120000,
   json: false,
   runtimeProfile: '',
+  sessionName: '',
   retainedRequirement: process.env.AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT
     || resolve(homedir(), '.agent-browser', 'publications', 'local-dashboard-retained-browser.json'),
   rotateStaleRequirementSha256: '',
@@ -40,6 +41,7 @@ for (let index = 0; index < process.argv.slice(2).length; index += 1) {
   else if (arg === '--job-timeout-ms') options.jobTimeoutMs = requiredValue(args, ++index, arg);
   else if (arg === '--json') options.json = true;
   else if (arg === '--runtime-profile') options.runtimeProfile = requiredValue(args, ++index, arg);
+  else if (arg === '--session-name') options.sessionName = requiredValue(args, ++index, arg);
   else if (arg === '--retained-requirement') options.retainedRequirement = requiredValue(args, ++index, arg);
   else if (arg === '--rotate-stale-requirement-sha256') {
     options.rotateStaleRequirementSha256 = requiredValue(args, ++index, arg);
@@ -154,6 +156,7 @@ Options:
   --url <url>                 Exact canonical URL to open and retain.
   --url-prefix <url>          Reviewed origin and path boundary containing the exact URL.
   --runtime-profile <id>      Required managed runtime profile.
+  --session-name <name>       Reuse an existing retained session. Defaults to the runtime profile.
   --retained-requirement <path>
                               Private durable requirement path.
   --rotate-stale-requirement-sha256 <sha256>

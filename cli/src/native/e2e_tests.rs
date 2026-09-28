@@ -22,7 +22,9 @@ use crate::test_utils::EnvGuard;
 
 use super::actions::{execute_command, DaemonState};
 use super::control_plane::ControlPlaneWorker;
-use super::service_model::{BrowserHealth as ServiceBrowserHealth, JobState};
+use super::service_model::{
+    BrowserHealth as ServiceBrowserHealth, BrowserTab, JobState, TabLifecycle,
+};
 use super::service_store::{JsonServiceStateStore, ServiceStateStore};
 
 fn assert_success(resp: &Value) {
@@ -180,6 +182,113 @@ async fn e2e_launch_navigate_evaluate_close() {
     let resp = execute_command(&json!({ "id": "99", "action": "close" }), &mut state).await;
     assert_success(&resp);
     assert_eq!(get_data(&resp)["closed"], true);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore]
+async fn e2e_managed_launch_control_plane_attestation() {
+    let guard = EnvGuard::new(&["AGENT_BROWSER_SESSION"]);
+    guard.set("AGENT_BROWSER_SESSION", "managed-attestation-e2e");
+    let (profile_dir, profile) = e2e_temp_profile("managed-launch-attestation");
+    let mut state = DaemonState::new();
+
+    let launched = execute_command(
+        &json!({
+            "id": "managed-launch",
+            "action": "launch",
+            "headless": true,
+            "profile": profile
+        }),
+        &mut state,
+    )
+    .await;
+    assert_success(&launched);
+
+    let target_id = state
+        .browser
+        .as_ref()
+        .unwrap()
+        .active_target_id()
+        .unwrap()
+        .to_string();
+    let tab_id = format!("target:{target_id}");
+    let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+    let mut service_state = store.load().unwrap();
+    service_state
+        .sessions
+        .get_mut("managed-attestation-e2e")
+        .unwrap()
+        .tab_ids
+        .push(tab_id.clone());
+    service_state.tabs.insert(
+        tab_id.clone(),
+        BrowserTab {
+            id: tab_id.clone(),
+            browser_id: "session:managed-attestation-e2e".into(),
+            target_id: Some(target_id),
+            session_id: Some("managed-attestation-e2e".into()),
+            owner_session_id: Some("managed-attestation-e2e".into()),
+            lifecycle: TabLifecycle::Ready,
+            ..BrowserTab::default()
+        },
+    );
+    service_state.refresh_service_tab_handles();
+    let service_tab_handle =
+        serde_json::to_value(service_state.service_tab_handle(&tab_id).unwrap().clone()).unwrap();
+    store.save(&service_state).unwrap();
+
+    let initial = execute_command(
+        &json!({
+            "id": "initial-proof",
+            "action": "diagnostics",
+            "serviceTabHandle": service_tab_handle.clone()
+        }),
+        &mut state,
+    )
+    .await;
+    assert_success(&initial);
+    assert_eq!(
+        get_data(&initial)["controlPlaneAttestation"]["complete"],
+        true
+    );
+    assert_eq!(
+        get_data(&initial)["controlPlaneAttestation"]["ownerCustody"]["basis"],
+        "verified_managed_launch_lifecycle"
+    );
+
+    let navigated = execute_command(
+        &json!({
+            "id": "managed-navigation",
+            "action": "navigate",
+            "url": "data:text/html,<title>Managed launch custody</title>"
+        }),
+        &mut state,
+    )
+    .await;
+    assert_success(&navigated);
+    let after = execute_command(
+        &json!({
+            "id": "post-navigation-proof",
+            "action": "diagnostics",
+            "serviceTabHandle": service_tab_handle
+        }),
+        &mut state,
+    )
+    .await;
+    assert_success(&after);
+    assert_eq!(
+        get_data(&after)["controlPlaneAttestation"]["complete"],
+        true
+    );
+    assert_eq!(
+        get_data(&after)["controlPlaneAttestation"]["missingProofs"],
+        json!([])
+    );
+
+    let closed = execute_command(&json!({"id": "close", "action": "close"}), &mut state).await;
+    assert_success(&closed);
+    let _ = std::fs::remove_dir_all(profile_dir);
 }
 
 #[tokio::test]

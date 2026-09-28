@@ -14,8 +14,10 @@ export function resolveRuntimeDaemonClientBinary(
   const procExecutable = `/proc/${daemonPid}/exe`;
   if (!pathExists(procExecutable)) return fallbackBin;
   try {
-    const target = readLink(procExecutable);
-    if (target.endsWith(' (deleted)')) return fallbackBin;
+    // Linux keeps /proc/<pid>/exe executable for the lifetime of the process
+    // even after its original pathname was atomically replaced. That retained
+    // image is the only client guaranteed to match an old daemon protocol.
+    readLink(procExecutable);
   } catch {
     return fallbackBin;
   }

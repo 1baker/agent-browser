@@ -49,6 +49,7 @@ pub struct ControlPlaneHandle {
     service_job_timeout_ms: Option<u64>,
     service_monitor_interval_ms: Option<u64>,
     running_cancellations: Arc<Mutex<HashMap<String, RunningJobCancel>>>,
+    worker_identity: Option<WorkerIdentity>,
 }
 
 pub struct ControlPlaneStatus {
@@ -62,6 +63,13 @@ struct WorkerRuntimeOptions {
     service_job_timeout_ms: Option<u64>,
     service_monitor_interval_ms: Option<u64>,
     running_cancellations: Arc<Mutex<HashMap<String, RunningJobCancel>>>,
+    worker_identity: Option<WorkerIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkerIdentity {
+    session_id: String,
+    instance_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +108,8 @@ pub struct ControlRequest {
     pub agent_name: Option<String>,
     pub task_name: Option<String>,
     pub naming_warnings: Vec<String>,
+    runner_session_id: Option<String>,
+    runner_instance_id: Option<String>,
     pub command: Value,
     pub priority: ControlPriority,
     /// Optional worker-bound execution timeout. The worker records timed-out
@@ -144,7 +154,7 @@ pub struct ControlPlaneWorker;
 
 impl ControlPlaneWorker {
     pub fn start(state: DaemonState) -> ControlPlaneHandle {
-        Self::start_with_capacity_and_options(state, DEFAULT_QUEUE_CAPACITY, None, None, None)
+        Self::start_with_capacity_and_options(state, DEFAULT_QUEUE_CAPACITY, None, None, None, None)
     }
 
     pub fn start_with_service_reconcile_interval(
@@ -166,11 +176,38 @@ impl ControlPlaneWorker {
             service_reconcile_interval_ms,
             service_job_timeout_ms,
             service_monitor_interval_ms,
+            None,
+        )
+    }
+
+    /// Start the serialized service worker for one exclusive daemon session.
+    /// Jobs accepted by this worker carry a per-start generation so a later
+    /// worker for the same session can fail only work that the replaced worker
+    /// could no longer finish.
+    pub fn start_for_session_with_options(
+        state: DaemonState,
+        session_id: &str,
+        service_reconcile_interval_ms: Option<u64>,
+        service_job_timeout_ms: Option<u64>,
+        service_monitor_interval_ms: Option<u64>,
+    ) -> ControlPlaneHandle {
+        let worker_identity = WorkerIdentity {
+            session_id: session_id.to_string(),
+            instance_id: format!("worker-{}", uuid::Uuid::new_v4()),
+        };
+        reconcile_jobs_interrupted_by_replaced_worker(&worker_identity);
+        Self::start_with_capacity_and_options(
+            state,
+            DEFAULT_QUEUE_CAPACITY,
+            service_reconcile_interval_ms,
+            service_job_timeout_ms,
+            service_monitor_interval_ms,
+            Some(worker_identity),
         )
     }
 
     fn start_with_capacity(state: DaemonState, capacity: usize) -> ControlPlaneHandle {
-        Self::start_with_capacity_and_options(state, capacity, None, None, None)
+        Self::start_with_capacity_and_options(state, capacity, None, None, None, None)
     }
 
     fn start_with_capacity_and_options(
@@ -179,6 +216,7 @@ impl ControlPlaneWorker {
         service_reconcile_interval_ms: Option<u64>,
         service_job_timeout_ms: Option<u64>,
         service_monitor_interval_ms: Option<u64>,
+        worker_identity: Option<WorkerIdentity>,
     ) -> ControlPlaneHandle {
         let (tx, rx) = mpsc::channel(capacity);
         let status = Arc::new(ControlPlaneStatus::new());
@@ -188,6 +226,7 @@ impl ControlPlaneWorker {
             service_job_timeout_ms,
             service_monitor_interval_ms,
             running_cancellations: running_cancellations.clone(),
+            worker_identity: worker_identity.clone(),
         };
         tokio::spawn(run_worker(
             state,
@@ -202,6 +241,7 @@ impl ControlPlaneWorker {
             service_job_timeout_ms,
             service_monitor_interval_ms,
             running_cancellations,
+            worker_identity,
         }
     }
 }
@@ -423,6 +463,14 @@ impl ControlPlaneHandle {
             agent_name,
             task_name,
             naming_warnings,
+            runner_session_id: self
+                .worker_identity
+                .as_ref()
+                .map(|identity| identity.session_id.clone()),
+            runner_instance_id: self
+                .worker_identity
+                .as_ref()
+                .map(|identity| identity.instance_id.clone()),
             command,
             priority: ControlPriority::Normal,
             timeout_ms,
@@ -717,6 +765,37 @@ fn persist_service_job(job: ServiceJob) {
     });
 }
 
+fn reconcile_jobs_interrupted_by_replaced_worker(identity: &WorkerIdentity) {
+    let completed_at = current_timestamp();
+    mutate_persisted_service_jobs(|state| {
+        for job in state.jobs.values_mut() {
+            let nonterminal = matches!(
+                job.state,
+                JobState::Queued | JobState::WaitingProfileLease | JobState::Running
+            );
+            let owned_by_replaced_worker = job.runner_session_id.as_deref()
+                == Some(identity.session_id.as_str())
+                && job
+                    .runner_instance_id
+                    .as_deref()
+                    .is_some_and(|instance_id| instance_id != identity.instance_id.as_str());
+            if !nonterminal || !owned_by_replaced_worker {
+                continue;
+            }
+            job.state = JobState::Failed;
+            job.completed_at = Some(completed_at.clone());
+            job.result = Some(json!({
+                "success": false,
+                "interrupted": true,
+                "reason": "service_worker_replaced",
+            }));
+            job.error = Some(
+                "Service worker was replaced before the job reached a terminal state".to_string(),
+            );
+        }
+    });
+}
+
 fn persist_service_job_queued(request: &ControlRequest) {
     let allocation_refs = service_job_allocation_refs(request, None);
     persist_service_job(ServiceJob {
@@ -741,6 +820,8 @@ fn persist_service_job_queued(request: &ControlRequest) {
         route_pool_entry_id: allocation_refs.route_pool_entry_id,
         viewer_lease_id: allocation_refs.viewer_lease_id,
         controller_lease_id: allocation_refs.controller_lease_id,
+        runner_session_id: request.runner_session_id.clone(),
+        runner_instance_id: request.runner_instance_id.clone(),
         target: JobTarget::Service,
         owner: ServiceActor::System,
         state: JobState::Queued,
@@ -780,6 +861,8 @@ fn persist_service_job_waiting_profile_lease(
         route_pool_entry_id: allocation_refs.route_pool_entry_id,
         viewer_lease_id: allocation_refs.viewer_lease_id,
         controller_lease_id: allocation_refs.controller_lease_id,
+        runner_session_id: request.runner_session_id.clone(),
+        runner_instance_id: request.runner_instance_id.clone(),
         target: JobTarget::Service,
         owner: ServiceActor::System,
         state: JobState::WaitingProfileLease,
@@ -927,6 +1010,8 @@ fn persist_service_job_running(request: &ControlRequest) {
         route_pool_entry_id: allocation_refs.route_pool_entry_id,
         viewer_lease_id: allocation_refs.viewer_lease_id,
         controller_lease_id: allocation_refs.controller_lease_id,
+        runner_session_id: request.runner_session_id.clone(),
+        runner_instance_id: request.runner_instance_id.clone(),
         target: JobTarget::Service,
         owner: ServiceActor::System,
         state: JobState::Running,
@@ -975,6 +1060,8 @@ fn persist_service_job_finished(request: &ControlRequest, response: &Value) {
         route_pool_entry_id: allocation_refs.route_pool_entry_id,
         viewer_lease_id: allocation_refs.viewer_lease_id,
         controller_lease_id: allocation_refs.controller_lease_id,
+        runner_session_id: request.runner_session_id.clone(),
+        runner_instance_id: request.runner_instance_id.clone(),
         target: JobTarget::Service,
         owner: ServiceActor::System,
         state: if success {
@@ -1021,6 +1108,8 @@ fn persist_service_job_timed_out(request: &ControlRequest) {
         route_pool_entry_id: allocation_refs.route_pool_entry_id,
         viewer_lease_id: allocation_refs.viewer_lease_id,
         controller_lease_id: allocation_refs.controller_lease_id,
+        runner_session_id: request.runner_session_id.clone(),
+        runner_instance_id: request.runner_instance_id.clone(),
         target: JobTarget::Service,
         owner: ServiceActor::System,
         state: JobState::TimedOut,
@@ -1062,6 +1151,8 @@ fn persist_service_job_cancelled(request: &ControlRequest, reason: &str) {
         route_pool_entry_id: allocation_refs.route_pool_entry_id,
         viewer_lease_id: allocation_refs.viewer_lease_id,
         controller_lease_id: allocation_refs.controller_lease_id,
+        runner_session_id: request.runner_session_id.clone(),
+        runner_instance_id: request.runner_instance_id.clone(),
         target: JobTarget::Service,
         owner: ServiceActor::System,
         state: JobState::Cancelled,
@@ -1103,6 +1194,8 @@ fn persist_service_job_failed_to_enqueue(request: &ControlRequest, error: &str) 
         route_pool_entry_id: allocation_refs.route_pool_entry_id,
         viewer_lease_id: allocation_refs.viewer_lease_id,
         controller_lease_id: allocation_refs.controller_lease_id,
+        runner_session_id: request.runner_session_id.clone(),
+        runner_instance_id: request.runner_instance_id.clone(),
         target: JobTarget::Service,
         owner: ServiceActor::System,
         state: JobState::Failed,
@@ -1123,6 +1216,7 @@ fn enqueue_due_monitor_run(
     tx: &mpsc::Sender<WorkerMessage>,
     status: &Arc<ControlPlaneStatus>,
     service_job_timeout_ms: Option<u64>,
+    worker_identity: Option<&WorkerIdentity>,
 ) {
     if !persisted_due_monitor_work_pending() {
         return;
@@ -1137,6 +1231,8 @@ fn enqueue_due_monitor_run(
         agent_name: Some("service-monitor-scheduler".to_string()),
         task_name: Some("run-due-monitors".to_string()),
         naming_warnings: Vec::new(),
+        runner_session_id: worker_identity.map(|identity| identity.session_id.clone()),
+        runner_instance_id: worker_identity.map(|identity| identity.instance_id.clone()),
         command: json!({
             "id": id,
             "action": SERVICE_MONITORS_RUN_DUE_ACTION,
@@ -1513,6 +1609,7 @@ async fn run_worker(
         interval
     });
     let service_job_timeout_ms = runtime_options.service_job_timeout_ms;
+    let worker_identity = runtime_options.worker_identity;
     let running_cancellations = runtime_options.running_cancellations;
     status.set_state(WorkerState::Ready);
 
@@ -1540,6 +1637,10 @@ async fn run_worker(
                     #[cfg(unix)]
                     WorkerMessage::Private(mut request) => {
                         status.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                        if !state.allows_unfenced_cdp() {
+                            let _ = request.response_tx.send(Err("private_handoff_custody_requires_governed_dispatch"));
+                            continue;
+                        }
                         if request.response_tx.is_closed() {
                             continue;
                         }
@@ -1772,6 +1873,7 @@ async fn run_worker(
                             persist_service_job_finished(&request, &response);
                         }
                         let follow_up = async {
+                            if !state.allows_unfenced_cdp() { return; }
                             if timed_out {
                                 run_post_timeout_health_circuit(
                                     &mut state,
@@ -1827,7 +1929,12 @@ async fn run_worker(
                     None => std::future::pending::<tokio::time::Instant>().await,
                 }
             }, if service_monitor_interval.is_some() => {
-                enqueue_due_monitor_run(&tx, &status, service_job_timeout_ms);
+                enqueue_due_monitor_run(
+                    &tx,
+                    &status,
+                    service_job_timeout_ms,
+                    worker_identity.as_ref(),
+                );
             }
         }
     }
@@ -2006,6 +2113,84 @@ mod tests {
         path
     }
 
+    #[test]
+    fn replaced_worker_terminalizes_only_its_interrupted_jobs() {
+        let home = temp_home("control-plane-replaced-worker");
+        let guard = EnvGuard::new(&["HOME"]);
+        guard.set("HOME", home.to_str().unwrap());
+        mutate_persisted_service_jobs(|state| {
+            for (id, runner_session_id, runner_instance_id, job_state) in [
+                (
+                    "owned-running",
+                    Some("session-a"),
+                    Some("worker-old"),
+                    JobState::Running,
+                ),
+                (
+                    "owned-queued",
+                    Some("session-a"),
+                    Some("worker-old"),
+                    JobState::Queued,
+                ),
+                (
+                    "current-running",
+                    Some("session-a"),
+                    Some("worker-new"),
+                    JobState::Running,
+                ),
+                (
+                    "other-running",
+                    Some("session-b"),
+                    Some("worker-old"),
+                    JobState::Running,
+                ),
+                ("legacy-running", None, None, JobState::Running),
+                (
+                    "owned-terminal",
+                    Some("session-a"),
+                    Some("worker-old"),
+                    JobState::Succeeded,
+                ),
+            ] {
+                state.jobs.insert(
+                    id.to_string(),
+                    ServiceJob {
+                        id: id.to_string(),
+                        action: "state_list".to_string(),
+                        runner_session_id: runner_session_id.map(str::to_string),
+                        runner_instance_id: runner_instance_id.map(str::to_string),
+                        state: job_state,
+                        ..ServiceJob::default()
+                    },
+                );
+            }
+        });
+
+        reconcile_jobs_interrupted_by_replaced_worker(&WorkerIdentity {
+            session_id: "session-a".to_string(),
+            instance_id: "worker-new".to_string(),
+        });
+
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        let persisted = store.load().unwrap();
+        for id in ["owned-running", "owned-queued"] {
+            let job = &persisted.jobs[id];
+            assert_eq!(job.state, JobState::Failed);
+            assert!(job.completed_at.is_some());
+            assert_eq!(job.result.as_ref().unwrap()["interrupted"], true);
+            assert_eq!(
+                job.result.as_ref().unwrap()["reason"],
+                "service_worker_replaced"
+            );
+        }
+        assert_eq!(persisted.jobs["current-running"].state, JobState::Running);
+        assert_eq!(persisted.jobs["other-running"].state, JobState::Running);
+        assert_eq!(persisted.jobs["legacy-running"].state, JobState::Running);
+        assert_eq!(persisted.jobs["owned-terminal"].state, JobState::Succeeded);
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[tokio::test]
     async fn submit_returns_command_response() {
         let home = temp_home("control-plane-submit");
@@ -2049,6 +2234,66 @@ mod tests {
         assert_eq!(job.result.as_ref().unwrap()["success"], true);
 
         handle.shutdown().await;
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn named_worker_records_identity_and_reconciles_its_restart() {
+        let home = temp_home("control-plane-named-worker-restart");
+        let guard = EnvGuard::new(&["HOME"]);
+        guard.set("HOME", home.to_str().unwrap());
+        let first = ControlPlaneWorker::start_for_session_with_options(
+            DaemonState::new(),
+            "session-a",
+            None,
+            None,
+            None,
+        );
+        let response = first
+            .submit(json!({
+                "id": "named-worker-complete",
+                "action": "state_list",
+            }))
+            .await;
+        assert_eq!(response.get("success").and_then(Value::as_bool), Some(true));
+
+        let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+        let first_state = store.load().unwrap();
+        let completed = &first_state.jobs["named-worker-complete"];
+        assert_eq!(completed.runner_session_id.as_deref(), Some("session-a"));
+        let first_instance = completed.runner_instance_id.clone().unwrap();
+        first.shutdown().await;
+
+        mutate_persisted_service_jobs(|state| {
+            state.jobs.insert(
+                "named-worker-interrupted".to_string(),
+                ServiceJob {
+                    id: "named-worker-interrupted".to_string(),
+                    action: "navigate".to_string(),
+                    runner_session_id: Some("session-a".to_string()),
+                    runner_instance_id: Some(first_instance.clone()),
+                    state: JobState::Running,
+                    ..ServiceJob::default()
+                },
+            );
+        });
+
+        let replacement = ControlPlaneWorker::start_for_session_with_options(
+            DaemonState::new(),
+            "session-a",
+            None,
+            None,
+            None,
+        );
+        let replacement_state = store.load().unwrap();
+        let interrupted = &replacement_state.jobs["named-worker-interrupted"];
+        assert_eq!(interrupted.state, JobState::Failed);
+        assert_eq!(
+            interrupted.result.as_ref().unwrap()["reason"],
+            "service_worker_replaced"
+        );
+        replacement.shutdown().await;
+
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -2216,6 +2461,8 @@ mod tests {
             agent_name: Some("test-agent".to_string()),
             task_name: Some("test-task".to_string()),
             naming_warnings: Vec::new(),
+            runner_session_id: None,
+            runner_instance_id: None,
             command,
             priority: ControlPriority::Normal,
             timeout_ms: None,
@@ -2617,7 +2864,7 @@ mod tests {
     }
 
     #[test]
-    fn service_job_repository_helpers_mutate_prune_and_load() {
+    fn service_job_repository_helpers_prune_terminal_history_and_load() {
         let home = temp_home("control-plane-job-repository");
         let store = JsonServiceStateStore::new(home.join("state.json"));
         let repository = LockedServiceStateRepository::new(store.clone());
@@ -2630,7 +2877,7 @@ mod tests {
                     ServiceJob {
                         id,
                         action: "navigate".to_string(),
-                        state: JobState::Queued,
+                        state: JobState::Succeeded,
                         submitted_at: Some(format!(
                             "2026-04-22T00:{:02}:{:02}Z",
                             index / 60,

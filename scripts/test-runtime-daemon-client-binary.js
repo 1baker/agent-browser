@@ -20,7 +20,7 @@ assert.equal(
     ...dependencies,
     readLink: () => '/opt/agent-browser/old (deleted)',
   }),
-  fallback,
+  '/proc/123/exe',
 );
 assert.equal(
   resolveRuntimeDaemonClientBinary(123, fallback, {

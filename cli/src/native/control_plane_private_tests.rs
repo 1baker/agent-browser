@@ -104,6 +104,7 @@ fn channel(capacity: usize) -> (ControlPlaneHandle, mpsc::Receiver<WorkerMessage
             service_job_timeout_ms: None,
             service_monitor_interval_ms: None,
             running_cancellations: Arc::new(Mutex::new(HashMap::new())),
+            worker_identity: None,
         },
         rx,
     )
@@ -187,6 +188,7 @@ fn start_existing(
             service_job_timeout_ms: None,
             service_monitor_interval_ms: None,
             running_cancellations: Arc::clone(&handle.running_cancellations),
+            worker_identity: None,
         },
     ))
 }

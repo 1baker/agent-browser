@@ -34,6 +34,20 @@ assert.deepEqual(buildRetainedBrowserPinArgs(request), [
   '--json',
 ]);
 
+const reusedSessionRequest = normalizeRetainedBrowserPreparationRequest({
+  url: request.url,
+  urlPrefix: request.urlPrefix,
+  runtimeProfile: 'chatgpt-pro',
+  sessionName: 'dashboard-service-backend',
+});
+assert.equal(reusedSessionRequest.sessionName, 'dashboard-service-backend');
+assert.deepEqual(buildRetainedBrowserRemoteViewArgs(reusedSessionRequest).slice(0, 4), [
+  '--json',
+  '--session',
+  'dashboard-service-backend',
+  'remote-view',
+]);
+
 const fragmentRequest = normalizeRetainedBrowserPreparationRequest({
   url: 'https://sso.ice.com/index.html#/pageLogin',
   urlPrefix: 'https://sso.ice.com/index.html',

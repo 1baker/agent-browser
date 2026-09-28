@@ -64,6 +64,7 @@ agent-browser service monitors triage <id> # Acknowledge monitor incident and cl
 agent-browser service site-policies   # Show configured service site-policy records
 agent-browser service providers       # Show configured service provider records
 agent-browser service challenges      # Show retained service challenge records
+agent-browser service recover-interrupted --job-id <id> --dry-run # Preview exact legacy interrupted-job recovery
 agent-browser service cancel <job-id> # Cancel a queued, waiting, or running service control job
 agent-browser service acknowledge <incident-id> # Mark a retained incident acknowledged
 agent-browser service resolve <incident-id>     # Mark a retained incident resolved
@@ -111,6 +112,54 @@ and exits the current daemon without closing the browser. `agent-browser
 handoff resume` starts a replacement daemon, reconnects to the same browser and
 open targets, refreshes the runtime stream record, and removes the retry record
 only after the attach succeeds.
+
+A recorded active target is required: resume refuses a missing or unresponsive
+target instead of switching to another tab. Legacy records without a target
+retain discovery behavior. Repeated prepare with no browser preserves any
+existing retry record and reports pending recovery. Inspect and resume that
+record; do not delete it to bypass recovery. These safeguards preserve continuity,
+but version-1 records do not provide exclusive ownership attestation.
+
+Linux version-2 handoffs from owned browsers verify source-process exit and the
+retained browser's process, profile and debugging listener. The replacement holds
+a profile-scoped exclusive lock and persists claimed and committed receipts.
+Failed transfers preserve evidence and block ordinary work across restarts.
+Diagnostics exposes `controlPlaneAttestation`, checked against the current
+service receipt, lease and target. Remote-headed operation additionally requires
+the configured route user's verified kernel display identity. Legacy records
+never qualify as complete proof. Transferred sessions deny direct dashboard CDP
+input, background handlers, private journeys and unsupported commands; use the
+governed command queue. This does not automatically migrate a live legacy daemon.
+
+`handoff reconcile` is a separate explicit repair for an absent shared receipt
+projection owned by the currently running daemon. Reconciliation requires its
+committed prospective receipt, held lease and unchanged target/URL/display. It
+rejects conflicting entries, is idempotent for an identical entry, and never
+starts or upgrades a daemon or attaches Chrome. It is unavailable in older
+already-running binaries.
+
+For a stranded older owner, `handoff inspect-external` checks one live committed
+receipt against its private enrollment, kernel-held profile lock, service records
+and exact DevTools target URL without changing state. `handoff reconcile-external`
+rechecks those bindings and restores only an absent identical shared projection.
+It never starts or retires a daemon, replaces Chrome, or sends page input. Check
+the installed owner's governed URL and snapshot reads afterward; other commands
+may remain outside the transferred-session allowlist.
+
+Explicit Linux migration uses `handoff migration-plan <target-id> <canonical-url>`,
+`handoff migration-prepare <target-id> <canonical-url> <plan-sha256>` and
+`handoff migration-resume`. The read-only plan witnesses the existing authenticated
+source without starting or replacing a daemon. Prepare verifies the approved plan
+and dispatches once on the same kernel-witnessed socket. Separate prospective
+enrollment preserves the original legacy descriptor bytes; it does not fabricate
+historical v2 source ownership. Resume requires source exit, exact retained
+browser/profile/session/target/URL/display bindings and a destination lease before
+committing custody. Unknown acknowledgements and identity drift fail closed.
+Install the reviewed runtime before enrollment, keep maintenance exclusion held
+during migration, and do not use ordinary publisher recovery on an enrolled
+session. Verify fresh complete attestation before browser input.
+Linux display verification supports the same-name abstract X socket only when
+the filesystem endpoint is absent; owner or access failures never fall back.
 
 The local development publisher runs this protocol automatically around
 executable replacement. Browser PIDs, DevTools ports, profiles, and tabs remain
@@ -432,6 +481,7 @@ agent-browser service monitors triage <id> # Acknowledge monitor incident and cl
 agent-browser service site-policies   # Show configured site-policy records
 agent-browser service providers       # Show configured provider records
 agent-browser service challenges      # Show retained challenge records
+agent-browser service recover-interrupted --job-id <id> --dry-run
 agent-browser service cancel <job-id> --reason stale
 agent-browser service retry browser-1 --by operator --note approved
 agent-browser service jobs --limit 20
@@ -525,7 +575,9 @@ Add <code>--released-sessions</code> when released or expired session records sh
 
 `service access-plan` prints the same no-launch recommendation returned by HTTP <code>GET /api/service/access-plan</code> and MCP <code>service_access_plan</code>. Use it before browser work when an operator, agent, or software client needs the selected profile, manual-seeding posture, monitor freshness recommendation, service request availability, and compact <code>browser_build_summary</code> that explains whether stock Chrome, stealth CDP Chromium, or CDP-free headed mode won. Pass <code>--browser-host</code>, <code>--view-stream-provider</code>, <code>--control-input-provider</code>, and <code>--display-isolation</code> when the caller needs the plan to preserve an explicit remote viewport posture.
 
-`service cancel <job-id>` marks a queued or lease-waiting service job cancelled before it dispatches or requests cooperative cancellation for a running job. Running cancellation drops the active service future, records the job as <code>cancelled</code>, and cleans up browser state before the worker accepts more work. Terminal jobs are rejected rather than rewritten. Add <code>--reason &lt;text&gt;</code> to record an operator-readable reason for queued cancellation.
+`service cancel <job-id>` marks a queued or lease-waiting service job cancelled before it dispatches or requests cooperative cancellation for a running job. Running cancellation drops the active service future, records the job as <code>cancelled</code>, and cleans up browser state before the worker accepts more work. Jobs accepted by a named daemon record <code>runnerSessionId</code> and <code>runnerInstanceId</code>. If that exclusive daemon session restarts, its new worker marks only nonterminal jobs from its replaced worker generation as failed with <code>reason: "service_worker_replaced"</code>; jobs owned by other sessions and legacy jobs without ownership proof remain unchanged. Terminal jobs are rejected rather than rewritten. Add <code>--reason &lt;text&gt;</code> to record an operator-readable reason for queued cancellation.
+
+`service recover-interrupted --job-id <id> --dry-run` previews bounded recovery for an older ownerless running record. A candidate must still be running, be at least five minutes old, have no runner identity, and contain no terminal evidence. Apply requires the same exact IDs and the fresh candidate-bound <code>reviewToken</code>; changed state or a digest mismatch fails closed. Successful recovery marks the record failed with <code>reason: "legacy_service_worker_unowned"</code>. It cannot override a job that names a worker.
 
 `service retry <browser-id>` explicitly allows one new recovery attempt for a faulted browser. It records a <code>browser_recovery_override</code> event, moves the browser back to a retryable stale health state, and resets retry counting from that override boundary. Add <code>--by &lt;text&gt;</code> and <code>--note &lt;text&gt;</code> for operator auditability. HTTP retry requests accept <code>service-name</code>, <code>agent-name</code>, and <code>task-name</code> query parameters, and MCP <code>service_browser_retry</code> accepts <code>serviceName</code>, <code>agentName</code>, and <code>taskName</code>, so override events appear in filtered service traces.
 
@@ -685,6 +737,8 @@ The RDP gateway readiness smoke also emits compact readiness rows with component
 When manual seeding blocks that recipe, <code>serviceRequest.request</code> includes <code>blockedByManualAction</code> and <code>manualSeedingRequired</code>. Raw HTTP and MCP service requests carrying both markers must also include <code>allowManualAction: true</code>. When CDP-free posture blocks the tab recipe, <code>serviceRequest.request</code> includes <code>requiresCdpFree: true</code> and <code>cdpAttachmentAllowed: false</code>; HTTP, MCP, and service-client request paths reject that CDP-backed tab request. The same decision includes <code>serviceRequest.cdpFreeAvailability</code> so clients can see before launch that <code>cdp_free_launch</code> is the only currently available lifecycle-only service-request action. Use <code>action: "cdp_free_launch"</code> to launch and track a headed no-DevTools browser when no CDP command is required. The response includes <code>unsupportedCommands</code> so clients can hide or reroute follow-up service-request actions that still require CDP. Software clients can call <code>summarizeServiceCdpFreeLaunchAvailability()</code> for a serializable availability summary or <code>isServiceCdpFreeActionAvailable()</code> for one action.
 
 Successful brokered tab requests can include <code>data.serviceTabHandle</code>, and service tab records expose the same handle as <code>serviceTabHandle</code>. The handle carries browser, session, tab, optional CDP target, profile, profile origin, lease, cleanup, trace, validity, and stale-reason fields so software clients can bind follow-on work without rescanning processes or DevTools targets. Use <code>getServiceTabHandle()</code> or <code>requireServiceTabHandle()</code> from <code>@agent-browser/client/service-request</code>; the latter fails closed when the handle is missing or stale. When site policy and the access plan allow CDP attachment, <code>requestServiceCdpAttach()</code> returns a service-owned attach descriptor for that handle, and <code>requestServiceCdpDetach()</code> records detach without closing the browser process by default. Use <code>releaseServiceTabHandle()</code> when a client is done with a leased tab; the service marks only that retained tab closed and preserves the browser process plus session route for other clients. Use <code>requestServiceEvaluate()</code> for bounded JavaScript reads against a valid handle; it requires <code>timeoutMs</code> and <code>maxReturnBytes</code> and returns URL, title, byte count, and truncation metadata. Use <code>requestServiceUiAction()</code> or <code>runServiceUiAction()</code> for bounded generic UI recipes that return per-step evidence and keep provider selectors in caller-owned recipe data. Use <code>requestServiceNetworkCapture()</code> or <code>captureServiceNetwork()</code> for capped network response evidence with metadata-only defaults and explicit capped body capture. Use <code>requestServiceFileTransfer()</code> or <code>transferServiceFiles()</code> for allowlisted file input and download capture recipes. Use <code>requestServiceDiagnostics()</code> for compact URL/title, browser, session, tab, profile-readiness, route/view, console, error, request-summary, snapshot-summary, caller, trace, and optional screenshot evidence for the same handle.
+
+Transferred runtime owners require <code>brokerTransport=true</code>, the exact retained handle, and a broker-issued <code>broker_attach</code> task step. They return an opaque binding instead of Chrome's DevTools endpoint. Native commands and event reads each require their own approved ordered step; exact verified detach preserves Chrome, while unknown outcomes remain fenced.
 
 Access-plan and profile-lookup queries also accept <code>accountId</code>, <code>accountIds</code>, and <code>url</code>. URL hints derive a known site-policy target from the URL origin. MCP templates are <code>agent-browser://access-plan&#123;?serviceName,agentName,taskName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,url,sitePolicyId,challengeId,readinessProfileId,runtimeProfile,browserBuild,browserHost,viewStreamProvider,controlInputProvider,displayIsolation&#125;</code> and <code>agent-browser://profiles/lookup&#123;?query,hostname,profileId,profileName,serviceName,targetServiceId,targetServiceIds,siteId,siteIds,loginId,loginIds,accountId,accountIds,authenticationState,freshnessState,tag,url,readinessProfileId,browserBuild&#125;</code>.
 

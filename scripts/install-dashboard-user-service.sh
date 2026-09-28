@@ -54,6 +54,7 @@ EnvironmentFile=-$HOME/.agent-browser/.env
 Environment=AGENT_BROWSER_DASHBOARD=1
 Environment=AGENT_BROWSER_DASHBOARD_PORT=$PORT
 ExecStart=$AGENT_BROWSER_BIN
+KillMode=process
 Restart=on-failure
 RestartSec=3
 

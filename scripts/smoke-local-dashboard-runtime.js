@@ -146,9 +146,14 @@ async function run() {
     }
     options.browserBuild = capability.browserBuild || '';
     options.browserProfile = capability.profilePath || '';
+    let browserFailure = null;
+    let browserFailurePhase = null;
     try {
       currentPhase = 'browser smoke';
       report.browser = await runBrowserSmoke(dashboardUrl);
+    } catch (error) {
+      browserFailure = error;
+      browserFailurePhase = currentPhase;
     } finally {
       if (capability.disposableProfile && !options.keepBrowser) {
         currentPhase = 'remove disposable browser profile';
@@ -159,6 +164,10 @@ async function run() {
           retryDelay: 250,
         });
       }
+    }
+    if (browserFailure) {
+      currentPhase = browserFailurePhase;
+      throw browserFailure;
     }
   }
 }

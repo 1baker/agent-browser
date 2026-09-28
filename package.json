@@ -40,6 +40,7 @@
     "test:local-dashboard-retained-browser-watchdog": "node scripts/test-local-dashboard-retained-browser-watchdog.js",
     "test:local-dashboard-publication-journal": "node scripts/test-local-dashboard-publication-journal.js",
     "test:local-dashboard-publication-operations": "node scripts/test-local-dashboard-publication-operations.js",
+    "test:local-dashboard-terminal-provenance-repair": "node scripts/test-local-dashboard-terminal-provenance-repair.js",
     "test:dashboard-publication-status-projection": "node scripts/test-dashboard-publication-status-projection.js",
     "smoke:dashboard-operator-plan0022-live": "node scripts/smoke-dashboard-operator-plan0022-live.js",
     "converge:local-runtime": "node scripts/converge-local-runtime.js",

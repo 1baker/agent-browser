@@ -241,6 +241,10 @@ pub(crate) fn upsert_service_profile_and_session(
             .get(session_id)
             .and_then(|session| session.profile_id.clone())
     });
+    let selected_profile_allows_shared_lease = selected_profile_id
+        .as_deref()
+        .and_then(|profile_id| service_state.profiles.get(profile_id))
+        .is_some_and(|profile| profile.allocation == ProfileAllocationPolicy::SharedService);
     let lease_telemetry = selected_profile_id
         .as_deref()
         .map(|profile_id| profile_lease_telemetry(service_state, session_id, profile_id));
@@ -277,7 +281,11 @@ pub(crate) fn upsert_service_profile_and_session(
         session.profile_lease_conflict_session_ids = lease_telemetry.conflict_session_ids;
     }
     session.lease = if session.profile_id.is_some() {
-        LeaseState::Exclusive
+        if selected_profile_allows_shared_lease {
+            LeaseState::Shared
+        } else {
+            LeaseState::Exclusive
+        }
     } else {
         session.lease
     };
@@ -1297,6 +1305,7 @@ mod tests {
             session.profile_lease_disposition,
             Some(ProfileLeaseDisposition::ReusedBrowser)
         );
+        assert_eq!(session.lease, LeaseState::Shared);
         assert!(session.profile_lease_conflict_session_ids.is_empty());
     }
 

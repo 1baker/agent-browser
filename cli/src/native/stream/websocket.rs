@@ -461,15 +461,12 @@ mod privacy_tests {
                 }
             }
         });
-        let client = Arc::new(
-            CdpClient::connect(&format!("ws://{cdp_address}"))
-                .await
-                .unwrap(),
-        );
-        // No public command or inspect attachment precedes this admission.
-        let gate =
-            crate::native::privacy_gate::PrivacyGate::for_endpoint(&format!("ws://{cdp_address}"))
+        let endpoint_fixture =
+            crate::native::cdp::client::TestCdpEndpoint::new(&format!("ws://{cdp_address}"))
                 .unwrap();
+        let client = Arc::new(endpoint_fixture.connect().await.unwrap());
+        // No public command or inspect attachment precedes this admission.
+        let gate = endpoint_fixture.gate();
         let _private_permit = gate.begin_private().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

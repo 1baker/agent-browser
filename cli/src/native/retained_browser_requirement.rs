@@ -26,6 +26,54 @@ const MAX_SERVICE_STATE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CDP_TARGET_BYTES: usize = 4 * 1024 * 1024;
 const CDP_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Match only ChatGPT's optional human-readable project slug, never a new target.
+/// Other URLs remain byte-exact. Session/profile/target checks are independent.
+fn retained_target_urls_match(expected: &str, observed: &str) -> bool {
+    if expected == observed {
+        return true;
+    }
+    fn identity(raw: &str) -> Option<(&str, &str)> {
+        let tail = raw.strip_prefix("https://chatgpt.com/g/g-p-")?;
+        if !tail.is_ascii() {
+            return None;
+        }
+        let (project_slug, conversation) = tail.split_once("/c/")?;
+        let hex = |part: &str| {
+            part.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        if project_slug.len() < 32 || !hex(&project_slug[..32]) {
+            return None;
+        }
+        let suffix = &project_slug[32..];
+        if !suffix.is_empty() {
+            let slug = suffix.strip_prefix('-')?;
+            if slug.split('-').any(|part| {
+                part.is_empty()
+                    || !part
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            }) {
+                return None;
+            }
+        }
+        let pieces: Vec<&str> = conversation.split('-').collect();
+        if pieces.len() != 5
+            || pieces
+                .iter()
+                .zip([8, 4, 4, 4, 12])
+                .any(|(part, len)| part.len() != len || !hex(part))
+        {
+            return None;
+        }
+        Some((&project_slug[..32], conversation))
+    }
+    match (identity(expected), identity(observed)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetainedBrowserRequirementStatus {
@@ -484,8 +532,10 @@ fn verify_persisted_browser(
                             == Some(expectation.target_id.as_str())
                         && handle.get("profileId").and_then(Value::as_str)
                             == Some(expectation.profile_id.as_str())
-                        && handle.get("url").and_then(Value::as_str)
-                            == Some(expectation.url.as_str())
+                        && handle
+                            .get("url")
+                            .and_then(Value::as_str)
+                            .is_some_and(|url| retained_target_urls_match(&expectation.url, url))
                         && handle.get("valid").and_then(Value::as_bool) == Some(true)
                 })
                 .count()
@@ -518,7 +568,11 @@ fn verify_persisted_browser(
             "retained_target_ambiguous"
         }));
     }
-    if matches[0].get("url").and_then(Value::as_str) != Some(expectation.url.as_str()) {
+    if !matches[0]
+        .get("url")
+        .and_then(Value::as_str)
+        .is_some_and(|url| retained_target_urls_match(&expectation.url, url))
+    {
         return Err(failure("retained_target_url_changed"));
     }
     Ok(())
@@ -632,6 +686,39 @@ fn failure(code: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chatgpt_project_slug_does_not_change_identity() {
+        let canonical = "https://chatgpt.com/g/g-p-6a7e016622e48191a60c4bc34366b537/c/6a80e64e-e830-83ea-b21f-9079abf27a1d";
+        let slugged = canonical.replace("/c/", "-codex-chatgpt-workshop/c/");
+        assert!(super::retained_target_urls_match(&slugged, canonical));
+        assert!(super::retained_target_urls_match(canonical, &slugged));
+        for changed in [
+            canonical.replace("6a7e0166", "7a7e0166"),
+            canonical.replace("6a80e64e", "7a80e64e"),
+            format!("{canonical}?x=1"),
+            format!("{canonical}#x"),
+            format!("{canonical}/"),
+            format!("{canonical}\n"),
+            canonical.replace("chatgpt.com", "chatgpt.com.evil.test"),
+            canonical.replace("chatgpt.com", "user@chatgpt.com"),
+            canonical.replace("chatgpt.com", "chatgpt.com:443"),
+            canonical.replace("https:", "http:"),
+        ] {
+            assert!(
+                !super::retained_target_urls_match(&slugged, &changed),
+                "{changed}"
+            );
+        }
+        assert!(super::retained_target_urls_match(
+            "https://example.com",
+            "https://example.com"
+        ));
+        assert!(!super::retained_target_urls_match(
+            "https://example.com",
+            "https://example.com/"
+        ));
+    }
+
     use super::*;
     use crate::test_utils::EnvGuard;
     use serde_json::json;

@@ -100,6 +100,7 @@ export async function discoverVerifyAndPinRetainedBrowser({
         }
         : readRetainedBrowserRequirement(requirementPath),
       adapters: liveAdapters,
+      replacement: discovery.expectation,
     })
     : null;
   const requirement = rotateExpectedSha256
@@ -132,7 +133,7 @@ export async function discoverVerifyAndPinRetainedBrowser({
   };
 }
 
-async function confirmDurableRequirementIsStale({ requirement, adapters }) {
+async function confirmDurableRequirementIsStale({ requirement, adapters, replacement }) {
   if (!requirement?.exists || !requirement.enforcement?.exists) {
     throw liveError(
       'retained_browser_rotation_requirement_missing',
@@ -153,6 +154,29 @@ async function confirmDurableRequirementIsStale({ requirement, adapters }) {
   }
   if (!readback.browser) {
     return { confirmed: true, reason: 'retained_browser_missing' };
+  }
+  // A successful preparation can recreate the same daemon session. Compare
+  // exact target authority, not the session name alone. Never infer absence
+  // from unreadable CDP or permit a different profile/conversation here.
+  if (replacement?.sessionName === old.sessionName
+    && replacement.profileId === old.profileId
+    && replacement.url === old.url
+    && replacement.targetId !== old.targetId
+    && readback.browser.id === replacement.browserId
+    && readback.browser.profileId === old.profileId
+    && readback.browser.health === 'ready'
+    && isLoopbackDevToolsUrl(readback.browser.cdpEndpoint)) {
+    const targets = await adapters.readCdpTargets(readback.browser.cdpEndpoint);
+    if (Array.isArray(targets)
+      && !targets.some((target) => target.id === old.targetId)
+      && evaluateRetainedBrowserExpectation({
+        browser: readback.browser,
+        cdpTargets: targets,
+        expectation: replacement,
+        stage: 'rotation_replacement_reverification',
+      }).verified) {
+      return { confirmed: true, reason: 'retained_browser_missing' };
+    }
   }
   throw liveError(
     'retained_browser_rotation_old_authority_live',

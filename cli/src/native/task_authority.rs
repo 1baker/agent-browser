@@ -260,6 +260,8 @@ pub struct TaskAuthorityIssueRequest {
     pub issuer: TaskAuthorityIssuer,
     pub approval_reference: String,
     pub expires_in_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consequence_ceiling: Option<String>,
     pub steps: Vec<TaskAuthorityPlanStep>,
 }
 
@@ -278,6 +280,8 @@ pub struct TaskAuthorityReconcileRequest {
     pub issuer: TaskAuthorityIssuer,
     pub approval_reference: String,
     pub expires_in_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consequence_ceiling: Option<String>,
     pub steps: Vec<TaskAuthorityPlanStep>,
 }
 
@@ -1121,9 +1125,17 @@ pub fn decide_task_authority_confirmation(
     } else if record.requested_by != decided_by {
         Some("confirmation decision actor mismatch".to_string())
     } else if decision == "confirm" && record.target_binding.target_id != target_id.unwrap_or("") {
-        Some("confirmation target changed before decision".to_string())
+        Some(format!(
+            "confirmation target changed before decision: expected '{}' observed '{}'",
+            record.target_binding.target_id,
+            target_id.unwrap_or("")
+        ))
     } else if decision == "confirm" && record.target_binding.url != url.unwrap_or("") {
-        Some("confirmation URL changed before decision".to_string())
+        Some(format!(
+            "confirmation URL changed before decision: expected '{}' observed '{}'",
+            record.target_binding.url,
+            url.unwrap_or("")
+        ))
     } else if confirmation_request_sha256(&record.command)? != record.request_sha256 {
         Some("confirmation request digest changed before decision".to_string())
     } else {
@@ -1741,6 +1753,15 @@ fn issue_task_authority_with_identity(
     let mut origins = BTreeSet::from([normalized_origin(current_url)?]);
     let mut evidence_bytes = 0u64;
     let mut approved_steps = Vec::with_capacity(request.steps.len());
+    let requested_ceiling = match request.consequence_ceiling.as_deref() {
+        Some(value) => {
+            ActionConsequence::parse(value).ok_or("Task authority consequenceCeiling is invalid")?
+        }
+        None => ActionConsequence::ReadOnly,
+    };
+    if requested_ceiling.authority_rank() > ActionConsequence::ScriptExecution.authority_rank() {
+        return Err("Task authority consequenceCeiling cannot grant browser lifecycle or control-plane actions".to_string());
+    }
     let mut expected_current_url = normalized_url(current_url)?;
     for (index, step) in request.steps.iter().enumerate() {
         let action = step.action.trim();
@@ -1748,11 +1769,20 @@ fn issue_task_authority_with_identity(
             return Err("Task authority plan action must be non-empty".to_string());
         }
         let consequence = super::policy::action_consequence(action);
-        if consequence.authority_rank() > ActionConsequence::Navigation.authority_rank() {
+        if request.consequence_ceiling.is_none()
+            && consequence.authority_rank() > ActionConsequence::Navigation.authority_rank()
+        {
             return Err(format!(
                 "Task authority issuer does not yet permit '{}' ({}) in an approved plan",
                 action,
                 consequence.as_str()
+            ));
+        }
+        if consequence.authority_rank() > requested_ceiling.authority_rank() {
+            return Err(format!(
+                "Task authority action '{}' exceeds requested consequenceCeiling '{}'",
+                action,
+                requested_ceiling.as_str()
             ));
         }
         actions.insert(action.to_string());
@@ -1817,7 +1847,7 @@ fn issue_task_authority_with_identity(
                 .map_err(|_| "Task authority action count overflow")?,
             max_evidence_bytes: evidence_bytes,
         },
-        consequence_ceiling: ActionConsequence::ReadOnly.as_str().to_string(),
+        consequence_ceiling: requested_ceiling.as_str().to_string(),
         expires_at: expires_at.to_rfc3339(),
     };
     let hash = envelope_sha256(&envelope)?;
@@ -2221,6 +2251,7 @@ fn reconcile_task_authority_inner(
             issuer: request.issuer.clone(),
             approval_reference: request.approval_reference.clone(),
             expires_in_seconds: request.expires_in_seconds,
+            consequence_ceiling: request.consequence_ceiling.clone(),
             steps: request.steps.clone(),
         })
         .map_err(|error| format!("Failed to prepare replacement authority: {error}"))?;
@@ -2905,6 +2936,53 @@ mod tests {
         )
         .unwrap_err();
         assert!(mutation_error.contains("does not yet permit"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn broker_issue_allows_explicit_confirmed_consequence_ceiling() {
+        let root =
+            std::env::temp_dir().join(format!("agent-browser-authority-{}", uuid::Uuid::new_v4()));
+        let mut request = issue_request(json!([{"action": "evaluate", "evidenceBytes": 4096}]));
+        request["consequenceCeiling"] = json!("script_execution");
+        let issued = issue_task_authority(
+            &request,
+            "session-1",
+            "target-1",
+            "https://example.com/start",
+            &root,
+        )
+        .unwrap();
+        assert_eq!(issued["envelope"]["consequenceCeiling"], "script_execution");
+        let mut cmd = command(issued["envelope"].clone());
+        cmd["id"] = json!("script-command-1");
+        cmd["action"] = json!("evaluate");
+        cmd["taskStepId"] = issued["approvedPlan"]["steps"][0]["stepId"].clone();
+        cmd["taskEvidenceBytes"] = json!(4096);
+        let mut required = context(root.clone(), "https://example.com/start");
+        required.require_authority = true;
+        assert!(matches!(
+            admit_task_authority(
+                &cmd,
+                "evaluate",
+                ActionConsequence::ScriptExecution,
+                &required,
+                true,
+            )
+            .unwrap(),
+            TaskAuthorityDecision::Admitted(_)
+        ));
+        let mut excessive = request;
+        excessive["consequenceCeiling"] = json!("browser_lifecycle");
+        assert!(issue_task_authority(
+            &excessive,
+            "session-1",
+            "target-1",
+            "https://example.com/start",
+            &root,
+        )
+        .unwrap_err()
+        .contains("cannot grant browser lifecycle"));
         let _ = fs::remove_dir_all(root);
     }
 

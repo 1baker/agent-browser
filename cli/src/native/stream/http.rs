@@ -2159,6 +2159,8 @@ fn service_request_command_with_state(
         "taskAuthority",
         "taskStepId",
         "taskEvidenceBytes",
+        "brokerTransport",
+        "expectedUrl",
         "targetServiceId",
         "targetService",
         "targetServiceIds",
@@ -6073,6 +6075,18 @@ mod tests {
         assert_eq!(command["requiresCdpFree"], true);
         assert_eq!(command["cdpAttachmentAllowed"], false);
         assert_eq!(command["url"], "https://www.canva.com/");
+    }
+
+    #[test]
+    fn service_request_command_preserves_flattened_broker_attach_fields() {
+        let command = service_request_command(
+            r##"{"action":"cdp_attach","cdpAttachmentAllowed":true,"brokerTransport":true,"expectedUrl":"https://example.com/exact","serviceTabHandle":{"browserId":"session:default","sessionName":"default","tabId":"target:target-1","targetId":"target-1","profileOrigin":"agent_browser_owned","leaseHeartbeatExpected":true,"traceFilter":{"browserId":"session:default","profileId":"profile-1","sessionId":"default"},"valid":true}}"##,
+        )
+        .unwrap();
+
+        assert_eq!(command["action"], "cdp_attach");
+        assert_eq!(command["brokerTransport"], true);
+        assert_eq!(command["expectedUrl"], "https://example.com/exact");
     }
 
     #[test]

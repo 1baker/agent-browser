@@ -4,10 +4,9 @@
 //! equivalent. This is not protection from the OS owner or out-of-band clients.
 use super::private_identity::{ValidatedPrivateJourney, ValidatedPrivateTarget};
 pub(crate) use super::private_secret_store::CleanupCommit;
-use super::private_secret_store::{PrivateScope, SecretStore};
+use super::private_secret_store::{GateLease, PrivateScope, SecretStore};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::File,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -20,7 +19,7 @@ pub struct PrivacyGate {
 /// Owned, Send, non-clone shared OS lease. Hold through response processing and
 /// any resulting public output; a point-in-time boolean is insufficient.
 pub struct PublicLease {
-    _file: File,
+    _file: GateLease,
 }
 
 /// Public sockets/subscriptions are permanently bound to the epoch in which
@@ -47,7 +46,7 @@ impl PrivacyObserver {
 
 /// Non-clone private capability. Its durable lock survives Drop and process exit.
 pub struct PrivatePermit {
-    file: Option<File>,
+    file: Option<GateLease>,
     store: Arc<SecretStore>,
     epoch: String,
     completion: Option<CleanupCommit>,
@@ -129,11 +128,11 @@ impl PrivatePermit {
     }
 }
 
-/// A public command's crash-safe outstanding receipt. Drop intentionally does
-/// no I/O and leaves the receipt blocking private admission across restarts.
+/// A public command's crash-safe outstanding receipt. Drop releases the OS
+/// lease but leaves the receipt blocking private admission across restarts.
 pub struct CommandLease {
     store: Arc<SecretStore>,
-    _file: File,
+    _file: GateLease,
     pending: Option<String>,
 }
 
@@ -176,6 +175,18 @@ fn endpoint_key(endpoint: &str) -> Result<String, &'static str> {
 }
 
 impl PrivacyGate {
+    /// Synthetic transports use real gate semantics without sharing operator state.
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    pub(crate) fn open_test_endpoint(
+        root: &Path,
+        endpoint: &str,
+    ) -> Result<Arc<Self>, &'static str> {
+        Ok(Arc::new(Self {
+            store: Arc::new(SecretStore::open_gate(root)?),
+            endpoint: Some(endpoint_key(endpoint)?),
+        }))
+    }
+
     pub fn for_endpoint(endpoint: &str) -> Result<Arc<Self>, &'static str> {
         let key = endpoint_key(endpoint)?;
         let base = match std::env::var_os("AGENT_BROWSER_HOME") {

@@ -7,6 +7,35 @@
 use std::path::Path;
 
 pub type StoreResult<T> = Result<T, &'static str>;
+/// One owned flock, distinct from the durable privacy marker. Explicit unlock
+/// prevents a concurrent fork's inherited descriptor extending its lifetime.
+pub(crate) struct GateLease {
+    file: std::fs::File,
+    #[cfg(unix)]
+    owner_pid: u32,
+}
+
+impl std::ops::Deref for GateLease {
+    type Target = std::fs::File;
+
+    fn deref(&self) -> &Self::Target {
+        &self.file
+    }
+}
+
+#[cfg(unix)]
+impl Drop for GateLease {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        // A forked child must not release the parent's still-owned lease.
+        if self.owner_pid == std::process::id() {
+            // SAFETY: this non-clone owner keeps the descriptor open until
+            // after Drop. Unlocking never removes durable gate/receipt files.
+            unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
+}
+
 pub const MAX_SECRET_BYTES: usize = 64 * 1024;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum CleanupCommit {
@@ -289,7 +318,7 @@ mod platform {
 
         /// A fresh open file description is essential: dup/try_clone would
         /// share flock state and allow one guard to release another's lock.
-        fn independent_lock(&self, exclusive: bool) -> StoreResult<File> {
+        fn independent_lock(&self, exclusive: bool) -> StoreResult<GateLease> {
             valid_directory(&self.directory, true)?;
             let dot = name(".")?;
             let file = owned_file(unsafe {
@@ -308,7 +337,10 @@ mod platform {
             if unsafe { libc::flock(file.as_raw_fd(), mode | libc::LOCK_NB) } != 0 {
                 return Err("private_store_busy");
             }
-            Ok(file)
+            Ok(GateLease {
+                file,
+                owner_pid: std::process::id(),
+            })
         }
 
         fn gate_key(&self) -> StoreResult<()> {
@@ -319,7 +351,7 @@ mod platform {
             Ok(())
         }
 
-        pub(crate) fn gate_public_lease(&self) -> StoreResult<File> {
+        pub(crate) fn gate_public_lease(&self) -> StoreResult<GateLease> {
             let lease = self.independent_lock(false)?;
             self.gate_key()?;
             if self.read_optional("privacy.lock", 32)?.is_some()
@@ -346,7 +378,7 @@ mod platform {
             }
         }
 
-        pub(crate) fn gate_begin_private(&self) -> StoreResult<(File, String)> {
+        pub(crate) fn gate_begin_private(&self) -> StoreResult<(GateLease, String)> {
             self.gate_begin_private_with_scope(None)
         }
 
@@ -354,7 +386,7 @@ mod platform {
             &self,
             target_id: &str,
             identity_digest: &str,
-        ) -> StoreResult<(File, String)> {
+        ) -> StoreResult<(GateLease, String)> {
             let scope = PrivateScope {
                 target_id: target_id.to_owned(),
                 identity_digest: identity_digest.to_owned(),
@@ -369,7 +401,7 @@ mod platform {
             &self,
             target_id: &str,
             digests: &[String],
-        ) -> StoreResult<(File, String)> {
+        ) -> StoreResult<(GateLease, String)> {
             let scope = PrivateScope {
                 target_id: target_id.to_owned(),
                 identity_digest: digests.first().ok_or(INVALID)?.clone(),
@@ -412,7 +444,7 @@ mod platform {
         fn gate_begin_private_with_scope(
             &self,
             scope: Option<PrivateScope>,
-        ) -> StoreResult<(File, String)> {
+        ) -> StoreResult<(GateLease, String)> {
             let lease = self.independent_lock(true)?;
             self.gate_key()?;
             let anchor = self.read_optional("privacy.lock", 32)?;
@@ -441,7 +473,7 @@ mod platform {
 
         /// Recovery reattaches only to an existing private interval. Pending or
         /// uncertain receipts are retained, not interpreted as reconciled.
-        pub(crate) fn gate_resume_private(&self) -> StoreResult<(File, String)> {
+        pub(crate) fn gate_resume_private(&self) -> StoreResult<(GateLease, String)> {
             let lease = self.independent_lock(true)?;
             self.gate_key()?;
             if self.read_optional("privacy.lock", 32)?.is_none() {
@@ -583,7 +615,7 @@ mod platform {
             Ok(())
         }
 
-        pub(crate) fn gate_command_lease(&self) -> StoreResult<(File, String)> {
+        pub(crate) fn gate_command_lease(&self) -> StoreResult<(GateLease, String)> {
             let lease = self.gate_public_lease()?;
             let mut random = [0; 32];
             getrandom::getrandom(&mut random).map_err(|_| UNAVAILABLE)?;
@@ -1170,7 +1202,7 @@ impl SecretStore {
         &self,
         _: &str,
         _: &[String],
-    ) -> StoreResult<(std::fs::File, String)> {
+    ) -> StoreResult<(GateLease, String)> {
         Err(UNAVAILABLE)
     }
     pub(crate) fn gate_advance_private(
@@ -1193,26 +1225,26 @@ impl SecretStore {
     pub(crate) fn open_gate(_: &Path) -> StoreResult<Self> {
         Err(UNAVAILABLE)
     }
-    pub(crate) fn gate_public_lease(&self) -> StoreResult<std::fs::File> {
+    pub(crate) fn gate_public_lease(&self) -> StoreResult<GateLease> {
         Err(UNAVAILABLE)
     }
     pub(crate) fn gate_public_epoch(&self) -> StoreResult<Option<String>> {
         Err(UNAVAILABLE)
     }
-    pub(crate) fn gate_begin_private(&self) -> StoreResult<(std::fs::File, String)> {
+    pub(crate) fn gate_begin_private(&self) -> StoreResult<(GateLease, String)> {
         Err(UNAVAILABLE)
     }
     pub(crate) fn gate_begin_private_scoped(
         &self,
         _: &str,
         _: &str,
-    ) -> StoreResult<(std::fs::File, String)> {
+    ) -> StoreResult<(GateLease, String)> {
         Err(UNAVAILABLE)
     }
     pub(crate) fn gate_private_scope(&self, _: &str) -> StoreResult<Option<PrivateScope>> {
         Err(UNAVAILABLE)
     }
-    pub(crate) fn gate_resume_private(&self) -> StoreResult<(std::fs::File, String)> {
+    pub(crate) fn gate_resume_private(&self) -> StoreResult<(GateLease, String)> {
         Err(UNAVAILABLE)
     }
     pub(crate) fn gate_permit_matches(&self, _: &std::fs::File) -> StoreResult<()> {
@@ -1234,7 +1266,7 @@ impl SecretStore {
     pub(crate) fn gate_mark_uncertain(&self) -> StoreResult<()> {
         Err(UNAVAILABLE)
     }
-    pub(crate) fn gate_command_lease(&self) -> StoreResult<(std::fs::File, String)> {
+    pub(crate) fn gate_command_lease(&self) -> StoreResult<(GateLease, String)> {
         Err(UNAVAILABLE)
     }
     pub(crate) fn gate_complete_command(&self, _: &str) -> StoreResult<()> {
@@ -1307,6 +1339,71 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn private_lease_drop_releases_inherited_descriptor_without_reopening_privacy() {
+        let fixture = Fixture::new();
+        let store = SecretStore::open_gate(&fixture.0).unwrap();
+        let (lease, _) = store.gate_begin_private().unwrap();
+        // dup shares the same open file description as a fork-inherited fd.
+        let inherited = lease.try_clone().unwrap();
+        assert!(store.gate_resume_private().is_err());
+        drop(lease);
+        let (resumed, _) = store.gate_resume_private().unwrap();
+        assert!(store.gate_public_lease().is_err());
+        drop(inherited);
+        assert!(store.gate_resume_private().is_err());
+        drop(resumed);
+        assert!(store.gate_public_lease().is_err());
+    }
+
+    #[test]
+    fn public_lease_drop_does_not_release_independent_reader() {
+        let fixture = Fixture::new();
+        let store = SecretStore::open_gate(&fixture.0).unwrap();
+        let first = store.gate_public_lease().unwrap();
+        let inherited = first.try_clone().unwrap();
+        let second = store.gate_public_lease().unwrap();
+        drop(first);
+        assert!(store.gate_begin_private().is_err());
+        drop(second);
+        let (_private, _) = store.gate_begin_private().unwrap();
+        drop(inherited);
+        assert!(store.gate_resume_private().is_err());
+    }
+
+    #[test]
+    fn inherited_child_lease_drop_does_not_unlock_parent() {
+        let fixture = Fixture::new();
+        let store = SecretStore::open_gate(&fixture.0).unwrap();
+        let (parent, _) = store.gate_begin_private().unwrap();
+        let child = GateLease {
+            file: parent.try_clone().unwrap(),
+            owner_pid: std::process::id().wrapping_add(1),
+        };
+        drop(child);
+        assert!(store.gate_resume_private().is_err());
+        drop(parent);
+        assert!(store.gate_resume_private().is_ok());
+        assert!(store.gate_public_lease().is_err());
+    }
+
+    #[test]
+    fn command_lease_drop_keeps_pending_receipt_despite_inherited_descriptor() {
+        let fixture = Fixture::new();
+        let store = SecretStore::open_gate(&fixture.0).unwrap();
+        let (lease, reference) = store.gate_command_lease().unwrap();
+        let inherited = lease.try_clone().unwrap();
+        drop(lease);
+        assert!(matches!(
+            store.gate_begin_private(),
+            Err("privacy_gate_pending")
+        ));
+        store.gate_complete_command(&reference).unwrap();
+        let (_private, _) = store.gate_begin_private().unwrap();
+        drop(inherited);
+        assert!(store.gate_resume_private().is_err());
     }
 
     #[test]

@@ -1,5 +1,211 @@
 # Runbook
 
+## 2026-09-14 | Custody-governed native broker (source staged)
+
+Transferred owners now admit CDP only with an exact retained handle and a
+broker-issued, target-bound `broker_attach` step. The owner verifies the
+rendered URL and service-state identity, returns an opaque binding rather than
+Chrome's DevTools endpoint, and requires a separately approved ordered step
+for each native command or event read. Cleanup verifies the exact page-session
+detach while preserving Chrome. A lost in-memory attachment is cleanup-only;
+unknown outcomes remain fenced and cannot create a second attachment.
+
+The approved-plan issuer is currently read-only. Script execution, UI input,
+uploads and navigation remain blocked on this native path. This patch is not
+installed in the retained Workshop owner; no live attach or ChatGPT prompt was
+attempted. AuraCall still needs approved step provisioning before a live run.
+Focused broker tests passed (4), as did the widened custody filter (8), Rust
+format, binary Clippy with warnings denied, and a source build. All-targets
+Clippy remains blocked by unchanged test-only warnings in `src/chat.rs` and
+`src/native/private_coordinator.rs`. Root `pnpm lint` cannot run in this
+checkout because `node_modules` is absent and the system ESLint is version
+6.4.0, which cannot load the repository's flat config. The retained daemon
+and Chrome processes remained live; no install or browser input occurred.
+
+## 2026-09-14 | Live external committed-receipt reconciliation
+
+The installed `chatgpt-pro` daemon (PID 575804) held a committed private
+version-2 custody receipt and its kernel profile lock, while an older state
+writer had removed the matching `runtimeCustodyReceipts` projection. Its own
+guard refused ordinary work with `handoff_custody_receipt_snapshot_mismatch`.
+The latest Cochran `main` at `a9a3055d` contains transactional orphan adoption,
+but its handoff failure classifier does not admit this mismatch; the isolated
+upstream checkout now has a distinct fail-closed classifier regression. No
+upstream installer apply or daemon revocation was attempted.
+
+Added standalone `handoff inspect-external` and `handoff reconcile-external`
+to this checkout. They require one live private committed receipt matching the
+prospective enrollment and original descriptor digest; verify source exit,
+exact destination and browser process identities, the same-profile kernel
+FLOCK held by that destination, current service session/browser/tab/display,
+and the exact loopback DevTools browser endpoint and target URL. The inspect
+path is read-only. The reconcile path atomically inserts only an absent
+matching receipt, rechecks the live target and lock, and verifies readback.
+It does not launch, replace, retire, detach or send input to the browser.
+
+Focused Rust tests passed for kernel-lock refusal after release and for wrong
+rendered target URL; the widened `external_` filter passed five tests. Cargo
+check, strict Clippy, final build, format and diff checks passed. The
+live read-only inspect returned `ready=true, mutated=false` for the exact
+receipt digest `c17c3c6d0f5c82ff8204281b7a7278223afcb56ecdbb0b9eb8e3331cca53abf5`.
+One reconcile inserted the lost projection; an immediate repeat returned
+`inserted=false`. Shared readback equals the private receipt exactly.
+Installed binary SHA-256 remained
+`2e522208680e7586a98c984b355efbf9f129ebb90392c74d60ad9a7ead159c57`;
+daemon PID 575804 and Chrome PID 505779 remained live. The installed daemon
+then returned the exact retained Workshop URL, page title and a successful
+governed snapshot. A delayed readback after source checks still matched the
+private receipt, and a second snapshot succeeded. `tab list` still returns
+`runtime_handoff_action_not_governed`
+by the transferred-session allowlist; this is not a custody failure. No
+ChatGPT prompt, tab mutation, process restart or GitHub write occurred.
+
+Status: exact existing-owner read automation recovered and live verified. Full
+agentic workflow and prompt submission remain untested. Preserve the browser
+and do not widen the handoff allowlist solely to make `tab list` pass.
+
+## 2026-09-14 | Staged owner-only receipt reconciliation
+
+Added Linux `handoff reconcile`: an early CLI path connects only to the existing
+matching-executable authenticated owner, sends once, and never ensures, launches,
+upgrades or attaches a daemon/browser. The handler requires the committed private
+and in-memory receipt, held kernel lease, immutable prospective URL and exact
+browser/profile/session/target/display evidence. It restores only an absent shared
+entry under the repository transaction; conflicts fail closed. An owner-memory
+pending flag remains set after any post-write failure or dropped recovery future,
+blocking ordinary input until a complete explicit reconciliation succeeds.
+Receipts without a committed prospective URL are intentionally unsupported.
+
+Changed surfaces this slice: `cli/src/commands.rs`, `cli/src/main.rs`,
+`cli/src/connection.rs`, `cli/src/native/actions.rs`, the synthetic browser fixture
+in `cli/src/native/handoff_custody.rs`, `cli/src/output.rs`, `README.md`,
+`skills/agent-browser/SKILL.md`, `docs/src/app/commands/page.mdx`, and this runbook.
+Existing unrelated dirty work remains preserved. CodeGraph reported this checkout
+uninitialized; direct source inspection was used without creating an index.
+
+Delegation: `/root/migration_review` implemented the bounded patch and reported six
+focused tests passing. `/root/activation_scope` independently reviewed the frozen
+criteria with no blocking findings. Explicit cancellation regression coverage is
+still absent; accepted as nonblocking because the pending flag is set before the
+first await and clears only after final verification. Primary independently ran
+the full isolated suite: 2122 passed, zero failed, 73 ignored (32.31 seconds).
+Strict Clippy, format, build and whitespace checks passed. Separate built-CLI
+smokes proved missing-owner no-launch and wrong-executable zero-dispatch. This
+slice changes no TypeScript/client schema; no new TypeScript validation is claimed.
+
+The initial primary focused run passed three tests and failed repeat recovery.
+Diagnosis showed the synthetic endpoint's unsupported Browser.getVersion health
+probe made the optional scheduler mark it CdpDisconnected/Closed. The test now
+retains the real dispatcher and injected job metadata but excludes that unrelated
+timer. Production health/identity predicates were not weakened. Final focused
+tests also cover conflicts, missing committed URL, post-insert rendered URL drift,
+input refusal after failure, browserless refusal and single-dispatch errors.
+
+Built candidate SHA-256:
+`7896f92e37b248de54d5e15d8c805126eaba7444d0b3e14e7bb9bc3c3c755803`.
+Installed runtime remains unchanged at
+`2e522208680e7586a98c984b355efbf9f129ebb90392c74d60ad9a7ead159c57`.
+Status: staged and locally verified, not installed or live recovered. Old owner
+575804 lacks this command and rejects governed handoff while its shared receipt
+is absent. Replacing the executable on disk cannot change the running process.
+No supported activation/reacquisition path for that already-stranded owner has
+been established; do not manually restore its receipt or bypass its gate. Its
+Chrome 505779 remains running, both obsolete QA workers remain absent, and no
+ChatGPT prompt, process restart or GitHub write occurred in this slice.
+
+## 2026-09-14 | Authorized retirement of legacy QA state writers
+
+The user approved retirement of only `transfer-qa` (PID 1974838) and
+`installed-transfer-qa` (PID 3762797), preserving browsers. Rechecked their
+process identities and exact temporary socket roots, then used each running
+binary through its `/proc/PID/exe` client. Initial tab-list diagnostics hit the
+old client's auto-launch preflight and were refused before launch; no browser
+was created. Each explicit `handoff prepare` returned success with
+`browserPresent=false` and `prepared=false`. Both daemon PIDs then disappeared.
+Chrome PIDs 505779 and 3755158 and ChatGPT daemon 575804 remained alive.
+
+A subsequent 12-second directory watch observed only current dashboard backend
+writer 565944, not either retired QA writer. Shared `runtimeCustodyReceipts`
+remained empty. Removing the writers does not reconstruct the missing receipt.
+Primary source inspection confirmed that `verify_active_handoff_custody_against`
+requires the shared receipt to match the live owner's receipt, and the dispatch
+guard checks this before even handoff/close. The existing
+`test_handoff_v2_resume_and_drift_are_governed` covers refusal after receipt loss;
+it was inspected, not rerun in this operational slice. No source code changed.
+
+Delegation: reused `/root/migration_review` for a read-only, bounded recovery-path
+inspection; its no-existing-reconciliation finding was independently checked by
+the primary against the guard and resume code. No installed command safely
+repairs this live-owner state. Status: QA retirement verified; ownership recovery
+and the single-prompt end-to-end test remain blocked. Next engineering work must
+provide a reviewed owner-bound recovery/activation path without manually copying
+receipts, replaying migration, or restarting Chrome. No prompt or GitHub write
+occurred, and existing dirty work was preserved.
+
+## 2026-09-13 | Installed legacy custody migration, shared-state blocker
+
+Preserved the existing dirty startup fixes and applied only committed custody
+support (`b385fd18`) plus the reviewed legacy-migration path. The unrelated dirty
+recovery broker/pipe implementation was not imported. New local-only plan,
+single-dispatch prepare and explicit resume preserve original v1 bytes with
+separate prospective evidence. Independent review corrected generic resume-launch
+exposure and duplicate browser/profile ownership; migration restart coverage is
+present. No historical source custody is fabricated.
+
+Primary verification: eight migration-filtered tests passed (seven migration
+tests plus an existing matching workstation test); build, strict Clippy, format,
+generator contract checks, focused client typecheck and targeted generator lint
+passed. Initial startup integration needed its existing cold-admission wrapper's
+migration flag threaded through. A widened handoff run then found two fixture
+records needing the newly required ready/exact-session fields; no production
+predicate is being relaxed. The initial read-only live migration plan refused
+Chrome's space-joined process title. The existing runtime attach verifier already
+supports that form using exact executable and SingletonLock evidence; equivalent
+bounded support is being added to custody verification.
+
+At the initial no-mutation checkpoint, the installed binary was SHA-256
+`3d2e7954865610e9f4fccb006a411aadb6b218379b4f82f2eca67b04e3f861e4`.
+At that checkpoint no migration or installation had occurred. The following
+installed checkpoint supersedes it; no ChatGPT prompt or GitHub write occurred.
+
+### Installed and live checkpoint
+
+Both real-host compatibility defects were fixed without relaxing ownership:
+conservative joined Chrome argv validation, and same-name abstract X socket
+verification only on filesystem ENOENT. Independent review accepted the bounded
+transport change. Final primary full isolated suite: 2116 passed, zero failures,
+73 ignored. Strict Clippy, build, format, generator contract and diff checks
+passed. The installed binary is SHA-256
+`2e522208680e7586a98c984b355efbf9f129ebb90392c74d60ad9a7ead159c57`.
+Publication `local-dashboard-473a57c6-43fe-49b9-91ea-d891f1c9b40a` reached ready,
+with paired manifest, rollback binary and unqualified final install doctor pass.
+The pinned Reliability Gap target, Chrome PID 505779, original endpoint and
+existing physical targets were verified preserved; no forced termination occurred.
+
+After publication, explicit migration used the current Create Brief Deliverables
+target `B3EDD449D2285854CA0D4CAD60A81974` and exact URL ending
+`/c/6aa4a4bb-f028-83ea-a2ec-f8209276f124`. Source daemon 564799 exited before
+destination 575804 attached. The original v1 descriptor is preserved separately,
+SHA-256 `c17c3c6d0f5c82ff8204281b7a7278223afcb56ecdbb0b9eb8e3331cca53abf5`.
+The first live broker diagnostics at 2026-09-14T02:49:29Z reported complete true,
+missingProofs empty and displayOwner.verified true, with prospective receipt basis.
+Maintenance custody was released and the original timer state restored.
+
+The next read-only evaluate request failed with
+`handoff_custody_receipt_snapshot_mismatch`, before any typing or Send. The private
+committed receipt remains, but shared `runtimeCustodyReceipts` became empty.
+A 12-second read-only directory watch observed actual service-state writes from
+PIDs 1974838 (`transfer-qa`) and 3762797 (`installed-transfer-qa`). Both run deleted,
+older binaries with temporary AGENT_BROWSER_HOME/socket roots but HOME=/home/bak3r.
+The service-state resolver uses HOME, so those QA workers rewrite the real shared
+state and cannot preserve the new custody field. Neither worker was stopped.
+
+Status: installed and migration-verified, but end-to-end prompt test NOT complete.
+Further work needs scoped retirement of those two legacy QA writers with browser
+preservation, then owner-verified custody reconciliation. Do not manually restore
+the receipt into shared state, replay migration, restart Chrome, or send through
+the failed gate. Existing dirty work and live tabs remain preserved.
+
 This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
@@ -8949,3 +9155,30 @@ renewal stays disabled and no live credential was used.
   consumed before I/O and cannot be rebuilt from saved public references.
 - No renewal runtime is enabled. Encrypted staging, retained-browser transitions,
   verified privacy cleanup and the guarded key/consumer handoff remain required.
+
+### 2026-09-19: retained ChatGPT MCP routing and publication provenance
+
+- The retained ChatGPT lane is `dashboard-service-backend`, profile
+  `chatgpt-pro`. Exact live acceptance retained browser PID `657110`, CDP
+  endpoint port `42233`, target `A4B271B93677A0298D2E69C8854C3141`, and the
+  Codex + ChatGPT Workshop conversation through guarded publications.
+- Typed MCP `browser_*` calls now resolve access-plan retained-browser reuse at
+  the MCP call boundary, before individual handlers can contact the default
+  lane. Typed schemas expose `runtimeProfile`, `profileId`, `browserId`, and
+  `sessionName`, so callers can copy an unambiguous access-plan decision.
+  Conflicting browser/session hints fail closed.
+- A fresh installed MCP stdio process successfully routed `browser_tabs` from
+  default to `dashboard-service-backend` using `targetServiceId=chatgpt` plus
+  `runtimeProfile=chatgpt-pro`; it returned exactly the pinned target above.
+- Legacy terminal publications can repair a stale workstation binary digest
+  only when the exact terminal journal replacement and every preserved payload
+  asset verify. The repair snapshots both manifests and changes only the binary
+  digest. The strict publisher then replaced the binary and manifest together.
+- Installed SHA-256 is
+  `91a23afb21f1817bc2d76b894f1ac43964cdef5d37452c67baf1849b195cb391`.
+  Publication `local-dashboard-958ad060-1003-44dc-8cd2-6f5bb2c97aca`
+  reached `ready`; final install doctor, source-free reconcile, runtime
+  interlock, HTTP/runtime-manifest readback, and exact retained target all
+  passed. A separate network tunnel is not part of this local browser-control
+  path; retain one only for remote cloud clients that must reach a local HTTP
+  connector.

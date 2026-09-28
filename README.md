@@ -291,6 +291,7 @@ agent-browser service monitors triage <id> # Acknowledge monitor incident and cl
 agent-browser service site-policies   # Show configured service site-policy records
 agent-browser service providers       # Show configured service provider records
 agent-browser service challenges      # Show retained service challenge records
+agent-browser service recover-interrupted --job-id <id> --dry-run # Preview exact legacy interrupted-job recovery
 agent-browser service cancel <job-id> # Cancel a queued, waiting, or running service control job
 agent-browser service acknowledge <incident-id> # Mark a retained incident acknowledged
 agent-browser service resolve <incident-id>     # Mark a retained incident resolved
@@ -332,6 +333,57 @@ active browsers, DevTools ports, profiles, and tabs remain live. If an older
 installed daemon owns an active browser but does not support handoff, publishing
 fails before replacing the executable. A normal `close` after resume retains
 the original browser shutdown behavior.
+
+When the retry record names an active target, resume requires that exact target;
+it fails if the target is missing or cannot initialize instead of selecting
+another tab. Legacy records without a target retain discovery behavior. Repeating
+prepare without a browser preserves any existing retry record and reports
+pending recovery; inspect that record and use resume rather than deleting it.
+Linux owned-browser handoffs additionally write a version-2 custody record.
+Resume requires the exact source process to have exited, verifies the retained
+process/profile/debugging listener, holds a profile-scoped exclusive lock, and
+durably records claimed and committed transfer phases. Failed transfers preserve
+recovery evidence and block ordinary work, including after daemon restart.
+Legacy version-1 records remain readable but never provide complete custody proof.
+Diagnostics reports `controlPlaneAttestation`; complete proof requires the
+committed receipt to match current service lease/tab state and, for remote-headed
+browsers, the configured route user's kernel-observed display owner.
+Transferred sessions use governed queued commands only: direct dashboard CDP
+input, background handlers, private journeys, and unsupported commands are denied.
+This implementation does not automatically upgrade an already running legacy
+controller or authorize installation into an unverified live runtime.
+On Linux, guarded publication uses the live daemon's `/proc/<pid>/exe` as its
+compatibility client even when the original pathname has been replaced. The
+kernel-retained executable remains bound to that exact process and avoids
+mistaking a stale idle daemon for an uninspectable active browser owner.
+
+Linux operators can explicitly enroll a legacy retained session prospectively
+with `handoff migration-plan <target-id> <canonical-url>`, followed by
+`handoff migration-prepare <target-id> <canonical-url> <plan-sha256>` and
+`handoff migration-resume`. Plan reads the authenticated source without launching
+or replacing a daemon. Prepare rechecks the approved identity, uses that same
+kernel-witnessed socket exactly once, and preserves the original v1 descriptor
+alongside separate migration evidence. Resume requires verified source exit,
+unchanged browser/profile/session/target/URL/display bindings and an exclusive
+destination lease before committing custody. An uncertain acknowledgement stops
+the sequence; do not repeat prepare or use ordinary recovery to bypass it.
+Install and verify the reviewed runtime before enrollment. Do not run the ordinary
+publisher across an enrolled migration. Unit tests are not live custody proof.
+`handoff reconcile` is an explicit Linux owner-only repair for a missing shared
+receipt projection. It requires a running matching-executable daemon, its existing
+committed prospective receipt, held lease and exact target/URL/display evidence.
+It never starts a worker, reconnects Chrome, supplies a receipt, or overwrites a
+conflicting entry. An already identical entry is an idempotent success. An older
+running daemon without this command cannot be upgraded by invoking it.
+For that older-owner case, `handoff inspect-external` verifies its private
+committed receipt, enrollment, live destination process and kernel-held profile
+lock, service snapshot, and exact DevTools target URL without mutation.
+`handoff reconcile-external` repeats those checks and restores only an absent
+matching shared projection through the service-state transaction. A conflicting
+projection or changed URL fails closed. Both commands are standalone early CLI
+paths; neither starts a daemon, replaces Chrome, or submits page input.
+Linux display ownership accepts the exact same-name abstract X socket only when
+the filesystem endpoint is absent. Ownership failures never trigger fallback.
 
 Service mode is the persistent control plane for long-lived automation. It keeps profile, session, browser, tab, monitor, job, incident, event, site-policy, provider, and challenge state aligned across CLI commands, the HTTP API, MCP resources/tools, and the dashboard. Agents should include `serviceName`, `agentName`, and `taskName` when available so multi-service work remains traceable. The normal service request is identity-first: ask for a tab or browser action, target site or login identity, and the owning service, agent, and task. agent-browser selects or reuses the managed profile and browser, serializes CDP work through the queue, and records the state needed for debugging. Service profile records and profile allocation rows include `targetReadiness`, a no-launch readiness view for target services. Google targets without authenticated evidence report `needs_manual_seeding` and recommend detached `runtime login` before attachable automation. Once a managed profile lists the target in `authenticatedServiceIds`, readiness changes to `seeded_unknown_freshness` and access-plan no longer treats first-login seeding as a required manual action. Access-plan responses also include `monitorFindings` and `decision.monitorAttentionRequired` when an active `profile_readiness` monitor is faulted for the requested target identity. When a matching active `profile_readiness` monitor is due or never checked, access-plan sets `monitorFindings.profileReadinessProbeDue`, fills `decision.monitorRunDue`, and recommends `run_due_profile_readiness_monitor` before the caller trusts the profile. Use an explicit managed runtime profile when you know where the needed login state lives; use `--profile <path>` only when bringing an external profile is part of the contract.
 
@@ -809,9 +861,12 @@ the same profile. Service-scoped launches reject active exclusive profile
 conflicts by default before browser start; set `profileLeasePolicy: "wait"` and
 `profileLeaseWaitTimeoutMs` to keep the job queued while polling for release,
 leaving the worker available for other commands. Same-session retained browser
-reuse remains allowed. MCP typed browser tools accept the same target profile hints,
-so clients can use `browser_navigate` or other typed tools
-without falling back to `browser_command`.
+reuse remains allowed. MCP typed browser tools accept the same target profile
+hints plus `runtimeProfile`, `profileId`, `browserId`, and `sessionName` from
+`service_access_plan`. Before dispatch, the MCP boundary uses those hints to
+reuse the access-plan-selected retained daemon rather than auto-launching a
+duplicate profile lane. Clients can therefore use `browser_navigate` or other
+typed tools without falling back to `browser_command`.
 Run `pnpm test:service-profile-target-mcp-live` to validate the live typed MCP
 target-hint profile selection path.
 Run `pnpm test:service-request-live` to validate that HTTP
@@ -1188,6 +1243,12 @@ agent-browser includes security features for safe AI agent deployments. All feat
 - **Action Confirmation** requires explicit approval for exact actions or consequence categories: `--confirm-actions external_mutation,page_mutation,file_transfer,credentials,script_execution`. Receipts bind the exact ID, target ID, URL, consequence class, and 60-second lifetime; changed or expired targets fail closed.
 - **Task Authority** binds an agentic run to one broker-issued immutable `taskAuthority` envelope and ordered plan: exact caller task, retained target, broker-derived step IDs/actions/URLs/evidence, plan hash, read-only consequence ceiling, and expiry. Every v2 command names the exact next `taskStepId`; the daemon records its command-bound admission and advances the cursor atomically before dispatch, then durably finalizes the exact response as completed or failed before publication. An admission stranded by a crash is reported as indeterminate and stays consumed. `POST /api/service/task-authorities/issue` and `service_task_authority_issue` always require exact-target confirmation; status is read-only/no-launch, and revoke is confirmation-gated and durable. Reconcile is also confirmation-gated: it requires exactly one named indeterminate receipt, revokes the predecessor first, and mints one deterministic replacement whose envelope binds the predecessor authority, step, command, and indeterminate state. These three pending controls are privately persisted with their exact session, action, target, URL, requester, request digest, and expiry. HTTP requester and decider evidence comes from the authenticated dashboard superuser; MCP derives it from the OS-owned stdio transport, and conflicting caller claims fail closed. Decisions are archived before dispatch, survive daemon restart, and are single use. A crash after decision commit remains visibly indeterminate and is never replayed or restaged automatically. `POST /api/service/task-authorities/confirmations/cleanup` and `service_task_authority_confirmation_cleanup` provide review-digest-gated terminal receipt retention while preserving pending and indeterminate evidence. Retired IDs remain exactly searchable in a bounded active manifest plus fixed-capacity immutable hash-chained segments; invalid linkage, counts, active digest, or head digest fail closed. The Service dashboard Authorities workspace shows redacted receipts, cleanup policy, candidate hashes, authenticated requester, exact review digest, and verified ledger evidence before apply. It excludes consumed steps from replacement previews and requires a separate exact-session confirm or deny decision through `POST /api/service/task-authorities/confirmation` or `service_task_authority_confirmation`. Required mode rejects caller-fabricated, changed, revoked, expired, repeated, stale, or out-of-order authority before execution.
 - **Output Length Limits** prevent context flooding: `--max-output 50000`
+
+Transferred runtime owners do not expose raw Chrome DevTools. Native clients
+must present an exact retained handle and broker-issued `broker_attach` step;
+the owner returns an opaque binding. Each passive broker command or event read
+requires its own approved step, and an exact verified detach preserves the
+browser. Unknown outcomes stay fenced instead of replaying an attach.
 
 For unattended headed or headless runs that need the real OS credential store, agent-browser can read keychain settings from a dotenv file. Environment variables take precedence, otherwise it loads `AGENT_BROWSER_ENV_FILE`, then `~/.agent-browser/.env` if present.
 
@@ -1626,6 +1687,13 @@ replaying a completed resume; unknown installed bytes fail closed. Run
 phase, and installed-artifact classification. Run
 `pnpm recover:local-dashboard-publication` only to reconcile an incomplete
 transaction; it returns without building when no recovery is required.
+If an older terminal publication replaced the installed executable before the
+publisher learned to update workstation provenance in the same transaction,
+use `--recover-only --repair-workstation-provenance <transaction-id>` for that
+exact journal. The repair verifies the terminal replacement evidence, package
+version, and every preserved workstation asset; snapshots both manifest states;
+changes only the binary digest; and is idempotent. Arbitrary binaries,
+nonterminal journals, and asset drift fail closed.
 The installed binary projects the same bounded evidence under
 `data.localDashboardPublication` in `agent-browser install doctor --json`,
 through authenticated HTTP `GET
@@ -2590,6 +2658,7 @@ agent-browser service monitors triage google-login-freshness --by operator --not
 agent-browser service site-policies
 agent-browser service providers
 agent-browser service challenges
+agent-browser service recover-interrupted --job-id <id> --dry-run
 agent-browser service cancel <job-id> --reason stale
 agent-browser service retry browser-1 --by operator --note approved
 agent-browser service acknowledge browser-1 --by operator --note triaged
@@ -2691,7 +2760,9 @@ second Chrome process on the same profile directory.
 
 Use `service status --watch` or `service watch` for a polling operator view of worker health, browser health, queue depth, profile lease wait pressure, and reconciliation status. In JSON mode, each poll is emitted as one JSON response line.
 
-Use `service cancel <job-id>` to mark a queued or lease-waiting service job cancelled before it dispatches or request cooperative cancellation for a running job. Running cancellation drops the active service future, records the job as `cancelled`, and cleans up browser state before the worker accepts more work. Terminal jobs are rejected rather than rewritten. Add `--reason <text>` to record an operator-readable reason for queued cancellation.
+Use `service cancel <job-id>` to mark a queued or lease-waiting service job cancelled before it dispatches or request cooperative cancellation for a running job. Running cancellation drops the active service future, records the job as `cancelled`, and cleans up browser state before the worker accepts more work. Jobs accepted by a named daemon record `runnerSessionId` and `runnerInstanceId`. If that exclusive daemon session restarts, its new worker marks only nonterminal jobs from its replaced worker generation as failed with `reason: "service_worker_replaced"`; jobs owned by other sessions and legacy jobs without ownership proof remain unchanged. Terminal jobs are rejected rather than rewritten. Add `--reason <text>` to record an operator-readable reason for queued cancellation.
+
+For an older ownerless running record, use `service recover-interrupted --job-id <id> --dry-run`. Recovery accepts only exact IDs that are still running, at least five minutes old, have no runner identity, and have no terminal evidence. Apply requires the same IDs plus the fresh candidate-bound `reviewToken`; any state change or digest mismatch fails closed. Successful recovery marks the record failed with `reason: "legacy_service_worker_unowned"`. This is a bounded legacy repair, not a way to override an identified live worker.
 
 Use `service acknowledge <incident-id>` to mark a retained incident seen by an operator. Add `--by <text>` to record who acknowledged it and `--note <text>` to persist a short operator note.
 

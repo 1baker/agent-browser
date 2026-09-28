@@ -35,11 +35,18 @@ export function normalizeRetainedBrowserPreparationRequest(input) {
       'The retained browser build must be stock_chrome or stealthcdp_chromium',
     );
   }
+  const sessionName = String(input.sessionName || runtimeProfile).trim();
+  if (!SAFE_PROFILE_ID.test(sessionName)) {
+    throw preparationError(
+      'retained_browser_preparation_session_invalid',
+      'A safe retained session name is required',
+    );
+  }
   return {
     url: exactUrl,
     urlPrefix,
     runtimeProfile,
-    sessionName: runtimeProfile,
+    sessionName,
     browserBuild,
     serviceName: boundedLabel(input.serviceName, 'AuraCall'),
     agentName: boundedLabel(input.agentName, 'codex'),

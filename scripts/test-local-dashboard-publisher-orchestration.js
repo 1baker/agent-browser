@@ -49,6 +49,7 @@ try {
   await runRetainedGuardRecoveryFailureScenario();
   await runUnverifiedRecoveryScenario();
   await runRecoverOnlyNoopScenario();
+  await runTerminalProvenanceRepairScenario();
 } finally {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 }
@@ -468,6 +469,36 @@ async function runRecoveryPreservesOriginalSkipBrowserPolicyScenario() {
   assert.equal(fixture.actions.includes('browser-smoke'), false);
 }
 
+async function runTerminalProvenanceRepairScenario() {
+  const fixture = createFixture();
+  seedIncompleteJournal(fixture, {
+    phase: 'publication_failed_replacement_retained',
+    installed: 'replacement',
+  });
+  const journal = fixture.publicationJournal.read();
+  fixture.publicationJournal.acquire();
+  fixture.publicationJournal.commit(journal, 'recovered_ready');
+  fixture.publicationJournal.release();
+  fixture.actions.length = 0;
+  fixture.input.options.recoverOnly = true;
+  fixture.input.options.repairWorkstationProvenance = journal.transactionId;
+  fixture.input.adapters.repairWorkstationProvenance = ({ installBin, journalRecord }) => {
+    fixture.actions.push('repair-workstation-provenance');
+    assert.equal(installBin, fixture.installBin);
+    assert.equal(journalRecord.transactionId, journal.transactionId);
+    return { changed: true };
+  };
+
+  await runLocalDashboardPublisherOrchestration(fixture.input);
+
+  assert.deepEqual(fixture.actions, [
+    'resolve-install',
+    'guard-install',
+    'repair-workstation-provenance',
+  ]);
+  assert.equal(fixture.report.recovery.result, 'workstation_provenance_repaired');
+}
+
 async function runRetainedGuardRecoveryFailureScenario() {
   const handoff = fixtureHandoff();
   const fixture = createFixture({ retainedGuardFaultAt: 'recovery_post_handoff' });
@@ -669,6 +700,7 @@ function createFixture({
       options: {
         release: false,
         recoverOnly: false,
+        repairWorkstationProvenance: '',
         requireBrowserSmoke: false,
         skipSmoke: false,
         smokeBrowser: true,

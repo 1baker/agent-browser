@@ -48,6 +48,9 @@ import {
   resolveRuntimeDaemonClientBinary as runtimeDaemonClientBinary,
 } from './lib/runtime-daemon-client-binary.js';
 import {
+  repairTerminalWorkstationProvenance,
+} from './lib/local-dashboard-terminal-provenance-repair.js';
+import {
   isRuntimeHandoffBrowserActive,
   removeVerifiedRuntimeHandoffRecord,
   selectRuntimeHandoffBrowser,
@@ -74,6 +77,7 @@ const options = {
   browserProfile: '',
   release: false,
   recoverOnly: false,
+  repairWorkstationProvenance: '',
   retainedBrowserStatus: false,
   retainedRequirementPath: process.env.AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT
     || resolve(homedir(), '.agent-browser', 'publications', 'local-dashboard-retained-browser.json'),
@@ -126,6 +130,8 @@ for (let index = 0; index < args.length; index += 1) {
     options.release = true;
   } else if (arg === '--recover-only') {
     options.recoverOnly = true;
+  } else if (arg === '--repair-workstation-provenance') {
+    options.repairWorkstationProvenance = requiredValue(args, ++index, arg);
   } else if (arg === '--retained-browser-status') {
     options.retainedBrowserStatus = true;
   } else if (arg === '--retained-requirement') {
@@ -402,6 +408,23 @@ async function run() {
         'agent-browser',
       ),
       builtBinaryExists: existsSync,
+      repairWorkstationProvenance: ({ installBin, journalRecord }) => {
+        const version = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8')).version;
+        const installedVersion = execFileSync(installBin, ['--version'], {
+          encoding: 'utf8',
+          timeout: 15000,
+        }).trim();
+        if (installedVersion !== `agent-browser ${version}`) {
+          throw new Error('Installed binary version differs from publication checkout');
+        }
+        return repairTerminalWorkstationProvenance({
+          root: homedir(),
+          version,
+          installBin,
+          journalPath: publicationJournal.path,
+          journalRecord,
+        });
+      },
       serviceStatus,
       backupInstalledBinary,
       quiesceDashboardForRuntimeHandoff,
@@ -770,18 +793,40 @@ function runAgentJson(binary, sessionName, commandArgs) {
 
 function serviceBrowserForSession(binary, sessionName, expectedBrowser = null) {
   const result = runAgentJson(binary, sessionName, ['service', 'browsers']);
-  const browsers = result.json?.data?.browsers || [];
+  let browsers = result.json?.data?.browsers || [];
+  let compatibilityFallback = false;
+  if (
+    (
+      result.error === 'runtime_handoff_action_not_governed'
+      || result.error?.startsWith('handoff_custody_observation_failed:')
+    )
+    && browsers.length === 0
+  ) {
+    try {
+      const persisted = JSON.parse(readFileSync(
+        join(homedir(), '.agent-browser', 'service', 'state.json'),
+        'utf8',
+      ));
+      browsers = Object.values(persisted?.browsers || {});
+      compatibilityFallback = true;
+    } catch {
+      // Preserve the structured daemon error below when the durable snapshot
+      // is unavailable or malformed.
+    }
+  }
   const selection = selectRuntimeHandoffBrowser({
     browsers,
     sessionName,
     expectedBrowser,
   });
   return {
-    success: result.status === 0
-      && result.json?.success === true
-      && selection.error === null,
+    success: (
+      (result.status === 0 && result.json?.success === true)
+      || compatibilityFallback
+    ) && selection.error === null,
     browser: selection.browser,
-    error: selection.error || result.error,
+    error: selection.error || (compatibilityFallback ? null : result.error),
+    compatibilityFallback,
   };
 }
 
@@ -1226,6 +1271,9 @@ Options:
   --write-retained-requirement
                               Verify and privately pin explicit or uniquely discovered retained identity.
   --recover-only              Recover one incomplete transaction; never start a new build.
+  --repair-workstation-provenance <transaction-id>
+                              With --recover-only, pair an exact terminal journal replacement
+                              with its otherwise intact workstation manifest.
   --release                   Build cli/target/release/agent-browser instead of debug.
   --skip-browser              Skip browser smoke, keep required HTTP and bundle readiness.
   --require-browser-smoke     Fail when the disposable browser cannot launch.

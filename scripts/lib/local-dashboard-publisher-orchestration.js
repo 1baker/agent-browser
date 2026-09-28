@@ -33,6 +33,27 @@ async function runLockedLocalDashboardPublisherOrchestration({ options, report, 
     return;
   }
   if (options.recoverOnly) {
+    if (options.repairWorkstationProvenance) {
+      if (!existingJournal) {
+        throw new Error('Workstation provenance repair requires an existing publication journal');
+      }
+      if (options.repairWorkstationProvenance !== existingJournal.transactionId) {
+        throw new Error('Workstation provenance repair transaction ID does not match the journal');
+      }
+      report.workstationProvenanceRepair = await adapters.repairWorkstationProvenance({
+        installBin,
+        journalRecord: existingJournal,
+      });
+      report.publicationJournal = journalSummary(existingJournal, adapters.publicationJournal.path);
+      report.recovery = {
+        transactionId: existingJournal.transactionId,
+        result: report.workstationProvenanceRepair.changed
+          ? 'workstation_provenance_repaired'
+          : 'workstation_provenance_already_current',
+        terminalPhase: existingJournal.phase,
+      };
+      return;
+    }
     report.publicationJournal = existingJournal
       ? journalSummary(existingJournal, adapters.publicationJournal.path)
       : null;
@@ -355,6 +376,9 @@ async function runLockedLocalDashboardPublisherOrchestration({ options, report, 
 }
 
 function validateOptions(options) {
+  if (options.repairWorkstationProvenance && !options.recoverOnly) {
+    throw new Error('--repair-workstation-provenance requires --recover-only');
+  }
   if (!options.smokeBrowser && options.requireBrowserSmoke) {
     throw new Error('--skip-browser and --require-browser-smoke cannot be used together');
   }

@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
+import { selectedTemporaryLabel, temporaryRoute } from './lib/temporary-rdp-route.js';
+
+const temporaryLabel = selectedTemporaryLabel(process.argv);
 
 const userA = process.env.AGENT_BROWSER_RDP_ROUTE_A_USERNAME || 'agent-browser-rdp-a';
 const userB = process.env.AGENT_BROWSER_RDP_ROUTE_B_USERNAME || 'agent-browser-rdp-b';
@@ -123,6 +126,21 @@ function attachDisplayContent(route) {
 }
 
 const rows = processRows();
+if (temporaryLabel) {
+  const { user } = temporaryRoute(temporaryLabel);
+  const selected = inspectUser(rows, user);
+  const otherDisplays = rows.filter(row => row.user !== user)
+    .filter(row => /^(Xorg|Xvnc|Xvfb)$/i.test(row.command))
+    .map(row => displayFromArgs(row.args));
+  const success = selected.candidates.length === 1 && !otherDisplays.includes(selected.displayName);
+  console.log(JSON.stringify({ success, status: success ? 'ready' : 'blocked',
+    routes: { [temporaryLabel]: attachDisplayContent(selected) },
+    routeSpecificUsers: { [temporaryLabel]: attachDisplayContent(selected) },
+    env: success ? { [`AGENT_BROWSER_RDP_ROUTE_${temporaryLabel}_DISPLAY_NAME`]: selected.displayName } : {},
+    nextStep: success ? 'Verify display access and service route preflight.' : 'Establish only the selected isolated RDP desktop.',
+  }));
+  process.exit(success ? 0 : 1);
+}
 const routeA = inspectUser(rows, userA, preferredRouteADisplay);
 const routeB = inspectUser(rows, userB, preferredRouteBDisplay);
 const existingUserRoutes = rows

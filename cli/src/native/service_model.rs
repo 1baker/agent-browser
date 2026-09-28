@@ -2324,6 +2324,9 @@ pub struct RemoteViewHandoff {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ServiceState {
+    /// Committed handoff receipts, checked together with current leases/tabs.
+    /// Older writers may erase these records; absence must deny attestation.
+    pub runtime_custody_receipts: BTreeMap<String, Value>,
     pub control_plane: Option<ControlPlaneSnapshot>,
     pub reconciliation: Option<ServiceReconciliationSnapshot>,
     pub events: Vec<ServiceEvent>,
@@ -5685,6 +5688,17 @@ pub struct ServiceJob {
     pub viewer_lease_id: Option<String>,
     /// Controller lease id requested or granted by a view operation.
     pub controller_lease_id: Option<String>,
+    /// Daemon session whose serialized worker accepted this job.
+    ///
+    /// This is lifecycle evidence, not browser or profile authority. A new
+    /// worker for the same exclusive daemon session can use it together with
+    /// `runner_instance_id` to terminalize work interrupted by a restart.
+    pub runner_session_id: Option<String>,
+    /// Per-worker generation that accepted this job.
+    ///
+    /// The value changes on every daemon worker start. Older job records omit
+    /// it and remain preserve-only until explicitly reconciled.
+    pub runner_instance_id: Option<String>,
     pub target: JobTarget,
     pub owner: ServiceActor,
     pub state: JobState,
@@ -5721,6 +5735,8 @@ impl Default for ServiceJob {
             route_pool_entry_id: None,
             viewer_lease_id: None,
             controller_lease_id: None,
+            runner_session_id: None,
+            runner_instance_id: None,
             target: JobTarget::Service,
             owner: ServiceActor::System,
             state: JobState::Queued,

@@ -1543,13 +1543,17 @@ mod tests {
         let store = SecretStore::open(&root).unwrap();
         let references = stage(&store, &payloads());
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let workers = (0..2)
-            .map(|_| {
-                let root = root.clone();
+        // Opening a store also takes a nonblocking lock. Prepare independent
+        // handles before racing claims so setup cannot panic before the barrier.
+        let contenders = (0..2)
+            .map(|_| SecretStore::open(&root).unwrap())
+            .collect::<Vec<_>>();
+        let workers = contenders
+            .into_iter()
+            .map(|store| {
                 let references = references.clone();
                 let barrier = std::sync::Arc::clone(&barrier);
                 std::thread::spawn(move || {
-                    let store = SecretStore::open(&root).unwrap();
                     barrier.wait();
                     store.reserve_journey(&"a".repeat(64), &references)
                 })

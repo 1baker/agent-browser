@@ -2033,6 +2033,17 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                 }
             })?;
             match subcommand {
+                "reconcile" if rest.len() == 1 => Ok(json!({"id":id,"action":"runtime_handoff_reconcile"})),
+                "inspect-external" if rest.len() == 1 => Ok(json!({"id":id,"action":"runtime_handoff_inspect_external"})),
+                "reconcile-external" if rest.len() == 1 => Ok(json!({"id":id,"action":"runtime_handoff_reconcile_external"})),
+                "migration-plan" | "migration-prepare" => {
+                    let expected = if subcommand == "migration-plan" { 3 } else { 4 };
+                    if rest.len() != expected {
+                        return Err(ParseError::MissingArguments { context:"handoff migration".into(), usage:"handoff migration-plan <target-id> <canonical-url> | handoff migration-prepare <target-id> <canonical-url> <plan-sha256>" });
+                    }
+                    Ok(json!({"id":id,"action":"runtime_legacy_migration","targetId":rest[1],"url":rest[2],"approvedDigest":rest.get(3)}))
+                }
+                "migration-resume" if rest.len() == 1 => Ok(json!({"id":id,"action":"runtime_handoff_resume","prospectiveMigration":true})),
                 "prepare" => Ok(json!({ "id": id, "action": "runtime_handoff_prepare" })),
                 "resume" => Ok(json!({ "id": id, "action": "runtime_handoff_resume" })),
                 _ => Err(ParseError::UnknownSubcommand {
@@ -2915,6 +2926,91 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                     "action": "service_challenges",
                     "serviceState": flags.service_state.clone(),
                 }))
+            }
+            Some("recover-interrupted") => {
+                let usage = "service recover-interrupted --job-id <id> [--job-id <id> ...] [--dry-run|--apply --review-token <token>]";
+                let mut job_ids = Vec::new();
+                let mut apply = false;
+                let mut review_token: Option<&str> = None;
+                let mut saw_apply = false;
+                let mut saw_dry_run = false;
+                let mut i = 1;
+                while i < rest.len() {
+                    match rest[i] {
+                        "--job-id" => {
+                            let Some(raw) = rest.get(i + 1) else {
+                                return Err(ParseError::InvalidValue {
+                                    message: "--job-id requires a value".to_string(),
+                                    usage,
+                                });
+                            };
+                            job_ids.push(*raw);
+                            i += 1;
+                        }
+                        "--apply" => {
+                            saw_apply = true;
+                            apply = true;
+                        }
+                        "--dry-run" => {
+                            saw_dry_run = true;
+                            apply = false;
+                        }
+                        "--review-token" => {
+                            let Some(raw) = rest.get(i + 1) else {
+                                return Err(ParseError::InvalidValue {
+                                    message: "--review-token requires a value".to_string(),
+                                    usage,
+                                });
+                            };
+                            review_token = Some(raw);
+                            i += 1;
+                        }
+                        flag => {
+                            return Err(ParseError::InvalidValue {
+                                message: format!(
+                                    "Unknown flag for service recover-interrupted: {flag}"
+                                ),
+                                usage,
+                            });
+                        }
+                    }
+                    i += 1;
+                }
+                if job_ids.is_empty() {
+                    return Err(ParseError::MissingArguments {
+                        context: "service recover-interrupted".to_string(),
+                        usage,
+                    });
+                }
+                if saw_apply && saw_dry_run {
+                    return Err(ParseError::InvalidValue {
+                        message: "--apply and --dry-run cannot be used together".to_string(),
+                        usage,
+                    });
+                }
+                if apply && review_token.is_none() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--apply requires --review-token".to_string(),
+                        usage,
+                    });
+                }
+                if !apply && review_token.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--review-token requires --apply".to_string(),
+                        usage,
+                    });
+                }
+                let mut cmd = json!({
+                    "id": id,
+                    "action": "service_recover_interrupted",
+                    "apply": apply,
+                    "jobIds": job_ids,
+                    "serviceState": flags.service_state.clone(),
+                });
+                if let Some(review_token) = review_token {
+                    cmd["reviewToken"] = json!(review_token);
+                }
+                Ok(cmd)
             }
             Some("cancel") => {
                 let job_id = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
@@ -7339,6 +7435,45 @@ mod tests {
         assert_eq!(cmd["browserId"], "browser-123");
         assert_eq!(cmd["by"], "operator");
         assert_eq!(cmd["note"], "approved");
+    }
+
+    #[test]
+    fn test_service_recover_interrupted_preview_and_apply() {
+        let preview = parse_command(
+            &args("service recover-interrupted --job-id legacy-a --job-id legacy-b --dry-run"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(preview["action"], "service_recover_interrupted");
+        assert_eq!(preview["apply"], false);
+        assert_eq!(preview["jobIds"], json!(["legacy-a", "legacy-b"]));
+
+        let apply = parse_command(
+            &args(
+                "service recover-interrupted --job-id legacy-a --apply --review-token abjir1:1:digest",
+            ),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(apply["apply"], true);
+        assert_eq!(apply["reviewToken"], "abjir1:1:digest");
+    }
+
+    #[test]
+    fn test_service_recover_interrupted_requires_bound_apply() {
+        let missing_id = parse_command(
+            &args("service recover-interrupted --dry-run"),
+            &default_flags(),
+        )
+        .unwrap_err();
+        assert!(matches!(missing_id, ParseError::MissingArguments { .. }));
+
+        let missing_token = parse_command(
+            &args("service recover-interrupted --job-id legacy-a --apply"),
+            &default_flags(),
+        )
+        .unwrap_err();
+        assert!(matches!(missing_token, ParseError::InvalidValue { .. }));
     }
 
     #[test]

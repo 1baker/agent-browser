@@ -8,6 +8,8 @@ const BROWSER_LAUNCH_UNAVAILABLE_PATTERNS = [
   /Chrome process failed/i,
   /browser executable.+(?:missing|not found)/i,
   /spawn .+ ENOENT/i,
+  /Stealth browser launch proof unavailable/i,
+  /no_matching_preference_binding/i,
 ];
 
 /**

@@ -16,18 +16,26 @@ pub mod clipboard;
 pub mod control_plane;
 #[allow(dead_code)]
 pub mod cookies;
+#[cfg(target_os = "linux")]
+pub(crate) mod custody_broker;
 #[allow(dead_code)]
 pub mod daemon;
 #[allow(dead_code)]
 pub mod dependent_batch;
 #[allow(dead_code)]
 pub mod diff;
+#[cfg(target_os = "linux")]
+mod display_owner_proof;
 #[allow(dead_code)]
 pub mod element;
+#[cfg(target_os = "linux")]
+pub(crate) mod handoff_custody;
 #[allow(dead_code)]
 pub mod inspect_server;
 #[allow(dead_code)]
 pub mod interaction;
+#[cfg(target_os = "linux")]
+pub(crate) mod legacy_migration;
 #[allow(dead_code)]
 pub mod network;
 #[allow(dead_code)]
@@ -85,6 +93,7 @@ pub mod remote_view_lease;
 pub mod remote_view_proof;
 #[allow(dead_code)]
 pub mod retained_browser_requirement;
+mod runtime_attach_proof;
 #[allow(dead_code)]
 pub mod screenshot;
 #[allow(dead_code)]

@@ -138,18 +138,38 @@ pub async fn run_daemon(session: &str) {
         }
     }
 
+    let cold = env::var("AGENT_BROWSER_COLD_DAEMON").as_deref() == Ok("1");
+    let write_startup_metadata = |path: &std::path::Path, value: &str| {
+        let result = if cold {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .and_then(|mut file| file.write_all(value.as_bytes()))
+        } else {
+            fs::write(path, value)
+        };
+        if cold && result.is_err() {
+            let _ = writeln!(
+                std::io::stderr(),
+                "Cold daemon metadata reservation denied: {}",
+                path.display()
+            );
+            process::exit(1);
+        }
+    };
     let pid_path = socket_dir.join(format!("{}.pid", session));
-    let _ = fs::write(&pid_path, process::id().to_string());
+    write_startup_metadata(&pid_path, &process::id().to_string());
     secure_daemon_file(&pid_path);
     log_startup_milestone(startup_started, "pid-written");
 
     let version_path = socket_dir.join(format!("{}.version", session));
-    let _ = fs::write(&version_path, env!("CARGO_PKG_VERSION"));
+    write_startup_metadata(&version_path, env!("CARGO_PKG_VERSION"));
     secure_daemon_file(&version_path);
     log_startup_milestone(startup_started, "version-written");
 
     let executable_sha_path = socket_dir.join(format!("{}.sha256", session));
-    let _ = fs::write(&executable_sha_path, "pending");
+    write_startup_metadata(&executable_sha_path, "pending");
     secure_daemon_file(&executable_sha_path);
     log_startup_milestone(startup_started, "executable-sha-pending");
 
@@ -158,7 +178,7 @@ pub async fn run_daemon(session: &str) {
     let socket_path = socket_dir.join(format!("{}.sock", session));
 
     #[cfg(unix)]
-    if socket_path.exists() {
+    if !cold && socket_path.exists() {
         let _ = fs::remove_file(&socket_path);
     }
 
@@ -330,8 +350,9 @@ async fn run_socket_server(
         None
     };
 
-    let control_plane = ControlPlaneWorker::start_with_options(
+    let control_plane = ControlPlaneWorker::start_for_session_with_options(
         DaemonState::new_with_stream(stream_client, stream_server),
+        session,
         service_reconcile_interval_ms,
         service_job_timeout_ms,
         service_monitor_interval_ms,
@@ -441,8 +462,9 @@ async fn run_socket_server(
         None
     };
 
-    let control_plane = ControlPlaneWorker::start_with_options(
+    let control_plane = ControlPlaneWorker::start_for_session_with_options(
         DaemonState::new_with_stream(stream_client, stream_server),
+        session,
         service_reconcile_interval_ms,
         service_job_timeout_ms,
         service_monitor_interval_ms,

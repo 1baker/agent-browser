@@ -2824,6 +2824,32 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                 return;
             }
         }
+        if action == Some("service_recover_interrupted") {
+            let apply = data
+                .get("apply")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let count = data
+                .get(if apply {
+                    "recoveredCount"
+                } else {
+                    "candidateCount"
+                })
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            if apply {
+                println!("Recovered {count} interrupted legacy service job(s)");
+            } else {
+                let token = data
+                    .get("reviewToken")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                println!(
+                    "Interrupted legacy service job preview: candidates={count} review_token={token}"
+                );
+            }
+            return;
+        }
         if action == Some("storage_get") {
             if let Some(output) = format_storage_text(data) {
                 println!("{}", output);
@@ -4252,6 +4278,10 @@ agent-browser close - Close the browser
 Usage: agent-browser close [options]
 
 Closes the browser instance for the current session.
+For a recovered or borrowed connection, close detaches and preserves retained
+browser identity. Explicit service_browser_close may terminate an exclusively
+owned recovered Linux Chrome only after exact process and profile verification;
+terminal cleanup requires observed process exit and profile-lock release.
 
 Aliases: quit, exit
 
@@ -4274,17 +4304,48 @@ Examples:
             r##"
 agent-browser handoff - Transfer a live browser to a replacement daemon
 
-Usage: agent-browser handoff <prepare|resume>
+Usage: agent-browser handoff <prepare|resume|migration-plan|migration-prepare|migration-resume|reconcile|inspect-external|reconcile-external>
 
 Subcommands:
   prepare    Persist the browser PID and CDP endpoint, relinquish process
              ownership, and stop the current daemon without closing the browser
   resume     Start a replacement daemon, reconnect to the same browser and
              targets, then remove the durable retry record
+  migration-plan <target-id> <canonical-url>
+             Read-only Linux legacy source/target plan; returns planSha256
+  migration-prepare <target-id> <canonical-url> <plan-sha256>
+             Verify approved plan and prepare once on the witnessed source socket
+  migration-resume
+             Explicitly resume prospective migration after verified source exit
+  reconcile  Restore only this live owner's absent shared receipt projection;
+             requires the same executable, held lease and committed URL evidence
+  inspect-external
+             Read-only proof for a stranded older owner's committed receipt
+  reconcile-external
+             Restore only that verified older owner's absent shared projection
 
 This command is used by the local development publisher and runtime interlock.
 The browser process, DevTools port, profile, and open tabs remain live during
 the changeover. A later normal `close` still shuts down an owned browser.
+
+A recorded active target must be present and initialize; resume never falls
+back to another tab. Legacy records without a target retain discovery behavior.
+Prepare without a browser preserves existing retry records and reports pending
+recovery. Inspect and resume the record rather than deleting it.
+Linux owned-source v2 handoffs verify source exit, retained process/profile/CDP,
+an exclusive profile lock and committed receipt. Diagnostics reports current
+controlPlaneAttestation including remote display ownership. Legacy v1 records
+never qualify as complete proof. Pending recovery blocks ordinary work.
+V2 sessions deny direct dashboard CDP input, background handlers, private
+journeys and unsupported commands; use governed queued commands.
+
+Migration preserves original v1 bytes plus separate prospective evidence; it
+does not fabricate historical source custody. Install and verify the reviewed
+runtime before enrollment and hold maintenance exclusion during migration.
+Unknown acknowledgements require reconciliation, never prepare replay, forced
+kills or ordinary publisher recovery. Verify fresh complete proof before input.
+Linux display proof allows the same-name abstract socket only on filesystem
+absence, never as a fallback after access or ownership failure.
 
 Global Options:
   --json               Output as JSON
@@ -4293,6 +4354,8 @@ Global Options:
 Examples:
   agent-browser --session work handoff prepare
   agent-browser --session work handoff resume
+  agent-browser --session work handoff inspect-external
+  agent-browser --session work handoff reconcile-external
 "##
         }
 
@@ -5119,6 +5182,12 @@ inventory. Locally launched browsers also require a live browser PID; an
 explicit attached-existing browser may omit that local PID only while its live
 daemon and exact loopback DevTools identity still verify. It never launches a
 daemon or browser.
+Healthy workstation reconcile reports healthy-runtime-preserved after fresh
+provenance, unit, and canonical-route checks, without restarting services or
+changing browsers/configuration. Unknown evidence and active route conflicts
+stop before repair. Guacamole probes may issue temporary authentication tokens.
+Fresh workstation apply still performs bootstrap.
+ChatGPT project slug changes preserve identity only when project/conversation IDs match.
 Use workstation retained-browser-status for the same source-free, no-lock,
 no-launch check before apply or reconcile. It honors
 AGENT_BROWSER_DASHBOARD_RETAINED_REQUIREMENT from the normal agent-browser env
@@ -5141,6 +5210,10 @@ submission action. If retained-browser-status proves the old daemon is gone,
 --rotate-stale-requirement-sha256 performs an explicit digest-bound replacement.
 It refuses live or unreadable old authority, journals the two private-file
 updates, fails closed during a partial commit, and resumes safely after a crash.
+Same-session replacement requires the same profile and URL, a verified new
+target, and fresh readable CDP proof that the old exact target is absent.
+Managed remote-headed Chrome cache paths follow the installer-selected Chrome;
+custom executable paths remain unchanged.
 
 Workstation apply reruns stop the managed dashboard, runtime interlock, and
 backup timer during reconciliation, then reactivate them after final readiness.
@@ -5154,6 +5227,14 @@ helper and fails closed instead of prompting. Compatible installed helper
 versions are retained across byte-only bundle drift.
 Routine workstation reconciliation preserves live XRDP desktops and applies
 route-user or credential changes at the next login without restarting sesman.
+For an additional temporary C-Z slot without reconciling A/B, the source checkout
+provides: pnpm setup:rdp-guac-temporary-route -- --label C --dry-run --json
+Replace --dry-run with --apply after review. This provisions only a new account
+and Guacamole connection; it does not open a desktop/browser or prove readiness.
+Existing identities fail closed. Keep its private recovery journal confidential.
+Source opener/inspector/readiness scripts accept --route-label C to select only
+the supplemental slot; the opener requires an explicit matching route pool JSON.
+The default installed workstation contract remains canonical A/B.
 Host preparation includes display inspection, visual-proof tools, and a
 path-scoped AppArmor userns policy for managed Chrome on Ubuntu 24.04. It does
 not require that policy when the kernel disables AppArmor or does not restrict
@@ -5665,6 +5746,7 @@ Usage:
   agent-browser service site-policies
   agent-browser service providers
   agent-browser service challenges
+  agent-browser service recover-interrupted --job-id <id> [--job-id <id> ...] [--dry-run|--apply --review-token <token>]
   agent-browser service cancel <job-id> [--reason <text>]
   agent-browser service retry <browser-id> [--by <text>] [--note <text>]
   agent-browser service acknowledge <incident-id> [--by <text>] [--note <text>]
@@ -5686,6 +5768,7 @@ Commands:
   prune-retained        Dry-run or apply removal of inert retained browser, closed-tab, orphaned profile, and display allocation records
   repair-retained       Dry-run or apply safe repair of legacy inert retained session evidence
   access-plan           Show the no-launch profile, readiness, site-policy, provider, challenge, and browser-build routing recommendation
+                        Readiness follows the runtime profile unless --readiness-profile-id overrides it
   browser-capability    Preflight guarded executable routing for one requested browser build without launching
   browser-capability guide
                         List known executable IDs and copyable prefer commands derived from the current registry
@@ -5709,6 +5792,7 @@ Commands:
   site-policies         Show configured service site-policy records
   providers             Show configured service provider records
   challenges            Show retained auth, 2FA, captcha, passkey, and blocked-flow challenge records
+  recover-interrupted   Preview or fail exact legacy running jobs whose worker ownership was never recorded
   cancel                Cancel a queued job or request running job cancellation
   retry                 Enable one new recovery attempt for a faulted browser
   acknowledge           Record that an operator has seen a retained incident
@@ -5743,6 +5827,8 @@ Notes:
   - Incident operator metadata includes acknowledgement and resolution timestamps, actor names, and notes.
   - Acknowledgement and resolution append incident_acknowledged and incident_resolved service events.
   - Cancel marks queued or lease-waiting jobs before dispatch and requests cooperative cancellation for running jobs.
+  - recover-interrupted requires exact job IDs, at least five minutes of age, absent runner ownership and terminal evidence, plus a fresh candidate-bound review token before apply.
+  - Named daemon jobs record runnerSessionId and runnerInstanceId. A restarted exclusive session fails only nonterminal jobs from its replaced worker generation; unowned legacy jobs remain unchanged.
   - Monitor reset clears the reviewed failure count while preserving last failure evidence.
   - Monitor triage acknowledges the related monitor incident and clears reviewed failure counts in one queued service operation.
   - Job filters match state, action, profile ID, session ID, service name, agent name, task name, and RFC 3339 timestamps before applying --limit.
@@ -5787,6 +5873,7 @@ Notes:
   - The stream server exposes named browser control endpoints at /api/browser/url, /api/browser/title, /api/browser/tabs, /api/browser/navigate, /api/browser/back, /api/browser/forward, /api/browser/reload, /api/browser/new-tab, /api/browser/switch-tab, /api/browser/close-tab, /api/browser/viewport, /api/browser/user-agent, /api/browser/media, /api/browser/timezone, /api/browser/locale, /api/browser/geolocation, /api/browser/permissions, /api/browser/cookies/get, /api/browser/cookies/set, /api/browser/cookies/clear, /api/browser/storage/get, /api/browser/storage/set, /api/browser/storage/clear, /api/browser/console, /api/browser/errors, /api/browser/set-content, /api/browser/headers, /api/browser/offline, /api/browser/dialog, /api/browser/clipboard, /api/browser/upload, /api/browser/download, /api/browser/wait-for-download, /api/browser/pdf, /api/browser/response-body, /api/browser/har/start, /api/browser/har/stop, /api/browser/route, /api/browser/unroute, /api/browser/requests, /api/browser/request-detail, /api/browser/snapshot, /api/browser/screenshot, /api/browser/click, /api/browser/fill, /api/browser/wait, /api/browser/type, /api/browser/press, /api/browser/hover, /api/browser/select, /api/browser/get-text, /api/browser/get-value, /api/browser/is-visible, /api/browser/get-attribute, /api/browser/get-html, /api/browser/get-styles, /api/browser/count, /api/browser/get-box, /api/browser/is-enabled, /api/browser/is-checked, /api/browser/check, /api/browser/uncheck, /api/browser/scroll, /api/browser/scroll-into-view, /api/browser/focus, and /api/browser/clear.
   - The stream server exposes the service surface at /api/service/status, /api/service/publications/local-dashboard, /api/service/request, /api/service/profiles, /api/service/profiles/lookup, /api/service/profiles/<id>/allocation, /api/service/profiles/<id>/readiness, /api/service/profiles/<id>/seeding-handoff, /api/service/profiles/<id>, /api/service/profiles/<id>/freshness, /api/service/sessions, /api/service/sessions/<id>, /api/service/browsers, /api/service/tabs, /api/service/monitors, /api/service/monitors/run-due, /api/service/monitors/<id>/pause, /api/service/monitors/<id>/resume, /api/service/monitors/<id>/reset-failures, /api/service/monitors/<id>/triage, /api/service/site-policies, /api/service/site-policies/<id>, /api/service/providers, /api/service/providers/<id>, /api/service/challenges, /api/service/trace, /api/service/jobs, /api/service/jobs/<id>, /api/service/jobs/<id>/cancel, /api/service/incidents, /api/service/incidents/<id>, /api/service/incidents/<id>/activity, /api/service/incidents/<id>/acknowledge, /api/service/incidents/<id>/resolve, /api/service/events, and /api/service/reconcile. The local-dashboard publication route is read-only and never authorizes recovery. GET /api/service/monitors accepts state, failed, and summary query parameters.
   - POST /api/service/request accepts one intent object with serviceName, agentName, taskName, siteId/loginId, targetServiceId, accountId, url, browserBuild, profile or runtimeProfile hints, top-level browserId/sessionName reuse route hints, profileLeasePolicy, profileLeaseWaitTimeoutMs, action, params, and jobTimeoutMs, then queues the browser command through the same service-owned control path. Top-level browserId/sessionName route ordinary commands to an existing daemon lane selected by access-plan profileReuse; params.browserId/params.sessionName remain action parameters. Direct launches that select a profile already backed by a live retained browser are rejected unless they use those route hints or allowDuplicateProfileLane=true for reviewed isolation or throwaway work. Use action=view_takeover with params.browserId, params.sessionName, params.streamId, params.provider, and params.openMode when an RDP or Guacamole viewer needs a service-owned takeover or reconnect request without closing or relaunching the browser. Use service_viewer_lease_request, service_viewer_lease_heartbeat, service_viewer_lease_release, and service_controller_lease_takeover when software clients need explicit observer heartbeat, release, and controller ownership state for retained remote-view routes.
+  - Transferred runtime owners require brokerTransport=true, an exact retained serviceTabHandle, and a broker-issued broker_attach step for native CDP transport. They return an opaque binding, not Chrome's endpoint; each command or event read needs its own ordered authority step. Unknown outcomes stay fenced, and exact verified detach preserves Chrome.
   - POST /api/service/profiles/<id>, POST /api/service/profiles/<id>/freshness, POST /api/service/sessions/<id>, POST /api/service/site-policies/<id>, POST /api/service/monitors/<id>, and POST /api/service/providers/<id> persist service config records through the service worker queue. POST /api/service/monitors/run-due runs due active monitors now. POST /api/service/monitors/<id>/pause and POST /api/service/monitors/<id>/resume update retained monitor state. POST /api/service/monitors/<id>/triage acknowledges related incidents and clears reviewed failures. DELETE on the same entity paths removes persisted records through the same queue.
   - Service config mutation uses the path ID as authoritative and rejects a request body whose nested id conflicts with the path.
   - Daemon background reconciliation runs every 60000 ms by default; set --service-reconcile-interval 0 or service.reconcileIntervalMs: 0 to disable it.
@@ -5830,6 +5917,7 @@ Examples:
   agent-browser service site-policies
   agent-browser service providers
   agent-browser service challenges
+  agent-browser service recover-interrupted --job-id <id> --dry-run
   agent-browser service cancel <job-id> --reason stale
   agent-browser service retry browser-1 --by operator --note approved
   agent-browser service acknowledge browser-1 --by operator --note triaged
@@ -5872,8 +5960,13 @@ Usage:
 
 Commands:
   serve                 Run the MCP stdio server
+                        Cold profile creation uses a browserless worker; stale routes stay guarded.
   resources             List read-only service resources exposed for MCP adapters
   read                  Read a service resource URI as JSON
+
+  Cold navigate/tab_new requests need a URL, exact selected profile, an approved
+  new-browser access plan and absent daemon metadata. Reads/input never bootstrap.
+  Cold startup preserves configured options and dispatches the action only once.
 
 Notes:
   - The stdio server reads newline-delimited JSON-RPC messages from stdin and writes MCP messages to stdout.
@@ -5893,7 +5986,7 @@ Notes:
   - browser_navigate, browser_back, browser_forward, browser_reload, browser_tab_*, browser_set_content, browser_requests, browser_request_detail, browser_headers, browser_offline, browser_cookies_*, browser_storage_*, browser_user_agent, browser_viewport, browser_geolocation, browser_permissions, browser_timezone, browser_locale, browser_media, browser_dialog, browser_upload, browser_download, browser_wait_for_download, browser_har_*, browser_route, browser_unroute, browser_console, browser_errors, browser_pdf, browser_response_body, and browser_clipboard provide typed schemas for common navigation, tab, page-content, request-inspection, session-shaping, observability, artifact, file-transfer, HAR, routing, cookie, and storage workflows.
   - browser_command queues remaining HTTP-parity actions with params copied into the queued daemon command when a typed browser_* tool is not yet available.
   - Example browser_command arguments: {"action":"navigate","params":{"url":"https://example.com","waitUntil":"load","targetServiceId":"acs"},"serviceName":"JournalDownloader","taskName":"probeACSwebsite"}.
-  - Typed browser_* tools also accept targetServiceId, targetService, targetServiceIds, targetServices, siteId, siteIds, loginId, loginIds, accountId, accountIds, and url for first-command profile selection.
+  - Typed browser_* tools also accept targetServiceId, targetService, targetServiceIds, targetServices, siteId, siteIds, loginId, loginIds, runtimeProfile, profileId, browserId, sessionName, browserBuild, and url. Copy the access-plan profile and retained route hints so the MCP boundary reuses the selected daemon instead of auto-launching a duplicate profile lane.
   - browser_snapshot queues the existing snapshot command and returns the active session accessibility snapshot.
   - service_trace reads persisted service state and returns related events, jobs, incidents, activity, browser capability launch decisions, profile lease wait summaries, ownership summary contexts, naming warnings, and UI-neutral attention metadata for serviceName, agentName, taskName, browserId, profileId, sessionId, and since filters.
   - service_incidents reads grouped retained incidents with the same state, severity, escalation, handling, kind, browser, profile, session, service, agent, task, since, and summary filters as CLI and HTTP.
@@ -6148,6 +6241,28 @@ Commands:
   login [url]           Launch a detached headed browser for manual sign-in
   attach [name]         Bind the current automation session to a runtime profile
 
+Attachment build evidence:
+  Repository legacy publisher: --prebuilt-bin <absolute-path> --expected-sha256 <sha256>
+  --expected-sessions <names|none> --skip-reference-sync --skip-browser skips builds.
+  --controller-update <scripts/path.js=absolute-source=sha256> updates an existing
+  controller with matching embedded bytes; rollback restores scripts and manifest.
+  HTTP/manifest checks remain required. The exact runtime-interlock timer is paused;
+  legacy flock and native reconcile locks are supported. Native crash custody
+  requires receipt-bound recovery; foreign locks and unproven roots are refused.
+  Same-version workstation records are journaled with the binary for recovery
+  and rollback. Exact in-transaction doctor checks precede a strict unlocked check.
+  Dashboard stop may retire only its proven idle, browser-free backend session.
+  uncertain handoffs retain custody. Recovery uses --recover-only with the exact
+  --recover-interlock-receipt <id>. These are publisher-script flags, not install flags.
+  Metadata-preserving Linux handoff rechecks exact retained build proof atomically
+  with health. Failed process verification clears stale build/path evidence only.
+  Linux managed attach verifies installed stock Chrome against the live PID,
+  executable, profile directory, exact browser WebSocket and process-owned
+  DevTools listener. Missing or mismatched evidence leaves build-sensitive
+  broker reuse blocked. This is not sign-in or renewal readiness. Custom builds
+  and other platforms do not gain installer proof through this check.
+  Use --leave-open to preserve the browser when detaching the session.
+
 Locked profiles:
   If the default runtime profile is locked by a live browser PID and the task
   needs existing login state, inspect `service status` or `runtime status`,
@@ -6378,6 +6493,7 @@ Service:
   service site-policies      Show configured service site-policy records
   service providers          Show configured service provider records
   service challenges         Show retained service challenge records
+  service recover-interrupted Preview or fail exact ownerless legacy running jobs after digest review
   service cancel             Cancel a queued job or request running job cancellation
   service acknowledge        Record that an operator has seen a retained incident
   service resolve            Mark a retained incident handled
@@ -6744,6 +6860,7 @@ Examples:
   agent-browser service site-policies    # Inspect configured service site-policy records
   agent-browser service providers        # Inspect configured service provider records
   agent-browser service challenges       # Inspect retained service challenge records
+  agent-browser service recover-interrupted --job-id <id> --dry-run # Preview exact ownerless legacy job recovery
   agent-browser service cancel <job-id>  # Cancel a queued, waiting, or running service job
   agent-browser service acknowledge      # Mark a retained incident acknowledged
   agent-browser service resolve          # Mark a retained incident resolved

@@ -12,6 +12,7 @@ const publisher = readFileSync('scripts/publish-local-dashboard-runtime.js', 'ut
 const publisherLifecycle = readFileSync('scripts/lib/local-dashboard-publisher-lifecycle.js', 'utf8');
 const publisherOrchestration = readFileSync('scripts/lib/local-dashboard-publisher-orchestration.js', 'utf8');
 const publicationJournal = readFileSync('scripts/lib/local-dashboard-publication-journal.js', 'utf8');
+const runtimeSmoke = readFileSync('scripts/smoke-local-dashboard-runtime.js', 'utf8');
 const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
 
 const wslLaunch = classifyLocalDashboardBrowserSmokeFailure({
@@ -52,6 +53,20 @@ const publisherAdvisory = evaluateLocalDashboardBrowserSmokeResult({
 });
 assert.equal(publisherAdvisory.status, 'unavailable');
 assert.equal(publisherAdvisory.fatal, false);
+
+const missingStealthBinding = classifyLocalDashboardBrowserSmokeFailure({
+  phase: 'open dashboard url',
+  error: "Stealth browser launch proof unavailable: no_matching_preference_binding",
+});
+assert.equal(missingStealthBinding.status, 'unavailable');
+assert.equal(missingStealthBinding.classification, 'browser_launch_unavailable');
+assert.equal(missingStealthBinding.fatal, false);
+
+assert.match(
+  runtimeSmoke,
+  /browserFailurePhase = currentPhase[\s\S]*currentPhase = 'remove disposable browser profile'[\s\S]*currentPhase = browserFailurePhase[\s\S]*throw browserFailure/,
+  'browser smoke must preserve its primary failure phase across disposable profile cleanup',
+);
 
 const publisherPass = evaluateLocalDashboardBrowserSmokeResult({
   processStatus: 0,

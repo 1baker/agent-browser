@@ -484,6 +484,14 @@ export interface ServiceFileTransferData {
 }
 
 export interface ServiceDiagnosticsData {
+  /** Missing or incomplete evidence never authorizes browser effects. */
+  controlPlaneAttestation?: {
+    complete: boolean;
+    missingProofs: string[];
+    ownerCustody?: Record<string, unknown>;
+    displayOwner: { verified: boolean; [key: string]: unknown };
+  };
+  snapshotOnly?: boolean;
   ok: boolean;
   action: "diagnostics";
   observedAt: string;

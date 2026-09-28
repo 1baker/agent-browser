@@ -3731,6 +3731,24 @@ mod tests {
         assert!(serialized.len() < 8_000);
     }
 
+    /// Reserve an unreachable endpoint for the entire probe. Binding and then
+    /// dropping a listener lets another parallel fixture claim its port.
+    fn reserved_unreachable_socket() -> tokio::net::TcpSocket {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = socket.local_addr().unwrap();
+        assert!(
+            std::net::TcpListener::bind(address).is_err(),
+            "the unreachable fixture must reserve its port against other tests"
+        );
+        assert!(std::net::TcpStream::connect_timeout(
+            &address,
+            std::time::Duration::from_millis(100)
+        )
+        .is_err());
+        socket
+    }
+
     fn http_response(status: u16, reason: &str, body: &[u8]) -> Vec<u8> {
         let header = format!(
             "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -4503,9 +4521,8 @@ mod tests {
                 .as_micros()
         ));
         fs::create_dir_all(&dir).unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        let reservation = reserved_unreachable_socket();
+        let port = reservation.local_addr().unwrap().port();
         let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR"]);
         guard.set("AGENT_BROWSER_SOCKET_DIR", dir.to_str().unwrap());
         fs::write(dir.join("probe.pid"), std::process::id().to_string()).unwrap();
@@ -5135,7 +5152,8 @@ EOF
 
         let client = http_client().unwrap();
         let url = format!("http://127.0.0.1:{}/test", port);
-        let _ = client.get(&url).send().await;
+        let response = client.get(&url).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
         let request_text = server.await.unwrap();
         let expected_ua = format!("agent-browser/{}", env!("CARGO_PKG_VERSION"));
         assert!(
@@ -5152,12 +5170,8 @@ EOF
             .enable_all()
             .build()
             .unwrap();
-        let url = rt.block_on(async {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let port = listener.local_addr().unwrap().port();
-            drop(listener);
-            format!("http://127.0.0.1:{}/test.zip", port)
-        });
+        let reservation = reserved_unreachable_socket();
+        let url = format!("http://{}/test.zip", reservation.local_addr().unwrap());
         let result = rt.block_on(download_bytes_with_retry_backoff(&url, false));
         assert!(result.is_err());
         let err = result.unwrap_err();
