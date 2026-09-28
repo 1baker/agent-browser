@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-browser.dev/contracts/local-dashboard-retained-browser-requirement.v1.schema.json",
+  "title": "Local Dashboard Retained Browser Requirement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "createdAt", "expectation"],
+  "properties": {
+    "schemaVersion": {
+      "const": "agent-browser.local-dashboard-retained-browser-requirement.v1"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionName", "profileId", "targetId", "url"],
+      "properties": {
+        "sessionName": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "profileId": { "type": "string", "minLength": 1 },
+        "targetId": { "type": "string", "minLength": 1 },
+        "url": {
+          "type": "string",
+          "pattern": "^https?://"
+        }
+      }
+    }
+  }
+}

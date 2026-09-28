@@ -25,6 +25,23 @@ const state = JSON.parse(readFileSync(process.env.P78_FIXTURE_STATE, 'utf8'));
 appendFileSync(process.env.P78_FIXTURE_LOG, JSON.stringify({ command: 'agent-browser', args }) + '\\n');
 
 if (args.join(' ') === 'install doctor --json') {
+  if (state.scenario === 'repairable-stale') {
+    console.log(JSON.stringify({
+      success: false,
+      data: {
+        issues: [{
+          code: 'active_runtime_stale_executable',
+          session: 'retained-fixture',
+          remedy: {
+            argv: ['agent-browser', 'close', '--session', 'retained-fixture'],
+          },
+        }],
+        runtimeInventory: { status: 'stale', runtimeCount: 1, staleCount: 1, convergedCount: 0 },
+        daemonListenerInventory: { state: 'authoritative', listeners: [] },
+      },
+    }));
+    process.exit(1);
+  }
   console.log(JSON.stringify({
     success: true,
     data: {
@@ -205,6 +222,24 @@ try {
   assert.equal(dryRun.result.status, 1, 'dry-run must report the blocked empty-fixture state');
   assertNoMutations(dryRun.commands, 'dry-run');
 
+  const repairableDryRun = runScenario('repairable-stale-dry-run', ['--json'], {
+    scenario: 'repairable-stale',
+  });
+  assert.equal(
+    repairableDryRun.result.status,
+    1,
+    'dry-run must remain nonzero while a repairable stale daemon exists',
+  );
+  assert.deepEqual(
+    repairableDryRun.payload.safeRemedies,
+    [{
+      session: 'retained-fixture',
+      argv: ['agent-browser', 'close', '--session', 'retained-fixture'],
+    }],
+    'dry-run must report the exact safe stale-daemon remedy from nonzero doctor JSON',
+  );
+  assertNoMutations(repairableDryRun.commands, 'repairable stale dry-run');
+
   const unrelated = runScenario('unrelated', ['--apply', '--skip-publish', '--json'], {
     scenario: 'unrelated',
   });
@@ -227,6 +262,7 @@ try {
 
 function runScenario(name, controllerArgs, state = {}) {
   const scenarioRoot = join(fixtureRoot, name);
+  const socketDir = `${scenarioRoot}.sockets`;
   const statePath = `${scenarioRoot}.state.json`;
   const logPath = `${scenarioRoot}.commands.jsonl`;
   const evidencePath = `${scenarioRoot}.evidence.json`;
@@ -244,6 +280,7 @@ function runScenario(name, controllerArgs, state = {}) {
       ...process.env,
       HOME: fixtureRoot,
       AGENT_BROWSER_BIN: fakeAgentBrowser,
+      AGENT_BROWSER_SOCKET_DIR: socketDir,
       PNPM_BIN: fakePnpm,
       P78_FIXTURE_LOG: logPath,
       P78_FIXTURE_STATE: statePath,

@@ -300,18 +300,19 @@ pub(crate) fn profile_lease_telemetry(
     session_id: &str,
     profile_id: &str,
 ) -> ProfileLeaseTelemetry {
-    let current_browser_id = service_browser_id_for_session(session_id);
-    let has_current_browser =
-        service_state
-            .browsers
-            .get(&current_browser_id)
-            .is_some_and(|browser| {
-                browser.profile_id.as_deref() == Some(profile_id)
-                    && browser
-                        .active_session_ids
-                        .iter()
-                        .any(|active_session_id| active_session_id == session_id)
-            });
+    let current_owned_browser_ids = service_state
+        .browsers
+        .iter()
+        .filter(|(_browser_id, browser)| {
+            browser.profile_id.as_deref() == Some(profile_id)
+                && browser
+                    .active_session_ids
+                    .iter()
+                    .any(|active_session_id| active_session_id == session_id)
+        })
+        .map(|(browser_id, _browser)| browser_id.as_str())
+        .collect::<Vec<_>>();
+    let has_current_browser = !current_owned_browser_ids.is_empty();
     let mut conflict_session_ids = service_state
         .sessions
         .iter()
@@ -319,6 +320,11 @@ pub(crate) fn profile_lease_telemetry(
             candidate_id.as_str() != session_id
                 && session.profile_id.as_deref() == Some(profile_id)
                 && session.lease == LeaseState::Exclusive
+                && !session.browser_ids.iter().any(|browser_id| {
+                    current_owned_browser_ids
+                        .iter()
+                        .any(|owned_browser_id| owned_browser_id == &browser_id.as_str())
+                })
         })
         .map(|(candidate_id, _)| candidate_id.clone())
         .collect::<Vec<_>>();
@@ -1298,6 +1304,38 @@ mod tests {
             Some(ProfileLeaseDisposition::ReusedBrowser)
         );
         assert!(session.profile_lease_conflict_session_ids.is_empty());
+    }
+
+    #[test]
+    fn test_profile_lease_telemetry_allows_exact_shared_browser_route() {
+        let mut service_state = ServiceState::default();
+        service_state.browsers.insert(
+            "session:chatgpt-pro".to_string(),
+            BrowserProcess {
+                id: "session:chatgpt-pro".to_string(),
+                profile_id: Some("chatgpt-pro".to_string()),
+                active_session_ids: vec!["chatgpt-pro".to_string()],
+                ..BrowserProcess::default()
+            },
+        );
+        service_state.sessions.insert(
+            "default".to_string(),
+            BrowserSession {
+                id: "default".to_string(),
+                profile_id: Some("chatgpt-pro".to_string()),
+                lease: LeaseState::Exclusive,
+                browser_ids: vec!["session:chatgpt-pro".to_string()],
+                ..BrowserSession::default()
+            },
+        );
+
+        let telemetry = profile_lease_telemetry(&service_state, "chatgpt-pro", "chatgpt-pro");
+
+        assert_eq!(
+            telemetry.disposition,
+            ProfileLeaseDisposition::ReusedBrowser
+        );
+        assert!(telemetry.conflict_session_ids.is_empty());
     }
 
     #[test]

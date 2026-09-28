@@ -286,7 +286,7 @@ mod tests {
         assert_eq!(authority.summary.non_viable_browser_count, 1);
         assert_eq!(authority.browser_verdicts[0].browser_id, "browser-dead");
         assert_eq!(authority.browser_verdicts[0].state, "non_viable");
-        assert_eq!(authority.browser_verdicts[0].viable, false);
+        assert!(!authority.browser_verdicts[0].viable);
     }
 
     #[test]

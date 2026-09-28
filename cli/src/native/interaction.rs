@@ -690,6 +690,8 @@ pub async fn focus(
     Ok(())
 }
 
+/// Clear a text input or contenteditable using the browser's editing command,
+/// and refuse success if the selected element still contains text.
 pub async fn clear(
     client: &CdpClient,
     session_id: &str,
@@ -706,15 +708,25 @@ pub async fn clear(
     )
     .await?;
 
-    client
+    let response: Value = client
         .send_command_typed::<_, Value>(
             "Runtime.callFunctionOn",
             &CallFunctionOnParams {
                 function_declaration: r#"function() {
                     this.focus();
+                    if (this.isContentEditable) {
+                        const selection = this.ownerDocument.getSelection();
+                        const range = this.ownerDocument.createRange();
+                        range.selectNodeContents(this);
+                        selection.removeAllRanges();
+                        selection.addRange(range);
+                        this.ownerDocument.execCommand('delete');
+                        return { cleared: !(this.textContent || '').trim() };
+                    }
                     this.value = '';
                     this.dispatchEvent(new Event('input', { bubbles: true }));
                     this.dispatchEvent(new Event('change', { bubbles: true }));
+                    return { cleared: this.value === '' };
                 }"#
                 .to_string(),
                 object_id: Some(object_id),
@@ -725,6 +737,11 @@ pub async fn clear(
             Some(&effective_session_id),
         )
         .await?;
+
+    if response.get("exceptionDetails").is_some() || response["result"]["value"]["cleared"] != true
+    {
+        return Err("clear did not empty the selected editable element".to_string());
+    }
 
     Ok(())
 }

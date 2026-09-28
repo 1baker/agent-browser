@@ -3,7 +3,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { getServiceContracts } from '../packages/client/src/service-observability.js';
+import {
+  getLocalDashboardPublicationStatus,
+  getServiceContracts,
+} from '../packages/client/src/service-observability.js';
 
 import {
   assert,
@@ -105,6 +108,31 @@ try {
     baseUrl: `http://127.0.0.1:${port}`,
   });
   const status = await httpJson(port, 'GET', '/api/service/status');
+  const publicationDirectory = join(agentHome, 'publications');
+  assert(
+    !existsSync(publicationDirectory),
+    'isolated publication status precondition unexpectedly contained a publication directory',
+  );
+  const publicationStatus = await httpJson(
+    port,
+    'GET',
+    '/api/service/publications/local-dashboard',
+  );
+  const clientPublicationStatus = await getLocalDashboardPublicationStatus({
+    baseUrl: `http://127.0.0.1:${port}`,
+  });
+  assert(
+    publicationStatus.success === true && publicationStatus.data?.recommendedAction === 'none',
+    `HTTP publication status mismatch: ${JSON.stringify(publicationStatus)}`,
+  );
+  assert(
+    clientPublicationStatus.recommendedAction === 'none',
+    `client publication status mismatch: ${JSON.stringify(clientPublicationStatus)}`,
+  );
+  assert(
+    !existsSync(publicationDirectory),
+    'publication status HTTP and client reads must not create a publication directory',
+  );
 
   assert(contracts.success === true, `HTTP service contracts failed: ${JSON.stringify(contracts)}`);
   assert(contracts.data?.schemaVersion === 'v1', `contracts schemaVersion mismatch: ${JSON.stringify(contracts)}`);

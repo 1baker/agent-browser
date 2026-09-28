@@ -90,7 +90,8 @@ impl Connection {
 }
 
 /// Get the base directory for socket/pid files.
-/// Priority: AGENT_BROWSER_SOCKET_DIR > XDG_RUNTIME_DIR > ~/.agent-browser > tmpdir
+/// Priority: AGENT_BROWSER_SOCKET_DIR > XDG_RUNTIME_DIR > inferred secure Linux
+/// user runtime directory > ~/.agent-browser > tmpdir.
 pub fn get_socket_dir() -> PathBuf {
     // 1. Explicit override (ignore empty string)
     if let Ok(dir) = env::var("AGENT_BROWSER_SOCKET_DIR") {
@@ -106,13 +107,35 @@ pub fn get_socket_dir() -> PathBuf {
         }
     }
 
-    // 3. Home directory fallback (like Docker Desktop's ~/.docker/run/)
+    // 3. Noninteractive Linux shells do not always inherit XDG_RUNTIME_DIR,
+    // even though user services use the standard /run/user/<uid> namespace.
+    // Reuse that namespace only when the directory already exists, belongs to
+    // the effective user, is not a symlink, and has private permissions.
+    #[cfg(target_os = "linux")]
+    if let Some(runtime_dir) = inferred_linux_user_runtime_dir() {
+        return runtime_dir.join("agent-browser");
+    }
+
+    // 4. Home directory fallback (like Docker Desktop's ~/.docker/run/)
     if let Some(home) = dirs::home_dir() {
         return home.join(".agent-browser");
     }
 
-    // 4. Last resort: temp dir
+    // 5. Last resort: temp dir
     env::temp_dir().join("agent-browser")
+}
+
+#[cfg(target_os = "linux")]
+fn inferred_linux_user_runtime_dir() -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    let uid = unsafe { libc::geteuid() };
+    let runtime_dir = PathBuf::from(format!("/run/user/{uid}"));
+    let metadata = fs::symlink_metadata(&runtime_dir).ok()?;
+    if !metadata.file_type().is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+        return None;
+    }
+    Some(runtime_dir)
 }
 
 #[cfg(unix)]
@@ -592,12 +615,81 @@ fn disconnect_stale_daemon(session: &str) {
 }
 
 pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult, String> {
+    ensure_daemon_with_mode(session, opts, false)
+}
+
+/// Cold admission never repairs stale metadata or replaces an existing daemon.
+pub(crate) fn ensure_cold_daemon(
+    session: &str,
+    opts: &DaemonOptions,
+) -> Result<DaemonResult, String> {
+    ensure_daemon_with_mode(session, opts, true)
+}
+
+pub(crate) fn daemon_session_metadata_absent(session: &str) -> bool {
+    session_metadata_absent_at(&get_socket_dir(), session)
+}
+
+fn session_metadata_absent_at(directory: &Path, session: &str) -> bool {
+    ["sock", "pid", "version", "sha256", "token", "port", "stream", "engine", "provider", "extensions"]
+        .iter()
+        .all(|suffix| matches!(fs::symlink_metadata(directory.join(format!("{session}.{suffix}"))), Err(err) if err.kind() == std::io::ErrorKind::NotFound))
+}
+
+struct DaemonStartupLock(fs::File);
+
+impl DaemonStartupLock {
+    fn acquire(directory: &Path, session: &str) -> Result<Self, String> {
+        let path = directory.join(format!(".{session}.startup-lock"));
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|err| format!("Daemon startup lock unavailable: {err}"))?;
+        set_private_file_permissions(&path).map_err(|err| err.to_string())?;
+        let started = Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self(file)),
+                Err(std::fs::TryLockError::WouldBlock)
+                    if started.elapsed() < DAEMON_START_TIMEOUT =>
+                {
+                    thread::sleep(DAEMON_START_POLL_INTERVAL);
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "Daemon startup admission unavailable for '{session}': {err}"
+                    ))
+                }
+            }
+        }
+    }
+}
+
+impl Drop for DaemonStartupLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+fn ensure_daemon_with_mode(
+    session: &str,
+    opts: &DaemonOptions,
+    cold: bool,
+) -> Result<DaemonResult, String> {
+    let socket_dir = ensure_socket_dir_exists()?;
+    let _startup_lock = DaemonStartupLock::acquire(&socket_dir, session)?;
+    if cold && (!daemon_session_metadata_absent(session) || daemon_ready(session)) {
+        return Err(format!("Cold daemon admission denied for '{session}': existing session metadata or endpoint requires retained-session recovery"));
+    }
     let mut prepared_handoff = false;
     let mut prepared_handoff_pid = None;
     // Socket connectivity is the sole liveness check — no PID check — so
     // callers in a different PID namespace (e.g. unshare) can still reuse
     // an existing daemon they can reach over the socket.
-    if daemon_ready(session) {
+    if !cold && daemon_ready(session) {
         // Double-check it's actually responsive by waiting and checking again
         // This handles the race condition where daemon is shutting down
         // (daemon has a 100ms shutdown delay, so we wait longer)
@@ -681,7 +773,9 @@ pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult
     }
 
     // Clean up any stale socket/pid files before starting fresh
-    cleanup_stale_files(session);
+    if !cold {
+        cleanup_stale_files(session);
+    }
 
     // Ensure socket directory exists
     let socket_dir = ensure_socket_dir_exists()?;
@@ -720,7 +814,21 @@ pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult
     let exe_path = env::current_exe().map_err(|e| e.to_string())?;
     let exe_path = exe_path.canonicalize().unwrap_or(exe_path);
     let daemon_auth_token = generate_daemon_auth_token()?;
-    write_daemon_auth_token(session, &daemon_auth_token)?;
+    if cold {
+        // Reserve the credential path without replacing another startup's token.
+        let mut token_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(get_auth_token_path(session))
+            .map_err(|err| err.to_string())?;
+        set_private_file_permissions(&get_auth_token_path(session))
+            .map_err(|err| err.to_string())?;
+        token_file
+            .write_all(daemon_auth_token.as_bytes())
+            .map_err(|err| err.to_string())?;
+    } else {
+        write_daemon_auth_token(session, &daemon_auth_token)?;
+    }
 
     #[allow(unused_assignments)]
     let mut daemon_child: Option<std::process::Child> = None;
@@ -731,6 +839,7 @@ pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult
 
         let mut cmd = Command::new(&exe_path);
         cmd.env("AGENT_BROWSER_DAEMON", "1");
+        cmd.env("AGENT_BROWSER_COLD_DAEMON", if cold { "1" } else { "0" });
         apply_daemon_env(&mut cmd, session, opts);
         cmd.env(DAEMON_AUTH_TOKEN_ENV, &daemon_auth_token);
 
@@ -756,6 +865,7 @@ pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult
 
         let mut cmd = Command::new(&exe_path);
         cmd.env("AGENT_BROWSER_DAEMON", "1");
+        cmd.env("AGENT_BROWSER_COLD_DAEMON", if cold { "1" } else { "0" });
         apply_daemon_env(&mut cmd, session, opts);
         cmd.env(DAEMON_AUTH_TOKEN_ENV, &daemon_auth_token);
 
@@ -775,6 +885,16 @@ pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult
     let startup_started = Instant::now();
     while startup_started.elapsed() < DAEMON_START_TIMEOUT {
         if daemon_ready(session) {
+            if cold {
+                let expected_pid = daemon_child.as_ref().map(|child| child.id().to_string());
+                let actual_pid = fs::read_to_string(get_pid_path(session)).ok();
+                if actual_pid.as_deref().map(str::trim) != expected_pid.as_deref()
+                    || load_daemon_auth_token(session).ok().as_deref()
+                        != Some(daemon_auth_token.as_str())
+                {
+                    return Err(format!("Cold daemon admission lost ownership for '{session}'; request not dispatched"));
+                }
+            }
             if prepared_handoff {
                 let resume = send_command(
                     json!({
@@ -827,8 +947,9 @@ pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult
                 // If the daemon failed because another instance won the bind
                 // race ("Address already in use"), check whether that winner is
                 // now accepting connections and piggyback on it.
-                if stderr_trimmed.contains("Address already in use")
-                    || stderr_trimmed.contains("Failed to bind")
+                if !cold
+                    && (stderr_trimmed.contains("Address already in use")
+                        || stderr_trimmed.contains("Failed to bind"))
                 {
                     thread::sleep(Duration::from_millis(200));
                     if daemon_ready(session) {
@@ -977,7 +1098,7 @@ fn is_command_response_read_timeout(error: &str) -> bool {
             || error.contains("Resource temporarily unavailable"))
 }
 
-fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
+pub(crate) fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
     let mut stream = connect(session)?;
 
     stream.set_read_timeout(Some(Duration::from_secs(300))).ok();
@@ -1005,6 +1126,86 @@ mod tests {
     use super::*;
     use crate::test_utils::EnvGuard;
 
+    struct ColdTestDirectory(PathBuf);
+
+    impl ColdTestDirectory {
+        fn new() -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = env::temp_dir().join(format!("ab-cold-test-{}-{nonce}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for ColdTestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn cold_metadata_admission_rejects_each_stale_identity() {
+        let directory = ColdTestDirectory::new();
+        for suffix in [
+            "sock",
+            "pid",
+            "version",
+            "sha256",
+            "token",
+            "port",
+            "stream",
+            "engine",
+            "provider",
+            "extensions",
+        ] {
+            assert!(session_metadata_absent_at(directory.path(), "cold"));
+            let path = directory.path().join(format!("cold.{suffix}"));
+            fs::write(&path, "retained").unwrap();
+            assert!(!session_metadata_absent_at(directory.path(), "cold"));
+            assert_eq!(fs::read_to_string(&path).unwrap(), "retained");
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn cold_startup_serializes_and_preserves_winners_metadata() {
+        let directory = ColdTestDirectory::new();
+        let first = DaemonStartupLock::acquire(directory.path(), "race").unwrap();
+        let path = directory.path().to_path_buf();
+        let loser = std::thread::spawn(move || {
+            let _second = DaemonStartupLock::acquire(&path, "race").unwrap();
+            assert!(!session_metadata_absent_at(&path, "race"));
+            for suffix in ["sock", "token", "pid"] {
+                assert_eq!(
+                    fs::read_to_string(path.join(format!("race.{suffix}"))).unwrap(),
+                    "winner"
+                );
+            }
+        });
+        for suffix in ["sock", "token", "pid"] {
+            fs::write(directory.path().join(format!("race.{suffix}")), "winner").unwrap();
+        }
+        drop(first);
+        loser.join().unwrap();
+        // The durable lock file is not a stale claim: dropping ownership releases it.
+        assert!(DaemonStartupLock::acquire(directory.path(), "race").is_ok());
+    }
+
+    fn assert_inferred_runtime_or_home_socket_dir(result: PathBuf) {
+        #[cfg(target_os = "linux")]
+        if let Some(runtime_dir) = inferred_linux_user_runtime_dir() {
+            assert_eq!(result, runtime_dir.join("agent-browser"));
+            return;
+        }
+        assert!(result.to_string_lossy().ends_with(".agent-browser"));
+    }
+
     #[test]
     fn test_get_socket_dir_explicit_override() {
         let _guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "XDG_RUNTIME_DIR"]);
@@ -1022,9 +1223,7 @@ mod tests {
         _guard.set("AGENT_BROWSER_SOCKET_DIR", "");
         _guard.remove("XDG_RUNTIME_DIR");
 
-        assert!(get_socket_dir()
-            .to_string_lossy()
-            .ends_with(".agent-browser"));
+        assert_inferred_runtime_or_home_socket_dir(get_socket_dir());
     }
 
     #[test]
@@ -1047,9 +1246,7 @@ mod tests {
         _guard.set("AGENT_BROWSER_SOCKET_DIR", "");
         _guard.set("XDG_RUNTIME_DIR", "");
 
-        assert!(get_socket_dir()
-            .to_string_lossy()
-            .ends_with(".agent-browser"));
+        assert_inferred_runtime_or_home_socket_dir(get_socket_dir());
     }
 
     #[test]
@@ -1060,10 +1257,30 @@ mod tests {
         _guard.remove("XDG_RUNTIME_DIR");
 
         let result = get_socket_dir();
+        #[cfg(target_os = "linux")]
+        if let Some(runtime_dir) = inferred_linux_user_runtime_dir() {
+            assert_eq!(result, runtime_dir.join("agent-browser"));
+            return;
+        }
         assert!(result.to_string_lossy().ends_with(".agent-browser"));
         assert!(
             result.to_string_lossy().contains("home") || result.to_string_lossy().contains("Users")
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_get_socket_dir_infers_secure_linux_user_runtime_without_xdg() {
+        let _guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "XDG_RUNTIME_DIR"]);
+
+        _guard.remove("AGENT_BROWSER_SOCKET_DIR");
+        _guard.remove("XDG_RUNTIME_DIR");
+
+        let uid = unsafe { libc::geteuid() };
+        let runtime_dir = PathBuf::from(format!("/run/user/{uid}"));
+        if runtime_dir.is_dir() {
+            assert_eq!(get_socket_dir(), runtime_dir.join("agent-browser"));
+        }
     }
 
     // === Transient Error Detection Tests ===

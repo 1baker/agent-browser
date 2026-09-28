@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { request } from 'node:http';
 import { createConnection } from 'node:net';
 
@@ -14,14 +16,23 @@ import {
   runCli,
 } from './smoke-utils.js';
 import { ensureStreamPort } from './smoke-remote-headed-utils.js';
+import {
+  createDisposableSmokeProfile,
+  findLatestInstalledSmokeBrowser,
+  isWslWindowsBrowserExecutable,
+  selectSmokeBrowserExecutable,
+} from './lib/smoke-browser-fixture.js';
 
 const context = createSmokeContext({
   prefix: 'ab-cdp-tab-stream-',
   sessionPrefix: 'cdp-tab-stream',
 });
-context.env.AGENT_BROWSER_ARGS = '--no-sandbox';
-if (!process.env.AGENT_BROWSER_SMOKE_AGENT_BROWSER_CMD && existsSync('/usr/bin/google-chrome')) {
-  context.env.AGENT_BROWSER_EXECUTABLE_PATH = '/usr/bin/google-chrome';
+const browserExecutable = selectSmokeBrowserExecutable({
+  configuredExecutable: context.env.AGENT_BROWSER_EXECUTABLE_PATH,
+  fallbackExecutable: findLatestInstalledSmokeBrowser(),
+});
+if (browserExecutable) {
+  context.env.AGENT_BROWSER_EXECUTABLE_PATH = browserExecutable;
 }
 
 const { session } = context;
@@ -36,6 +47,38 @@ const timeout = setTimeout(() => {
 
 let streamPort;
 let ws;
+let profilePath;
+
+function exposeInstalledBrowserToFixture() {
+  if (!browserExecutable) return;
+  const versionDirectory = dirname(browserExecutable);
+  const versionName = basename(versionDirectory);
+  if (!versionName.startsWith('chrome-')) return;
+  const fixtureBrowsers = join(context.agentHome, 'browsers');
+  mkdirSync(fixtureBrowsers, { recursive: true, mode: 0o700 });
+  const fixtureVersionDirectory = join(fixtureBrowsers, versionName);
+  mkdirSync(fixtureVersionDirectory, { recursive: true, mode: 0o700 });
+  symlinkSync(browserExecutable, join(fixtureVersionDirectory, basename(browserExecutable)));
+}
+
+function createFixtureProfile() {
+  const windowsTempRoot = isWslWindowsBrowserExecutable(browserExecutable)
+    ? execFileSync('wslpath', [
+        '-u',
+        execFileSync(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-Command', '[Console]::Out.Write([IO.Path]::GetTempPath())'],
+          { encoding: 'utf8' },
+        ).trim(),
+      ], { encoding: 'utf8' }).trim()
+    : null;
+  return createDisposableSmokeProfile({
+    browserExecutable,
+    defaultRoot: context.tempHome,
+    windowsTempRoot,
+    prefix: 'agent-browser-cdp-tab-stream-',
+  });
+}
 
 async function cleanup() {
   clearTimeout(timeout);
@@ -47,7 +90,9 @@ async function cleanup() {
   await closeSession(context);
   if (process.env.AGENT_BROWSER_SMOKE_PRESERVE === '1') {
     console.error(`Preserved smoke temp home: ${context.tempHome}`);
+    if (profilePath) console.error(`Preserved smoke browser profile: ${profilePath}`);
   } else {
+    if (profilePath) rmSync(profilePath, { recursive: true, force: true });
     context.cleanupTempHome();
   }
 }
@@ -77,10 +122,11 @@ function frameHash(frame) {
   return createHash('sha256').update(frame.data || '').digest('hex');
 }
 
-async function serviceRequest(action, params, taskName) {
+async function serviceRequest(action, params, taskName, requestOverrides = {}) {
   let response;
   try {
     response = await httpJsonWithTimeout(streamPort, 'POST', '/api/service/request', {
+      ...requestOverrides,
       action,
       serviceName,
       agentName,
@@ -333,14 +379,17 @@ class SmokeWebSocket {
 }
 
 try {
+  exposeInstalledBrowserToFixture();
+  profilePath = createFixtureProfile();
   streamPort = await ensureStreamPort(context, 120000);
 
   await serviceRequest('navigate', {
+    browserBuild: 'stock_chrome',
     headless: true,
     args: ['--no-sandbox'],
     url: pageA,
     waitUntil: 'load',
-  }, 'openPageA');
+  }, 'openPageA', { profile: profilePath });
 
   const afterPageA = await waitForServiceTab('CDP Stream A', 'after page A launch');
   const browser = afterPageA.state?.browsers?.[browserId];
@@ -364,6 +413,7 @@ try {
   const pageAFrame = await ws.nextFrame('page A');
 
   await serviceRequest('tab_new', {
+    browserBuild: 'stock_chrome',
     url: pageB,
     waitUntil: 'load',
   }, 'openPageB');

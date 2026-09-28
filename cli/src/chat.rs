@@ -124,14 +124,6 @@ async fn run_interactive(session: &str, model: &str, verbosity: Verbosity, json_
     let mut openai_messages: Vec<Value> =
         vec![json!({"role": "system", "content": chat::get_system_prompt()})];
 
-    let gateway_url = std::env::var("AI_GATEWAY_URL")
-        .unwrap_or_else(|_| chat::DEFAULT_AI_GATEWAY_URL.to_string())
-        .trim_end_matches('/')
-        .to_string();
-    let api_key = std::env::var("AI_GATEWAY_API_KEY").unwrap_or_default();
-    let url = format!("{}/v1/chat/completions", gateway_url);
-    let client = chat::http_client();
-
     loop {
         if !json_mode {
             eprint!("{} ", color::cyan(">"));
@@ -156,26 +148,6 @@ async fn run_interactive(session: &str, model: &str, verbosity: Verbosity, json_
 
         openai_messages.push(json!({"role": "user", "content": input}));
 
-        // Compaction check
-        let total_chars = chat::estimate_chars(&openai_messages);
-        if total_chars > chat::COMPACT_THRESHOLD_CHARS
-            && openai_messages.len() > chat::KEEP_RECENT_MESSAGES + 2
-        {
-            let split = chat::find_safe_split(&openai_messages, chat::KEEP_RECENT_MESSAGES);
-            let to_summarize = &openai_messages[1..split];
-            if let Some(summary) =
-                chat::summarize_for_compaction(client, &url, &api_key, model, to_summarize).await
-            {
-                let summary_msg = json!({
-                    "role": "system",
-                    "content": format!("[Conversation summary]\n{}", summary)
-                });
-                let recent = openai_messages[split..].to_vec();
-                openai_messages = vec![openai_messages[0].clone(), summary_msg];
-                openai_messages.extend(recent);
-            }
-        }
-
         let success =
             run_chat_turn(session, model, &mut openai_messages, verbosity, json_mode).await;
 
@@ -187,6 +159,42 @@ async fn run_interactive(session: &str, model: &str, verbosity: Verbosity, json_
             eprintln!();
         }
     }
+}
+
+/// Compact only within this turn's budget. Failure never replaces stored history.
+async fn compact_chat_history(
+    messages: &mut Vec<Value>,
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    model: &str,
+    deadline: tokio::time::Instant,
+) -> Result<(), String> {
+    if chat::estimate_chars(messages) <= chat::COMPACT_THRESHOLD_CHARS
+        || messages.len() <= chat::KEEP_RECENT_MESSAGES + 2
+    {
+        return Ok(());
+    }
+    let split = chat::find_safe_split(messages, chat::KEEP_RECENT_MESSAGES);
+    let summary = tokio::time::timeout_at(
+        deadline,
+        chat::summarize_for_compaction(client, url, api_key, model, &messages[1..split]),
+    )
+    .await
+    .map_err(|_| "Chat session timed out during history compaction; history preserved and no new browser actions dispatched.".to_string())?;
+    if let Some(summary) = summary {
+        let recent = messages[split..].to_vec();
+        let system = messages[0].clone();
+        *messages = vec![
+            system,
+            json!({
+                "role": "system",
+                "content": format!("[Conversation summary]\n{}", summary)
+            }),
+        ];
+        messages.extend(recent);
+    }
+    Ok(())
 }
 
 /// Runs one chat turn: sends messages to the gateway, streams text/tool calls,
@@ -225,9 +233,23 @@ async fn run_chat_turn(
     let total_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
     let tool_timeout = std::time::Duration::from_secs(60);
 
+    if let Err(error) = compact_chat_history(
+        openai_messages,
+        client,
+        &url,
+        &api_key,
+        model,
+        total_deadline,
+    )
+    .await
+    {
+        return report_chat_failure(json_mode, &error);
+    }
+
     let mut all_text = String::new();
     let mut all_tool_calls: Vec<Value> = Vec::new();
     let mut had_text = false;
+    let mut completed = false;
 
     for _step in 0..50 {
         if tokio::time::Instant::now() >= total_deadline {
@@ -256,6 +278,7 @@ async fn run_chat_turn(
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
+            .timeout(total_deadline.saturating_duration_since(tokio::time::Instant::now()))
             .body(gateway_body.to_string())
             .send()
             .await
@@ -288,8 +311,18 @@ async fn run_chat_turn(
             return false;
         }
 
-        let (text_chunks, tool_calls) =
-            parse_gateway_stream(gw_response, verbosity, json_mode).await;
+        let (text_chunks, tool_calls) = match tokio::time::timeout_at(
+            total_deadline,
+            parse_gateway_stream(gw_response, verbosity, json_mode),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => return report_chat_failure(json_mode, &error),
+            Err(_) => {
+                return report_chat_failure(json_mode, "Chat session timed out (5 minute limit).")
+            }
+        };
 
         if !text_chunks.is_empty() {
             let text = text_chunks.join("");
@@ -316,6 +349,7 @@ async fn run_chat_turn(
         }
 
         if tool_calls.is_empty() {
+            completed = true;
             break;
         }
 
@@ -342,6 +376,9 @@ async fn run_chat_turn(
         }
 
         for (tc_id, _tc_name, tc_args) in &tool_calls {
+            if tokio::time::Instant::now() >= total_deadline {
+                return report_chat_failure(json_mode, "Chat session timed out (5 minute limit).");
+            }
             let input: Value = serde_json::from_str(tc_args).unwrap_or(json!({}));
             let command = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
 
@@ -349,13 +386,21 @@ async fn run_chat_turn(
                 eprintln!("{}", color::dim(&format!("> {}", command)));
             }
 
-            let result =
-                match tokio::time::timeout(tool_timeout, chat::execute_chat_tool(session, command))
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(_) => "Tool execution timed out after 60 seconds.".to_string(),
-                };
+            let result = match tokio::time::timeout(
+                tool_timeout
+                    .min(total_deadline.saturating_duration_since(tokio::time::Instant::now())),
+                chat::execute_chat_tool(session, command),
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    return report_chat_failure(
+                        json_mode,
+                        "Tool execution timed out; outcome unknown. Inspect the retained page before continuing.",
+                    );
+                }
+            };
 
             if !json_mode && verbosity == Verbosity::Verbose {
                 for line in result.lines() {
@@ -376,6 +421,13 @@ async fn run_chat_turn(
         }
     }
 
+    if !completed {
+        return report_chat_failure(
+            json_mode,
+            "Chat step limit reached (50 steps); task completion is unverified.",
+        );
+    }
+
     if json_mode {
         println!(
             "{}",
@@ -393,13 +445,22 @@ async fn run_chat_turn(
     true
 }
 
+fn report_chat_failure(json_mode: bool, error: &str) -> bool {
+    if json_mode {
+        println!("{}", json!({"success": false, "error": error}));
+    } else {
+        eprintln!("\n{} {}", color::error_indicator(), error);
+    }
+    false
+}
+
 /// Parses the SSE stream from the AI gateway, printing text deltas to stdout in
 /// real-time. Returns (collected_text_chunks, tool_calls).
 async fn parse_gateway_stream(
     gw_response: reqwest::Response,
     verbosity: Verbosity,
     json_mode: bool,
-) -> (Vec<String>, Vec<(String, String, String)>) {
+) -> Result<(Vec<String>, Vec<(String, String, String)>), String> {
     use futures_util::StreamExt as _;
 
     let mut text_chunks: Vec<String> = Vec::new();
@@ -411,7 +472,7 @@ async fn parse_gateway_stream(
     while let Some(chunk_result) = byte_stream.next().await {
         let chunk = match chunk_result {
             Ok(c) => c,
-            Err(_) => break,
+            Err(error) => return Err(format!("Gateway stream failed: {error}")),
         };
 
         buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -432,7 +493,7 @@ async fn parse_gateway_stream(
                     // End the streamed text line
                     let _ = std::io::stdout().flush();
                 }
-                return (text_chunks, tool_calls);
+                return Ok((text_chunks, tool_calls));
             }
             let Ok(sse_json) = serde_json::from_str::<Value>(data) else {
                 continue;
@@ -487,8 +548,7 @@ async fn parse_gateway_stream(
     if !json_mode && !text_chunks.is_empty() {
         let _ = std::io::stdout().flush();
     }
-    let tool_calls = collect_tool_calls(&mut tool_call_args);
-    (text_chunks, tool_calls)
+    Err("Gateway stream ended before [DONE]; partial tool calls were not executed.".to_string())
 }
 
 fn collect_tool_calls(
@@ -500,4 +560,167 @@ fn collect_tool_calls(
         .into_iter()
         .filter_map(|idx| map.remove(&idx))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn compaction_fixture(stall: bool) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 8192];
+                let count = socket.read(&mut chunk).await.unwrap();
+                if count == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..count]);
+                if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                    let length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .unwrap()
+                        .parse::<usize>()
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            if stall {
+                std::future::pending::<()>().await;
+            }
+            let body = r#"{"choices":[{"message":{"content":"Verified summary"}}]}"#;
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        (url, task)
+    }
+
+    fn long_history() -> Vec<Value> {
+        let mut messages = vec![json!({"role":"system","content":"Keep original rules"})];
+        messages.extend(
+            (0..12).map(|i| json!({"role":"user","content":format!("{i}:{}", "x".repeat(20_000))})),
+        );
+        messages
+    }
+
+    #[tokio::test]
+    async fn compaction_deadline_preserves_history() {
+        let (url, task) = compaction_fixture(true).await;
+        let mut messages = long_history();
+        let original = messages.clone();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            compact_chat_history(
+                &mut messages,
+                &reqwest::Client::new(),
+                &url,
+                "fixture",
+                "fixture",
+                tokio::time::Instant::now() + std::time::Duration::from_millis(100),
+            ),
+        )
+        .await
+        .expect("compaction must respect the shared turn deadline");
+        task.abort();
+        assert!(result
+            .unwrap_err()
+            .contains("no new browser actions dispatched"));
+        assert_eq!(messages, original);
+    }
+
+    #[tokio::test]
+    async fn compaction_success_preserves_system_and_recent_messages() {
+        let (url, task) = compaction_fixture(false).await;
+        let mut messages = long_history();
+        let original = messages.clone();
+        let split = chat::find_safe_split(&original, chat::KEEP_RECENT_MESSAGES);
+        compact_chat_history(
+            &mut messages,
+            &reqwest::Client::new(),
+            &url,
+            "fixture",
+            "fixture",
+            tokio::time::Instant::now() + std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        task.await.unwrap();
+        assert_eq!(messages[0], original[0]);
+        assert_eq!(
+            messages[1]["content"],
+            "[Conversation summary]\nVerified summary"
+        );
+        assert_eq!(messages[2..], original[split..]);
+    }
+
+    async fn mock_gateway(body: &'static str, stall: bool) -> reqwest::Response {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").await.unwrap();
+            socket.write_all(body.as_bytes()).await.unwrap();
+            if stall {
+                // Keep the socket alive until the client deadline cancels its read.
+                let _ = socket.read(&mut request).await;
+            }
+        });
+        reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .timeout(std::time::Duration::from_millis(250))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn gateway_stream_requires_completion_before_dispatching_tools() {
+        let response = mock_gateway(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"agent_browser\",\"arguments\":\"{\\\"command\\\":\\\"click @e1\\\"}\"}}]}}]}\n\n",
+            false,
+        ).await;
+        let result = parse_gateway_stream(response, Verbosity::Quiet, true).await;
+        assert!(result
+            .unwrap_err()
+            .contains("partial tool calls were not executed"));
+    }
+
+    #[tokio::test]
+    async fn gateway_stream_accepts_completed_response() {
+        let response = mock_gateway(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Done\"}}]}\n\ndata: [DONE]\n\n",
+            false,
+        )
+        .await;
+        let (text, tools) = parse_gateway_stream(response, Verbosity::Quiet, true)
+            .await
+            .unwrap();
+        assert_eq!(text, vec!["Done"]);
+        assert!(tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gateway_stream_stall_respects_request_deadline() {
+        let response = mock_gateway(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Partial\"}}]}\n\n",
+            true,
+        )
+        .await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            parse_gateway_stream(response, Verbosity::Quiet, true),
+        )
+        .await
+        .expect("request deadline must bound a stalled body");
+        assert!(result.unwrap_err().contains("Gateway stream failed"));
+    }
 }

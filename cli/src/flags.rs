@@ -1256,6 +1256,8 @@ pub struct Flags {
     pub executable_path: Option<String>,
     pub executable_path_source: Option<String>,
     pub cdp: Option<String>,
+    /// Exact retained browser target selected for daemon-only reconnect.
+    pub target_id: Option<String>,
     pub extensions: Vec<String>,
     pub profile: Option<String>,
     pub state: Option<String>,
@@ -1603,6 +1605,7 @@ pub fn parse_flags(args: &[String]) -> Flags {
         executable_path,
         executable_path_source,
         cdp: config.cdp,
+        target_id: None,
         extensions,
         profile: env::var("AGENT_BROWSER_PROFILE").ok().or(config.profile),
         state: env::var("AGENT_BROWSER_STATE").ok().or(config.state),
@@ -1922,6 +1925,12 @@ pub fn parse_flags(args: &[String]) -> Flags {
             "--cdp" => {
                 if let Some(s) = args.get(i + 1) {
                     flags.cdp = Some(s.clone());
+                    i += 1;
+                }
+            }
+            "--target-id" => {
+                if let Some(s) = args.get(i + 1) {
+                    flags.target_id = Some(s.clone());
                     i += 1;
                 }
             }
@@ -2258,6 +2267,7 @@ pub fn clean_args(args: &[String]) -> Vec<String> {
         "--headers",
         "--executable-path",
         "--cdp",
+        "--target-id",
         "--extension",
         "--profile",
         "--state",
@@ -2345,6 +2355,15 @@ mod tests {
 
         assert_eq!(flags.command_job_timeout_ms, Some(20_000));
         assert_eq!(clean_args(&input), args("eval --stdin"));
+    }
+
+    #[test]
+    fn target_id_is_global_and_removed_from_runtime_args() {
+        let input = args("runtime reconnect work --target-id target-1");
+        let flags = parse_flags(&input);
+
+        assert_eq!(flags.target_id.as_deref(), Some("target-1"));
+        assert_eq!(clean_args(&input), args("runtime reconnect work"));
     }
 
     #[test]

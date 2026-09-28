@@ -12,6 +12,7 @@ export type ServiceRequestAction =
   | "probe"
   | "tab_handle_refresh"
   | "tab_handle_release"
+  | "tab_reopen"
   | "ui_action"
   | "network_capture"
   | "file_transfer"
@@ -113,6 +114,7 @@ export interface ServiceRequest {
   serviceName?: string;
   agentName?: string;
   taskName?: string;
+  taskStepId?: string;
   targetServiceId?: string;
   targetService?: string;
   siteId?: string;
@@ -141,6 +143,7 @@ export interface ServiceRequest {
   maxConsoleEntries?: number;
   maxErrorEntries?: number;
   maxRequestEntries?: number;
+  taskEvidenceBytes?: number;
   cdpPort?: number;
   blockedByManualAction?: boolean;
   manualSeedingRequired?: boolean;
@@ -159,6 +162,7 @@ export interface ServiceRequest {
   uiAction?: Record<string, unknown>;
   networkCapture?: Record<string, unknown>;
   fileTransfer?: Record<string, unknown>;
+  taskAuthority?: Record<string, unknown>;
 }
 
 export type ServiceRequestForAction<TAction extends ServiceRequestAction> =
@@ -371,6 +375,7 @@ export interface ServiceTabHandleReleaseData {
   physicalTabCloseAttempted?: boolean;
   physicalTabClosed?: boolean;
   physicalTabCloseSkippedReason?: string | null;
+  physicalCloseRequired?: boolean;
   browserId: string;
   sessionName: string;
   tabId: string;
@@ -380,6 +385,24 @@ export interface ServiceTabHandleReleaseData {
   afterLifecycle?: string | null;
   serviceTabHandle?: ServiceTabHandle | null;
   releasedAt?: string;
+  [key: string]: unknown;
+}
+
+export interface ServiceTabReopenData {
+  ok: boolean;
+  action: "tab_reopen";
+  reopened: boolean;
+  reopenedFromTabId: string;
+  reopenedAsTabId: string;
+  reopenedAt: string;
+  browserId: string;
+  sessionName: string;
+  url: string;
+  freshPhysicalTarget: true;
+  browserProcessPreserved: true;
+  sessionRoutePreserved: true;
+  tab: ServiceTabNewData;
+  serviceTabHandle: ServiceTabHandle;
   [key: string]: unknown;
 }
 
@@ -459,6 +482,36 @@ export interface ServiceNetworkCaptureData {
   [key: string]: unknown;
 }
 
+export interface ServiceFileTransferFileReceipt {
+  name?: string;
+  path?: string;
+  size: number;
+  sha256: string;
+  [key: string]: unknown;
+}
+
+export interface ServiceFileTransferUploadReceipt {
+  ok: boolean;
+  uploaded: number;
+  files: ServiceFileTransferFileReceipt[];
+  selectedFileNames?: string[] | null;
+  [key: string]: unknown;
+}
+
+export interface ServiceFileTransferDownloadReceipt {
+  ok: boolean;
+  localPath: string;
+  fileName: string;
+  providerSuggestedFileName: string;
+  expectedFileName?: string | null;
+  downloadGuid?: string | null;
+  size: number;
+  sha256: string;
+  mimeType?: string | null;
+  sourceUrl?: string | null;
+  [key: string]: unknown;
+}
+
 export interface ServiceFileTransferData {
   ok: boolean;
   action: "file_transfer";
@@ -471,8 +524,8 @@ export interface ServiceFileTransferData {
   fileTransfer: Record<string, unknown>;
   before?: Record<string, unknown>;
   after?: Record<string, unknown>;
-  upload?: Record<string, unknown> | null;
-  download?: Record<string, unknown> | null;
+  upload?: ServiceFileTransferUploadReceipt | null;
+  download?: ServiceFileTransferDownloadReceipt | null;
   failedPhase?: string;
   error?: string;
   diagnostics?: Record<string, unknown> | null;
@@ -1042,6 +1095,7 @@ export interface ServiceRequestActionDataMap {
   probe: ServiceProbeData;
   tab_handle_refresh: ServiceTabHandleRefreshData;
   tab_handle_release: ServiceTabHandleReleaseData;
+  tab_reopen: ServiceTabReopenData;
   ui_action: ServiceUiActionData;
   network_capture: ServiceNetworkCaptureData;
   file_transfer: ServiceFileTransferData;
@@ -1221,6 +1275,7 @@ export interface ServiceExternalByopAdoptRequestOptions extends Omit<ServiceRequ
   runtimeProfile?: string;
   cdpUrl?: string;
   cdpPort?: number;
+  browserPid?: number;
   url?: string;
   params?: Record<string, unknown>;
 }
@@ -1357,10 +1412,25 @@ export interface ServiceTabHandleRefreshHttpOptions extends ServiceTabHandleRefr
 
 export interface ServiceTabHandleReleaseOptions extends Omit<ServiceRequest, "action" | "params"> {
   serviceTabHandle: ServiceTabHandle;
+  closePhysicalTab?: boolean;
+  requirePhysicalClose?: boolean;
   params?: Record<string, unknown>;
 }
 
 export interface ServiceTabHandleReleaseHttpOptions extends ServiceTabHandleReleaseOptions {
+  baseUrl: string;
+  fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
+}
+
+export interface ServiceTabReopenOptions extends Omit<ServiceRequest, "action" | "params"> {
+  tabId: string;
+  browserId: string;
+  sessionName: string;
+  params?: Record<string, unknown>;
+}
+
+export interface ServiceTabReopenHttpOptions extends ServiceTabReopenOptions {
   baseUrl: string;
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
@@ -1511,6 +1581,83 @@ export interface ServiceControllerLeaseTakeoverHttpOptions extends ServiceContro
   signal?: AbortSignal;
 }
 
+export interface ServiceTaskAuthorityPlanStep {
+  action: string;
+  url?: string;
+  evidenceBytes?: number;
+}
+
+export interface ServiceTaskAuthorityIssueOptions {
+  baseUrl: string;
+  fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
+  sessionName?: string;
+  taskName: string;
+  serviceName?: string;
+  agentName?: string;
+  expectedTargetId: string;
+  expectedUrl: string;
+  approvalReference: string;
+  expiresInSeconds: number;
+  steps: ServiceTaskAuthorityPlanStep[];
+}
+
+export interface ServiceTaskAuthorityReadOptions {
+  baseUrl: string;
+  fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
+  sessionName?: string;
+}
+
+export interface ServiceTaskAuthorityRevokeOptions extends ServiceTaskAuthorityReadOptions {
+  authorityId: string;
+  reason: string;
+}
+
+export interface ServiceTaskAuthorityReconcileOptions extends ServiceTaskAuthorityReadOptions {
+  authorityId: string;
+  reconciliationId: string;
+  unresolvedStepId: string;
+  taskName: string;
+  serviceName?: string;
+  agentName?: string;
+  expectedTargetId: string;
+  expectedUrl: string;
+  approvalReference: string;
+  expiresInSeconds: number;
+  steps: ServiceTaskAuthorityPlanStep[];
+}
+
+export interface ServiceTaskAuthorityConfirmationOptions extends ServiceTaskAuthorityReadOptions {
+  confirmationId: string;
+  expectedAction: "task_authority_issue" | "task_authority_reconcile" | "task_authority_revoke";
+  decision: "confirm" | "deny";
+}
+
+export interface ServiceTaskAuthorityConfirmationCleanupOptions extends ServiceTaskAuthorityReadOptions {
+  retainCount?: number;
+  minAgeSeconds?: number;
+  apply?: boolean;
+  reviewSha256?: string;
+}
+
+export interface ServiceTaskAuthorityStatus {
+  schema: string;
+  id: string;
+  sessionId: string;
+  state: "active" | "revoked" | "expired" | "exhausted" | string;
+  usable: boolean;
+  envelope: Record<string, unknown>;
+  envelopeSha256: string;
+  issuer: { kind: string; id: string };
+  approvalReference: string;
+  approvedPlan: Record<string, unknown>;
+  issuedAt: string;
+  revocation?: Record<string, unknown> | null;
+  usage: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export declare const SERVICE_REQUEST_ACTIONS: readonly ServiceRequestAction[];
 export declare const SERVICE_REQUEST_REQUIRED_FIELDS: readonly string[];
 export declare const SERVICE_REQUEST_STRING_FIELDS: readonly string[];
@@ -1568,6 +1715,9 @@ export declare function createServiceTabHandleRefreshRequest(
 export declare function createServiceTabHandleReleaseRequest(
   input: ServiceTabHandleReleaseOptions,
 ): ServiceRequestForAction<"tab_handle_release">;
+export declare function createServiceTabReopenRequest(
+  input: ServiceTabReopenOptions,
+): ServiceRequestForAction<"tab_reopen">;
 export declare function createServiceRemoteViewRoutePreflightRequest(
   input: ServiceRemoteViewRouteCheckoutOptions,
 ): ServiceRequestForAction<"service_remote_view_route_preflight">;
@@ -1669,6 +1819,12 @@ export declare function releaseServiceTabHandle(
 export declare function requestServiceTabHandleRelease(
   options: ServiceTabHandleReleaseHttpOptions,
 ): Promise<ServiceRequestResponse<ServiceTabHandleReleaseData>>;
+export declare function reopenServiceTab(
+  options: ServiceTabReopenHttpOptions,
+): Promise<ServiceRequestResponse<ServiceTabReopenData>>;
+export declare function requestServiceTabReopen(
+  options: ServiceTabReopenHttpOptions,
+): Promise<ServiceRequestResponse<ServiceTabReopenData>>;
 export declare function requestServiceRemoteViewRoutePreflight(
   options: ServiceRemoteViewRouteCheckoutHttpOptions,
 ): Promise<ServiceRequestResponse<ServiceRemoteViewRouteMutationData>>;
@@ -1717,6 +1873,28 @@ export declare function releaseServiceViewerLease(
 export declare function takeoverServiceControllerLease(
   options: ServiceControllerLeaseTakeoverHttpOptions,
 ): Promise<ServiceRequestResponse<ServiceViewerLeaseMutationData>>;
+export declare function issueServiceTaskAuthority(
+  options: ServiceTaskAuthorityIssueOptions,
+): Promise<ServiceRequestResponse<ServiceTaskAuthorityStatus>>;
+export declare function getServiceTaskAuthorities(
+  options: ServiceTaskAuthorityReadOptions,
+): Promise<ServiceRequestResponse<{ authorities: ServiceTaskAuthorityStatus[]; count: number }>>;
+export declare function getServiceTaskAuthority(
+  authorityId: string,
+  options: ServiceTaskAuthorityReadOptions,
+): Promise<ServiceRequestResponse<ServiceTaskAuthorityStatus>>;
+export declare function reconcileServiceTaskAuthority(
+  options: ServiceTaskAuthorityReconcileOptions,
+): Promise<ServiceRequestResponse<{ predecessor: ServiceTaskAuthorityStatus; replacement: ServiceTaskAuthorityStatus; lineage: Record<string, unknown> }>>;
+export declare function decideServiceTaskAuthorityConfirmation(
+  options: ServiceTaskAuthorityConfirmationOptions,
+): Promise<ServiceRequestResponse<Record<string, unknown>>>;
+export declare function cleanupServiceTaskAuthorityConfirmations(
+  options: ServiceTaskAuthorityConfirmationCleanupOptions,
+): Promise<ServiceRequestResponse<Record<string, unknown>>>;
+export declare function revokeServiceTaskAuthority(
+  options: ServiceTaskAuthorityRevokeOptions,
+): Promise<ServiceRequestResponse<ServiceTaskAuthorityStatus>>;
 export declare function summarizeServiceCdpFreeLaunchAvailability(
   data: ServiceCdpFreeLaunchData,
 ): ServiceCdpFreeLaunchAvailability;

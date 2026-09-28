@@ -12,6 +12,7 @@ import {
   getServiceAccessPlan,
   getServiceBrowserCapabilityPreflight,
   getServiceContracts,
+  getLocalDashboardPublicationStatus,
   getServiceMonitors,
   getServiceProfileAllocation,
   getServiceProfileAllocationForAccessPlan,
@@ -149,6 +150,30 @@ async function main() {
   assert.equal(statusResult.control_plane.service_monitor_interval_ms, 60000);
   assert.deepEqual(statusResult.profileAllocations, []);
   assert.equal(statusResult.launchConfig.stealthCdpChromiumReady, true);
+
+  const publication = createFetchRecorder({
+    success: true,
+    data: {
+      schemaVersion: 'agent-browser.local-dashboard-publication.v1',
+      journalPath: '/tmp/publication.json',
+      exists: false,
+      lock: { path: '/tmp/publication.json.lock', present: false, ownerPid: null, live: false, stale: false },
+      transaction: null,
+      installedArtifact: null,
+      recoverable: false,
+      recommendedAction: 'none',
+    },
+  });
+  const publicationResult = await getLocalDashboardPublicationStatus({
+    baseUrl: 'http://127.0.0.1:4849',
+    fetch: publication.fetch,
+  });
+  assert.equal(
+    publication.calls[0].url,
+    'http://127.0.0.1:4849/api/service/publications/local-dashboard',
+  );
+  assert.equal(publication.calls[0].init.method, 'GET');
+  assert.equal(publicationResult.recommendedAction, 'none');
 
   const preflight = createFetchRecorder({
     success: true,

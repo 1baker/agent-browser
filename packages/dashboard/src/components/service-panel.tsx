@@ -10,12 +10,15 @@ import { useAtomValue } from "jotai/react";
 import {
   Activity,
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   CheckCircle2,
   Clock3,
   Copy,
   Edit3,
   Eye,
   ExternalLink,
+  FileWarning,
   Filter,
   GitBranch,
   History,
@@ -33,6 +36,7 @@ import { cn } from "@/lib/utils";
 import { SERVICE_API_BASE } from "@/lib/dashboard-api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { TaskAuthorityWorkspace } from "@/components/task-authority-workspace";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -127,6 +131,7 @@ import {
   updateDashboardWorkspaceUrlSelection,
   type DashboardWorkspaceUrlSelection,
 } from "@/lib/workspace-url-selection";
+import type { ServiceTaskAuthorityCollection } from "@/lib/service-task-authorities";
 
 type ControlPlaneSnapshot = {
   worker_state?: string;
@@ -141,6 +146,35 @@ type ReconciliationSnapshot = {
   lastError?: string | null;
   browserCount?: number;
   changedBrowsers?: number;
+};
+
+type LocalDashboardPublicationStatus = {
+  schemaVersion?: string;
+  journalPath?: string;
+  exists?: boolean;
+  lock?: {
+    present?: boolean;
+    ownerPid?: number | null;
+    live?: boolean;
+    stale?: boolean;
+  };
+  transaction?: {
+    transactionId?: string;
+    revision?: number;
+    phase?: string;
+    terminal?: boolean;
+    retainedBrowserExpectationRequired?: boolean;
+    retainedBrowserExpectationVerified?: boolean | null;
+    retainedBrowserExpectationStage?: string | null;
+  } | null;
+  installedArtifact?: {
+    path?: string | null;
+    sha256?: string | null;
+    classification?: string;
+    verified?: boolean;
+  } | null;
+  recoverable?: boolean;
+  recommendedAction?: "none" | "wait_for_active_publisher" | "recover_only" | "investigate_installed_artifact" | "investigate_retained_browser";
 };
 
 type ServiceEvent = {
@@ -311,6 +345,7 @@ export type ServiceTab = {
   latestSnapshotId?: string | null;
   latestScreenshotId?: string | null;
   challengeId?: string | null;
+  serviceTabHandle?: Record<string, unknown> | null;
 };
 
 type SelectedViewStream = {
@@ -371,6 +406,18 @@ type ServiceBrowserCloseData = {
   browserId?: string;
   requestedBrowserId?: string;
   serviceOwned?: boolean;
+};
+
+type ServiceTabHandleReleaseData = {
+  tabReleased?: boolean;
+  physicalTabClosed?: boolean;
+  physicalTabCloseSkippedReason?: string | null;
+};
+
+type ServiceTabReopenData = {
+  reopened?: boolean;
+  reopenedFromTabId?: string;
+  reopenedAsTabId?: string;
 };
 
 type ServiceBrowserRepairData = {
@@ -540,8 +587,8 @@ type ProfileReadinessFilter = "all" | "needs_attention" | "normal";
 type IncidentHandlingFilter = "all" | "unacknowledged" | "acknowledged" | "resolved";
 type ServiceJobDisplayFilter = "all" | "private_virtual_display" | "shared_display" | "ambient_display" | "unrecorded";
 type ServiceJobSortKey = "submittedAt" | "state" | "action" | "displayIsolation" | "serviceName" | "taskName";
-type ServiceWorkspaceTab = "profiles" | "browsers" | "incidents" | "sessions" | "tabs" | "jobs" | "events";
-const SERVICE_WORKSPACE_TABS: ServiceWorkspaceTab[] = ["browsers", "profiles", "incidents", "sessions", "tabs", "jobs", "events"];
+type ServiceWorkspaceTab = "authorities" | "profiles" | "browsers" | "incidents" | "sessions" | "tabs" | "jobs" | "events";
+const SERVICE_WORKSPACE_TABS: ServiceWorkspaceTab[] = ["browsers", "profiles", "authorities", "incidents", "sessions", "tabs", "jobs", "events"];
 type TraceFilters = {
   serviceName: string;
   agentName: string;
@@ -903,6 +950,10 @@ function isHumanTakeoverSession(session: ServiceSession): boolean {
 function isActiveServiceTab(tab: ServiceTab): boolean {
   const lifecycle = (tab.lifecycle ?? "").toLowerCase();
   return lifecycle === "ready" || lifecycle === "loading" || lifecycle === "active";
+}
+
+function isClosedServiceTab(tab: ServiceTab): boolean {
+  return (tab.lifecycle ?? "").toLowerCase() === "closed";
 }
 
 function isBlankServiceTab(tab: ServiceTab): boolean {
@@ -5405,12 +5456,18 @@ function ServiceSessionRow({
 function ServiceTabRow({
   tab,
   viewStreamAvailable,
+  actionPending,
   onInspect,
+  onPark,
+  onReopen,
   onSelect,
 }: {
   tab: ServiceTab;
   viewStreamAvailable?: boolean;
+  actionPending?: boolean;
   onInspect?: (tab: ServiceTab) => void;
+  onPark?: (tab: ServiceTab) => void;
+  onReopen?: (tab: ServiceTab) => void;
   onSelect: (tab: ServiceTab) => void;
 }) {
   const tone = tab.lifecycle === "crashed" ? "bad" : tab.lifecycle === "ready" ? "good" : "neutral";
@@ -5445,6 +5502,34 @@ function ServiceTabRow({
         >
           <Eye className="size-3" />
           Control
+        </Button>
+      )}
+      {onPark && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 shrink-0 gap-1.5 px-2 text-[10px]"
+          disabled={actionPending}
+          title="Close this physical tab but keep its URL and ownership record so it can be reopened later. Unsaved page state is not preserved."
+          onClick={() => onPark(tab)}
+        >
+          {actionPending ? <Loader2 className="size-3 animate-spin" /> : <Archive className="size-3" />}
+          Park
+        </Button>
+      )}
+      {onReopen && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 shrink-0 gap-1.5 px-2 text-[10px]"
+          disabled={actionPending}
+          title="Open the recorded URL as a fresh tab in the same live browser/profile and attach a new service handle."
+          onClick={() => onReopen(tab)}
+        >
+          {actionPending ? <Loader2 className="size-3 animate-spin" /> : <ArchiveRestore className="size-3" />}
+          Reopen
         </Button>
       )}
     </div>
@@ -6334,6 +6419,10 @@ export function ServicePanel({
   const [incidents, setIncidents] = useState<ServiceIncidentsData | null>(null);
   const [resources, setResources] = useState<ServiceResourcesData | null>(null);
   const [contracts, setContracts] = useState<ServiceContractsData | null>(null);
+  const [taskAuthorities, setTaskAuthorities] = useState<ServiceTaskAuthorityCollection | null>(null);
+  const [publicationStatus, setPublicationStatus] = useState<LocalDashboardPublicationStatus | null>(null);
+  const [publicationError, setPublicationError] = useState("");
+  const [taskAuthorityError, setTaskAuthorityError] = useState("");
   const [trace, setTrace] = useState<ServiceTraceData | null>(null);
   const [traceLoading, setTraceLoading] = useState(false);
   const [traceError, setTraceError] = useState("");
@@ -6404,6 +6493,7 @@ export function ServicePanel({
   const [profileConfigDeleting, setProfileConfigDeleting] = useState(false);
   const [profileConfigError, setProfileConfigError] = useState("");
   const [actingBrowserActionId, setActingBrowserActionId] = useState<string | null>(null);
+  const [actingTabActionId, setActingTabActionId] = useState<string | null>(null);
   const [retainedPruneAction, setRetainedPruneAction] = useState<"dry-run" | "apply" | null>(null);
   const [retainedPruneResult, setRetainedPruneResult] = useState<ServiceRetentionPruneData | null>(null);
   const profileAllocationLookupId = useRef(0);
@@ -6464,13 +6554,20 @@ export function ServicePanel({
         params.set("since", new Date(Date.now() - windowOption.milliseconds).toISOString());
       }
       const contractsPromise = fetch(`${serviceBase(activePort)}/contracts`).catch(() => null);
-      const [statusResp, jobsResp, eventsResp, incidentsResp, resourcesResp, contractsResp] = await Promise.all([
+      const authorityParams = new URLSearchParams();
+      if (activeSession) authorityParams.set("sessionName", activeSession);
+      const authorityUrl = `${serviceBase(activePort)}/task-authorities${authorityParams.size > 0 ? `?${authorityParams.toString()}` : ""}`;
+      const authorityPromise = fetch(authorityUrl).catch(() => null);
+      const publicationPromise = fetch(`${serviceBase(activePort)}/publications/local-dashboard`).catch(() => null);
+      const [statusResp, jobsResp, eventsResp, incidentsResp, resourcesResp, contractsResp, authorityResp, publicationResp] = await Promise.all([
         fetch(`${serviceBase(activePort)}/status`),
         fetch(`${serviceBase(activePort)}/jobs?limit=${jobLimit}`),
         fetch(`${serviceBase(activePort)}/events?${params.toString()}`),
         fetch(`${serviceBase(activePort)}/incidents?summary=true&limit=50`),
         fetch(`${serviceBase(activePort)}/resources`).catch(() => null),
         contractsPromise,
+        authorityPromise,
+        publicationPromise,
       ]);
       const statusJson = (await statusResp.json()) as ApiResponse<ServiceStatusData>;
       const jobsJson = (await jobsResp.json()) as ApiResponse<ServiceJobsData>;
@@ -6482,6 +6579,12 @@ export function ServicePanel({
       const contractsJson = contractsResp?.ok
         ? ((await contractsResp.json()) as ApiResponse<ServiceContractsData>)
         : null;
+      const authorityJson = authorityResp
+        ? ((await authorityResp.json().catch(() => null)) as ApiResponse<ServiceTaskAuthorityCollection> | null)
+        : null;
+      const publicationJson = publicationResp
+        ? ((await publicationResp.json().catch(() => null)) as ApiResponse<LocalDashboardPublicationStatus> | null)
+        : null;
       if (!statusJson.success) throw new Error(statusJson.error || "Service status failed");
       if (!jobsJson.success) throw new Error(jobsJson.error || "Service jobs failed");
       if (!eventsJson.success) throw new Error(eventsJson.error || "Service events failed");
@@ -6491,12 +6594,24 @@ export function ServicePanel({
       setIncidents(incidentsJson.success ? incidentsJson.data ?? null : null);
       setResources(resourcesJson?.success ? resourcesJson.data ?? null : null);
       setContracts(contractsJson?.success ? contractsJson.data ?? null : null);
+      setTaskAuthorities(authorityJson?.success ? authorityJson.data ?? null : null);
+      setTaskAuthorityError(
+        authorityJson?.success
+          ? ""
+          : authorityJson?.error || "Task authority status is unavailable for the selected session.",
+      );
+      setPublicationStatus(publicationJson?.success ? publicationJson.data ?? null : null);
+      setPublicationError(
+        publicationJson?.success
+          ? ""
+          : publicationJson?.error || "Dashboard publication status is unavailable from the installed runtime.",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Service API unavailable");
     } finally {
       if (showSpinner) setLoading(false);
     }
-  }, [activePort, canFetch, eventBrowserId, eventKind, eventLimit, eventWindow, jobLimit]);
+  }, [activePort, activeSession, canFetch, eventBrowserId, eventKind, eventLimit, eventWindow, jobLimit]);
 
   useEffect(() => {
     setStatus(null);
@@ -6504,6 +6619,10 @@ export function ServicePanel({
     setEvents(null);
     setIncidents(null);
     setResources(null);
+    setTaskAuthorities(null);
+    setTaskAuthorityError("");
+    setPublicationStatus(null);
+    setPublicationError("");
     setTrace(null);
     setTraceError("");
     setError("");
@@ -6825,6 +6944,8 @@ export function ServicePanel({
   );
   const browserCloseSupported = serviceRequestActions.has("service_browser_close");
   const browserRepairSupported = serviceRequestActions.has("service_browser_repair");
+  const tabParkSupported = serviceRequestActions.has("tab_handle_release");
+  const tabReopenSupported = serviceRequestActions.has("tab_reopen");
   const control = status?.control_plane;
   const serviceJobTimeoutMs =
     control?.service_job_timeout_ms ?? serviceState?.controlPlane?.serviceJobTimeoutMs ?? null;
@@ -7595,6 +7716,81 @@ export function ServicePanel({
       setRetainedPruneAction(null);
     }
   }, [activePort, activeSession, canFetch, fetchService, operatorIdentity, selectWorkspaceTab, serviceState]);
+  const parkServiceTab = useCallback(async (tab: ServiceTab) => {
+    if (!canFetch || !tabParkSupported || !tab.id) return;
+    const handle = tab.serviceTabHandle;
+    if (!handle || handle.valid !== true) {
+      setError("This tab does not have an active service handle and cannot be parked safely.");
+      return;
+    }
+    setActingTabActionId(tab.id);
+    setError("");
+    try {
+      const resp = await fetch(`${serviceBase(activePort)}/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "tab_handle_release",
+          serviceName: "agent-browser-dashboard",
+          agentName: operatorIdentity.trim() || activeSession || "operator",
+          taskName: "park-service-tab",
+          browserId: typeof handle.browserId === "string" ? handle.browserId : tab.browserId,
+          sessionName: typeof handle.sessionName === "string"
+            ? handle.sessionName
+            : tab.sessionId ?? tab.ownerSessionId,
+          serviceTabHandle: handle,
+          params: { closePhysicalTab: true, requirePhysicalClose: true },
+          jobTimeoutMs: 10000,
+        }),
+      });
+      const json = (await resp.json()) as ApiResponse<ServiceTabHandleReleaseData>;
+      if (!json.success) throw new Error(json.error || "Tab park request failed");
+      if (json.data?.tabReleased !== true || json.data?.physicalTabClosed !== true) {
+        throw new Error(
+          `Tab was not parked${json.data?.physicalTabCloseSkippedReason ? `: ${json.data.physicalTabCloseSkippedReason}` : "."}`,
+        );
+      }
+      await fetchService(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Tab park request failed");
+    } finally {
+      setActingTabActionId(null);
+    }
+  }, [activePort, activeSession, canFetch, fetchService, operatorIdentity, tabParkSupported]);
+  const reopenServiceTab = useCallback(async (tab: ServiceTab) => {
+    if (!canFetch || !tabReopenSupported || !tab.id || !tab.browserId) return;
+    const sessionName = tab.sessionId ?? tab.ownerSessionId;
+    if (!sessionName) {
+      setError("This retained tab has no session route and cannot be reopened safely.");
+      return;
+    }
+    setActingTabActionId(tab.id);
+    setError("");
+    try {
+      const resp = await fetch(`${serviceBase(activePort)}/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "tab_reopen",
+          serviceName: "agent-browser-dashboard",
+          agentName: operatorIdentity.trim() || activeSession || "operator",
+          taskName: "reopen-retained-tab",
+          browserId: tab.browserId,
+          sessionName,
+          params: { tabId: tab.id },
+          jobTimeoutMs: 10000,
+        }),
+      });
+      const json = (await resp.json()) as ApiResponse<ServiceTabReopenData>;
+      if (!json.success) throw new Error(json.error || "Tab reopen request failed");
+      if (json.data?.reopened !== true) throw new Error("The retained tab was not reopened.");
+      await fetchService(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Tab reopen request failed");
+    } finally {
+      setActingTabActionId(null);
+    }
+  }, [activePort, activeSession, canFetch, fetchService, operatorIdentity, tabReopenSupported]);
   const inspectTabViewStream = useCallback(async (tab: ServiceTab) => {
     const browser = tab.browserId ? browserById.get(tab.browserId) : null;
     const stream = browserPrimaryViewStream(browser);
@@ -7702,6 +7898,10 @@ export function ServicePanel({
   const resourceCandidateCount = resourceSummary?.candidateCount ?? 0;
   const resourceCandidateRssBytes = resourceSummary?.candidateRssBytes ?? 0;
   const resourceAttentionNeeded = resourceCandidateCount > 0;
+  const authorityRecords = taskAuthorities?.authorities ?? [];
+  const indeterminateAuthorityCount = authorityRecords.filter((authority) =>
+    (authority.usage?.indeterminateSteps?.length ?? 0) > 0,
+  ).length;
   const managedRecordDetail = useMemo(() => [
     `${entityCounts.browsers} retained browser records`,
     `${entityCounts.profiles} managed profile records`,
@@ -7713,6 +7913,10 @@ export function ServicePanel({
   ].join("; "), [entityCounts, jobs?.count, jobs?.total, recentJobs.length]);
   const managedAttentionCount = [
     reconciliation?.lastError,
+    taskAuthorityError,
+    publicationError,
+    publicationStatus?.recommendedAction && publicationStatus.recommendedAction !== "none",
+    indeterminateAuthorityCount > 0,
     retainedStateCleanupNeeded,
     resourceAttentionNeeded,
   ].filter(Boolean).length;
@@ -7728,6 +7932,13 @@ export function ServicePanel({
       label: "Browsers",
       count: browserRecords.length,
       detail: `${browserRecords.filter(isLiveBrowserRecord).length} live`,
+    },
+    {
+      value: "authorities" as const,
+      label: "Authorities",
+      count: authorityRecords.length,
+      detail: `${indeterminateAuthorityCount} indeterminate`,
+      tone: indeterminateAuthorityCount > 0 || taskAuthorityError ? "warn" : "neutral",
     },
     {
       value: "incidents" as const,
@@ -7764,16 +7975,19 @@ export function ServicePanel({
     },
   ], [
     browserRecords,
+    authorityRecords.length,
     filteredIncidentRecords.length,
     filteredProfileAllocations.length,
     incidentHandlingSummary.unacknowledged,
     incidentOnly,
+    indeterminateAuthorityCount,
     jobActivitySummary.active,
     jobActivitySummary.retained,
     sessionActivitySummary.activeSessions,
     sessionActivitySummary.activeTabs,
     sessionActivitySummary.retainedSessions,
     sessionActivitySummary.retainedTabs,
+    taskAuthorityError,
     visibleEvents.length,
   ]);
 
@@ -7952,6 +8166,15 @@ export function ServicePanel({
               tone={resourceAttentionNeeded ? "warn" : "good"}
             />
             <ServiceStatusLight
+              label="Publication"
+              value={publicationError ? "unavailable" : publicationStatus?.recommendedAction ?? "loading"}
+              detail={publicationStatus?.transaction?.phase
+                ? `Transaction ${publicationStatus.transaction.transactionId ?? "unknown"}; phase ${publicationStatus.transaction.phase}${publicationStatus.transaction.retainedBrowserExpectationRequired ? `; retained browser ${publicationStatus.transaction.retainedBrowserExpectationVerified ? "verified" : "not verified"}` : ""}`
+                : "Durable local dashboard publication journal"}
+              icon={FileWarning}
+              tone={publicationError || (publicationStatus?.recommendedAction && publicationStatus.recommendedAction !== "none") ? "warn" : "good"}
+            />
+            <ServiceStatusLight
               label="Records"
               value={`${entityCounts.browsers} browsers`}
               detail={`Retained service-state counts: ${managedRecordDetail}`}
@@ -7973,6 +8196,44 @@ export function ServicePanel({
                   <Button size="sm" variant="outline" className="service-state-alert-action" onClick={() => selectWorkspaceTab("events")}>
                     Review events
                   </Button>
+                </div>
+              )}
+              {(taskAuthorityError || indeterminateAuthorityCount > 0) && (
+                <div className="service-state-alert service-retained-state-hint">
+                  <FileWarning className="mt-0.5 size-3.5 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="font-black text-foreground">Task authority needs review</p>
+                    <p className="mt-1 leading-5">
+                      {taskAuthorityError || `${indeterminateAuthorityCount} authority record${indeterminateAuthorityCount === 1 ? " has" : "s have"} a consumed step without durable terminal evidence.`}
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" className="service-state-alert-action" onClick={() => selectWorkspaceTab("authorities")}>
+                    Review authorities
+                  </Button>
+                </div>
+              )}
+              {(publicationError || (publicationStatus?.recommendedAction && publicationStatus.recommendedAction !== "none")) && (
+                <div className="service-state-alert service-retained-state-hint">
+                  <FileWarning className="mt-0.5 size-3.5 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="font-black text-foreground">Dashboard publication needs review</p>
+                    <p className="mt-1 leading-5">
+                      {publicationError || (
+                        publicationStatus?.recommendedAction === "recover_only"
+                          ? "A verified incomplete transaction is recoverable. Review its phase and artifact hash, then explicitly run the recovery-only command."
+                          : publicationStatus?.recommendedAction === "wait_for_active_publisher"
+                            ? `Publisher process ${publicationStatus.lock?.ownerPid ?? "unknown"} still owns the transaction lock. Wait for it to finish before taking action.`
+                            : publicationStatus?.recommendedAction === "investigate_retained_browser"
+                              ? "A terminal transaction lacks final exact retained-browser proof. Investigate the retained lane before trusting publication readiness."
+                              : "The installed artifact does not match the transaction's verified evidence. Investigate the installed bytes; recovery remains disabled."
+                      )}
+                    </p>
+                    {publicationStatus?.recommendedAction === "recover_only" && (
+                      <p className="mt-1 leading-5">
+                        Explicit command: <code>pnpm recover:local-dashboard-publication</code>
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
               {retainedStateCleanupNeeded && (
@@ -8077,6 +8338,17 @@ export function ServicePanel({
                 ))}
               </TabsList>
             </div>
+
+            <TabsContent value="authorities" className="service-workspace-content">
+              <TaskAuthorityWorkspace
+                collection={taskAuthorities}
+                tabs={tabRecords}
+                sessionName={activeSession || "default"}
+                loading={loading}
+                error={taskAuthorityError}
+                onRefresh={() => void fetchService(true)}
+              />
+            </TabsContent>
 
             <TabsContent value="browsers" className="service-workspace-content">
               <div className="service-workspace-pane-heading">
@@ -8462,15 +8734,31 @@ export function ServicePanel({
                         : "Only closed blank placeholder tabs are retained. Use search to inspect them."}
                   </p>
                 ) : (
-                  visibleTabRecords.map((tab, index) => (
-                    <ServiceTabRow
-                      key={tab.id || tab.targetId || `tab-${index}`}
-                      tab={tab}
-                      viewStreamAvailable={tab.browserId ? canOpenControlViewStream(browserPrimaryViewStream(browserById.get(tab.browserId))) : false}
-                      onInspect={inspectTabViewStream}
-                      onSelect={inspectTab}
-                    />
-                  ))
+                  visibleTabRecords.map((tab, index) => {
+                    const siblingTabs = tab.browserId ? browserTabsById.get(tab.browserId) ?? [] : [];
+                    const liveSiblingCount = siblingTabs.filter(isActiveServiceTab).length;
+                    const canPark = tabParkSupported
+                      && isActiveServiceTab(tab)
+                      && tab.serviceTabHandle?.valid === true
+                      && liveSiblingCount > 1;
+                    const canReopen = tabReopenSupported
+                      && isClosedServiceTab(tab)
+                      && Boolean(tab.browserId && (tab.sessionId || tab.ownerSessionId) && tab.url && !isBlankServiceTab(tab));
+                    return (
+                      <ServiceTabRow
+                        key={tab.id || tab.targetId || `tab-${index}`}
+                        tab={tab}
+                        viewStreamAvailable={isActiveServiceTab(tab) && tab.browserId
+                          ? canOpenControlViewStream(browserPrimaryViewStream(browserById.get(tab.browserId)))
+                          : false}
+                        actionPending={actingTabActionId === tab.id}
+                        onInspect={inspectTabViewStream}
+                        onPark={canPark ? parkServiceTab : undefined}
+                        onReopen={canReopen ? reopenServiceTab : undefined}
+                        onSelect={inspectTab}
+                      />
+                    );
+                  })
                 )}
               </div>
             </TabsContent>

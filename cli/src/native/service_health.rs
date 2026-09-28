@@ -1,24 +1,113 @@
 //! Health and target probes for persisted service-mode browser records.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
+use std::path::Path;
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use super::browser::BrowserShutdownOutcome;
 use super::remote_view::{route_display_socket_available, route_pool_target_string};
 use super::remote_view_attachability::refresh_remote_view_attachability;
 use super::service_lifecycle::{upsert_service_profile_and_session, ServiceLaunchMetadata};
 use super::service_model::{
-    BrowserHealth, BrowserHealthObservation, BrowserHost, BrowserProcess, BrowserSession,
-    BrowserTab, DisplayAllocation, LeaseState, ServiceEvent, ServiceEventKind, ServiceIncident,
-    ServiceReconciliationSnapshot, ServiceState, TabLifecycle, ViewStreamProvider,
+    BrowserBuild, BrowserHealth, BrowserHealthObservation, BrowserHost, BrowserProcess,
+    BrowserProfile, BrowserSession, BrowserTab, DisplayAllocation, LeaseState, ProfileOrigin,
+    ServiceEvent, ServiceEventKind, ServiceIncident, ServiceReconciliationSnapshot, ServiceState,
+    TabLifecycle, ViewStreamProvider,
 };
 use super::service_store::{LockedServiceStateRepository, ServiceStateRepository};
 
 const CDP_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 const MAX_SERVICE_EVENTS: usize = 100;
+
+/// Recheck a retained external browser's original process proof before filling
+/// a missing PID. This never attaches to, launches, or changes the browser.
+pub(super) fn verified_external_byop_pid(
+    browser: &BrowserProcess,
+    profile: &BrowserProfile,
+) -> Result<u32, String> {
+    verified_external_byop_pid_with(browser, profile, |pid, endpoint, directory, executable| {
+        super::runtime_attach_proof::verify_external_byop_process(
+            pid, endpoint, directory, executable,
+        )
+    })
+}
+
+fn verified_external_byop_pid_with(
+    browser: &BrowserProcess,
+    profile: &BrowserProfile,
+    verify_process: impl Fn(u32, &str, &str, &Path) -> Result<u64, &'static str>,
+) -> Result<u32, String> {
+    let proof = browser
+        .browser_build_proof
+        .as_ref()
+        .ok_or("retained BYOP build proof missing")?;
+    if browser.host != BrowserHost::AttachedExisting
+        || browser.health != BrowserHealth::Ready
+        || profile.profile_origin != ProfileOrigin::ExternalByop
+        || profile.browser_build != browser.browser_build
+        || browser.profile_id.as_deref() != Some(profile.id.as_str())
+        || browser.verified_attached_proof_profile_id() != Some(profile.id.as_str())
+        || proof.get("applied").and_then(Value::as_bool) != Some(true)
+        || proof.get("reason").and_then(Value::as_str) != Some("verified_external_byop_process")
+    {
+        return Err("retained BYOP identity does not match its verified profile".into());
+    }
+    let pid = proof
+        .get("browserPid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+        .ok_or("retained BYOP proof has no valid PID")?;
+    let endpoint = browser
+        .cdp_endpoint
+        .as_deref()
+        .ok_or("retained BYOP endpoint missing")?;
+    let directory = profile
+        .user_data_dir
+        .as_deref()
+        .ok_or("retained BYOP profile directory missing")?;
+    let executable = browser
+        .executable_path
+        .as_deref()
+        .ok_or("retained BYOP executable missing")?;
+    if browser.pid.is_some_and(|existing| existing != pid)
+        || proof.get("cdpEndpoint").and_then(Value::as_str) != Some(endpoint)
+        || proof.get("userDataDir").and_then(Value::as_str) != Some(directory)
+        || proof.get("executablePath").and_then(Value::as_str) != Some(executable)
+        || proof
+            .get("processStartTicks")
+            .and_then(Value::as_u64)
+            .is_none()
+    {
+        return Err("retained BYOP process identity changed".into());
+    }
+    let mut file =
+        std::fs::File::open(executable).map_err(|_| "retained BYOP executable is unreadable")?;
+    let mut hash = Sha256::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        let size = file
+            .read(&mut chunk)
+            .map_err(|_| "retained BYOP executable read failed")?;
+        if size == 0 {
+            break;
+        }
+        hash.update(&chunk[..size]);
+    }
+    if proof.get("executableSha256").and_then(Value::as_str)
+        != Some(format!("{:x}", hash.finalize()).as_str())
+        || verify_process(pid, endpoint, directory, Path::new(executable)).ok()
+            != proof.get("processStartTicks").and_then(Value::as_u64)
+    {
+        return Err("retained BYOP live process proof failed".into());
+    }
+    Ok(pid)
+}
 
 fn mark_cdp_screencast_streams_unavailable(
     browser: &mut BrowserProcess,
@@ -637,10 +726,37 @@ pub fn persist_service_browser_record_in_repository(
     last_error: Option<String>,
     metadata: Option<ServiceLaunchMetadata>,
 ) -> Result<(), String> {
+    persist_service_browser_record_with_refresh(
+        repository,
+        session_id,
+        host,
+        health,
+        pid,
+        cdp_endpoint,
+        last_error,
+        metadata,
+        |_| {},
+    )
+}
+
+/// Complete retained evidence refresh inside the same transaction as health,
+/// before deriving attachability or making the updated record visible.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn persist_service_browser_record_with_refresh(
+    repository: &impl ServiceStateRepository,
+    session_id: &str,
+    host: BrowserHost,
+    health: BrowserHealth,
+    pid: Option<u32>,
+    cdp_endpoint: Option<String>,
+    last_error: Option<String>,
+    metadata: Option<ServiceLaunchMetadata>,
+    refresh: impl FnOnce(&mut ServiceState),
+) -> Result<(), String> {
     repository.mutate(|service_state| {
         let id = service_browser_id_for_session(session_id);
         let previous = service_state.browsers.get(&id).cloned();
-        let profile_id = metadata
+        let projected_profile_id = metadata
             .as_ref()
             .and_then(|metadata| metadata.profile_id.clone())
             .or_else(|| {
@@ -667,9 +783,94 @@ pub fn persist_service_browser_record_in_repository(
                     .and_then(|browser| browser.display_name.clone()),
             ),
         };
+        let new_browser_build_proof = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.browser_capability_launch.clone());
+        // A live attached browser may have been adopted by an older daemon
+        // that persisted its full process proof but omitted BrowserProcess.pid.
+        // Re-observe the exact process under the state lock before preserving
+        // that proof through an ordinary health refresh.
+        let verified_retained_pid = if pid.is_none()
+            && health == BrowserHealth::Ready
+            && host == BrowserHost::AttachedExisting
+        {
+            previous.as_ref().and_then(|browser| {
+                browser.profile_id.as_deref().and_then(|profile_id| {
+                    service_state
+                        .profiles
+                        .get(profile_id)
+                        .and_then(|profile| verified_external_byop_pid(browser, profile).ok())
+                })
+            })
+        } else {
+            None
+        };
+        let pid = pid.or(verified_retained_pid);
+        // A proof belongs to one physical browser, not to a reusable session
+        // label. A changed PID or endpoint must be verified from scratch.
+        let same_browser_identity = previous.as_ref().is_some_and(|browser| {
+            (browser.pid == pid
+                || (browser.pid.is_none() && verified_retained_pid == pid && pid.is_some()))
+                && browser.cdp_endpoint == cdp_endpoint
+                && (browser.profile_id == projected_profile_id
+                    // For an attached browser, an exact verified proof is
+                    // stronger than a stale incoming profile projection.
+                    || (host == BrowserHost::AttachedExisting
+                        && browser.host == BrowserHost::AttachedExisting
+                        && browser.verified_attached_proof_profile_id().is_some()))
+        });
+        let (browser_build, executable_path, browser_build_proof) =
+            if let Some(proof) = new_browser_build_proof {
+                let proven = proof.get("applied").and_then(|value| value.as_bool()) == Some(true);
+                if proven {
+                    let browser_build = proof
+                        .get("browserBuild")
+                        .and_then(|value| serde_json::from_value(value.clone()).ok());
+                    let executable_path = proof
+                        .get("executablePath")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string);
+                    (browser_build, executable_path, Some(proof))
+                } else if same_browser_identity
+                    && proof.get("verificationReason").is_none()
+                    && previous
+                        .as_ref()
+                        .and_then(|browser| browser.browser_build_proof.as_ref())
+                        .and_then(|proof| proof.get("applied"))
+                        .and_then(|value| value.as_bool())
+                        == Some(true)
+                {
+                    (
+                        previous.as_ref().and_then(|browser| browser.browser_build),
+                        previous
+                            .as_ref()
+                            .and_then(|browser| browser.executable_path.clone()),
+                        previous
+                            .as_ref()
+                            .and_then(|browser| browser.browser_build_proof.clone()),
+                    )
+                } else {
+                    (None, None, Some(proof))
+                }
+            } else if same_browser_identity {
+                (
+                    previous.as_ref().and_then(|browser| browser.browser_build),
+                    previous
+                        .as_ref()
+                        .and_then(|browser| browser.executable_path.clone()),
+                    previous
+                        .as_ref()
+                        .and_then(|browser| browser.browser_build_proof.clone()),
+                )
+            } else {
+                (None, None, None)
+            };
         let mut browser = BrowserProcess {
             id: id.clone(),
-            profile_id: profile_id.clone(),
+            profile_id: projected_profile_id.clone(),
+            browser_build,
+            executable_path,
+            browser_build_proof,
             host,
             health,
             display_isolation,
@@ -689,6 +890,14 @@ pub fn persist_service_browser_record_in_repository(
             last_health_observation: None,
             attachability: None,
         };
+        // A verified attached-runtime proof is stronger custody evidence than
+        // an incoming stale metadata projection. Align the browser and session
+        // only when the proof exactly matches this retained endpoint.
+        let profile_id = browser
+            .effective_profile_id()
+            .map(str::to_string)
+            .or(projected_profile_id);
+        browser.profile_id = profile_id.clone();
         upsert_browser_display_allocation(
             service_state,
             session_id,
@@ -726,7 +935,28 @@ pub fn persist_service_browser_record_in_repository(
                 metadata.as_ref(),
             );
         }
+        let verified_attached_profile = browser
+            .verified_attached_proof_profile_id()
+            .map(str::to_string);
+        if let Some(profile_id) = verified_attached_profile {
+            if let Some(session) = service_state.sessions.get_mut(session_id) {
+                session.profile_id = Some(profile_id.clone());
+            }
+            for tab in service_state.tabs.values_mut().filter(|tab| {
+                tab.browser_id == id && tab.owner_session_id.as_deref() == Some(session_id)
+            }) {
+                if let Some(handle) = tab.service_tab_handle.as_mut() {
+                    handle.profile_id = Some(profile_id.clone());
+                }
+            }
+            for handle in &mut browser.tab_handles {
+                if handle.owner_session_id.as_deref() == Some(session_id) {
+                    handle.profile_id = Some(profile_id.clone());
+                }
+            }
+        }
         service_state.browsers.insert(id, browser);
+        refresh(service_state);
         refresh_remote_view_attachability(service_state);
         Ok(())
     })
@@ -791,7 +1021,7 @@ fn upsert_browser_display_allocation(
     service_state: &mut ServiceState,
     session_id: &str,
     browser: &mut BrowserProcess,
-    metadata: Option<&ServiceLaunchMetadata>,
+    _metadata: Option<&ServiceLaunchMetadata>,
 ) {
     if browser.host != BrowserHost::RemoteHeaded {
         browser.display_allocation_id = None;
@@ -822,11 +1052,14 @@ fn upsert_browser_display_allocation(
     allocation.owner_browser_id = Some(browser.id.clone());
     allocation.owner_session_id = Some(session_id.to_string());
     allocation.profile_id = browser.profile_id.clone();
-    allocation.browser_build = metadata
-        .and_then(|metadata| metadata.browser_capability_launch.as_ref())
-        .and_then(|launch| launch.get("browserBuild"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
+    allocation.browser_build = browser.browser_build.map(|build| {
+        match build {
+            BrowserBuild::StockChrome => "stock_chrome",
+            BrowserBuild::StealthcdpChromium => "stealthcdp_chromium",
+            BrowserBuild::CdpFreeHeaded => "cdp_free_headed",
+        }
+        .to_string()
+    });
     allocation.host = Some(browser.host);
     allocation.state = match browser.health {
         BrowserHealth::Ready => "ready",
@@ -1064,6 +1297,9 @@ pub(crate) fn stale_browser_process_record(
     let mut browser = BrowserProcess {
         id: id.to_string(),
         profile_id: previous.and_then(|browser| browser.profile_id.clone()),
+        browser_build: previous.and_then(|browser| browser.browser_build),
+        executable_path: previous.and_then(|browser| browser.executable_path.clone()),
+        browser_build_proof: previous.and_then(|browser| browser.browser_build_proof.clone()),
         host: previous
             .map(|browser| browser.host)
             .unwrap_or(BrowserHost::AttachedExisting),
@@ -1241,8 +1477,39 @@ pub(crate) fn persist_closed_browser_health_in_repository(
     session_id: &str,
     outcome: Option<&BrowserShutdownOutcome>,
 ) -> Result<(), String> {
+    persist_closed_browser_health_if_unchanged(repository, session_id, outcome, None)
+}
+
+/// Terminal recovery must not erase custody replaced while CDP shutdown ran.
+pub(crate) fn persist_closed_browser_health_if_unchanged(
+    repository: &impl ServiceStateRepository,
+    session_id: &str,
+    outcome: Option<&BrowserShutdownOutcome>,
+    expected: Option<&ServiceState>,
+) -> Result<(), String> {
     repository.mutate(|service_state| {
         let id = service_browser_id_for_session(session_id);
+        if let Some(expected) = expected {
+            let profile_id = expected
+                .browsers
+                .get(&id)
+                .and_then(|b| b.profile_id.as_ref());
+            if !expected.browsers.contains_key(&id)
+                || service_state.browsers.get(&id) != expected.browsers.get(&id)
+                || service_state.sessions.get(session_id) != expected.sessions.get(session_id)
+                || profile_id.is_none()
+                || profile_id
+                    .is_some_and(|id| service_state.profiles.get(id) != expected.profiles.get(id))
+                || service_state.sessions.values().any(|other| {
+                    other.id != session_id
+                        && other.lease != LeaseState::Released
+                        && (other.profile_id.as_ref() == profile_id
+                            || other.browser_ids.contains(&id))
+                })
+            {
+                return Err("Recovered browser custody changed; terminal records preserved".into());
+            }
+        }
         let previous = service_state.browsers.get(&id).cloned();
         let host = previous
             .as_ref()
@@ -1493,7 +1760,22 @@ pub fn merge_reconciled_service_state(
         target.reconciliation = reconciled.reconciliation.clone();
     }
 
+    // Session names are reusable. An observation belongs to the PID/endpoint
+    // that was probed, not to whichever process now occupies that name.
+    let replaced_browser_ids = before
+        .browsers
+        .iter()
+        .filter_map(|(id, observed)| {
+            target.browsers.get(id).and_then(|current| {
+                (current.pid != observed.pid || current.cdp_endpoint != observed.cdp_endpoint)
+                    .then(|| id.clone())
+            })
+        })
+        .collect::<BTreeSet<_>>();
     for (id, reconciled_browser) in &reconciled.browsers {
+        if replaced_browser_ids.contains(id) {
+            continue;
+        }
         match target.browsers.get_mut(id) {
             Some(target_browser) => {
                 target_browser.health = reconciled_browser.health;
@@ -1523,9 +1805,24 @@ pub fn merge_reconciled_service_state(
     }
 
     for (id, reconciled_tab) in &reconciled.tabs {
+        if replaced_browser_ids.contains(&reconciled_tab.browser_id)
+            || target
+                .tabs
+                .get(id)
+                .is_some_and(|tab| replaced_browser_ids.contains(&tab.browser_id))
+        {
+            continue;
+        }
         target.tabs.insert(id.clone(), reconciled_tab.clone());
     }
     for id in before.tabs.keys() {
+        if before
+            .tabs
+            .get(id)
+            .is_some_and(|tab| replaced_browser_ids.contains(&tab.browser_id))
+        {
+            continue;
+        }
         if reconciled.tabs.contains_key(id) {
             continue;
         }
@@ -1539,7 +1836,22 @@ pub fn merge_reconciled_service_state(
         }
     }
 
+    let replaced_session_ids = before
+        .sessions
+        .iter()
+        .chain(target.sessions.iter())
+        .filter(|(_, session)| {
+            session
+                .browser_ids
+                .iter()
+                .any(|id| replaced_browser_ids.contains(id))
+        })
+        .map(|(id, _)| id.clone())
+        .collect::<BTreeSet<_>>();
     for (id, reconciled_session) in &reconciled.sessions {
+        if replaced_session_ids.contains(id) {
+            continue;
+        }
         let lease_changed_after_reconcile_started = before
             .sessions
             .get(id)
@@ -1575,6 +1887,9 @@ pub fn merge_reconciled_service_state(
             .retain(|session_id| !inactive_session_ids.contains(session_id));
     }
     for id in before.sessions.keys() {
+        if replaced_session_ids.contains(id) {
+            continue;
+        }
         if reconciled.sessions.contains_key(id) {
             continue;
         }
@@ -1660,6 +1975,17 @@ pub fn merge_reconciled_service_state(
         .collect::<BTreeSet<_>>();
     for event in &reconciled.events {
         if before_event_ids.contains(&event.id) || target_event_ids.contains(&event.id) {
+            continue;
+        }
+        if event
+            .browser_id
+            .as_ref()
+            .is_some_and(|id| replaced_browser_ids.contains(id))
+            || event
+                .session_id
+                .as_ref()
+                .is_some_and(|id| replaced_session_ids.contains(id))
+        {
             continue;
         }
         target_event_ids.insert(event.id.clone());
@@ -2886,8 +3212,9 @@ fn pid_is_running(pid: u32) -> bool {
 mod tests {
     use super::*;
     use crate::native::service_model::{
-        ControlInputProvider, DisplayAllocation, JobState, RemoteViewRoute, RoutePoolEntry,
-        ServiceJob, ServiceProvider, SitePolicy, ViewStream, ViewStreamProvider, ViewerLease,
+        BrowserBuild, ControlInputProvider, DisplayAllocation, JobState, RemoteViewRoute,
+        RoutePoolEntry, ServiceJob, ServiceProvider, SitePolicy, ViewStream, ViewStreamProvider,
+        ViewerLease,
     };
     use crate::native::service_store::{
         mutate_default_service_state, JsonServiceStateStore, ServiceStateStore,
@@ -2900,6 +3227,160 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
+
+    #[test]
+    fn retained_byop_pid_rebind_requires_exact_saved_and_live_process_identity() {
+        let home = temp_home("retained-byop-pid-rebind");
+        fs::create_dir_all(&home).unwrap();
+        let executable = home.join("chrome");
+        fs::write(&executable, b"verified chrome bytes").unwrap();
+        let digest = format!("{:x}", Sha256::digest(b"verified chrome bytes"));
+        let executable = executable.to_str().unwrap();
+        let directory_path = home.join("profile");
+        let directory = directory_path.to_str().unwrap();
+        let endpoint = "ws://127.0.0.1:39415/devtools/browser/exact";
+        let profile = BrowserProfile {
+            id: "exact-profile".into(),
+            profile_origin: ProfileOrigin::ExternalByop,
+            browser_build: Some(BrowserBuild::StealthcdpChromium),
+            user_data_dir: Some(directory.into()),
+            ..Default::default()
+        };
+        let browser = BrowserProcess {
+            id: "session:exact".into(),
+            profile_id: Some(profile.id.clone()),
+            browser_build: Some(BrowserBuild::StealthcdpChromium),
+            executable_path: Some(executable.into()),
+            browser_build_proof: Some(json!({
+                "applied": true,
+                "reason": "verified_external_byop_process",
+                "browserBuild": "stealthcdp_chromium",
+                "profileId": profile.id.clone(),
+                "browserPid": 1234,
+                "processStartTicks": 77,
+                "cdpEndpoint": endpoint,
+                "userDataDir": directory,
+                "executablePath": executable,
+                "executableSha256": digest,
+            })),
+            host: BrowserHost::AttachedExisting,
+            health: BrowserHealth::Ready,
+            cdp_endpoint: Some(endpoint.into()),
+            ..Default::default()
+        };
+        let verify =
+            |pid, observed_endpoint: &str, observed_directory: &str, observed_executable: &Path| {
+                assert_eq!(pid, 1234);
+                assert_eq!(observed_endpoint, endpoint);
+                assert_eq!(observed_directory, directory);
+                assert_eq!(observed_executable, Path::new(executable));
+                Ok(77)
+            };
+        assert_eq!(
+            verified_external_byop_pid_with(&browser, &profile, verify).unwrap(),
+            1234
+        );
+
+        let mut changed = browser.clone();
+        changed.pid = Some(4321);
+        assert!(verified_external_byop_pid_with(&changed, &profile, |_, _, _, _| Ok(77)).is_err());
+        changed = browser.clone();
+        changed.browser_build_proof.as_mut().unwrap()["processStartTicks"] = json!(78);
+        assert!(verified_external_byop_pid_with(&changed, &profile, |_, _, _, _| Ok(77)).is_err());
+        changed = browser.clone();
+        changed.browser_build_proof.as_mut().unwrap()["executableSha256"] = json!("wrong");
+        assert!(verified_external_byop_pid_with(&changed, &profile, |_, _, _, _| Ok(77)).is_err());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn recovered_close_cas_preserves_replacement_and_reports_storage_failure() {
+        let home = temp_home("recovered-close-cas");
+        let store = JsonServiceStateStore::new(home.join("state.json"));
+        let repository = LockedServiceStateRepository::new(store.clone());
+        let id = service_browser_id_for_session("retained");
+        let mut expected = ServiceState::default();
+        expected.browsers.insert(
+            id.clone(),
+            BrowserProcess {
+                id: id.clone(),
+                pid: Some(123),
+                profile_id: Some("owned".into()),
+                ..Default::default()
+            },
+        );
+        expected.sessions.insert(
+            "retained".into(),
+            super::super::service_model::BrowserSession {
+                id: "retained".into(),
+                profile_id: Some("owned".into()),
+                browser_ids: vec![id.clone()],
+                ..Default::default()
+            },
+        );
+        expected.profiles.insert(
+            "owned".into(),
+            super::super::service_model::BrowserProfile {
+                id: "owned".into(),
+                ..Default::default()
+            },
+        );
+        for drift in ["pid", "session", "profile", "shared_session"] {
+            let mut replacement = expected.clone();
+            match drift {
+                "pid" => replacement.browsers.get_mut(&id).unwrap().pid = Some(124),
+                "session" => replacement
+                    .sessions
+                    .get_mut("retained")
+                    .unwrap()
+                    .browser_ids
+                    .clear(),
+                "profile" => {
+                    replacement.profiles.get_mut("owned").unwrap().user_data_dir =
+                        Some("other".into())
+                }
+                "shared_session" => {
+                    let mut other = replacement.sessions["retained"].clone();
+                    other.id = "new-controller".into();
+                    other.lease = LeaseState::Exclusive;
+                    replacement.sessions.insert(other.id.clone(), other);
+                }
+                _ => unreachable!(),
+            }
+            store.save(&replacement).unwrap();
+            let before = repository.load_snapshot().unwrap();
+            assert!(persist_closed_browser_health_if_unchanged(
+                &repository,
+                "retained",
+                None,
+                Some(&expected)
+            )
+            .is_err());
+            assert_eq!(repository.load_snapshot().unwrap(), before);
+        }
+        struct FailedRepository;
+        impl ServiceStateRepository for FailedRepository {
+            fn load_snapshot(&self) -> Result<ServiceState, String> {
+                Err("storage unavailable".into())
+            }
+            fn mutate<R>(
+                &self,
+                _: impl FnOnce(&mut ServiceState) -> Result<R, String>,
+            ) -> Result<R, String> {
+                Err("storage unavailable".into())
+            }
+        }
+        assert_eq!(
+            persist_closed_browser_health_if_unchanged(
+                &FailedRepository,
+                "retained",
+                None,
+                Some(&expected)
+            )
+            .unwrap_err(),
+            "storage unavailable"
+        );
+    }
 
     fn service_state_with_browser(browser: BrowserProcess) -> ServiceState {
         ServiceState {
@@ -2917,6 +3398,113 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn merge_reconciled_service_state_rejects_obsolete_process_health() {
+        for changed_field in ["pid", "endpoint"] {
+            let id = "session:default";
+            let mut before = ServiceState::default();
+            before.browsers.insert(
+                id.into(),
+                BrowserProcess {
+                    id: id.into(),
+                    pid: Some(100),
+                    cdp_endpoint: Some("ws://127.0.0.1:9222/devtools/browser/old".into()),
+                    health: BrowserHealth::Ready,
+                    ..BrowserProcess::default()
+                },
+            );
+            before.tabs.insert(
+                "target:retained".into(),
+                BrowserTab {
+                    id: "target:retained".into(),
+                    browser_id: id.into(),
+                    lifecycle: TabLifecycle::Ready,
+                    ..BrowserTab::default()
+                },
+            );
+            before.sessions.insert(
+                "default".into(),
+                BrowserSession {
+                    id: "default".into(),
+                    lease: LeaseState::Exclusive,
+                    browser_ids: vec![id.into()],
+                    tab_ids: vec!["target:retained".into()],
+                    ..BrowserSession::default()
+                },
+            );
+            before.refresh_derived_views();
+            let mut reconciled = before.clone();
+            let old = reconciled.browsers.get_mut(id).unwrap();
+            old.health = BrowserHealth::ProcessExited;
+            old.last_error = Some("Recorded browser PID 100 is no longer running".into());
+            reconciled
+                .tabs
+                .get_mut("target:retained")
+                .unwrap()
+                .lifecycle = TabLifecycle::Closed;
+            reconciled
+                .sessions
+                .get_mut("default")
+                .unwrap()
+                .tab_ids
+                .clear();
+            reconciled.events.push(ServiceEvent {
+                id: "obsolete-exit".into(),
+                kind: ServiceEventKind::BrowserHealthChanged,
+                browser_id: Some(id.into()),
+                ..ServiceEvent::default()
+            });
+            let mut target = before.clone();
+            let current = target.browsers.get_mut(id).unwrap();
+            if changed_field == "pid" {
+                current.pid = Some(200);
+            } else {
+                current.cdp_endpoint = Some("ws://127.0.0.1:9222/devtools/browser/new".into());
+            }
+            let replacement = target.clone();
+            merge_reconciled_service_state(&mut target, &before, &reconciled);
+            assert_eq!(
+                target.browsers[id].health,
+                BrowserHealth::Ready,
+                "{changed_field}"
+            );
+            assert_eq!(target.browsers[id].last_error, None, "{changed_field}");
+            assert_eq!(
+                target.tabs["target:retained"],
+                replacement.tabs["target:retained"]
+            );
+            assert_eq!(target.sessions["default"], replacement.sessions["default"]);
+            assert!(!target
+                .events
+                .iter()
+                .any(|event| event.id == "obsolete-exit"));
+
+            // The same observation must still apply to the original process.
+            let mut unchanged = before.clone();
+            merge_reconciled_service_state(&mut unchanged, &before, &reconciled);
+            assert_eq!(unchanged.browsers[id].health, BrowserHealth::ProcessExited);
+            assert!(unchanged
+                .events
+                .iter()
+                .any(|event| event.id == "obsolete-exit"));
+
+            // Production cleanup removes the old browser before the merge.
+            // Its unchanged-looking child records still belong to the replacement.
+            remove_browser_operational_record(&mut reconciled, id, None);
+            let mut after_cleanup = replacement.clone();
+            merge_reconciled_service_state(&mut after_cleanup, &before, &reconciled);
+            assert_eq!(after_cleanup.browsers[id], replacement.browsers[id]);
+            assert_eq!(
+                after_cleanup.tabs["target:retained"],
+                replacement.tabs["target:retained"]
+            );
+            assert_eq!(
+                after_cleanup.sessions["default"],
+                replacement.sessions["default"]
+            );
+        }
     }
 
     #[test]
@@ -3812,7 +4400,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_headed_browser_record_upserts_private_display_allocation() {
+    fn remote_headed_build_proof_survives_health_refresh_but_not_identity_replacement() {
         let home = temp_home("service-health-display-allocation");
         let store = JsonServiceStateStore::new(home.join("state.json"));
         let repository = LockedServiceStateRepository::new(store.clone());
@@ -3828,7 +4416,9 @@ mod tests {
             Some(ServiceLaunchMetadata {
                 profile_id: Some("work".to_string()),
                 browser_capability_launch: Some(serde_json::json!({
-                    "browserBuild": "stealthcdp_chromium"
+                    "applied": true,
+                    "browserBuild": "stealthcdp_chromium",
+                    "executablePath": "/opt/stealth/chrome"
                 })),
                 view_streams: vec![ViewStream {
                     id: "remote-headed-view".to_string(),
@@ -3847,6 +4437,18 @@ mod tests {
 
         let state = store.load().unwrap();
         let browser = &state.browsers["session:persist-session"];
+        assert_eq!(
+            browser.browser_build,
+            Some(BrowserBuild::StealthcdpChromium)
+        );
+        assert_eq!(
+            browser.executable_path.as_deref(),
+            Some("/opt/stealth/chrome")
+        );
+        assert_eq!(
+            browser.browser_build_proof.as_ref().unwrap()["browserBuild"],
+            "stealthcdp_chromium"
+        );
         let allocation_id = browser.display_allocation_id.as_ref().unwrap();
         assert_eq!(
             allocation_id,
@@ -3878,6 +4480,165 @@ mod tests {
         assert_eq!(
             allocation.pid_hints.as_ref().unwrap()["browserPid"],
             serde_json::json!(1234)
+        );
+
+        persist_service_browser_record_in_repository(
+            &repository,
+            "persist-session",
+            BrowserHost::RemoteHeaded,
+            BrowserHealth::Degraded,
+            Some(1234),
+            Some("http://127.0.0.1:9222".to_string()),
+            Some("temporary health failure".to_string()),
+            None,
+        )
+        .unwrap();
+        let refreshed = store.load().unwrap();
+        let browser = &refreshed.browsers["session:persist-session"];
+        assert_eq!(
+            browser.browser_build,
+            Some(BrowserBuild::StealthcdpChromium)
+        );
+        assert_eq!(
+            browser.executable_path.as_deref(),
+            Some("/opt/stealth/chrome")
+        );
+        assert_eq!(
+            browser.browser_build_proof.as_ref().unwrap()["browserBuild"],
+            "stealthcdp_chromium"
+        );
+
+        persist_service_browser_record_in_repository(
+            &repository,
+            "persist-session",
+            BrowserHost::RemoteHeaded,
+            BrowserHealth::Ready,
+            Some(1234),
+            Some("http://127.0.0.1:9222".to_string()),
+            None,
+            Some(ServiceLaunchMetadata {
+                profile_id: Some("other-profile".to_string()),
+                browser_capability_launch: Some(serde_json::json!({
+                    "applied": false,
+                    "browserBuild": "stealthcdp_chromium"
+                })),
+                display_isolation: Some("private_virtual_display".to_string()),
+                display_name: Some(":91".to_string()),
+                ..ServiceLaunchMetadata::default()
+            }),
+        )
+        .unwrap();
+        let rebound = store.load().unwrap();
+        let browser = &rebound.browsers["session:persist-session"];
+        assert_eq!(browser.profile_id.as_deref(), Some("other-profile"));
+        assert_eq!(browser.browser_build, None);
+        assert_eq!(
+            browser.browser_build_proof.as_ref().unwrap()["applied"],
+            false
+        );
+        assert_eq!(
+            rebound.display_allocations[allocation_id].browser_build,
+            None
+        );
+
+        persist_service_browser_record_in_repository(
+            &repository,
+            "persist-session",
+            BrowserHost::RemoteHeaded,
+            BrowserHealth::Ready,
+            Some(5678),
+            Some("http://127.0.0.1:9333".to_string()),
+            None,
+            Some(ServiceLaunchMetadata {
+                profile_id: Some("work".to_string()),
+                browser_capability_launch: Some(serde_json::json!({
+                    "applied": false,
+                    "reason": "validation_evidence_missing_or_not_passed",
+                    "browserBuild": "stealthcdp_chromium"
+                })),
+                ..ServiceLaunchMetadata::default()
+            }),
+        )
+        .unwrap();
+        let refreshed_after_unproven_launch = store.load().unwrap();
+        let browser = &refreshed_after_unproven_launch.browsers["session:persist-session"];
+        assert_eq!(browser.browser_build, None);
+        assert_eq!(browser.executable_path, None);
+        assert_eq!(
+            browser.browser_build_proof.as_ref().unwrap()["applied"],
+            false
+        );
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn retained_attached_profile_stays_bound_to_verified_runtime_proof() {
+        let home = temp_home("service-health-retained-attached-profile");
+        let store = JsonServiceStateStore::new(home.join("state.json"));
+        let repository = LockedServiceStateRepository::new(store.clone());
+        let endpoint = "ws://127.0.0.1:9222/devtools/browser/exact".to_string();
+
+        persist_service_browser_record_in_repository(
+            &repository,
+            "retained-session",
+            BrowserHost::AttachedExisting,
+            BrowserHealth::Ready,
+            None,
+            Some(endpoint.clone()),
+            None,
+            Some(ServiceLaunchMetadata {
+                profile_id: Some("chatgpt-pro".to_string()),
+                browser_capability_launch: Some(serde_json::json!({
+                    "applied": true,
+                    "browserBuild": "stock_chrome",
+                    "profileId": "chatgpt-pro",
+                    "executablePath": "/opt/agent-browser/chrome",
+                    "cdpEndpoint": endpoint,
+                    "browserPid": 1234,
+                })),
+                ..ServiceLaunchMetadata::default()
+            }),
+        )
+        .unwrap();
+
+        persist_service_browser_record_in_repository(
+            &repository,
+            "retained-session",
+            BrowserHost::AttachedExisting,
+            BrowserHealth::Ready,
+            None,
+            Some(endpoint),
+            None,
+            Some(ServiceLaunchMetadata {
+                profile_id: Some("default".to_string()),
+                browser_capability_launch: Some(serde_json::json!({
+                    "applied": false,
+                    "browserBuild": "stock_chrome",
+                    "profileId": "default",
+                })),
+                ..ServiceLaunchMetadata::default()
+            }),
+        )
+        .unwrap();
+
+        let state = store.load().unwrap();
+        assert_eq!(
+            state.browsers["session:retained-session"]
+                .profile_id
+                .as_deref(),
+            Some("chatgpt-pro")
+        );
+        assert_eq!(
+            state.sessions["retained-session"].profile_id.as_deref(),
+            Some("chatgpt-pro")
+        );
+        assert_eq!(
+            state.browsers["session:retained-session"]
+                .browser_build_proof
+                .as_ref()
+                .unwrap()["applied"],
+            true
         );
 
         let _ = fs::remove_dir_all(&home);

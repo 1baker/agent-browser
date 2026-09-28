@@ -435,6 +435,36 @@ fn checked_out_route_display_allocation_id(
         .and_then(|route| route.display_allocation_id.clone())
 }
 
+fn same_owner_pending_acquisition_matches(
+    entry: &RoutePoolEntry,
+    allocation: Option<&DisplayAllocation>,
+    browser_id: &str,
+    session_id: &str,
+    route_id: &str,
+) -> bool {
+    let Some(allocation) = allocation else {
+        return false;
+    };
+    let entry_lease_id = entry.readiness.as_ref().and_then(|readiness| {
+        (readiness.get("component").and_then(Value::as_str) == Some("remote_view_open_acquisition"))
+            .then(|| readiness.get("leaseId").and_then(Value::as_str))
+            .flatten()
+    });
+    let allocation_lease_id = allocation.readiness.as_ref().and_then(|readiness| {
+        (readiness.get("component").and_then(Value::as_str) == Some("remote_view_open_acquisition"))
+            .then(|| readiness.get("leaseId").and_then(Value::as_str))
+            .flatten()
+    });
+    entry.state == "pending"
+        && entry.current_route_allocation_id.as_deref() == Some(route_id)
+        && allocation.state == "pending"
+        && allocation.owner_browser_id.as_deref() == Some(browser_id)
+        && allocation.owner_session_id.as_deref() == Some(session_id)
+        && allocation.route_ids.iter().any(|id| id == route_id)
+        && entry_lease_id.is_some()
+        && entry_lease_id == allocation_lease_id
+}
+
 fn requested_profile_hint(intent: &RemoteViewOpenIntent) -> Option<&str> {
     intent
         .runtime_profile
@@ -920,8 +950,18 @@ pub fn plan_remote_view_acquisition(
                     &display_allocation_id,
                 )
             });
+        let same_owner_pending_acquisition = reusable_route_id.is_some_and(|route_id| {
+            same_owner_pending_acquisition_matches(
+                entry,
+                display_allocation,
+                browser_id,
+                session_id,
+                route_id,
+            )
+        });
         let entry_available = entry.state == "available"
             || same_owner_checked_out
+            || same_owner_pending_acquisition
             || (entry.state != "checked_out"
                 && entry.readiness.as_ref().is_some_and(|readiness| {
                     readiness
@@ -2142,6 +2182,66 @@ mod tests {
         assert!(plan.decisions.iter().any(|decision| {
             decision.step == "route_pool_entry" && decision.reason == "same_owner_checked_out_route"
         }));
+    }
+
+    #[test]
+    fn acquisition_plan_accepts_only_its_exact_pending_reservation() {
+        let pending_readiness = json!({
+            "state": "pending",
+            "component": "remote_view_open_acquisition",
+            "leaseId": "remote-view-open:default:route-a:1"
+        });
+        let state = ServiceState {
+            route_pool: BTreeMap::from([(
+                "pool-a".to_string(),
+                RoutePoolEntry {
+                    id: "pool-a".to_string(),
+                    route_id: "route-a".to_string(),
+                    frame_url: Some("https://guac.example/#/client/route-a".to_string()),
+                    target: json!({
+                        "displayName": ":10",
+                        "displayAllocationId": "remote-view-display:pool-a"
+                    }),
+                    state: "pending".to_string(),
+                    current_route_allocation_id: Some("route-a".to_string()),
+                    readiness: Some(pending_readiness.clone()),
+                    ..RoutePoolEntry::default()
+                },
+            )]),
+            display_allocations: BTreeMap::from([(
+                "remote-view-display:pool-a".to_string(),
+                DisplayAllocation {
+                    id: "remote-view-display:pool-a".to_string(),
+                    display_name: Some(":10".to_string()),
+                    display_isolation: "shared_display".to_string(),
+                    owner_browser_id: Some("session:default".to_string()),
+                    owner_session_id: Some("default".to_string()),
+                    route_ids: vec!["route-a".to_string()],
+                    state: "pending".to_string(),
+                    readiness: Some(pending_readiness),
+                    ..DisplayAllocation::default()
+                },
+            )]),
+            ..ServiceState::default()
+        };
+        let intent = normalize_remote_view_open_intent(&json!({
+            "action": "remote_view_open",
+            "routePoolEntryId": "pool-a",
+            "dryRun": true
+        }))
+        .unwrap();
+
+        let plan =
+            plan_remote_view_acquisition(&state, &intent, None, "session:default", "default")
+                .unwrap();
+        assert_eq!(plan.selected_route_pool_entry_id.as_deref(), Some("pool-a"));
+
+        let error = plan_remote_view_acquisition(&state, &intent, None, "session:other", "other")
+            .unwrap_err();
+        assert!(
+            error.contains("owner_mismatch") || error.contains("route_pool_entry_unavailable"),
+            "unexpected fail-closed error: {error}"
+        );
     }
 
     #[test]

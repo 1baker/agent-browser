@@ -931,8 +931,8 @@ assert.doesNotMatch(
 
 assert.match(
   workspaceViewport,
-  /installGuacamoleTouchClickBridge[\s\S]*sendMouse\(touch, true\)[\s\S]*sendMouse\(touch, false\)[\s\S]*<iframe[\s\S]*ref=\{viewportFrameRef\}[\s\S]*className="workspace-remote-viewport-frame"[\s\S]*allow="clipboard-read; clipboard-write; fullscreen; pointer-lock"/,
-  'Workspace remote viewport must embed service-owned streams behind dashboard chrome with input capabilities enabled',
+  /installGuacamoleTouchClickBridge[\s\S]*#ime-text[\s\S]*textarea\.target[\s\S]*scope\?\.menu\?\.inputMethod === "text"[\s\S]*target\.focus\(\{ preventScroll: true \}\)[\s\S]*const onTouchStart[\s\S]*focusTextInput\(\)[\s\S]*stopTouch\(event\)[\s\S]*sendMouse\(touch, true\)[\s\S]*focusTextInput\(\)[\s\S]*sendMouse\(touch, false\)[\s\S]*<iframe[\s\S]*ref=\{viewportFrameRef\}[\s\S]*className="workspace-remote-viewport-frame"[\s\S]*allow="clipboard-read; clipboard-write; fullscreen; pointer-lock"/,
+  'Workspace remote viewport must embed service-owned streams with mouse input and restore Guacamole text-input focus for touch keyboards',
 );
 
 assert.match(

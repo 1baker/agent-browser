@@ -174,6 +174,33 @@ allows browser records and `viewStreams[]` to carry `displayAllocationId`,
 prefer `routeId` plus `displayAllocationId` over raw URL comparison when
 checking whether two browser workspaces are independently viewable.
 
+## Local Dashboard Publication Status
+
+`local-dashboard-publication-status.v1.schema.json` describes the bounded,
+source-free read of the durable dashboard publication journal, exact PID lock,
+transaction phase and counts, and installed-artifact SHA-256 classification.
+It is exposed by install doctor under `data.localDashboardPublication`,
+authenticated HTTP `GET /api/service/publications/local-dashboard`, MCP
+`agent-browser://publications/local-dashboard`, and
+`getLocalDashboardPublicationStatus()`. All surfaces are read-only. They never
+acquire the publication lock, build, install, restart, recover, or expose full
+handoff descriptors. `recover_only` is a recommendation rather than authority;
+the operator must separately run the explicit recovery-only command.
+
+`local-dashboard-retained-browser-requirement.v1.schema.json` describes the
+private durable identity gate used by repository publication tooling. It
+contains only session, profile, target, and canonical HTTP or HTTPS URL. PID,
+browser ID, and DevTools endpoint are deliberately excluded because they are
+transient runtime evidence. The file is owner-only, bounded, non-symlink, and
+loaded before publication build or source-checkout user-service convergence.
+
+`local-dashboard-retained-browser-enforcement.v1.schema.json` describes the
+separately committed private authority written before that requirement. Once
+present, a missing requirement is a fail-closed error rather than an
+unconfigured no-op. Its `requirementSha256` precommits the exact allowed
+requirement bytes, so crash retry can resume the same commit and a stale or
+replaced pair fails before service-state access.
+
 ## Browser Capability Registry Draft
 
 `service-browser-capability-registry.v1.schema.json` describes the advisory
@@ -636,6 +663,14 @@ selected-profile, registration, due-monitor, browser-preflight, and
 access-plan attention fields for software logs and operator output. It reports
 whether the request can be sent immediately or should be reused after manual
 seeding, challenge approval, or provider work completes.
+
+The generic service request actions also define a retained-tab parking cycle.
+`tab_handle_release` accepts `params.requirePhysicalClose: true` when the caller
+must keep the handle valid unless the exact target physically closes. The
+closed record retains its URL, title, browser, and session route. `tab_reopen`
+accepts `params.tabId` plus the exact top-level `browserId` and `sessionName`,
+opens the recorded URL as a fresh target in that same live browser/profile, and
+returns a new `serviceTabHandle`. It never launches a replacement browser.
 
 `service-remote-view-route-preflight-response.v1.schema.json` describes the
 no-launch route readiness response returned by HTTP

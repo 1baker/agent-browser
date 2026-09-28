@@ -33,7 +33,42 @@ pub mod network;
 #[allow(dead_code)]
 pub mod policy;
 #[allow(dead_code)]
+pub mod privacy_gate;
+#[allow(dead_code)]
+pub mod private_attachment;
+#[cfg(unix)]
+#[allow(dead_code)]
+pub mod private_bound_execution;
+#[allow(dead_code)]
+pub mod private_broker;
+#[allow(dead_code)]
+pub mod private_controller;
+#[allow(dead_code)]
+pub mod private_controller_socket;
+#[cfg(target_os = "linux")]
+mod private_coordinator;
+#[cfg(unix)]
+#[allow(dead_code)]
+mod private_delivery;
+#[allow(dead_code)]
+pub mod private_execution;
+#[cfg(unix)]
+#[allow(dead_code)]
+pub mod private_handoff;
+#[allow(dead_code)]
+pub mod private_identity;
+#[allow(dead_code)]
+pub mod private_journey;
+#[allow(dead_code)]
+pub mod private_operation;
+#[allow(dead_code)]
+pub mod private_recovery;
+#[allow(dead_code)]
+pub mod private_secret_store;
+#[allow(dead_code)]
 pub mod providers;
+#[allow(dead_code)]
+pub mod publication_status;
 #[allow(dead_code)]
 pub mod recording;
 #[allow(dead_code)]
@@ -48,6 +83,11 @@ pub mod remote_view_handoff;
 pub mod remote_view_lease;
 #[allow(dead_code)]
 pub mod remote_view_proof;
+#[allow(dead_code)]
+pub mod retained_browser_requirement;
+mod runtime_attach_proof;
+#[cfg(target_os = "linux")]
+mod runtime_handoff_v2;
 #[allow(dead_code)]
 pub mod screenshot;
 #[allow(dead_code)]
@@ -86,6 +126,8 @@ pub mod state;
 pub mod storage;
 #[allow(dead_code)]
 pub mod stream;
+#[allow(dead_code)]
+pub mod task_authority;
 #[allow(dead_code)]
 pub mod tracing;
 #[allow(dead_code)]

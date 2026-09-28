@@ -764,7 +764,11 @@ fn parse_service_browser_capability_guide(
     Ok(cmd)
 }
 
-fn parse_service_browser_capability_prefer(id: String, rest: &[&str]) -> Result<Value, ParseError> {
+fn parse_service_browser_capability_prefer(
+    id: String,
+    rest: &[&str],
+    flags: &Flags,
+) -> Result<Value, ParseError> {
     if rest.get(1).copied() != Some("prefer") {
         return Err(ParseError::InvalidValue {
             message: "Expected service browser-capability prefer".to_string(),
@@ -911,6 +915,13 @@ fn parse_service_browser_capability_prefer(id: String, rest: &[&str]) -> Result<
             }
         }
         i += 1;
+    }
+
+    // --browser-build is also a global launch-routing option. The top-level
+    // flag parser removes it before this nested parser runs, so preserve the
+    // explicit CLI selection here just as the preflight parser does.
+    if browser_build.is_none() && flags.cli_browser_build {
+        browser_build = flags.browser_build.clone();
     }
 
     let Some(browser_build) = browser_build else {
@@ -1456,6 +1467,7 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         });
     }
     let mut result = parse_command_inner(args, flags)?;
+    apply_explicit_global_launch_routing_flags(&mut result, flags);
 
     // Inject AGENT_BROWSER_DEFAULT_TIMEOUT into any wait-family command that
     // doesn't already carry an explicit timeout. Centralised here so that new
@@ -2023,7 +2035,15 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
         }
 
         // === Close ===
-        "close" | "quit" | "exit" => Ok(json!({ "id": id, "action": "close" })),
+        "close" | "quit" | "exit" => {
+            let mut command = json!({ "id": id, "action": "close" });
+            // A close request bypasses prestart launch, so an explicit CLI
+            // override must travel with the request to the existing daemon.
+            if flags.cli_leave_open && flags.leave_open {
+                command["leaveOpen"] = json!(true);
+            }
+            Ok(command)
+        }
         "handoff" => {
             let subcommand = rest.first().copied().ok_or_else(|| {
                 ParseError::MissingArguments {
@@ -2657,7 +2677,7 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             Some("browser-capability") => match rest.get(1).copied() {
                 Some("preflight") => parse_service_browser_capability_preflight(id, &rest, flags),
                 Some("guide") => parse_service_browser_capability_guide(id, &rest, flags),
-                Some("prefer") => parse_service_browser_capability_prefer(id, &rest),
+                Some("prefer") => parse_service_browser_capability_prefer(id, &rest, flags),
                 Some(subcommand) => Err(ParseError::UnknownSubcommand {
                     subcommand: subcommand.to_string(),
                     valid_options: &["preflight", "guide", "prefer"],
@@ -4741,6 +4761,7 @@ fn parse_get(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         "styles",
         "cdp-url",
         "browser-pid",
+        "page",
     ];
 
     match rest.first().copied() {
@@ -4779,6 +4800,76 @@ fn parse_get(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         Some("url") => Ok(json!({ "id": id, "action": "url" })),
         Some("cdp-url") => Ok(json!({ "id": id, "action": "cdp_url" })),
         Some("browser-pid") => Ok(json!({ "id": id, "action": "browser_pid" })),
+        Some("page") => {
+            const USAGE: &str = "get page --url <url> [--max-bytes <n>] [--timeout <ms>] [--include-credentials]";
+            let mut url = None;
+            let mut max_bytes = 64_000u64;
+            let mut timeout_ms = 15_000u64;
+            let mut include_credentials = false;
+            let mut index = 1;
+            while index < rest.len() {
+                match rest[index] {
+                    "--url" => {
+                        index += 1;
+                        url = rest.get(index).copied();
+                        if url.is_none() {
+                            return Err(ParseError::MissingArguments {
+                                context: "get page --url".to_string(),
+                                usage: USAGE,
+                            });
+                        }
+                    }
+                    "--max-bytes" => {
+                        index += 1;
+                        let value = rest.get(index).ok_or_else(|| ParseError::MissingArguments {
+                            context: "get page --max-bytes".to_string(),
+                            usage: USAGE,
+                        })?;
+                        max_bytes = value.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                            message: format!("Invalid --max-bytes value: {value}"),
+                            usage: USAGE,
+                        })?;
+                    }
+                    "--timeout" => {
+                        index += 1;
+                        let value = rest.get(index).ok_or_else(|| ParseError::MissingArguments {
+                            context: "get page --timeout".to_string(),
+                            usage: USAGE,
+                        })?;
+                        timeout_ms = value.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                            message: format!("Invalid --timeout value: {value}"),
+                            usage: USAGE,
+                        })?;
+                    }
+                    "--include-credentials" => include_credentials = true,
+                    value => {
+                        return Err(ParseError::InvalidValue {
+                            message: format!("Unknown get page option: {value}"),
+                            usage: USAGE,
+                        })
+                    }
+                }
+                index += 1;
+            }
+            let url = url.ok_or_else(|| ParseError::MissingArguments {
+                context: "get page".to_string(),
+                usage: USAGE,
+            })?;
+            if max_bytes == 0 || timeout_ms == 0 {
+                return Err(ParseError::InvalidValue {
+                    message: "--max-bytes and --timeout must be greater than zero".to_string(),
+                    usage: USAGE,
+                });
+            }
+            Ok(json!({
+                "id": id,
+                "action": "read_page",
+                "url": url,
+                "maxBytes": max_bytes,
+                "timeoutMs": timeout_ms,
+                "includeCredentials": include_credentials,
+            }))
+        }
         Some("title") => Ok(json!({ "id": id, "action": "title" })),
         Some("count") => {
             let sel = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
@@ -4807,7 +4898,7 @@ fn parse_get(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         }),
         None => Err(ParseError::MissingArguments {
             context: "get".to_string(),
-            usage: "get <text|html|value|attr|url|title|count|box|styles|cdp-url|browser-pid> [args...]",
+            usage: "get <text|html|value|attr|url|title|count|box|styles|cdp-url|browser-pid|page> [args...]",
         }),
     }
 }
@@ -5408,6 +5499,7 @@ mod tests {
             executable_path_source: None,
             extensions: Vec::new(),
             cdp: None,
+            target_id: None,
             profile: None,
             state: None,
             proxy: None,
@@ -5469,6 +5561,21 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn close_carries_only_an_explicit_leave_open_override() {
+        let ordinary = parse_command(&args("close"), &default_flags()).unwrap();
+        assert!(ordinary.get("leaveOpen").is_none());
+
+        let mut configured_only = default_flags();
+        configured_only.leave_open = true;
+        let configured = parse_command(&args("close"), &configured_only).unwrap();
+        assert!(configured.get("leaveOpen").is_none());
+
+        configured_only.cli_leave_open = true;
+        let explicit = parse_command(&args("close"), &configured_only).unwrap();
+        assert_eq!(explicit["leaveOpen"], true);
     }
 
     // === Cookies Tests ===
@@ -5761,6 +5868,21 @@ mod tests {
         assert_eq!(cmd["viewStreamProvider"], "rdp_gateway");
         assert_eq!(cmd["controlInputProvider"], "manual_attached_desktop");
         assert_eq!(cmd["displayIsolation"], "private_virtual_display");
+    }
+
+    #[test]
+    fn test_non_navigation_browser_command_preserves_explicit_global_launch_routing_flags() {
+        let mut flags = default_flags();
+        flags.profile = Some("/tmp/agent-browser-stealth-proof".to_string());
+        flags.cli_profile = true;
+        flags.browser_build = Some("stealthcdp_chromium".to_string());
+        flags.cli_browser_build = true;
+
+        let cmd = parse_command(&args("get url"), &flags).unwrap();
+
+        assert_eq!(cmd["action"], "url");
+        assert_eq!(cmd["profile"], "/tmp/agent-browser-stealth-proof");
+        assert_eq!(cmd["browserBuild"], "stealthcdp_chromium");
     }
 
     #[test]
@@ -6630,6 +6752,47 @@ mod tests {
     fn test_get_browser_pid() {
         let cmd = parse_command(&args("get browser-pid"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "browser_pid");
+    }
+
+    #[test]
+    fn test_get_page_uses_bounded_defaults_without_credentials() {
+        let cmd = parse_command(
+            &args("get page --url https://example.com/large"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "read_page");
+        assert_eq!(cmd["url"], "https://example.com/large");
+        assert_eq!(cmd["maxBytes"], 64_000);
+        assert_eq!(cmd["timeoutMs"], 15_000);
+        assert_eq!(cmd["includeCredentials"], false);
+    }
+
+    #[test]
+    fn test_get_page_accepts_explicit_bounds_and_credentials() {
+        let cmd = parse_command(
+            &args("get page --url https://example.com --max-bytes 4096 --timeout 7000 --include-credentials"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["maxBytes"], 4096);
+        assert_eq!(cmd["timeoutMs"], 7000);
+        assert_eq!(cmd["includeCredentials"], true);
+    }
+
+    #[test]
+    fn test_get_page_rejects_missing_url_and_zero_bounds() {
+        assert!(parse_command(&args("get page"), &default_flags()).is_err());
+        assert!(parse_command(
+            &args("get page --url https://example.com --max-bytes 0"),
+            &default_flags()
+        )
+        .is_err());
+        assert!(parse_command(
+            &args("get page --url https://example.com --timeout 0"),
+            &default_flags()
+        )
+        .is_err());
     }
 
     // === Protocol alignment tests ===
@@ -7575,6 +7738,22 @@ mod tests {
         assert_eq!(cmd["record"]["browserBuild"], "stock_chrome");
         assert_eq!(cmd["record"]["priority"], 250);
         assert_eq!(cmd["record"]["reason"], "site_requires_stock_chrome");
+    }
+
+    #[test]
+    fn test_service_browser_capability_prefer_preserves_cleaned_browser_build() {
+        let all_args = args(
+            "service browser-capability prefer --browser-build stealthcdp_chromium --target-service-id chatgpt --preferred-executable-id stealthcdp-win-150 --reason operator_primary_browser_preference",
+        );
+        let mut flags = default_flags();
+        flags.browser_build = Some("stealthcdp_chromium".to_string());
+        flags.cli_browser_build = true;
+
+        let cleaned = crate::flags::clean_args(&all_args);
+        let cmd = parse_command(&cleaned, &flags).unwrap();
+
+        assert_eq!(cmd["action"], "service_browser_capability_registry_upsert");
+        assert_eq!(cmd["record"]["browserBuild"], "stealthcdp_chromium");
     }
 
     #[test]

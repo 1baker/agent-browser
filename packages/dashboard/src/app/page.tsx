@@ -92,6 +92,9 @@ type RemoteViewHandoffApiResponse = {
   success: boolean;
   data?: RemoteViewHandoffResolution;
   error?: string | null;
+  cause?: string | null;
+  recourse?: string | null;
+  requestDispatched?: boolean;
 };
 
 type RuntimeManifest = {
@@ -308,16 +311,16 @@ function RemoteViewHandoffGate({
       });
       const payload = (await response.json()) as RemoteViewHandoffApiResponse;
       if (!response.ok || !payload.success || !payload.data) {
-        throw new Error(payload.error || "The remote-view handoff could not be resolved.");
+        throw new Error(
+          [
+            payload.error || "The remote-view handoff could not be resolved.",
+            payload.recourse,
+          ].filter(Boolean).join(" "),
+        );
       }
       const nextResolution = payload.data;
       setResolution(nextResolution);
       if (!nextResolution.resolved || nextResolution.status !== "ready") return;
-      if (nextResolution.providerFallbackUrl) {
-        window.location.assign(nextResolution.providerFallbackUrl);
-        return;
-      }
-
       const tab = nextResolution.tab ?? null;
       const open = nextResolution.open ?? null;
       const intent = open?.intent && typeof open.intent === "object"
@@ -413,7 +416,11 @@ function RemoteViewHandoffGate({
             {error || resolution?.message || "The handoff no longer exists."}
           </p>
           <div className="flex gap-3">
-            {error ? <Button onClick={() => void resolveHandoff(false)}>Retry</Button> : null}
+            {error ? (
+              <Button onClick={() => void resolveHandoff(false)}>
+                Recover and take control
+              </Button>
+            ) : null}
             <Button variant="outline" onClick={onLogout}>Sign out</Button>
           </div>
         </section>

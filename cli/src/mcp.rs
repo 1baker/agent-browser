@@ -3,6 +3,9 @@ use std::io::{self, BufRead, Write};
 use serde_json::{json, Map, Value};
 
 use crate::connection::{send_command, Response};
+use crate::native::publication_status::{
+    local_dashboard_publication_status, LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE,
+};
 use crate::native::remote_view_handoff::apply_remote_view_handoff_route_hints;
 use crate::native::service_access::{
     apply_shared_profile_route_hints_for_service_request, parse_service_access_plan_query,
@@ -15,7 +18,11 @@ use crate::native::service_contracts::{
     SERVICE_BROWSER_CAPABILITY_REGISTRY_RESOURCE, SERVICE_CONTRACTS_RESOURCE,
     SERVICE_DISPLAY_ALLOCATIONS_MCP_RESOURCE, SERVICE_PROFILE_SEEDING_HANDOFF_UPDATE_MCP_TOOL_NAME,
     SERVICE_REMOTE_VIEW_ROUTES_MCP_RESOURCE, SERVICE_REMOTE_VIEW_ROUTE_PREFLIGHT_MCP_TOOL_NAME,
-    SERVICE_REQUEST_ACTIONS, SERVICE_ROUTE_POOL_MCP_RESOURCE, SERVICE_VIEWER_LEASES_MCP_RESOURCE,
+    SERVICE_REQUEST_ACTIONS, SERVICE_ROUTE_POOL_MCP_RESOURCE,
+    SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME,
+    SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME, SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME,
+    SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME, SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME,
+    SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME, SERVICE_VIEWER_LEASES_MCP_RESOURCE,
 };
 use crate::native::service_incidents::{
     service_incident_summary, service_incidents_response, ServiceIncidentFilters,
@@ -60,6 +67,7 @@ pub fn run_mcp_command(
     json_output: bool,
     session: &str,
     configured_service_state: &ServiceState,
+    flags: &crate::flags::Flags,
 ) -> i32 {
     if args.get(1).map(|value| value.as_str()) == Some("serve") {
         return match run_stdio_server(
@@ -67,6 +75,7 @@ pub fn run_mcp_command(
             io::stdout().lock(),
             session,
             configured_service_state.clone(),
+            Some(flags),
         ) {
             Ok(()) => 0,
             Err(err) => {
@@ -255,6 +264,12 @@ fn service_mcp_resources() -> Vec<Value> {
             "mimeType": "application/json",
             "description": "Retained service events in chronological order"
         }),
+        json!({
+            "uri": LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE,
+            "name": "Local dashboard publication status",
+            "mimeType": "application/json",
+            "description": "Read-only durable publication journal, lock, transaction, and installed-artifact evidence"
+        }),
     ]
 }
 
@@ -313,6 +328,7 @@ fn read_service_mcp_resource_from_state(uri: &str, state: &ServiceState) -> Resu
     state.refresh_profile_readiness();
     let contents = match uri {
         SERVICE_CONTRACTS_RESOURCE => service_contracts_metadata(),
+        LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE => local_dashboard_publication_status()?,
         SERVICE_ACCESS_PLAN_MCP_RESOURCE => {
             service_access_plan_for_state(&state, Default::default())
         }
@@ -519,6 +535,7 @@ fn run_stdio_server<R, W>(
     mut writer: W,
     session: &str,
     configured_service_state: ServiceState,
+    flags: Option<&crate::flags::Flags>,
 ) -> Result<(), String>
 where
     R: BufRead,
@@ -531,7 +548,7 @@ where
         }
 
         if let Some(response) =
-            handle_jsonrpc_line_with_config(&line, session, &configured_service_state)
+            handle_jsonrpc_line_with_launch_config(&line, session, &configured_service_state, flags)
         {
             writeln!(
                 writer,
@@ -551,6 +568,49 @@ where
 #[cfg(test)]
 fn handle_jsonrpc_line(line: &str, session: &str) -> Option<Value> {
     handle_jsonrpc_line_with_config(line, session, &ServiceState::default())
+}
+
+/// Only the mutating service-request dispatch gets launch configuration. All
+/// other MCP methods keep their existing no-launch/read-only behavior.
+fn handle_jsonrpc_line_with_launch_config(
+    line: &str,
+    session: &str,
+    state: &ServiceState,
+    flags: Option<&crate::flags::Flags>,
+) -> Option<Value> {
+    if let (Some(flags), Ok(message)) = (flags, serde_json::from_str::<Value>(line)) {
+        if message.get("id").is_some()
+            && message["method"] == "tools/call"
+            && message["params"]["name"] == "service_managed_runtime_reconnect"
+        {
+            let result =
+                call_service_managed_runtime_reconnect(&message["params"]["arguments"], flags);
+            return Some(match result {
+                Ok(result) => json!({"jsonrpc": "2.0", "id": message["id"], "result": result}),
+                Err(error) => {
+                    jsonrpc_error(message["id"].clone(), error.code, error.message, error.data)
+                }
+            });
+        }
+        if message.get("id").is_some()
+            && message["method"] == "tools/call"
+            && message["params"]["name"] == "service_request"
+        {
+            let result = call_service_request_with_flags(
+                &message["params"]["arguments"],
+                session,
+                state,
+                Some(flags),
+            );
+            return Some(match result {
+                Ok(result) => json!({"jsonrpc": "2.0", "id": message["id"], "result": result}),
+                Err(error) => {
+                    jsonrpc_error(message["id"].clone(), error.code, error.message, error.data)
+                }
+            });
+        }
+    }
+    handle_jsonrpc_line_with_config(line, session, state)
 }
 
 fn handle_jsonrpc_line_with_config(
@@ -761,6 +821,10 @@ fn service_mcp_tools() -> Vec<Value> {
                     "readinessProfileId": {
                         "type": "string",
                         "description": "Explicit profile id for readiness inspection."
+                    },
+                    "runtimeProfile": {
+                        "type": "string",
+                        "description": "Explicit managed or registered profile id for routing and reuse planning."
                     },
                     "browserBuild": {
                         "type": "string",
@@ -1015,6 +1079,20 @@ fn service_mcp_tools() -> Vec<Value> {
                         "type": "string",
                         "description": "Calling task name, for example probeACSwebsite."
                     },
+                    "taskAuthority": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "description": "Broker-issued immutable task authority envelope."
+                    },
+                    "taskStepId": {
+                        "type": "string",
+                        "description": "Exact broker-assigned ID of the next ordered v2 authority step."
+                    },
+                    "taskEvidenceBytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Evidence reservation for the exact ordered authority step."
+                    },
                     "targetServiceId": {
                         "type": "string",
                         "description": "Target site or identity provider for profile selection."
@@ -1098,6 +1176,26 @@ fn service_mcp_tools() -> Vec<Value> {
                     }
                 },
                 "required": ["jobId"]
+            }
+        }),
+        json!({
+            "name": "service_managed_runtime_reconnect",
+            "title": "Reconnect exact retained browser",
+            "description": "Explicitly reconnect the selected daemon session to one exact target in its already-live browser after fresh profile, PID, CDP endpoint, target, and build-proof checks. Never launches or replaces Chrome and never replays the prior request.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "browserId": {"type": "string", "description": "Exact retained browser id from the no-launch access plan."},
+                    "sessionName": {"type": "string", "description": "Exact retained daemon session from the no-launch access plan."},
+                    "runtimeProfile": {"type": "string", "description": "Exact managed runtime profile selected by the access plan."},
+                    "expectedBrowserPid": {"type": "integer", "minimum": 1, "description": "Current browser PID from retained browser status."},
+                    "expectedTargetId": {"type": "string", "minLength": 1, "description": "Exact ready page target id from the retained browser status."},
+                    "serviceName": {"type": "string"},
+                    "agentName": {"type": "string"},
+                    "taskName": {"type": "string"}
+                },
+                "required": ["browserId", "sessionName", "runtimeProfile", "expectedBrowserPid", "expectedTargetId"]
             }
         }),
         json!({
@@ -2860,6 +2958,12 @@ fn service_mcp_tools() -> Vec<Value> {
         browser_tab_close_tool_schema(),
         browser_set_content_tool_schema(),
         browser_command_tool_schema(),
+        task_authority_issue_tool_schema(),
+        task_authority_status_tool_schema(),
+        task_authority_reconcile_tool_schema(),
+        task_authority_confirmation_tool_schema(),
+        task_authority_confirmation_cleanup_tool_schema(),
+        task_authority_revoke_tool_schema(),
         json!({
             "name": "service_trace",
             "title": "Read service trace",
@@ -2960,6 +3064,27 @@ fn with_browser_target_profile_hint_properties(mut tool: Value) -> Value {
             "type": "string",
             "enum": ["stock_chrome", "stealthcdp_chromium", "cdp_free_headed"],
             "description": "Optional browser-build preference for profile selection and launch routing."
+        }),
+    );
+    properties.insert(
+        "runtimeProfile".to_string(),
+        json!({
+            "type": "string",
+            "description": "Optional managed runtime profile used by the no-launch access plan to select a retained browser lane."
+        }),
+    );
+    properties.insert(
+        "browserId".to_string(),
+        json!({
+            "type": "string",
+            "description": "Optional retained browser route hint copied from access-plan profileReuse evidence. Session-prefixed browser IDs route this typed tool to that existing daemon lane."
+        }),
+    );
+    properties.insert(
+        "sessionName".to_string(),
+        json!({
+            "type": "string",
+            "description": "Optional retained daemon session route hint copied from access-plan profileReuse evidence."
         }),
     );
     properties.insert(
@@ -4549,6 +4674,195 @@ fn browser_command_tool_schema() -> Value {
     })
 }
 
+fn task_authority_issue_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME,
+        "title": "Issue bounded browser task authority",
+        "description": "Ask the broker to derive and durably issue exact-target authority for an approved plan. Authority defaults to the existing read/navigation posture; callers may request an explicit consequence ceiling no higher than script_execution. The operation always requires target-bound confirmation.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string", "description": "Exact retained daemon session." },
+                "taskName": { "type": "string" },
+                "serviceName": { "type": "string" },
+                "agentName": { "type": "string" },
+                "expectedTargetId": { "type": "string" },
+                "expectedUrl": { "type": "string" },
+                "issuer": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "kind": { "type": "string", "enum": ["operator", "service"] },
+                        "id": { "type": "string" }
+                    },
+                    "required": ["kind", "id"]
+                },
+                "approvalReference": { "type": "string" },
+                "expiresInSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+                "consequenceCeiling": {
+                    "type": "string",
+                    "enum": ["read_only", "navigation", "page_mutation", "external_mutation", "file_transfer", "credentials", "script_execution"]
+                },
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "action": { "type": "string" },
+                            "url": { "type": "string" },
+                            "evidenceBytes": { "type": "integer", "minimum": 1 }
+                        },
+                        "required": ["action"]
+                    }
+                }
+            },
+            "required": ["taskName", "expectedTargetId", "expectedUrl", "approvalReference", "expiresInSeconds", "steps"]
+        }
+    })
+}
+
+fn task_authority_status_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME,
+        "title": "Read browser task authority status",
+        "description": "Read broker issuer, approval, plan, revocation, expiry, usage, and remaining budget without launching or mutating a browser.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string", "description": "Exact retained daemon session." },
+                "authorityId": { "type": "string" }
+            },
+            "required": []
+        }
+    })
+}
+
+fn task_authority_revoke_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME,
+        "title": "Revoke browser task authority",
+        "description": "Durably revoke one broker-issued authority on its exact retained target. The operation always requires target-bound confirmation and is idempotent for matching evidence.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string", "description": "Exact retained daemon session." },
+                "authorityId": { "type": "string" },
+                "revokedBy": { "type": "string" },
+                "reason": { "type": "string" }
+            },
+            "required": ["authorityId", "reason"]
+        }
+    })
+}
+
+fn task_authority_reconcile_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME,
+        "title": "Reconcile indeterminate browser task authority",
+        "description": "Freshly confirm one exact retained target, durably revoke an authority with exactly one named indeterminate step, and mint one lineage-bound replacement without replaying the consumed step.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string" },
+                "authorityId": { "type": "string" },
+                "reconciliationId": { "type": "string" },
+                "unresolvedStepId": { "type": "string" },
+                "taskName": { "type": "string" },
+                "serviceName": { "type": "string" },
+                "agentName": { "type": "string" },
+                "expectedTargetId": { "type": "string" },
+                "expectedUrl": { "type": "string" },
+                "issuer": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "kind": { "type": "string", "enum": ["operator", "service"] },
+                        "id": { "type": "string" }
+                    },
+                    "required": ["kind", "id"]
+                },
+                "approvalReference": { "type": "string" },
+                "expiresInSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+                "consequenceCeiling": {
+                    "type": "string",
+                    "enum": ["read_only", "navigation", "page_mutation", "external_mutation", "file_transfer", "credentials", "script_execution"]
+                },
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "action": { "type": "string" },
+                            "url": { "type": "string" },
+                            "evidenceBytes": { "type": "integer", "minimum": 1 }
+                        },
+                        "required": ["action"]
+                    }
+                }
+            },
+            "required": ["authorityId", "reconciliationId", "unresolvedStepId", "taskName", "expectedTargetId", "expectedUrl", "approvalReference", "expiresInSeconds", "steps"]
+        }
+    })
+}
+
+fn task_authority_confirmation_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME,
+        "title": "Confirm or deny a task authority control",
+        "description": "Resolve one pending exact-target task authority issue, reconcile, or revoke confirmation on the same retained daemon session.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string" },
+                "confirmationId": { "type": "string" },
+                "expectedAction": { "type": "string", "enum": ["task_authority_issue", "task_authority_reconcile", "task_authority_revoke"] },
+                "decision": { "type": "string", "enum": ["confirm", "deny"] },
+                "decidedBy": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "kind": { "type": "string", "enum": ["operator", "service"] },
+                        "id": { "type": "string" }
+                    },
+                    "required": ["kind", "id"]
+                }
+            },
+            "required": ["confirmationId", "expectedAction", "decision"]
+        }
+    })
+}
+
+fn task_authority_confirmation_cleanup_tool_schema() -> Value {
+    json!({
+        "name": SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME,
+        "title": "Preview or apply task authority confirmation receipt cleanup",
+        "description": "Preview deterministic terminal receipt retirement with verified checkpoint-ledger evidence, then apply only with the exact review digest. Pending and indeterminate receipts are always preserved.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "sessionName": { "type": "string" },
+                "retainCount": { "type": "integer", "minimum": 0 },
+                "minAgeSeconds": { "type": "integer", "minimum": 0 },
+                "apply": { "type": "boolean" },
+                "reviewSha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+            },
+            "required": []
+        }
+    })
+}
+
 fn browser_read_tool_schema(spec: BrowserReadToolSpec) -> Value {
     json!({
         "name": spec.tool_name,
@@ -4703,6 +5017,12 @@ fn call_service_mcp_tool(
     let arguments = params
         .and_then(|value| value.get("arguments"))
         .unwrap_or(&Value::Null);
+    let routed_session = if name.starts_with("browser_") {
+        resolve_browser_tool_session(arguments, session, configured_service_state)?
+    } else {
+        session.to_string()
+    };
+    let session = routed_session.as_str();
 
     match name {
         SERVICE_ACCESS_PLAN_MCP_TOOL_NAME => {
@@ -4748,6 +5068,22 @@ fn call_service_mcp_tool(
         }
         SERVICE_REMOTE_VIEW_ROUTE_PREFLIGHT_MCP_TOOL_NAME => {
             call_service_remote_view_route_preflight(arguments, session)
+        }
+        SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME => call_task_authority_issue(arguments, session),
+        SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME => {
+            call_task_authority_status(arguments, session)
+        }
+        SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME => {
+            call_task_authority_reconcile(arguments, session)
+        }
+        SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME => {
+            call_task_authority_confirmation(arguments, session)
+        }
+        SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME => {
+            call_task_authority_confirmation_cleanup(arguments, session)
+        }
+        SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME => {
+            call_task_authority_revoke(arguments, session)
         }
         "service_request" => call_service_request(arguments, session, configured_service_state),
         "browser_command" => call_browser_command(arguments, session),
@@ -5172,7 +5508,60 @@ fn call_service_profile_upsert(arguments: &Value, session: &str) -> Result<Value
     let trace = service_tool_trace(service_name, agent_name, task_name);
     let command = service_profile_upsert_command(id, &profile, service_name, agent_name, task_name);
 
+    if cold_profile_worker_allowed(&crate::connection::get_socket_dir(), session) {
+        return run_cold_profile_worker(session, trace, command);
+    }
     send_queued_tool_command("service_profile_upsert", session, trace, command)
+}
+
+/// Only a metadata-free session qualifies. Never reinterpret a failed send,
+/// stale socket, missing token, or unreadable directory as cold-start authority.
+fn cold_profile_worker_allowed(socket_dir: &std::path::Path, session: &str) -> bool {
+    let prefix = format!("{session}.");
+    match std::fs::read_dir(socket_dir) {
+        Ok(mut entries) => !entries.any(|entry| match entry {
+            Ok(entry) => entry
+                .file_name()
+                .to_str()
+                .is_none_or(|name| name == session || name.starts_with(&prefix)),
+            Err(_) => true,
+        }),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+/// Profile configuration only: keep the canonical job queue and persistence
+/// checks, without a socket daemon, browser acquisition or ambient monitors.
+fn run_cold_profile_worker(
+    session: &str,
+    trace: Value,
+    command: Value,
+) -> Result<Value, JsonRpcError> {
+    let operation = || -> Result<Response, String> {
+        let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
+        runtime.block_on(async {
+            let mut state = crate::native::actions::DaemonState::new();
+            state.session_id = session.to_owned();
+            let worker = crate::native::control_plane::ControlPlaneWorker::start_with_options(
+                state,
+                None,
+                Some(30_000),
+                None,
+            );
+            let raw = worker.submit(command).await;
+            worker.shutdown().await;
+            serde_json::from_value(raw).map_err(|error| error.to_string())
+        })
+    };
+    let response = operation().map_err(|error| {
+        queued_tool_transport_error("service_profile_upsert", session, &trace, false, &error)
+    })?;
+    Ok(tool_response_from_daemon(
+        "service_profile_upsert",
+        session,
+        trace,
+        response,
+    ))
 }
 
 fn call_service_profile_freshness_update(
@@ -5459,6 +5848,11 @@ fn service_request_command_with_state(
     if let Some(id) = command.get("id").and_then(Value::as_str) {
         let new_id = id.replacen("mcp-browser-command-", "mcp-service-request-", 1);
         command["id"] = json!(new_id);
+    }
+    for field in ["taskAuthority", "taskStepId", "taskEvidenceBytes"] {
+        if let Some(value) = arguments.get(field) {
+            command[field] = value.clone();
+        }
     }
     context.apply_target_profile_hints(&mut command);
     if let Some(value) = arguments.get("manualLoginLaunch") {
@@ -6131,6 +6525,202 @@ fn call_service_request(
     session: &str,
     configured_service_state: &ServiceState,
 ) -> Result<Value, JsonRpcError> {
+    call_service_request_with_flags(arguments, session, configured_service_state, None)
+}
+
+/// Explicitly restore only a previously proven daemon connection. This never
+/// dispatches the caller's failed browser command and cannot cold-launch Chrome.
+fn call_service_managed_runtime_reconnect(
+    arguments: &Value,
+    flags: &crate::flags::Flags,
+) -> Result<Value, JsonRpcError> {
+    use crate::connection::{ensure_daemon, DaemonOptions};
+    use crate::native::service_store::ServiceStateRepository;
+    use crate::runtime_profile::runtime_status_with_user_data_dir;
+    use std::path::Path;
+
+    let required = |field: &str| {
+        arguments
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                JsonRpcError::invalid_params(&format!(
+                    "service_managed_runtime_reconnect requires {field}"
+                ))
+            })
+    };
+    let browser_id = required("browserId")?;
+    let session = required("sessionName")?;
+    let profile_id = required("runtimeProfile")?;
+    let expected_target_id = required("expectedTargetId")?;
+    let expected_pid = arguments
+        .get("expectedBrowserPid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params(
+                "service_managed_runtime_reconnect requires expectedBrowserPid",
+            )
+        })?;
+    if browser_id != format!("session:{session}") {
+        return Err(JsonRpcError::invalid_params(
+            "Retained reconnect browserId must match sessionName",
+        ));
+    }
+    let service_name = optional_string_argument(arguments, "serviceName")?;
+    let agent_name = optional_string_argument(arguments, "agentName")?;
+    let task_name = optional_string_argument(arguments, "taskName")?;
+    let trace = service_tool_trace(service_name, agent_name, task_name);
+    let refusal = |message: String| JsonRpcError {
+        code: -32603,
+        message: "Retained browser reconnect refused",
+        data: Some(json!({
+            "message": message,
+            "browserId": browser_id,
+            "sessionName": session,
+            "runtimeProfile": profile_id,
+            "expectedTargetId": expected_target_id,
+            "trace": trace,
+        })),
+    };
+    let repository = crate::native::service_store::LockedServiceStateRepository::default_json()
+        .map_err(|error| refusal(error.to_string()))?;
+    let state = repository
+        .load_snapshot()
+        .map_err(|error| refusal(error.to_string()))?;
+    let mut plan_fields = vec![("runtimeProfile".to_string(), profile_id.to_string())];
+    if let Some(service_name) = service_name {
+        plan_fields.push(("serviceName".to_string(), service_name.to_string()));
+    }
+    let plan_query =
+        parse_service_access_plan_query(plan_fields).map_err(|error| refusal(error.to_string()))?;
+    let plan = service_access_plan_for_state(&state, plan_query);
+    if plan["decision"]["profileReuse"]["reusableBrowserId"] != browser_id
+        || plan["decision"]["profileReuse"]["reusableSessionName"] != session
+    {
+        return Err(refusal(
+            "No-launch access plan does not recommend the exact retained browser".to_string(),
+        ));
+    }
+    let profile_path = state
+        .profiles
+        .get(profile_id)
+        .and_then(|profile| profile.user_data_dir.as_deref())
+        .ok_or_else(|| refusal("Retained profile path is unavailable".to_string()))?;
+    let status = runtime_status_with_user_data_dir(profile_id, Some(Path::new(profile_path)))
+        .map_err(refusal)?;
+    if status.browser_pid != Some(expected_pid) {
+        return Err(refusal("Retained browser PID changed".to_string()));
+    }
+    let identity =
+        crate::retained_reconnect_identity(session, profile_id, &status, Some(expected_target_id))
+            .map_err(refusal)?;
+    let port = status
+        .devtools_port
+        .ok_or_else(|| refusal("Retained browser DevTools port is unavailable".to_string()))?;
+    let opts = DaemonOptions {
+        headed: true,
+        debug: flags.debug,
+        leave_open: true,
+        executable_path: None,
+        executable_path_source: None,
+        extensions: &[],
+        args: None,
+        user_agent: None,
+        runtime_profile: Some(profile_id),
+        proxy: None,
+        proxy_bypass: None,
+        proxy_username: None,
+        proxy_password: None,
+        ignore_https_errors: false,
+        allow_file_access: false,
+        profile: None,
+        state: None,
+        provider: None,
+        device: None,
+        session_name: None,
+        download_path: None,
+        allowed_domains: flags.allowed_domains.as_deref(),
+        action_policy: flags.action_policy.as_deref(),
+        confirm_actions: flags.confirm_actions.as_deref(),
+        engine: Some("chrome"),
+        use_real_keychain: false,
+        keychain_password: None,
+        auto_connect: false,
+        idle_timeout: flags.idle_timeout.as_deref(),
+        service_reconcile_interval_ms: flags.service_reconcile_interval_ms,
+        service_job_timeout_ms: flags.service_job_timeout_ms,
+        service_monitor_interval_ms: flags.service_monitor_interval_ms,
+        service_recovery_retry_budget: flags.service_recovery_retry_budget,
+        service_recovery_base_backoff_ms: flags.service_recovery_base_backoff_ms,
+        service_recovery_max_backoff_ms: flags.service_recovery_max_backoff_ms,
+        service_recovery_retry_budget_source: flags.service_recovery_retry_budget_source.as_str(),
+        service_recovery_base_backoff_ms_source: flags
+            .service_recovery_base_backoff_ms_source
+            .as_str(),
+        service_recovery_max_backoff_ms_source: flags
+            .service_recovery_max_backoff_ms_source
+            .as_str(),
+        default_timeout: flags.default_timeout,
+        cdp: None,
+        runtime_attach_managed: false,
+        no_auto_dialog: flags.no_auto_dialog,
+        allow_stale_daemon_handoff: false,
+    };
+    ensure_daemon(session, &opts).map_err(refusal)?;
+    let command = json!({
+        "id": crate::commands::gen_id(),
+        "action": "retained_owner_prepare",
+        "browserId": browser_id,
+        "sessionName": session,
+        "cdpPort": port,
+        "runtimeProfile": profile_id,
+        "expectedBrowserPid": expected_pid,
+        "expectedCdpEndpoint": identity.endpoint,
+        "expectedTargetId": identity.target_id,
+        "serviceName": service_name,
+        "agentName": agent_name,
+        "taskName": task_name,
+    });
+    let response = send_command(command, session).map_err(refusal)?;
+    if !response.success {
+        return Err(refusal(response.error.unwrap_or_else(|| {
+            "Retained reconnect command failed".to_string()
+        })));
+    }
+    let post_status = runtime_status_with_user_data_dir(profile_id, Some(Path::new(profile_path)))
+        .map_err(refusal)?;
+    if post_status.browser_pid != Some(expected_pid)
+        || crate::retained_reconnect_identity(
+            session,
+            profile_id,
+            &post_status,
+            Some(expected_target_id),
+        )
+        .ok()
+        .as_ref()
+            != Some(&identity)
+    {
+        return Err(refusal(
+            "Retained reconnect post-check failed; browser was preserved".to_string(),
+        ));
+    }
+    Ok(tool_response_from_daemon(
+        "service_managed_runtime_reconnect",
+        session,
+        trace,
+        response,
+    ))
+}
+
+fn call_service_request_with_flags(
+    arguments: &Value,
+    session: &str,
+    configured_service_state: &ServiceState,
+    flags: Option<&crate::flags::Flags>,
+) -> Result<Value, JsonRpcError> {
     let mut state = load_default_service_state_snapshot().map_err(|err| JsonRpcError {
         code: -32603,
         message: "Internal error",
@@ -6138,8 +6728,411 @@ fn call_service_request(
     })?;
     state.overlay_configured_entities(configured_service_state.clone());
     state.refresh_profile_readiness();
-    let (trace, command) = service_request_command_with_state(arguments, Some(&state))?;
+    let mut configured_arguments = arguments.clone();
+    if let Some(flags) = flags {
+        if cold_launch_config_eligible(
+            arguments,
+            crate::connection::daemon_ready(session),
+            crate::connection::daemon_session_metadata_absent(session),
+        ) {
+            apply_cold_mcp_launch_defaults(&mut configured_arguments, flags);
+        }
+    }
+    let (trace, command) = service_request_command_with_state(&configured_arguments, Some(&state))?;
+    if let Some(flags) = flags {
+        if matches!(command["action"].as_str(), Some("navigate" | "tab_new"))
+            && !cold_request_has_route_hint(arguments)
+            && !cold_request_has_route_hint(&command)
+        {
+            let mut params = access_plan_params_from_arguments(&command)?;
+            if let Some(profile) = command.get("profileId").and_then(Value::as_str) {
+                params.push(("profileId".to_string(), profile.to_string()));
+            }
+            let request = parse_service_access_plan_query(params)
+                .map_err(|err| JsonRpcError::invalid_params(&err))?;
+            let plan = service_access_plan_for_state(&state, request);
+            if cold_service_request_admitted(arguments, &command, &plan) {
+                let selected_profile = plan["decision"]["profileReuse"]["selectedProfileId"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        JsonRpcError::invalid_params(
+                            "Cold MCP startup denied: selected profile missing",
+                        )
+                    })?;
+                let selected_path = cold_mcp_selected_profile_path(&command, &plan)?;
+                let cold_session = if crate::connection::daemon_ready(session) {
+                    format!("mcp-cold-{}", uuid::Uuid::new_v4().simple())
+                } else {
+                    session.to_string()
+                };
+                if !crate::connection::daemon_session_metadata_absent(&cold_session) {
+                    return Err(JsonRpcError::invalid_params("Cold MCP startup denied: refresh access plan and inspect retained profile/session ownership"));
+                }
+                crate::start_cold_mcp_daemon(
+                    flags,
+                    &cold_session,
+                    Some(selected_profile),
+                    Some(selected_path),
+                )
+                .map_err(|err| JsonRpcError {
+                    code: -32603,
+                    message: "Cold MCP startup denied",
+                    data: Some(json!({"message": err, "requestDispatched": false})),
+                })?;
+                return send_queued_tool_command_with_sender(
+                    "service_request",
+                    &cold_session,
+                    trace,
+                    command,
+                    |command, session| crate::connection::send_command_once(&command, session),
+                );
+            }
+            if !crate::connection::daemon_ready(session) {
+                return Err(JsonRpcError::invalid_params("Cold MCP startup denied: refresh access plan and inspect retained profile/session ownership"));
+            }
+        }
+    }
     send_queued_tool_command("service_request", session, trace, command)
+}
+
+fn cold_mcp_selected_profile_path<'a>(
+    command: &Value,
+    plan: &'a Value,
+) -> Result<&'a str, JsonRpcError> {
+    let selected = plan["selectedProfile"]["userDataDir"]
+        .as_str()
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params("Cold MCP startup denied: selected profile path missing")
+        })?;
+    if command
+        .get("profile")
+        .and_then(Value::as_str)
+        .is_some_and(|requested| requested != selected)
+    {
+        return Err(JsonRpcError::invalid_params(
+            "Cold MCP startup denied: request profile path differs from access plan",
+        ));
+    }
+    Ok(selected)
+}
+
+fn cold_request_has_route_hint(value: &Value) -> bool {
+    ["sessionName", "browserId", "serviceTabHandle", "targetId"]
+        .iter()
+        .any(|field| value.get(*field).is_some())
+}
+
+fn cold_launch_config_eligible(
+    arguments: &Value,
+    daemon_ready: bool,
+    metadata_absent: bool,
+) -> bool {
+    matches!(arguments["action"].as_str(), Some("navigate" | "tab_new"))
+        && !daemon_ready
+        && metadata_absent
+        && !cold_request_has_route_hint(arguments)
+        && !cold_request_has_route_hint(&arguments["params"])
+}
+
+fn cold_service_request_admitted(arguments: &Value, command: &Value, plan: &Value) -> bool {
+    let decision = &plan["decision"];
+    let reuse = &decision["profileReuse"];
+    let service = &decision["serviceRequest"];
+    let explicit_profile = command
+        .get("runtimeProfile")
+        .or_else(|| command.get("profileId"));
+    matches!(command["action"].as_str(), Some("navigate" | "tab_new"))
+        && command
+            .get("url")
+            .and_then(Value::as_str)
+            .is_some_and(|url| !url.is_empty())
+        && !cold_request_has_route_hint(arguments)
+        && !cold_request_has_route_hint(command)
+        && explicit_profile.is_some_and(|profile| {
+            profile.as_str().is_some() && profile == &reuse["selectedProfileId"]
+        })
+        && reuse["recommendedAction"] == "launch_new_browser"
+        && reuse["activeLeaseCount"] == 0
+        && reuse["compatibleLiveBrowserCount"] == 0
+        && reuse["sameProfileLiveBrowserIds"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+        && service["available"] == true
+        && service["blockedByPolicy"] == false
+        && service["blockedByManualAction"] == false
+        && service["blockedByCdpFree"] == false
+        && decision["manualSeedingRequired"] == false
+}
+
+fn apply_cold_mcp_launch_defaults(command: &mut Value, flags: &crate::flags::Flags) {
+    for (field, value) in [
+        ("runtimeProfile", flags.runtime_profile.as_deref()),
+        ("browserBuild", flags.browser_build.as_deref()),
+        ("browserHost", flags.browser_host.as_deref()),
+        ("viewStreamProvider", flags.view_stream_provider.as_deref()),
+        (
+            "controlInputProvider",
+            flags.control_input_provider.as_deref(),
+        ),
+        ("displayIsolation", flags.display_isolation.as_deref()),
+    ] {
+        let explicit_profile_alias = field == "runtimeProfile"
+            && [
+                command.get("profileId"),
+                command.get("profile"),
+                command["params"].get("profileId"),
+                command["params"].get("profile"),
+            ]
+            .iter()
+            .any(|value| value.is_some());
+        if command.get(field).is_none()
+            && command["params"].get(field).is_none()
+            && !explicit_profile_alias
+        {
+            if let Some(value) = value {
+                command[field] = json!(value);
+            }
+        }
+    }
+}
+
+fn task_authority_mcp_session<'a>(
+    arguments: &'a Value,
+    default: &'a str,
+) -> Result<&'a str, JsonRpcError> {
+    let Some(value) = optional_string_argument(arguments, "sessionName")? else {
+        return Ok(default);
+    };
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(JsonRpcError::invalid_params(
+            "task authority sessionName is invalid",
+        ));
+    }
+    Ok(value)
+}
+
+fn task_authority_mcp_actor() -> Value {
+    #[cfg(unix)]
+    let id = format!("mcp-stdio:uid:{}", unsafe { libc::geteuid() });
+    #[cfg(not(unix))]
+    let id = "mcp-stdio:local-process-owner".to_string();
+    json!({"kind": "service", "id": id})
+}
+
+fn bind_task_authority_mcp_actor(
+    request: &mut serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<(), JsonRpcError> {
+    let actor = task_authority_mcp_actor();
+    if let Some(claimed) = request.get(field) {
+        if claimed != &actor {
+            return Err(JsonRpcError::invalid_params(&format!(
+                "task authority {field} must match the authenticated MCP stdio principal"
+            )));
+        }
+    }
+    request.insert(field.to_string(), actor);
+    Ok(())
+}
+
+fn call_task_authority_issue(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let task_name = required_string_argument(arguments, "taskName")?;
+    let service_name = optional_string_argument(arguments, "serviceName")?;
+    let agent_name = optional_string_argument(arguments, "agentName")?;
+    let trace = service_tool_trace(service_name, agent_name, Some(task_name));
+    let mut request = arguments
+        .as_object()
+        .cloned()
+        .ok_or_else(|| JsonRpcError::invalid_params("task authority issue requires arguments"))?;
+    request.remove("sessionName");
+    bind_task_authority_mcp_actor(&mut request, "issuer")?;
+    let mut command = json!({
+        "id": format!("mcp-task-authority-issue-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_issue",
+        "taskName": task_name,
+        "request": request,
+    });
+    apply_service_trace_fields(&mut command, service_name, agent_name, Some(task_name));
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME,
+        target_session,
+        trace,
+        command,
+    )
+}
+
+fn call_task_authority_status(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let authority_id = optional_string_argument(arguments, "authorityId")?;
+    let mut command = json!({
+        "id": format!("mcp-task-authority-status-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_status",
+    });
+    if let Some(authority_id) = authority_id {
+        command["authorityId"] = json!(authority_id);
+    }
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME,
+        target_session,
+        json!({}),
+        command,
+    )
+}
+
+fn call_task_authority_revoke(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let authority_id = required_string_argument(arguments, "authorityId")?;
+    let actor = task_authority_mcp_actor();
+    let revoked_by = actor["id"].as_str().unwrap_or("mcp-stdio");
+    if let Some(claimed) = optional_string_argument(arguments, "revokedBy")? {
+        if claimed != revoked_by {
+            return Err(JsonRpcError::invalid_params(
+                "task authority revokedBy must match the authenticated MCP stdio principal",
+            ));
+        }
+    }
+    let reason = required_string_argument(arguments, "reason")?;
+    let command = json!({
+        "id": format!("mcp-task-authority-revoke-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_revoke",
+        "authorityId": authority_id,
+        "revokedBy": revoked_by,
+        "reason": reason,
+    });
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME,
+        target_session,
+        json!({}),
+        command,
+    )
+}
+
+fn call_task_authority_reconcile(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let authority_id = required_string_argument(arguments, "authorityId")?;
+    let task_name = required_string_argument(arguments, "taskName")?;
+    let service_name = optional_string_argument(arguments, "serviceName")?;
+    let agent_name = optional_string_argument(arguments, "agentName")?;
+    let trace = service_tool_trace(service_name, agent_name, Some(task_name));
+    let mut request = arguments.as_object().cloned().ok_or_else(|| {
+        JsonRpcError::invalid_params("task authority reconcile requires arguments")
+    })?;
+    request.remove("sessionName");
+    request.remove("authorityId");
+    bind_task_authority_mcp_actor(&mut request, "issuer")?;
+    let mut command = json!({
+        "id": format!("mcp-task-authority-reconcile-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_reconcile",
+        "authorityId": authority_id,
+        "taskName": task_name,
+        "request": request,
+    });
+    apply_service_trace_fields(&mut command, service_name, agent_name, Some(task_name));
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME,
+        target_session,
+        trace,
+        command,
+    )
+}
+
+fn call_task_authority_confirmation(
+    arguments: &Value,
+    session: &str,
+) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let confirmation_id = required_string_argument(arguments, "confirmationId")?;
+    let expected_action = required_string_argument(arguments, "expectedAction")?;
+    if !matches!(
+        expected_action,
+        "task_authority_issue" | "task_authority_reconcile" | "task_authority_revoke"
+    ) {
+        return Err(JsonRpcError::invalid_params(
+            "task authority confirmation expectedAction is invalid",
+        ));
+    }
+    let decision = required_string_argument(arguments, "decision")?;
+    if !matches!(decision, "confirm" | "deny") {
+        return Err(JsonRpcError::invalid_params(
+            "task authority confirmation decision must be confirm or deny",
+        ));
+    }
+    let decided_by = task_authority_mcp_actor();
+    if let Some(claimed) = arguments.get("decidedBy") {
+        if claimed != &decided_by {
+            return Err(JsonRpcError::invalid_params(
+                "task authority decidedBy must match the authenticated MCP stdio principal",
+            ));
+        }
+    }
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME,
+        target_session,
+        json!({}),
+        json!({
+            "id": format!("mcp-task-authority-{decision}-{}", uuid::Uuid::new_v4()),
+            "action": decision,
+            "confirmationId": confirmation_id,
+            "expectedAction": expected_action,
+            "decidedBy": decided_by,
+        }),
+    )
+}
+
+fn call_task_authority_confirmation_cleanup(
+    arguments: &Value,
+    session: &str,
+) -> Result<Value, JsonRpcError> {
+    let target_session = task_authority_mcp_session(arguments, session)?;
+    let mut command = json!({
+        "id": format!("mcp-task-authority-confirmation-cleanup-{}", uuid::Uuid::new_v4()),
+        "action": "task_authority_confirmation_cleanup",
+        "requestedBy": task_authority_mcp_actor(),
+    });
+    for field in ["retainCount", "minAgeSeconds"] {
+        if let Some(value) = arguments.get(field) {
+            if value.as_u64().is_none() {
+                return Err(JsonRpcError::invalid_params(&format!(
+                    "task authority confirmation cleanup {field} must be a nonnegative integer"
+                )));
+            }
+            command[field] = value.clone();
+        }
+    }
+    if let Some(value) = arguments.get("apply") {
+        if value.as_bool().is_none() {
+            return Err(JsonRpcError::invalid_params(
+                "task authority confirmation cleanup apply must be boolean",
+            ));
+        }
+        command["apply"] = value.clone();
+    }
+    if let Some(value) = arguments.get("reviewSha256") {
+        command["reviewSha256"] = value.clone();
+    }
+    if command.get("apply").and_then(Value::as_bool) == Some(true)
+        && command
+            .get("reviewSha256")
+            .and_then(Value::as_str)
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .is_none()
+    {
+        return Err(JsonRpcError::invalid_params(
+            "task authority confirmation cleanup apply requires reviewSha256",
+        ));
+    }
+    send_queued_tool_command(
+        SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME,
+        target_session,
+        json!({}),
+        command,
+    )
 }
 
 fn call_browser_navigate(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -6791,22 +7784,7 @@ fn call_browser_snapshot(arguments: &Value, session: &str) -> Result<Value, Json
         task_name,
     });
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_snapshot",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_snapshot",
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, "browser_snapshot", session, trace, command)
 }
 
 fn call_browser_read_tool(
@@ -6821,50 +7799,23 @@ fn call_browser_read_tool(
     let trace = service_tool_trace(service_name, agent_name, task_name);
     let command = browser_read_command(spec, job_timeout_ms, service_name, agent_name, task_name);
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": spec.tool_name,
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        spec.tool_name,
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, spec.tool_name, session, trace, command)
 }
 
 fn call_browser_tabs(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
     let verbose = optional_bool_argument(arguments, "verbose")?;
-    let job_timeout_ms = optional_positive_u64_argument(arguments, "jobTimeoutMs")?;
-    let service_name = optional_string_argument(arguments, "serviceName")?;
-    let agent_name = optional_string_argument(arguments, "agentName")?;
-    let task_name = optional_string_argument(arguments, "taskName")?;
-    let trace = service_tool_trace(service_name, agent_name, task_name);
-    let command =
-        browser_tabs_command(verbose, job_timeout_ms, service_name, agent_name, task_name);
+    let context = ServiceToolContext::from_arguments(arguments)?;
+    let trace = context.trace();
+    let mut command = browser_tabs_command(
+        verbose,
+        context.job_timeout_ms,
+        context.service_name,
+        context.agent_name,
+        context.task_name,
+    );
+    context.apply_target_profile_hints(&mut command);
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_tabs",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_tabs",
-        session,
-        trace,
-        response,
-    ))
+    send_queued_tool_command("browser_tabs", session, trace, command)
 }
 
 fn call_browser_screenshot(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -6894,22 +7845,7 @@ fn call_browser_screenshot(arguments: &Value, session: &str) -> Result<Value, Js
         task_name,
     });
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_screenshot",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_screenshot",
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, "browser_screenshot", session, trace, command)
 }
 
 fn call_browser_click(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -6931,22 +7867,7 @@ fn call_browser_click(arguments: &Value, session: &str) -> Result<Value, JsonRpc
         task_name,
     );
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_click",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_click",
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, "browser_click", session, trace, command)
 }
 
 fn call_browser_fill(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -6966,22 +7887,7 @@ fn call_browser_fill(arguments: &Value, session: &str) -> Result<Value, JsonRpcE
         task_name,
     );
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_fill",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_fill",
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, "browser_fill", session, trace, command)
 }
 
 fn call_browser_wait(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -7012,22 +7918,7 @@ fn call_browser_wait(arguments: &Value, session: &str) -> Result<Value, JsonRpcE
     };
     let command = browser_wait_command(args)?;
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_wait",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_wait",
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, "browser_wait", session, trace, command)
 }
 
 fn call_browser_type(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -7051,22 +7942,7 @@ fn call_browser_type(arguments: &Value, session: &str) -> Result<Value, JsonRpcE
         task_name,
     });
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_type",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_type",
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, "browser_type", session, trace, command)
 }
 
 fn call_browser_press(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -7078,22 +7954,7 @@ fn call_browser_press(arguments: &Value, session: &str) -> Result<Value, JsonRpc
     let trace = service_tool_trace(service_name, agent_name, task_name);
     let command = browser_press_command(key, job_timeout_ms, service_name, agent_name, task_name);
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_press",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_press",
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, "browser_press", session, trace, command)
 }
 
 fn call_browser_hover(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -7111,22 +7972,7 @@ fn call_browser_hover(arguments: &Value, session: &str) -> Result<Value, JsonRpc
         task_name,
     );
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_hover",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_hover",
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, "browser_hover", session, trace, command)
 }
 
 fn call_browser_select(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -7146,22 +7992,7 @@ fn call_browser_select(arguments: &Value, session: &str) -> Result<Value, JsonRp
         task_name,
     );
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_select",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_select",
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, "browser_select", session, trace, command)
 }
 
 fn call_browser_element_state_tool(
@@ -7185,19 +8016,7 @@ fn call_browser_element_state_tool(
         task_name,
     );
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": tool_name,
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        tool_name, session, trace, response,
-    ))
+    send_typed_browser_tool_command(arguments, tool_name, session, trace, command)
 }
 
 fn call_browser_element_read_tool(
@@ -7228,19 +8047,7 @@ fn call_browser_element_read_tool(
         task_name,
     });
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": tool_name,
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        tool_name, session, trace, response,
-    ))
+    send_typed_browser_tool_command(arguments, tool_name, session, trace, command)
 }
 
 fn call_browser_get_styles(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -7262,22 +8069,7 @@ fn call_browser_get_styles(arguments: &Value, session: &str) -> Result<Value, Js
         task_name,
     });
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_get_styles",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_get_styles",
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, "browser_get_styles", session, trace, command)
 }
 
 fn call_browser_check(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -7313,19 +8105,7 @@ fn call_browser_checked_tool(
         task_name,
     );
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": tool_name,
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        tool_name, session, trace, response,
-    ))
+    send_typed_browser_tool_command(arguments, tool_name, session, trace, command)
 }
 
 fn call_browser_scroll(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -7351,22 +8131,7 @@ fn call_browser_scroll(arguments: &Value, session: &str) -> Result<Value, JsonRp
         task_name,
     })?;
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_scroll",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        "browser_scroll",
-        session,
-        trace,
-        response,
-    ))
+    send_typed_browser_tool_command(arguments, "browser_scroll", session, trace, command)
 }
 
 fn call_browser_scroll_into_view(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -7384,22 +8149,13 @@ fn call_browser_scroll_into_view(arguments: &Value, session: &str) -> Result<Val
         task_name,
     );
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": "browser_scroll_into_view",
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
+    send_typed_browser_tool_command(
+        arguments,
         "browser_scroll_into_view",
         session,
         trace,
-        response,
-    ))
+        command,
+    )
 }
 
 fn call_browser_focus(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -7431,19 +8187,7 @@ fn call_browser_field_tool(
         task_name,
     );
 
-    let response = send_command(command, session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": session,
-            "tool": tool_name,
-            "trace": trace,
-        })),
-    })?;
-    Ok(tool_response_from_daemon(
-        tool_name, session, trace, response,
-    ))
+    send_typed_browser_tool_command(arguments, tool_name, session, trace, command)
 }
 
 fn call_service_browser_retry(arguments: &Value, session: &str) -> Result<Value, JsonRpcError> {
@@ -9688,6 +10432,7 @@ fn access_plan_params_from_arguments(
         "sitePolicyId",
         "challengeId",
         "readinessProfileId",
+        "runtimeProfile",
     ] {
         if let Some(value) = optional_string_argument(arguments, name)? {
             params.push((name.to_string(), value.to_string()));
@@ -10322,21 +11067,40 @@ fn send_queued_tool_command(
     tool_name: &str,
     session: &str,
     trace: Value,
+    command: Value,
+) -> Result<Value, JsonRpcError> {
+    send_queued_tool_command_with_sender(tool_name, session, trace, command, send_command)
+}
+
+fn send_typed_browser_tool_command(
+    arguments: &Value,
+    tool_name: &str,
+    session: &str,
+    trace: Value,
     mut command: Value,
+) -> Result<Value, JsonRpcError> {
+    ServiceToolContext::from_arguments(arguments)?.apply_target_profile_hints(&mut command);
+    send_queued_tool_command(tool_name, session, trace, command)
+}
+
+fn send_queued_tool_command_with_sender(
+    tool_name: &str,
+    session: &str,
+    trace: Value,
+    mut command: Value,
+    send: impl FnOnce(Value, &str) -> Result<Response, String>,
 ) -> Result<Value, JsonRpcError> {
     if tool_name.starts_with("browser_") {
         copy_target_profile_hints(&trace, &mut command);
     }
-    let relay_session = queued_tool_command_session(tool_name, session, &command);
-    let response = send_command(command, &relay_session).map_err(|err| JsonRpcError {
-        code: -32603,
-        message: "Internal error",
-        data: Some(json!({
-            "message": err,
-            "session": relay_session,
-            "tool": tool_name,
-            "trace": trace.clone(),
-        })),
+    let relay_session = queued_tool_command_session(tool_name, session, &command)?;
+    let retained_route = tool_name == "service_request"
+        && (command.get("serviceTabHandle").is_some()
+            || [command.get("sessionName"), command.get("browserId")]
+                .into_iter()
+                .any(|value| service_request_session_candidate(value).is_some()));
+    let response = send(command, &relay_session).map_err(|err| {
+        queued_tool_transport_error(tool_name, &relay_session, &trace, retained_route, &err)
     })?;
     Ok(tool_response_from_daemon(
         tool_name,
@@ -10346,16 +11110,107 @@ fn send_queued_tool_command(
     ))
 }
 
-fn queued_tool_command_session(tool_name: &str, default_session: &str, command: &Value) -> String {
+/// Explain unavailable retained routes without starting a daemon or replaying the request.
+/// Only missing/refused connection errors qualify; read, busy, and auth errors retain
+/// their original diagnostic because they do not establish an unavailable endpoint.
+fn queued_tool_transport_error(
+    tool_name: &str,
+    session: &str,
+    trace: &Value,
+    retained_route: bool,
+    error: &str,
+) -> JsonRpcError {
+    let mut data = json!({
+        "message": error,
+        "session": session,
+        "tool": tool_name,
+        "trace": trace,
+    });
+    if retained_route
+        && error.starts_with("Failed to connect:")
+        && [
+            "(os error 2)",
+            "(os error 61)",
+            "(os error 111)",
+            "(os error 10061)",
+        ]
+        .iter()
+        .any(|code| error.contains(code))
+    {
+        data["diagnosticCode"] = json!("retained_daemon_unavailable");
+        data["recommendedAction"] =
+            json!("refresh_access_plan_and_review_retained_session_recovery");
+        data["autoLaunchAttempted"] = json!(false);
+        data["guidance"] = json!(
+            "sessionName and browserId select an existing daemon lane; they do not create one. Refresh service_access_plan and inspect the retained session before approved recovery. Do not launch a duplicate profile lane or blindly replay the request; an earlier transport attempt may have been accepted."
+        );
+    }
+    JsonRpcError {
+        code: -32603,
+        message: "Internal error",
+        data: Some(data),
+    }
+}
+
+/// Route a retained handle without borrowing its caller identity or changing it.
+/// Conflicting or unroutable handles fail before transport; the daemon still
+/// validates profile, target, freshness and ownership on the selected lane.
+fn queued_tool_command_session(
+    tool_name: &str,
+    default_session: &str,
+    command: &Value,
+) -> Result<String, JsonRpcError> {
     if tool_name != "service_request" {
-        return default_session.to_string();
+        return Ok(default_session.to_string());
+    }
+    if let Some(handle) = command.get("serviceTabHandle") {
+        let handle = handle
+            .as_object()
+            .ok_or_else(|| JsonRpcError::invalid_params("serviceTabHandle must be an object"))?;
+        let session = service_request_session_candidate(handle.get("sessionName"));
+        // Opaque browser IDs are not daemon session names.
+        let browser_session = handle
+            .get("browserId")
+            .and_then(Value::as_str)
+            .and_then(|id| id.strip_prefix("session:"))
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_string);
+        if session.is_some() && browser_session.is_some() && session != browser_session {
+            return Err(JsonRpcError::invalid_params(
+                "serviceTabHandle sessionName and browserId routes conflict",
+            ));
+        }
+        let route = session.or(browser_session).ok_or_else(|| {
+            JsonRpcError::invalid_params(
+                "serviceTabHandle requires sessionName or a session-prefixed browserId",
+            )
+        })?;
+        for key in ["sessionName", "browserId"] {
+            let value = command.get(key);
+            if key == "browserId"
+                && value
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.starts_with("session:"))
+                && value == handle.get("browserId")
+            {
+                continue;
+            }
+            if let Some(explicit) = service_request_session_candidate(value) {
+                if explicit != route {
+                    return Err(JsonRpcError::invalid_params(
+                        "serviceTabHandle conflicts with explicit retained session route",
+                    ));
+                }
+            }
+        }
+        return Ok(route);
     }
     for value in [command.get("sessionName"), command.get("browserId")] {
         if let Some(session_name) = service_request_session_candidate(value) {
-            return session_name;
+            return Ok(session_name);
         }
     }
-    default_session.to_string()
+    Ok(default_session.to_string())
 }
 
 fn service_request_session_candidate(value: Option<&Value>) -> Option<String> {
@@ -10367,6 +11222,114 @@ fn service_request_session_candidate(value: Option<&Value>) -> Option<String> {
         return (!session_name.is_empty()).then(|| session_name.to_string());
     }
     Some(text.to_string())
+}
+
+/// Resolve typed browser tools through the same retained-profile access plan used by
+/// `service_request`. This is deliberately no-launch: an explicit route or a unique
+/// access-plan reuse recommendation may select an existing daemon, while every other
+/// result stays on the MCP transport's default session.
+fn resolve_browser_tool_session(
+    arguments: &Value,
+    default_session: &str,
+    configured_service_state: &ServiceState,
+) -> Result<String, JsonRpcError> {
+    if let Some(explicit) = explicit_browser_tool_session(arguments)? {
+        return Ok(explicit);
+    }
+
+    let has_access_plan_identity = [
+        "runtimeProfile",
+        "targetServiceId",
+        "targetService",
+        "targetServiceIds",
+        "targetServices",
+        "siteId",
+        "siteIds",
+        "loginId",
+        "loginIds",
+        "accountId",
+        "accountIds",
+        "url",
+    ]
+    .iter()
+    .any(|key| arguments.get(*key).is_some());
+    if !has_access_plan_identity {
+        return Ok(default_session.to_string());
+    }
+
+    let mut state = load_default_service_state_snapshot().map_err(|err| JsonRpcError {
+        code: -32603,
+        message: "Internal error",
+        data: Some(json!({
+            "message": err,
+            "tool": "typed_browser_route_resolution",
+            "requestDispatched": false,
+        })),
+    })?;
+    state.overlay_configured_entities(configured_service_state.clone());
+    state.refresh_profile_readiness();
+    let request = parse_service_access_plan_query(access_plan_params_from_arguments(arguments)?)
+        .map_err(|err| JsonRpcError::invalid_params(&err))?;
+    let plan = service_access_plan_for_state(&state, request);
+    browser_tool_session_from_access_plan(default_session, &plan)
+}
+
+fn explicit_browser_tool_session(arguments: &Value) -> Result<Option<String>, JsonRpcError> {
+    let session_name = optional_string_argument(arguments, "sessionName")?.map(str::to_string);
+    let browser_session = optional_string_argument(arguments, "browserId")?
+        .map(|browser_id| {
+            browser_id
+                .strip_prefix("session:")
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    JsonRpcError::invalid_params(
+                        "typed browser tools require browserId to use the session:<name> route form",
+                    )
+                })
+        })
+        .transpose()?;
+    if session_name.is_some() && browser_session.is_some() && session_name != browser_session {
+        return Err(JsonRpcError::invalid_params(
+            "browserId and sessionName retained routes conflict",
+        ));
+    }
+    Ok(session_name.or(browser_session))
+}
+
+fn browser_tool_session_from_access_plan(
+    default_session: &str,
+    plan: &Value,
+) -> Result<String, JsonRpcError> {
+    let reuse = &plan["decision"]["profileReuse"];
+    if reuse.get("recommendedAction").and_then(Value::as_str) != Some("reuse_existing_browser") {
+        return Ok(default_session.to_string());
+    }
+    let session_name = reuse
+        .get("reusableSessionName")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params(
+                "access plan recommends retained-browser reuse but provides no reusableSessionName",
+            )
+        })?;
+    let browser_session = reuse
+        .get("reusableBrowserId")
+        .and_then(Value::as_str)
+        .and_then(|value| value.strip_prefix("session:"))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            JsonRpcError::invalid_params(
+                "access plan recommends retained-browser reuse but provides no session-prefixed reusableBrowserId",
+            )
+        })?;
+    if session_name != browser_session {
+        return Err(JsonRpcError::invalid_params(
+            "access-plan retained browser and session routes conflict",
+        ));
+    }
+    Ok(session_name.to_string())
 }
 
 fn copy_target_profile_hints(source: &Value, command: &mut Value) {
@@ -10576,6 +11539,226 @@ fn profile_seeding_handoff_resource(uri: &str) -> Option<(String, Option<String>
 mod tests {
     use super::*;
 
+    fn cold_plan() -> Value {
+        json!({"decision": {
+            "manualSeedingRequired": false,
+            "profileReuse": {"selectedProfileId": "fresh", "recommendedAction": "launch_new_browser", "activeLeaseCount": 0, "compatibleLiveBrowserCount": 0, "sameProfileLiveBrowserIds": []},
+            "serviceRequest": {"available": true, "blockedByPolicy": false, "blockedByManualAction": false, "blockedByCdpFree": false}
+        }})
+    }
+
+    #[test]
+    fn cold_mcp_admits_only_exact_profile_launch_actions() {
+        let plan = cold_plan();
+        for action in ["navigate", "tab_new"] {
+            let command =
+                json!({"action": action, "url": "data:text/html,hello", "runtimeProfile": "fresh"});
+            assert!(cold_service_request_admitted(&command, &command, &plan));
+        }
+        for action in ["gettitle", "snapshot", "click", "launch", "close"] {
+            let command =
+                json!({"action": action, "url": "data:text/html,hello", "runtimeProfile": "fresh"});
+            assert!(!cold_service_request_admitted(&command, &command, &plan));
+        }
+        let command =
+            json!({"action": "navigate", "url": "data:text/html,hello", "runtimeProfile": "wrong"});
+        assert!(!cold_service_request_admitted(&command, &command, &plan));
+    }
+
+    #[test]
+    fn cold_mcp_selected_profile_path_must_match_access_plan() {
+        let plan = json!({"selectedProfile": {"userDataDir": "/tmp/selected-profile"}});
+        let request = json!({"profile": "/tmp/selected-profile"});
+        assert_eq!(
+            cold_mcp_selected_profile_path(&request, &plan).unwrap(),
+            "/tmp/selected-profile"
+        );
+        let wrong = json!({"profile": "/tmp/other-profile"});
+        assert!(cold_mcp_selected_profile_path(&wrong, &plan).is_err());
+        assert!(cold_mcp_selected_profile_path(&request, &json!({})).is_err());
+    }
+
+    #[test]
+    fn cold_mcp_denies_retained_routes_leases_and_policy_blocks() {
+        let command =
+            json!({"action": "navigate", "url": "data:text/html,hello", "runtimeProfile": "fresh"});
+        for field in ["browserId", "sessionName", "serviceTabHandle", "targetId"] {
+            let mut hinted = command.clone();
+            hinted[field] = Value::Null;
+            assert!(!cold_service_request_admitted(
+                &hinted,
+                &command,
+                &cold_plan()
+            ));
+            assert!(!cold_service_request_admitted(
+                &command,
+                &hinted,
+                &cold_plan()
+            ));
+        }
+        for (pointer, value) in [
+            ("/decision/profileReuse/activeLeaseCount", json!(1)),
+            (
+                "/decision/profileReuse/compatibleLiveBrowserCount",
+                json!(1),
+            ),
+            (
+                "/decision/profileReuse/sameProfileLiveBrowserIds",
+                json!(["retained"]),
+            ),
+            (
+                "/decision/profileReuse/recommendedAction",
+                json!("wait_for_profile_lease"),
+            ),
+            ("/decision/serviceRequest/available", json!(false)),
+            ("/decision/serviceRequest/blockedByPolicy", json!(true)),
+            (
+                "/decision/serviceRequest/blockedByManualAction",
+                json!(true),
+            ),
+            ("/decision/serviceRequest/blockedByCdpFree", json!(true)),
+            ("/decision/manualSeedingRequired", json!(true)),
+        ] {
+            let mut plan = cold_plan();
+            *plan.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                !cold_service_request_admitted(&command, &command, &plan),
+                "{pointer}"
+            );
+        }
+    }
+
+    #[test]
+    fn cold_mcp_transport_error_dispatches_once_without_replay() {
+        let calls = std::cell::Cell::new(0);
+        let result = send_queued_tool_command_with_sender(
+            "service_request",
+            "default",
+            json!({}),
+            json!({"action": "navigate"}),
+            |_, _| {
+                calls.set(calls.get() + 1);
+                Err("Connection reset after acceptance".to_string())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn cold_mcp_defaults_do_not_touch_retained_or_read_requests() {
+        for arguments in [
+            json!({"action": "gettitle"}),
+            json!({"action": "navigate", "serviceTabHandle": {"sessionName": "retained"}}),
+            json!({"action": "tab_new", "sessionName": "retained"}),
+            json!({"action": "navigate", "params": {"browserId": "retained"}}),
+        ] {
+            assert!(!cold_launch_config_eligible(&arguments, false, true));
+        }
+        let arguments = json!({"action": "navigate"});
+        assert!(cold_launch_config_eligible(&arguments, false, true));
+        assert!(!cold_launch_config_eligible(&arguments, true, true));
+        assert!(!cold_launch_config_eligible(&arguments, false, false));
+    }
+
+    #[test]
+    fn retained_reconnect_mcp_requires_exact_explicit_route() {
+        let tools = service_mcp_tools();
+        let reconnect = tools
+            .iter()
+            .find(|tool| tool["name"] == "service_managed_runtime_reconnect")
+            .expect("retained reconnect tool must be advertised");
+        assert_eq!(
+            reconnect["inputSchema"]["required"],
+            json!([
+                "browserId",
+                "sessionName",
+                "runtimeProfile",
+                "expectedBrowserPid",
+                "expectedTargetId"
+            ])
+        );
+        let flags = crate::flags::parse_flags(&[]);
+        let missing_target = call_service_managed_runtime_reconnect(
+            &json!({
+                "browserId": "session:qa",
+                "sessionName": "qa",
+                "runtimeProfile": "qa-profile",
+                "expectedBrowserPid": 123,
+            }),
+            &flags,
+        )
+        .unwrap_err();
+        assert_eq!(missing_target.code, -32602);
+        assert_eq!(
+            missing_target.data.unwrap()["message"],
+            "service_managed_runtime_reconnect requires expectedTargetId"
+        );
+        let error = call_service_managed_runtime_reconnect(
+            &json!({
+                "browserId": "session:other",
+                "sessionName": "qa",
+                "runtimeProfile": "qa-profile",
+                "expectedBrowserPid": 123,
+                "expectedTargetId": "target-1",
+            }),
+            &flags,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, -32602);
+        assert_eq!(
+            error.data.unwrap()["message"],
+            "Retained reconnect browserId must match sessionName"
+        );
+    }
+
+    #[test]
+    fn cold_mcp_defaults_preserve_config_and_explicit_request_precedence() {
+        let flags = crate::flags::parse_flags(&[
+            "--runtime-profile".into(),
+            "configured-profile".into(),
+            "--browser-build".into(),
+            "stock_chrome".into(),
+            "--browser-host".into(),
+            "local_headless".into(),
+        ]);
+        let mut command = json!({"action": "navigate"});
+        apply_cold_mcp_launch_defaults(&mut command, &flags);
+        assert_eq!(command["runtimeProfile"], "configured-profile");
+        assert_eq!(command["browserBuild"], "stock_chrome");
+        assert_eq!(command["browserHost"], "local_headless");
+        command["runtimeProfile"] = json!("explicit-profile");
+        command["browserBuild"] = json!("stealthcdp_chromium");
+        command["browserHost"] = json!("remote_headed");
+        apply_cold_mcp_launch_defaults(&mut command, &flags);
+        assert_eq!(command["runtimeProfile"], "explicit-profile");
+        assert_eq!(command["browserBuild"], "stealthcdp_chromium");
+        assert_eq!(command["browserHost"], "remote_headed");
+        let mut alias = json!({"action": "navigate", "profileId": "explicit-profile",
+            "params": {"browserHost": "remote_headed", "browserBuild": "stealthcdp_chromium"}});
+        apply_cold_mcp_launch_defaults(&mut alias, &flags);
+        assert!(alias.get("runtimeProfile").is_none());
+        assert!(alias.get("browserHost").is_none());
+        assert!(alias.get("browserBuild").is_none());
+        assert_eq!(alias["profileId"], "explicit-profile");
+        assert_eq!(alias["params"]["browserHost"], "remote_headed");
+        assert_eq!(alias["params"]["browserBuild"], "stealthcdp_chromium");
+    }
+
+    #[test]
+    fn access_plan_mcp_arguments_preserve_runtime_profile() {
+        let params = access_plan_params_from_arguments(&json!({
+            "serviceName": "AuraCall",
+            "runtimeProfile": "auracall-chatgpt-live",
+        }))
+        .expect("valid access-plan arguments");
+
+        assert!(params.contains(&(
+            "runtimeProfile".to_string(),
+            "auracall-chatgpt-live".to_string(),
+        )));
+    }
+
     fn assert_static_service_resource_uris(resources: &Value) {
         let uris = resources
             .as_array()
@@ -10609,6 +11792,7 @@ mod tests {
                 CHALLENGES_RESOURCE,
                 JOBS_RESOURCE,
                 EVENTS_RESOURCE,
+                LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE,
             ]
         );
     }
@@ -12678,6 +13862,39 @@ mod tests {
     #[test]
     fn browser_tool_schemas_include_target_profile_hints() {
         let tools = service_mcp_tools();
+        for name in [
+            SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME,
+            SERVICE_TASK_AUTHORITY_CONFIRMATION_CLEANUP_MCP_TOOL_NAME,
+            SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME,
+            SERVICE_TASK_AUTHORITY_RECONCILE_MCP_TOOL_NAME,
+            SERVICE_TASK_AUTHORITY_STATUS_MCP_TOOL_NAME,
+            SERVICE_TASK_AUTHORITY_REVOKE_MCP_TOOL_NAME,
+        ] {
+            assert!(tools.iter().any(|tool| tool["name"] == name));
+        }
+        let authority_confirmation = tools
+            .iter()
+            .find(|tool| tool["name"] == SERVICE_TASK_AUTHORITY_CONFIRMATION_MCP_TOOL_NAME)
+            .expect("task authority confirmation schema should be listed");
+        assert!(!authority_confirmation["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("decidedBy")));
+        assert!(call_task_authority_confirmation(
+            &json!({
+                "confirmationId": "confirmation-1",
+                "expectedAction": "task_authority_issue",
+                "decision": "confirm",
+                "decidedBy": {"kind": "operator", "id": "forged"}
+            }),
+            "default",
+        )
+        .unwrap_err()
+        .data
+        .unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("authenticated MCP stdio principal"));
         let service_request = tools
             .iter()
             .find(|tool| tool["name"] == "service_request")
@@ -12695,10 +13912,33 @@ mod tests {
         assert!(navigate["inputSchema"]["properties"]["targetServiceIds"].is_object());
         assert!(navigate["inputSchema"]["properties"]["siteId"].is_object());
         assert!(navigate["inputSchema"]["properties"]["loginIds"].is_object());
+        assert!(navigate["inputSchema"]["properties"]["runtimeProfile"].is_object());
+        assert!(navigate["inputSchema"]["properties"]["browserId"].is_object());
+        assert!(navigate["inputSchema"]["properties"]["sessionName"].is_object());
         assert!(service_request["inputSchema"]["properties"]["siteId"].is_object());
         assert!(service_request["inputSchema"]["properties"]["loginIds"].is_object());
+        assert!(service_request["inputSchema"]["properties"]["taskAuthority"].is_object());
+        assert!(service_request["inputSchema"]["properties"]["taskStepId"].is_object());
+        assert!(service_request["inputSchema"]["properties"]["taskEvidenceBytes"].is_object());
         assert!(service_trace["inputSchema"]["properties"]["targetServiceId"].is_null());
         assert!(service_trace["inputSchema"]["properties"]["siteId"].is_null());
+    }
+
+    #[test]
+    fn service_request_command_preserves_ordered_task_authority_fields() {
+        let authority = json!({"id": "authority-1", "planSha256": "abc"});
+        let (_, command) = service_request_command(&json!({
+            "action": "title",
+            "taskName": "inspect",
+            "taskAuthority": authority,
+            "taskStepId": "authority-1:step-0",
+            "taskEvidenceBytes": 4096,
+        }))
+        .unwrap();
+
+        assert_eq!(command["taskAuthority"], authority);
+        assert_eq!(command["taskStepId"], "authority-1:step-0");
+        assert_eq!(command["taskEvidenceBytes"], 4096);
     }
 
     #[test]
@@ -13517,8 +14757,8 @@ mod tests {
         use std::collections::BTreeMap;
 
         use crate::native::service_model::{
-            BrowserHealth, BrowserHost, BrowserProcess, BrowserProfile, ControlInputProvider,
-            ViewStream, ViewStreamProvider,
+            BrowserBuild, BrowserHealth, BrowserHost, BrowserProcess, BrowserProfile,
+            ControlInputProvider, ViewStream, ViewStreamProvider,
         };
 
         let state = ServiceState {
@@ -13536,6 +14776,7 @@ mod tests {
                 BrowserProcess {
                     id: "browser-social".to_string(),
                     profile_id: Some("shared-social".to_string()),
+                    browser_build: Some(BrowserBuild::StockChrome),
                     host: BrowserHost::RemoteHeaded,
                     health: BrowserHealth::Ready,
                     display_isolation: Some("private_virtual_display".to_string()),
@@ -13556,6 +14797,7 @@ mod tests {
                 "action": "tab_new",
                 "runtimeProfile": "shared-social",
                 "siteId": "x",
+                "browserBuild": "stock_chrome",
                 "browserHost": "remote_headed",
                 "viewStreamProvider": "rdp_gateway",
                 "controlInputProvider": "manual_attached_desktop",
@@ -13569,7 +14811,8 @@ mod tests {
         assert_eq!(command["browserId"], "browser-social");
         assert_eq!(command["sessionName"], "operator-social");
         assert_eq!(
-            queued_tool_command_session("service_request", "AgentBrowserDashboard", &command),
+            queued_tool_command_session("service_request", "AgentBrowserDashboard", &command)
+                .unwrap(),
             "operator-social"
         );
     }
@@ -13582,13 +14825,149 @@ mod tests {
         });
 
         assert_eq!(
-            queued_tool_command_session("service_request", "AgentBrowserDashboard", &command),
+            queued_tool_command_session("service_request", "AgentBrowserDashboard", &command)
+                .unwrap(),
             "operator-social"
         );
         assert_eq!(
-            queued_tool_command_session("browser_navigate", "AgentBrowserDashboard", &command),
+            queued_tool_command_session("browser_navigate", "AgentBrowserDashboard", &command)
+                .unwrap(),
             "AgentBrowserDashboard"
         );
+    }
+
+    #[test]
+    fn service_request_handle_only_routes_all_bounded_operations() {
+        for action in [
+            "cdp_attach",
+            "evaluate",
+            "diagnostics",
+            "cdp_detach",
+            "tab_handle_refresh",
+        ] {
+            for handle in [
+                json!({"sessionName": "retained", "browserId": "session:retained"}),
+                json!({"sessionName": "retained"}),
+                json!({"browserId": "session:retained"}),
+                json!({"sessionName": "retained", "browserId": "opaque-browser"}),
+            ] {
+                let command = json!({"action": action, "serviceTabHandle": handle});
+                let original = command.clone();
+                assert_eq!(
+                    queued_tool_command_session("service_request", "default", &command).unwrap(),
+                    "retained"
+                );
+                assert_eq!(command, original);
+            }
+        }
+    }
+
+    #[test]
+    fn service_request_handle_routes_reject_conflicts_and_missing_identity() {
+        for command in [
+            json!({"serviceTabHandle": {}}),
+            json!({"serviceTabHandle": null}),
+            json!({"serviceTabHandle": {"browserId": "opaque-browser"}}),
+            json!({"serviceTabHandle": {"browserId": "session:"}}),
+            json!({"serviceTabHandle": {"sessionName": "first", "browserId": "session:second"}}),
+            json!({"sessionName": "foreign", "serviceTabHandle": {"sessionName": "retained"}}),
+            json!({"browserId": "session:foreign", "serviceTabHandle": {"sessionName": "retained"}}),
+            json!({"sessionName": "opaque-browser", "browserId": "opaque-browser",
+                "serviceTabHandle": {"sessionName": "retained", "browserId": "opaque-browser"}}),
+        ] {
+            assert!(queued_tool_command_session("service_request", "default", &command).is_err());
+        }
+        let command = json!({"sessionName": "retained", "browserId": "session:retained",
+            "serviceTabHandle": {"sessionName": "retained", "valid": false}});
+        // Route discovery does not refresh or authorize a stale handle.
+        assert_eq!(
+            queued_tool_command_session("service_request", "default", &command).unwrap(),
+            "retained"
+        );
+        assert_eq!(command["serviceTabHandle"]["valid"], false);
+        let opaque = json!({"sessionName": "retained", "browserId": "opaque-browser",
+            "serviceTabHandle": {"sessionName": "retained", "browserId": "opaque-browser"}});
+        assert_eq!(
+            queued_tool_command_session("service_request", "default", &opaque).unwrap(),
+            "retained"
+        );
+    }
+
+    #[test]
+    fn service_request_handle_routes_preserve_unhinted_and_other_tool_defaults() {
+        assert_eq!(
+            queued_tool_command_session("service_request", "default", &json!({})).unwrap(),
+            "default"
+        );
+        assert_eq!(
+            queued_tool_command_session(
+                "browser_navigate",
+                "original",
+                &json!({
+                    "serviceTabHandle": {"sessionName": "retained"}
+                })
+            )
+            .unwrap(),
+            "original"
+        );
+    }
+
+    #[test]
+    fn retained_service_request_connect_error_has_recovery_guidance() {
+        let trace = json!({"taskName": "cold-route-regression"});
+        for message in [
+            "Failed to connect: No such file or directory (os error 2)",
+            "Failed to connect: Connection refused (os error 61)",
+            "Failed to connect: Connection refused (os error 111) (after 5 retries - daemon may be busy or unresponsive)",
+            "Failed to connect: No connection could be made (os error 10061)",
+        ] {
+            let error = queued_tool_transport_error(
+                "service_request", "retained-lane", &trace, true, message,
+            );
+            assert_eq!(error.code, -32603);
+            let data = error.data.unwrap();
+            assert_eq!(data["diagnosticCode"], "retained_daemon_unavailable");
+            assert_eq!(data["recommendedAction"], "refresh_access_plan_and_review_retained_session_recovery");
+            assert_eq!(data["autoLaunchAttempted"], false);
+            assert_eq!(data["message"], message);
+            assert_eq!(data["session"], "retained-lane");
+            assert_eq!(data["trace"], trace);
+        }
+    }
+
+    #[test]
+    fn retained_service_request_other_transport_errors_are_not_absent_daemons() {
+        for message in [
+            "Failed to read: Resource temporarily unavailable (os error 11)",
+            "Failed to connect: Resource temporarily unavailable (os error 11)",
+            "Failed to connect: Permission denied (os error 13)",
+            "Failed to send: Broken pipe (os error 32)",
+            "Daemon authentication token is missing",
+            "Failed to connect: Unknown error (os error 211)",
+        ] {
+            let error = queued_tool_transport_error(
+                "service_request",
+                "retained-lane",
+                &json!({}),
+                true,
+                message,
+            );
+            let data = error.data.unwrap();
+            assert!(data.get("diagnosticCode").is_none());
+            assert_eq!(data["message"], message);
+        }
+    }
+
+    #[test]
+    fn unhinted_service_request_connect_error_preserves_generic_diagnostic() {
+        let error = queued_tool_transport_error(
+            "service_request",
+            "default",
+            &json!({}),
+            false,
+            "Failed to connect: No such file or directory (os error 2)",
+        );
+        assert!(error.data.unwrap().get("diagnosticCode").is_none());
     }
 
     #[test]
@@ -13617,7 +14996,7 @@ mod tests {
         assert_eq!(command["browserId"], "session:original-lane");
         assert_eq!(command["sessionName"], "original-lane");
         assert_eq!(
-            queued_tool_command_session("service_request", "default", &command),
+            queued_tool_command_session("service_request", "default", &command).unwrap(),
             "original-lane"
         );
     }
@@ -13716,6 +15095,87 @@ mod tests {
         assert_eq!(command["loginIds"][0], "orcid");
         assert_eq!(command["profileLeasePolicy"], "wait");
         assert_eq!(command["profileLeaseWaitTimeoutMs"], 2500);
+    }
+
+    #[test]
+    fn typed_browser_explicit_route_requires_consistent_session_identity() {
+        assert_eq!(
+            explicit_browser_tool_session(&json!({
+                "browserId": "session:chatgpt-owner",
+                "sessionName": "chatgpt-owner"
+            }))
+            .unwrap()
+            .as_deref(),
+            Some("chatgpt-owner")
+        );
+        assert!(explicit_browser_tool_session(&json!({
+            "browserId": "browser-opaque"
+        }))
+        .unwrap_err()
+        .data
+        .unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("session:<name>"));
+        assert!(explicit_browser_tool_session(&json!({
+            "browserId": "session:first",
+            "sessionName": "second"
+        }))
+        .unwrap_err()
+        .data
+        .unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("conflict"));
+    }
+
+    #[test]
+    fn typed_browser_route_uses_exact_access_plan_reuse_session() {
+        let plan = json!({
+            "decision": {
+                "profileReuse": {
+                    "recommendedAction": "reuse_existing_browser",
+                    "reusableBrowserId": "session:chatgpt-owner",
+                    "reusableSessionName": "chatgpt-owner"
+                }
+            }
+        });
+        assert_eq!(
+            browser_tool_session_from_access_plan("default", &plan).unwrap(),
+            "chatgpt-owner"
+        );
+
+        let launch_plan = json!({
+            "decision": {
+                "profileReuse": {
+                    "recommendedAction": "launch_new_browser"
+                }
+            }
+        });
+        assert_eq!(
+            browser_tool_session_from_access_plan("default", &launch_plan).unwrap(),
+            "default"
+        );
+    }
+
+    #[test]
+    fn typed_browser_route_rejects_conflicting_access_plan_evidence() {
+        let plan = json!({
+            "decision": {
+                "profileReuse": {
+                    "recommendedAction": "reuse_existing_browser",
+                    "reusableBrowserId": "session:first",
+                    "reusableSessionName": "second"
+                }
+            }
+        });
+        assert!(browser_tool_session_from_access_plan("default", &plan)
+            .unwrap_err()
+            .data
+            .unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("conflict"));
     }
 
     #[test]
@@ -15051,13 +16511,14 @@ mod tests {
             &mut output,
             "default",
             ServiceState::default(),
+            None,
         )
         .unwrap();
         let lines = String::from_utf8(output).unwrap();
         let responses = lines.lines().collect::<Vec<_>>();
 
         assert_eq!(responses.len(), 2);
-        assert!(responses[0].contains(r#""method""#) == false);
+        assert!(!responses[0].contains(r#""method""#));
         assert!(responses[1].contains("agent-browser://incidents"));
         assert!(responses[1].contains("agent-browser://profiles"));
         assert!(responses[1].contains("agent-browser://sessions"));
@@ -16009,7 +17470,6 @@ mod tests {
                 previous_health: Some(BrowserHealth::Ready),
                 current_health: Some(BrowserHealth::ProcessExited),
                 details: Some(json!({"reasonKind": "process_exited"})),
-                ..ServiceEvent::default()
             }],
             ..ServiceState::default()
         };
