@@ -7113,6 +7113,34 @@ fn prepare_payload_transaction_with_replacement(
         ));
     }
 
+    if transaction.old_generation_id.is_none() && legacy_mutable_payload_present(paths) {
+        let legacy_generation_id = match migrate_legacy_payload_to_generation(paths) {
+            Ok(generation_id) => generation_id,
+            Err(error) => {
+                transaction.stop_reason = Some("legacy_generation_migration_failed".to_string());
+                let _ = persist_upgrade_transition(
+                    &transaction_path,
+                    &mut transaction,
+                    UpgradeTransactionState::RollbackBeforeCommit,
+                    "rollback_before_commit",
+                );
+                transaction.terminal_result = Some("legacy_payload_preserved".to_string());
+                let _ = persist_upgrade_transition(
+                    &transaction_path,
+                    &mut transaction,
+                    UpgradeTransactionState::FailedPreservedOldGeneration,
+                    "failed_preserved_old_generation",
+                );
+                return Err(format!(
+                    "{error}; transaction: {}",
+                    transaction_path.display()
+                ));
+            }
+        };
+        transaction.old_generation_id = Some(legacy_generation_id);
+        write_private_json_atomic(&transaction_path, &transaction)?;
+    }
+
     let staged = match stage_payload_generation(paths, args) {
         Ok(staged) => staged,
         Err(error) => {
@@ -7224,34 +7252,6 @@ fn prepare_payload_transaction_with_replacement(
             "service state migration blocked before payload mutation; transaction {}: {error}",
             transaction_path.display()
         ));
-    }
-
-    if transaction.old_generation_id.is_none() && legacy_mutable_payload_present(paths) {
-        let legacy_generation_id = match migrate_legacy_payload_to_generation(paths) {
-            Ok(generation_id) => generation_id,
-            Err(error) => {
-                transaction.stop_reason = Some("legacy_generation_migration_failed".to_string());
-                let _ = persist_upgrade_transition(
-                    &transaction_path,
-                    &mut transaction,
-                    UpgradeTransactionState::RollbackBeforeCommit,
-                    "rollback_before_commit",
-                );
-                transaction.terminal_result = Some("legacy_payload_preserved".to_string());
-                let _ = persist_upgrade_transition(
-                    &transaction_path,
-                    &mut transaction,
-                    UpgradeTransactionState::FailedPreservedOldGeneration,
-                    "failed_preserved_old_generation",
-                );
-                return Err(format!(
-                    "{error}; transaction: {}",
-                    transaction_path.display()
-                ));
-            }
-        };
-        transaction.old_generation_id = Some(legacy_generation_id);
-        write_private_json_atomic(&transaction_path, &transaction)?;
     }
 
     Ok(PreparedPayloadTransaction {
@@ -7685,6 +7685,7 @@ fn transfer_discovered_runtimes(
                     error.kind,
                     RuntimeTransactionCommandFailureKind::ProtocolUnavailable
                         | RuntimeTransactionCommandFailureKind::LegacyTransferredOwnerRejected
+                        | RuntimeTransactionCommandFailureKind::CustodyProjectionMismatch
                 ) =>
             {
                 cooperative_preparations[index] =
@@ -7783,6 +7784,8 @@ fn transfer_discovered_runtimes(
                     } => {
                         let legacy_transferred_owner_rejected = error.kind
                             == RuntimeTransactionCommandFailureKind::LegacyTransferredOwnerRejected;
+                        let custody_projection_mismatch = error.kind
+                            == RuntimeTransactionCommandFailureKind::CustodyProjectionMismatch;
                         let evidence = adopt_runtime_via_verified_orphan_fallback(
                             paths,
                             &candidate_binary,
@@ -7793,6 +7796,7 @@ fn transfer_discovered_runtimes(
                             handoffs,
                             &failed_session,
                             legacy_transferred_owner_rejected,
+                            custody_projection_mismatch,
                             false,
                             Some(&source_socket_dir),
                             source_is_runtime_host,
@@ -7820,6 +7824,7 @@ fn transfer_discovered_runtimes(
                         migration,
                         handoffs,
                         &source_session,
+                        false,
                         false,
                         true,
                         Some(&source_socket_dir),
@@ -7915,6 +7920,7 @@ fn transfer_discovered_runtimes(
                         migration,
                         handoffs,
                         &source_session,
+                        false,
                         false,
                         false,
                         None,
@@ -8919,6 +8925,7 @@ fn adopt_runtime_via_verified_orphan_fallback(
     handoffs: &mut Vec<PreparedRuntimeHandoff>,
     source_session: &str,
     legacy_transferred_owner_rejected: bool,
+    custody_projection_mismatch: bool,
     legacy_prepare_v1: bool,
     source_socket_dir: Option<&Path>,
     source_is_runtime_host: bool,
@@ -8934,6 +8941,23 @@ fn adopt_runtime_via_verified_orphan_fallback(
             source_is_runtime_host,
         ) {
             return Err("runtime_owner_current_evidence_mismatch: transferred owner fallback evidence is incomplete".to_string());
+        }
+    } else if custody_projection_mismatch {
+        if source_process_identity.is_none()
+            || !runtime_source_session_is_bound(
+                service_state,
+                &migration.logical_browser_id,
+                source_session,
+            )
+            || !migration
+                .reason_codes
+                .iter()
+                .any(|reason| reason == "cooperative_owner_registration_required")
+        {
+            return Err(
+                "handoff_custody_receipt_snapshot_mismatch: orphan fallback evidence is incomplete"
+                    .to_string(),
+            );
         }
     } else if !runtime_source_session_is_bound(
         service_state,
@@ -8954,6 +8978,7 @@ fn adopt_runtime_via_verified_orphan_fallback(
         && !legacy_ownerless_orphan_bootstrap_allowed(
             migration,
             legacy_transferred_owner_rejected,
+            custody_projection_mismatch,
             legacy_prepare_v1,
         )
     {
@@ -8998,7 +9023,9 @@ fn adopt_runtime_via_verified_orphan_fallback(
         return Err(error);
     }
     migration.disposition = RuntimeDisposition::OrphanAdoption;
-    let reason = if legacy_transferred_owner_rejected {
+    let reason = if custody_projection_mismatch {
+        "legacy_custody_projection_mismatch_effect_authority_revoked"
+    } else if legacy_transferred_owner_rejected {
         "legacy_transferred_owner_prepare_rejected_effect_authority_revoked"
     } else if legacy_prepare_v1 {
         "legacy_daemon_protocol_v1_effect_authority_revoked"
@@ -9035,10 +9062,11 @@ fn adopt_runtime_via_verified_orphan_fallback(
 fn legacy_ownerless_orphan_bootstrap_allowed(
     migration: &crate::runtime_adoption::RuntimeMigrationRecord,
     legacy_transferred_owner_rejected: bool,
+    custody_projection_mismatch: bool,
     legacy_prepare_v1: bool,
 ) -> bool {
     !legacy_transferred_owner_rejected
-        && legacy_prepare_v1
+        && (legacy_prepare_v1 || custody_projection_mismatch)
         && migration
             .reason_codes
             .iter()
@@ -9329,6 +9357,7 @@ fn resolve_runtime_source_session_with_probe(
 enum RuntimeTransactionCommandFailureKind {
     ProtocolUnavailable,
     LegacyTransferredOwnerRejected,
+    CustodyProjectionMismatch,
     ObservationOnlyAlias,
     BrowserUnavailableAlias,
     CommandFailed,
@@ -9357,6 +9386,8 @@ fn runtime_transaction_failure_kind(
     let legacy_transferred_owner_rejected = command_args == ["handoff", "prepare"]
         && (normalized.contains("runtime_owner_current_evidence_mismatch:")
             || normalized.contains("runtime_owner_generation_stale:"));
+    let custody_projection_mismatch = command_args == ["handoff", "prepare"]
+        && normalized.contains("handoff_custody_receipt_snapshot_mismatch");
     let observation_only_alias = command_args == ["handoff", "prepare"]
         && normalized.contains("runtime_owner_observation_only:");
     let browser_unavailable_alias =
@@ -9365,6 +9396,11 @@ fn runtime_transaction_failure_kind(
         RuntimeTransactionCommandFailureKind::ProtocolUnavailable
     } else if legacy_transferred_owner_rejected {
         RuntimeTransactionCommandFailureKind::LegacyTransferredOwnerRejected
+    } else if custody_projection_mismatch {
+        // A committed private receipt without its shared projection is not a
+        // missing handoff protocol. Revoking this owner before validating and
+        // reconciling that exact receipt would discard live custody evidence.
+        RuntimeTransactionCommandFailureKind::CustodyProjectionMismatch
     } else if observation_only_alias {
         RuntimeTransactionCommandFailureKind::ObservationOnlyAlias
     } else if browser_unavailable_alias {
@@ -17333,6 +17369,22 @@ mod tests {
         assert_eq!(
             runtime_transaction_failure_kind(
                 Some(&runtime_failure),
+                "handoff_reconcile_rejected: handoff_custody_receipt_snapshot_mismatch",
+                &["handoff", "prepare"]
+            ),
+            RuntimeTransactionCommandFailureKind::CustodyProjectionMismatch
+        );
+        assert_eq!(
+            runtime_transaction_failure_kind(
+                Some(&runtime_failure),
+                "handoff_custody_receipt_snapshot_mismatch",
+                &["handoff", "resume"]
+            ),
+            RuntimeTransactionCommandFailureKind::CommandFailed
+        );
+        assert_eq!(
+            runtime_transaction_failure_kind(
+                Some(&runtime_failure),
                 "runtime_owner_current_evidence_mismatch: existing profile owner does not match the preparing daemon",
                 &["handoff", "resume"]
             ),
@@ -17985,17 +18037,20 @@ mod tests {
         migration.reason_codes = vec!["cooperative_owner_registration_required".to_string()];
 
         assert!(legacy_ownerless_orphan_bootstrap_allowed(
-            &migration, false, true
+            &migration, false, false, true
+        ));
+        assert!(legacy_ownerless_orphan_bootstrap_allowed(
+            &migration, false, true, false
         ));
         assert!(!legacy_ownerless_orphan_bootstrap_allowed(
-            &migration, false, false
+            &migration, false, false, false
         ));
         assert!(!legacy_ownerless_orphan_bootstrap_allowed(
-            &migration, true, true
+            &migration, true, false, true
         ));
         migration.reason_codes = vec!["cooperative_owner_verified".to_string()];
         assert!(!legacy_ownerless_orphan_bootstrap_allowed(
-            &migration, false, true
+            &migration, false, true, false
         ));
     }
 
@@ -18286,6 +18341,44 @@ mod tests {
         assert_eq!(selected_session, "owner-route");
         assert_eq!(retired_sessions, vec!["transferred-alias"]);
         assert_eq!(retired_aliases, vec!["transferred-alias"]);
+    }
+
+    #[test]
+    fn runtime_handoff_prepare_preserves_custody_projection_mismatch_alias() {
+        let mut retired_sessions = Vec::new();
+        let (failed_session, error) = prepare_runtime_handoff_candidates(
+            "session:logical-browser",
+            "owner-route",
+            vec!["owner-route".to_string(), "receipt-mismatch".to_string()],
+            |session| {
+                if session == "owner-route" {
+                    Ok(serde_json::json!({
+                        "data": {
+                            "prepared": true,
+                            "browserPresent": true,
+                            "candidateSessionName": "candidate"
+                        }
+                    }))
+                } else {
+                    Err(RuntimeTransactionCommandFailure {
+                        kind: RuntimeTransactionCommandFailureKind::CustodyProjectionMismatch,
+                        message: "handoff_custody_receipt_snapshot_mismatch".to_string(),
+                    })
+                }
+            },
+            |session| {
+                retired_sessions.push(session.to_string());
+                Ok(())
+            },
+        )
+        .expect_err("a committed receipt mismatch cannot be retired as a stale alias");
+
+        assert_eq!(failed_session, "receipt-mismatch");
+        assert_eq!(
+            error.kind,
+            RuntimeTransactionCommandFailureKind::CustodyProjectionMismatch
+        );
+        assert!(retired_sessions.is_empty());
     }
 
     #[test]
@@ -18758,6 +18851,58 @@ mod tests {
                 "state_migration_staged",
                 "state_migration_validated",
             ]
+        );
+
+        remove_generation_tree(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn payload_preparation_imports_legacy_generation_before_candidate_staging() {
+        let root = env::temp_dir().join(format!(
+            "agent-browser-payload-legacy-import-order-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let paths = install_paths(&root);
+        fs::create_dir_all(paths.binary.parent().unwrap()).unwrap();
+        fs::create_dir_all(&paths.legacy_support_dir).unwrap();
+        fs::create_dir_all(&paths.unit_dir).unwrap();
+        fs::write(&paths.binary, b"legacy-binary").unwrap();
+        set_executable(&paths.binary).unwrap();
+        fs::write(paths.legacy_support_dir.join("manifest.json"), b"{}\n").unwrap();
+        for unit in WORKSTATION_GENERATION_UNITS {
+            if unit != "agent-browser-dashboard-backend.service" {
+                fs::write(paths.unit_dir.join(unit), format!("legacy {unit}\n")).unwrap();
+            }
+        }
+        let args = WorkstationInstallArgs {
+            mode: InstallMode::Apply,
+            json: true,
+            force_browserless_upgrade: false,
+            runtime_replacement_policy: RuntimeReplacementPolicy::Preserve,
+            expected_runtime_replacement_plan_digest: None,
+            dashboard_port: 4848,
+            guacamole_port: 8092,
+        };
+
+        let prepared = prepare_payload_transaction(&root, &paths, &args, true).unwrap();
+        let old_generation_id = prepared
+            .transaction
+            .old_generation_id
+            .as_deref()
+            .expect("legacy generation must be recorded before candidate staging");
+        assert_eq!(
+            selected_generation_id(&paths).as_deref(),
+            Some(old_generation_id)
+        );
+        assert!(paths
+            .generations_dir
+            .join(old_generation_id)
+            .join("generation.json")
+            .is_file());
+        assert_eq!(
+            prepared.transaction.state,
+            crate::runtime_adoption::UpgradeTransactionState::StateMigrationValidated
         );
 
         remove_generation_tree(&root).unwrap();

@@ -25,6 +25,17 @@ plans select one product lane and use the active-lane catalog for branch and
 worktree custody. [The notes index](docs/dev/notes/README.md) routes current
 field evidence and acceptance records into the same model.
 
+## P187 | Legacy Generation And Custody Recovery
+
+State: OPEN
+
+Current state: [Plan 0187](docs/dev/plans/0187-2026-09-20-legacy-generation-custody-recovery.md)
+owns the mixed-generation recovery exposed by the retained ChatGPT browser.
+The legacy mutable payload must be imported before candidate staging, and a
+committed custody projection mismatch must remain preserve-only. Acceptance
+requires the same retained Chrome process and tabs to survive exact
+transaction-bound adoption and regain task-authority readback.
+
 ## P186 | Route Viewer Admission Drain Recovery
 
 State: OPEN

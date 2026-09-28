@@ -456,6 +456,71 @@ fn observation_command_line_matches_profile(
         && (requested_port == Some(0) || requested_port == Some(devtools_port))
 }
 
+/// Prove one legacy Service State browser from current read-only evidence.
+///
+/// Older browser rows can predate persisted process identities. They are safe
+/// to classify for transactional adoption only when the observed browser
+/// process, registered profile, DevToolsActivePort file, exact WebSocket
+/// endpoint, and a bounded target query all agree. This function does not
+/// persist or synthesize a durable process identity.
+pub(crate) fn legacy_service_browser_identity_probe(
+    user_data_dir: &Path,
+    pid: u32,
+    expected_ws_url: &str,
+) -> Result<(), String> {
+    let expected = url::Url::parse(expected_ws_url)
+        .map_err(|error| format!("legacy_browser_cdp_endpoint_invalid:{error}"))?;
+    if expected.scheme() != "ws"
+        || !expected
+            .host_str()
+            .is_some_and(|host| matches!(host, "127.0.0.1" | "localhost" | "::1"))
+    {
+        return Err("legacy_browser_cdp_endpoint_not_loopback".to_string());
+    }
+    let port = expected
+        .port()
+        .ok_or_else(|| "legacy_browser_cdp_endpoint_port_missing".to_string())?;
+    let active_port_path = [
+        user_data_dir.join("DevToolsActivePort"),
+        user_data_dir.join("Default").join("DevToolsActivePort"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+    .ok_or_else(|| "legacy_browser_devtools_active_port_missing".to_string())?;
+    let active_port = fs::read_to_string(&active_port_path)
+        .map_err(|error| format!("legacy_browser_devtools_active_port_unreadable:{error}"))?;
+    let mut active_lines = active_port.lines();
+    let recorded_port = active_lines
+        .next()
+        .and_then(|line| line.trim().parse::<u16>().ok())
+        .ok_or_else(|| "legacy_browser_devtools_active_port_invalid".to_string())?;
+    let recorded_path = active_lines
+        .next()
+        .map(str::trim)
+        .filter(|path| path.starts_with("/devtools/browser/"))
+        .ok_or_else(|| "legacy_browser_devtools_websocket_path_invalid".to_string())?;
+    if recorded_port != port || expected.path() != recorded_path {
+        return Err("legacy_browser_devtools_endpoint_mismatch".to_string());
+    }
+
+    let observation = observe_process(pid);
+    if !observation_command_line_matches_profile(&observation, user_data_dir, port) {
+        return Err("legacy_browser_process_profile_mismatch".to_string());
+    }
+    let version = http_get_json(port, "/json/version")?;
+    let observed_ws_url = version
+        .get("webSocketDebuggerUrl")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "legacy_browser_cdp_identity_missing".to_string())?;
+    let observed = url::Url::parse(observed_ws_url)
+        .map_err(|error| format!("legacy_browser_cdp_identity_invalid:{error}"))?;
+    if observed.port() != Some(port) || observed.path() != recorded_path {
+        return Err("legacy_browser_cdp_identity_mismatch".to_string());
+    }
+    fetch_runtime_targets(port)?;
+    Ok(())
+}
+
 fn runtime_state_for_user_data_dir(user_data_dir: &Path, pid: u32) -> Option<RuntimeState> {
     let root = runtime_profiles_root().ok()?;
     fs::read_dir(root)
@@ -1283,6 +1348,70 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_service_legacy_browser_probe_requires_exact_profile_endpoint_and_targets() {
+        let root = env::temp_dir().join(format!(
+            "service-legacy-browser-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+        ));
+        let user_data_dir = root.join("profile");
+        fs::create_dir_all(&user_data_dir).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let browser_path = "/devtools/browser/service-legacy";
+        fs::write(
+            user_data_dir.join("DevToolsActivePort"),
+            format!("{port}\n{browser_path}\n"),
+        )
+        .unwrap();
+        let executable = root.join("legacy-chrome");
+        fs::copy("/bin/bash", &executable).unwrap();
+        let mut child = std::process::Command::new(&executable)
+            .arg("-c")
+            .arg("sleep 30 & wait")
+            .arg("legacy-chrome")
+            .arg(format!("--user-data-dir={}", user_data_dir.display()))
+            .arg("--remote-debugging-port=0")
+            .spawn()
+            .unwrap();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 1024];
+                let count = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..count]);
+                let body = if request.starts_with("GET /json/version ") {
+                    format!(r#"{{"webSocketDebuggerUrl":"ws://127.0.0.1:{port}{browser_path}"}}"#)
+                } else {
+                    r#"[{"id":"page-legacy","type":"page","title":"Legacy","url":"https://example.test"}]"#.to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+
+        legacy_service_browser_identity_probe(
+            &user_data_dir,
+            child.id(),
+            &format!("ws://127.0.0.1:{port}{browser_path}"),
+        )
+        .unwrap();
+
+        server.join().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

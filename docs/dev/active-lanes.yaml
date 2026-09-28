@@ -1,6 +1,24 @@
 schema_version: 1
 work_item_tracking: required
 lanes:
+  - id: P187
+    product_lane: PL-BUGFIX
+    objective: Recover legacy immutable-generation migration while preserving retained browser custody
+    plan: docs/dev/plans/0187-2026-09-20-legacy-generation-custody-recovery.md
+    plan_ref: refs/heads/fix/plan-0187-legacy-generation-custody-recovery
+    branch: fix/plan-0187-legacy-generation-custody-recovery
+    target: main
+    plan_state: OPEN
+    custody_state: ACTIVE_WORKTREE
+    checkpoint: a9a3055d0104708a3a663400fa33361ad021ba54
+    remote_ref: null
+    integration_receipt: null
+    integration: merge
+    work_items: [local-goal-01a04493-d237-7483-a944-a0b35a58536f]
+    dependencies: [P186]
+    overlaps: [P180, P184, P186]
+    reconciled_overlaps: [P180, P184, P186]
+    updated_at: 2026-09-20
   - id: P186
     product_lane: PL-BUGFIX
     objective: Recreate missing canonical route viewers under the exact install admission claim

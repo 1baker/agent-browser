@@ -1399,6 +1399,22 @@ fn service_browser_readback(
                 .and_then(|identity| identity.process_identity.browser_family.as_deref())
                 .is_some()
                 || profile.and_then(|profile| profile.browser_build).is_some();
+            let legacy_current_identity_proven = process.is_none()
+                && browser
+                    .pid
+                    .zip(browser.cdp_endpoint.as_deref())
+                    .is_some_and(|(pid, cdp_endpoint)| {
+                        profile
+                            .and_then(|profile| profile.user_data_dir.as_deref())
+                            .is_some_and(|user_data_dir| {
+                                crate::runtime_profile::legacy_service_browser_identity_probe(
+                                    Path::new(user_data_dir),
+                                    pid,
+                                    cdp_endpoint,
+                                )
+                                .is_ok()
+                            })
+                    });
             let mut evidence = base_fragment();
             evidence.browser_live = browser_live;
             evidence.manual_browser = browser_live
@@ -1426,7 +1442,7 @@ fn service_browser_readback(
                 .map_or(EvidenceAgreement::NotApplicable, |_| {
                     EvidenceAgreement::Match
                 });
-            evidence.browser_family = if family_known {
+            evidence.browser_family = if family_known || legacy_current_identity_proven {
                 EvidenceAgreement::Match
             } else if browser_live && !evidence.manual_browser {
                 EvidenceAgreement::Missing
@@ -1813,6 +1829,7 @@ struct ProcessCensusSeed {
     aliases: BTreeSet<String>,
     profile_digests: BTreeSet<String>,
     expected: Vec<crate::process_identity::RecordedProcessIdentity>,
+    legacy_service_browser_probes: Vec<(PathBuf, String)>,
     browser_pid: bool,
 }
 
@@ -1848,6 +1865,25 @@ fn process_identity_readback(
                 seed.aliases.insert(format!("profile-digest:{digest}"));
                 seed.profile_digests.insert(digest);
             }
+        } else if let (Some(profile_path), Some(cdp_endpoint)) = (
+            browser.profile_id.as_deref().and_then(|profile_id| {
+                state
+                    .profiles
+                    .get(profile_id)
+                    .and_then(|profile| profile.user_data_dir.as_deref())
+            }),
+            browser.cdp_endpoint.as_deref(),
+        ) {
+            let profile_path = PathBuf::from(profile_path);
+            let digest = canonical_profile_digest(
+                profile_path
+                    .to_str()
+                    .ok_or_else(|| "legacy browser profile path is not UTF-8".to_string())?,
+            )?;
+            seed.aliases.insert(format!("profile-digest:{digest}"));
+            seed.profile_digests.insert(digest);
+            seed.legacy_service_browser_probes
+                .push((profile_path, cdp_endpoint.to_string()));
         }
     }
     for profile in profiles {
@@ -1908,7 +1944,23 @@ fn process_identity_readback(
                     } else {
                         EvidenceAgreement::Missing
                     };
-                    evidence.process_identity = if seed.expected.is_empty() {
+                    let legacy_service_browser_proven = seed.expected.is_empty()
+                        && seed.legacy_service_browser_probes.len() == 1
+                        && seed.legacy_service_browser_probes.iter().all(
+                            |(profile_path, cdp_endpoint)| {
+                                crate::runtime_profile::legacy_service_browser_identity_probe(
+                                    profile_path,
+                                    pid,
+                                    cdp_endpoint,
+                                )
+                                .is_ok()
+                            },
+                        );
+                    evidence.process_identity = if legacy_service_browser_proven {
+                        evidence.cdp_endpoint = EvidenceAgreement::Match;
+                        evidence.target_set = EvidenceAgreement::Match;
+                        EvidenceAgreement::Match
+                    } else if seed.expected.is_empty() {
                         EvidenceAgreement::Missing
                     } else if seed.expected.iter().all(|expected| {
                         crate::process_identity::assess_process_ownership(
