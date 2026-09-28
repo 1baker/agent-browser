@@ -382,7 +382,19 @@ fn minimal_command(action: &str, id: &str) -> Value {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_all_documented_actions_are_handled() {
+    // Dispatch coverage must never discover a real browser or touch the user's
+    // credential/state directories. Browser execution belongs in ignored E2E.
+    let fixture = std::env::temp_dir().join(format!(
+        "agent-browser-dispatch-parity-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&fixture).unwrap();
     let env_guard = EnvGuard::new(&[
+        "HOME",
         "AGENT_BROWSER_ACTION_POLICY",
         "AGENT_BROWSER_ALLOWED_DOMAINS",
         "AGENT_BROWSER_CONFIRM_ACTIONS",
@@ -391,17 +403,36 @@ async fn test_all_documented_actions_are_handled() {
         "AGENT_BROWSER_EXECUTABLE_PATH",
         "AGENT_BROWSER_PROFILE",
         "AGENT_BROWSER_RUNTIME_PROFILE",
+        "AGENT_BROWSER_SOCKET_DIR",
+        "AGENT_BROWSER_TASK_AUTHORITY_DIR",
+        "AGENT_BROWSER_KEYCHAIN_PASSWORD",
+        "AGENT_BROWSER_USE_REAL_KEYCHAIN",
         "AGENT_BROWSER_SESSION",
         "AGENT_BROWSER_SESSION_NAME",
     ]);
     env_guard.remove("AGENT_BROWSER_ACTION_POLICY");
     env_guard.remove("AGENT_BROWSER_ALLOWED_DOMAINS");
     env_guard.remove("AGENT_BROWSER_CONFIRM_ACTIONS");
-    env_guard.remove("AGENT_BROWSER_DEFAULT_TIMEOUT");
-    env_guard.remove("AGENT_BROWSER_ENGINE");
-    env_guard.remove("AGENT_BROWSER_EXECUTABLE_PATH");
-    env_guard.remove("AGENT_BROWSER_PROFILE");
-    env_guard.remove("AGENT_BROWSER_RUNTIME_PROFILE");
+    env_guard.set("HOME", fixture.to_str().unwrap());
+    env_guard.set("AGENT_BROWSER_DEFAULT_TIMEOUT", "100");
+    env_guard.set("AGENT_BROWSER_ENGINE", "chrome");
+    let absent_browser = fixture.join("intentionally-absent-browser");
+    env_guard.set(
+        "AGENT_BROWSER_EXECUTABLE_PATH",
+        absent_browser.to_str().unwrap(),
+    );
+    let profile = fixture.join("profile");
+    env_guard.set("AGENT_BROWSER_PROFILE", profile.to_str().unwrap());
+    env_guard.set("AGENT_BROWSER_RUNTIME_PROFILE", "parity-isolated");
+    let socket_dir = fixture.join("sockets");
+    env_guard.set("AGENT_BROWSER_SOCKET_DIR", socket_dir.to_str().unwrap());
+    let authority_dir = fixture.join("task-authority");
+    env_guard.set(
+        "AGENT_BROWSER_TASK_AUTHORITY_DIR",
+        authority_dir.to_str().unwrap(),
+    );
+    env_guard.remove("AGENT_BROWSER_KEYCHAIN_PASSWORD");
+    env_guard.remove("AGENT_BROWSER_USE_REAL_KEYCHAIN");
     env_guard.remove("AGENT_BROWSER_SESSION");
     env_guard.remove("AGENT_BROWSER_SESSION_NAME");
 
@@ -409,8 +440,17 @@ async fn test_all_documented_actions_are_handled() {
 
     for (i, action) in DOCUMENTED_ACTIONS.iter().enumerate() {
         let id = format!("parity-{}", i);
-        let cmd = minimal_command(action, &id);
-        let result = execute_command(&cmd, &mut state).await;
+        let mut cmd = minimal_command(action, &id);
+        if let Some(path) = cmd.get("path").and_then(Value::as_str) {
+            let name = std::path::Path::new(path).file_name().unwrap();
+            cmd["path"] = json!(fixture.join(name));
+        }
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            execute_command(&cmd, &mut state),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("Action '{}' exceeded isolated dispatch deadline", action));
 
         assert!(
             result.get("id").is_some(),
@@ -426,6 +466,9 @@ async fn test_all_documented_actions_are_handled() {
             action
         );
     }
+    drop(state);
+    drop(env_guard);
+    std::fs::remove_dir_all(fixture).unwrap();
 }
 
 // ---------------------------------------------------------------------------

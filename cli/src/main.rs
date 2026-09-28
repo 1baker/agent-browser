@@ -1822,6 +1822,28 @@ fn main() {
         }
     };
 
+    // Migration coordination is local-only and must never invoke ensure_daemon
+    // or the generic retrying request transport against the old source.
+    if cmd["action"] == "runtime_legacy_migration" {
+        #[cfg(target_os = "linux")]
+        let result = native::legacy_migration::coordinate(
+            &flags.session,
+            cmd["targetId"].as_str().unwrap_or_default(),
+            cmd["url"].as_str().unwrap_or_default(),
+            cmd["approvedDigest"].as_str(),
+        );
+        #[cfg(not(target_os = "linux"))]
+        let result: Result<serde_json::Value, String> = Err("migration_linux_required".into());
+        match result {
+            Ok(data) => println!("{}", serde_json::json!({"success":true,"data":data})),
+            Err(error) => {
+                print_json_error(error);
+                exit(1);
+            }
+        }
+        return;
+    }
+
     // Remote-view commands construct their route-bound browser launch inside
     // the daemon, so carry workstation-specific launch hints on the command
     // itself as well as on the ordinary client-side prestart launch below.
@@ -2071,7 +2093,7 @@ fn main() {
             .map(|status| status.runtime_profile.as_str())
             .or(selected_runtime_profile.as_deref())
     };
-    let daemon_opts = DaemonOptions {
+    let mut daemon_opts = DaemonOptions {
         headed: flags.headed,
         debug: flags.debug,
         leave_open: flags.leave_open,
@@ -2126,7 +2148,27 @@ fn main() {
             == Some("runtime_handoff_prepare"),
     };
 
-    let daemon_result = match ensure_daemon(&flags.session, &daemon_opts) {
+    if cmd["prospectiveMigration"] == true {
+        // A migration destination may only recover the enrolled endpoint.
+        daemon_opts.cdp = None;
+        daemon_opts.auto_connect = false;
+        daemon_opts.runtime_attach_managed = false;
+        daemon_opts.provider = None;
+        daemon_opts.state = None;
+    }
+    #[cfg(target_os = "linux")]
+    let ensured = if cmd["prospectiveMigration"] == true {
+        connection::ensure_migration_destination(&flags.session, &daemon_opts)
+    } else {
+        ensure_daemon(&flags.session, &daemon_opts)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let ensured = if cmd["prospectiveMigration"] == true {
+        Err("migration_linux_required".into())
+    } else {
+        ensure_daemon(&flags.session, &daemon_opts)
+    };
+    let daemon_result = match ensured {
         Ok(result) => result,
         Err(e) => {
             if flags.json {
@@ -2137,6 +2179,30 @@ fn main() {
             exit(1);
         }
     };
+
+    if cmd["prospectiveMigration"] == true {
+        #[cfg(target_os = "linux")]
+        let result = connection::send_migration_resume_once(cmd.clone(), &flags.session);
+        #[cfg(not(target_os = "linux"))]
+        let result: Result<connection::Response, String> = Err("migration_linux_required".into());
+        match result {
+            Ok(response) => {
+                print_response_with_opts(
+                    &response,
+                    Some("runtime_handoff_resume"),
+                    &OutputOptions::from_flags(&flags),
+                );
+                if !response.success {
+                    exit(1);
+                }
+            }
+            Err(error) => {
+                print_json_error(error);
+                exit(1);
+            }
+        }
+        return;
+    }
 
     // Warn if launch-time options were explicitly passed via CLI but daemon was already running
     // Only warn about flags that were passed on the command line, not those set via environment

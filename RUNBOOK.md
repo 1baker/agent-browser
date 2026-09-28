@@ -4,6 +4,444 @@ This file records dated execution turns for repo governance, planning, release,
 and operational handoff work. Detailed command output belongs in validation
 notes or artifacts, not in this log.
 
+## 2026-09-13 | Required-mode broker issuance and bounded dispatcher stack
+
+The ordered v2 issuer now permits cdp_attach only for the exact current URL.
+Admission additionally requires brokerTransport=true, matching command url,
+expectedUrl and handle target. Raw attach cannot consume this authority, and v2
+broker issuance is mandatory even when global required mode is off. The read-only
+ceiling stays unchanged, so issuance and attach both retain confirmation gates.
+Other lifecycle/script actions remain excluded. Governed issue/status/revoke/
+reconcile controls now traverse the custody gate without skipping their checks;
+reconciliation does not yet issue replacement attach steps.
+
+New required-mode test goes through real issue, actor-bound confirmation, attach,
+second confirmation, approved command and cleanup. It rejects transport/URL/target
+drift, replay, and missing command authority, and records two completed steps.
+Negative issuer coverage keeps launch, close, raw lifecycle and script grants out.
+Initial fixture actor errors were correctly denied; test confirmations now name
+the existing fixture issuer, without weakening actor matching.
+
+The path exposed a default-stack overflow. A one-off 16 MiB diagnostic completed,
+proving finite execution; the production fix boxes the dispatcher frame behind
+the unchanged public execute_command async API. The same test now passes with
+the ordinary stack, with a <=1024-byte public future-size assertion. No persistent
+stack setting was changed. Independent narrow reviews found no introduced grant
+or stack-wrapper bypass; primary adjudicated and ran all validation.
+
+Primary final validation: full isolated Rust suite 2169 passed, 75 ignored, zero
+failures in 172.70 seconds; explicit AuraCall/native cross-process test passed
+separately. Build, strict Clippy, format and both diff checks passed. Native
+CodeGraph index absent, so direct source inspection was used. The suite's launch
+failure messages in dispatch parity use an intentionally absent executable.
+AuraCall plan audit retains its three existing errors. No fresh TypeScript suite
+is claimed because no TypeScript changed. README/help/skill/CDP docs updated.
+
+Required attach is now source-verified, not an installed provider feature.
+Remaining work: provider acquisition/configuration, approved per-command task
+delivery, pending-attachment crash reconciliation, download/descendant targets,
+selective integration and installed/live verification. No retained-browser input,
+runtime replacement, ChatGPT prompt or GitHub write.
+
+Source SHA-256: actions.rs
+7e235145697da00073573b023e63143283982bd90f5825b5011945cde0c94f22;
+task_authority.rs
+ff1e244d08ce664df1c73edf4e23137cfc50c22e5a547e48688b231e7ad919fd.
+
+## 2026-09-13 | Confirmed broker acquisition retains original policy
+
+Resolved the confirmed-policy-capture prerequisite before provider configuration.
+The worker now keeps a private original policy/confirmation snapshot while a
+confirmed command executes. Broker acquisition requires its exact command ID and
+captures those original settings, never the temporarily suppressed worker fields.
+Missing/mismatched snapshots still fail closed. Confirmation and denial are now
+allowed through the transferred-custody action gate; existing confirmation target
+checks and the inner command's action/custody checks remain mandatory.
+
+Regressions run real confirmation followed by broker admission: later diagnostics
+still require confirmation or obey explicit policy denial, even after worker
+settings are cleared. No Runtime.enable is sent on denial; exact detach succeeds.
+Wrong command identity and absent original capture are rejected before attachment.
+The first run exposed confirm/deny missing from the custody gate; that gate was
+fixed without bypassing inner action validation. Read-only reviewer found no
+introduced bypass; primary ran all tests and added the explicit-deny variant.
+
+Primary validation: broker filter 63 passed, 1 ignored; confirmation filter 17
+passed (overlapping); explicit cross-process AuraCall/native test passed. Dev
+build, format, strict Clippy rerun and diff checks passed.
+AuraCall audit retains the same three existing errors. No TypeScript changed.
+CodeGraph skill used; native checkout remains unindexed and direct reads were
+used. README/help/repo skill/CDP documentation now reflect confirmed acquisition.
+
+This removes one acquisition blocker, not required-mode lifecycle issuance or
+provider wiring. Those remain next, along with durable crash reconciliation,
+download/descendant-target support and installed/live verification. No install,
+restart, live browser input, provider prompt or GitHub write.
+
+actions.rs SHA-256:
+1046c6b6aa803f2cc2b7c219f73165fce8737497876fc89d7f3a5d8775be8750.
+
+## 2026-09-13 | AuraCall connector against actual native authority
+
+Added opt-in test_broker_cross_process_auracall_native_authority. It starts the
+real custody-backed worker, acquires an attachment, issues two ordered ledger
+steps, and runs AuraCall's built connector in a separate Node process against
+the production authenticated daemon handler. Only the Chrome protocol peer is
+synthetic. The cfg(test)-only wrapper exposes no production bypass.
+
+Verified: one additional Runtime.enable after startup, one exact-session event,
+two completed ledger steps, duplicate request rejection from a fresh connector,
+exhausted-plan rejection, and exactly one CDP detach across two cleanup requests.
+The original synthetic browser identity is preserved and Browser.close is absent.
+The first run caught a fixture assertion counting startup Runtime.enable; the
+corrected before/after counter passed without changing connector behavior.
+
+Primary: explicit cross-process test passed; broker filter 61 passed, 1 ignored
+(the opt-in test run separately); dev build, strict Clippy, format and both diff
+checks passed. AuraCall fixture passed node syntax check; Biome excludes that
+fixture path, so no fixture lint result is claimed. Plan audit retains the same
+three errors. Reviewer inspected the production-handler path and native assertions
+read-only, found no blocker, and did not run tests. CodeGraph skill used; native
+checkout unindexed, direct reads used. AuraCall index synchronized.
+
+Reproduce after building AuraCall: set AURACALL_NATIVE_BROKER_FIXTURE to its
+tests/fixtures/native-broker-cross-process.mjs, then use the isolated Rust runner
+with test_broker_cross_process_auracall_native_authority and the ignored-test flag.
+This is not required-mode lifecycle issuance or live provider proof. Next gates:
+authority-aware acquisition/provider configuration, confirmed-policy capture,
+crash reconciliation, download/descendant targets and controlled live verification.
+No installed runtime replacement, Chrome launch/input, prompt or GitHub write.
+
+Source SHA-256: actions.rs
+3bf0fc7607627bfcbd938d75139055419c3c3f4a4fb945f80b94a58e8558113d;
+daemon.rs
+dce02758008089419da2bab2818e694ca3032455f433b0874f47e037c64081f7.
+AuraCall built nativeBrokerTransport.js
+88a3e2b483ed0509051d60c2972e01285816e875bfe066c85f50ba589f3203bd;
+fixture script
+de6556e7b9eb12470acf04bbc2ed83a6ad72dad503474521cfb897104c98c0fa.
+
+## 2026-09-13 | Task-authorized broker event delivery, source-only
+
+The native broker now requires event request identity, exact cursor and task
+context. The real custody adapter admits explicit `broker_events` reads using
+the existing policy, profile and ordered-task ledger. It checks target identity
+before extraction and publication, filters foreign page-session events, rejects
+request replay, and retains authority through output. Positive evidence budgets
+default to 4096 bytes. Empty polls consume their issued task step too.
+
+Independent closed-world review identified a blocking framing gap: the daemon
+wrapper was added after the event-result size check. Fixed by retaining the
+admitted limit through final serialization, including wrapper and newline, before
+any write. Exact-limit and one-byte-under tests prove success and zero-byte denial.
+The ordered worker regression now writes through the actual daemon framing path.
+Task finalization still precedes socket I/O: failed delivery never refunds an
+admitted step or permits replay. This is not durable crash reconciliation.
+
+Primary validation: isolated broker filter 61 passed; task_authority filter
+32 passed; handoff filter 93 passed, 3 ignored; policy::tests filter 13 passed.
+Filters overlap and are not a unique test total. Development build, strict
+Clippy, format check and both worktree diff checks passed. AuraCall plan audit
+still exits 1 with three existing findings: responsesServer.ts:4328 route regex,
+and Plan 0357 Status/missing State headers. No TypeScript changed; no fresh
+TypeScript test, typecheck or build result is claimed.
+
+The delegated worker implemented broker_authority.rs event admission; primary
+inspected it, integrated the core and real-worker tests, and ran validation.
+The same worker reviewed the framing fix read-only and reported no remaining
+finding within that narrow criterion. CodeGraph was uninitialized, so direct
+source inspection was used without creating an index.
+
+Next integration gate: AuraCall brokerCdpClient.ts events still supplies only
+binding/cursor, not requestId/taskContext. Update the explicit client contract
+and send-once connector before provider selection. Remaining gates include
+confirmed-policy capture, required lifecycle issuance, registry retirement,
+durable crash reconciliation, fresh-pipe custody, downloads/descendant targets,
+selective integration, paired installation and live no-prompt verification.
+No install, restart, provider submission, GitHub write or unrelated cleanup.
+The installed runtime is unchanged; Plan 0359 remains open.
+
+Source SHA-256: broker_attachment.rs
+87e33a8441f21a7f9076e419c252e82a856a5e96df93bdeb96cca7768af39d2e;
+broker_authority.rs
+06384ac7ea635c77f10564a39b630eca95841e1643ce05bcbecc34f2b8eed0b3;
+actions.rs
+93bc0f5d9158cb038c16d40177fb386fa3e3ab256051c1627da8c3692c97f56a.
+
+## 2026-09-13 | Exact worker acquisition and cancellation-owned cleanup
+
+Previous goal turn classified as progress: source authority/locking fixes and
+tests changed the available integration path. This turn connects experimental
+`cdp_attach` with `brokerTransport: true` to the real transferred-custody worker.
+It does not enable an installed client or send provider input.
+
+The worker requires exact profile/browser/session/tab/target/URL, derives the
+returned handle from stored service records, recomputes access-plan constraints
+without trusting supplied serviceState/accessPlan, requires one reusable browser,
+and reserves registry capacity before CDP attach. It returns only opaque binding
+and canonical handle metadata. Rendered URL is verified on the dedicated owned
+session before returning acquisition success. No switching, new browser or raw
+endpoint fallback is performed. Original task/policy admission remains in force.
+
+Acquisition runs in an owner task independent of caller cancellation. Abandoned
+results are detached; closing-race attachments stay sealed and registered.
+Uncertain acquisition or an owner-task panic marks the registry closed/uncertain,
+preventing unverified lifecycle success. Reservations bound pending and registered
+capacity to 128, and unused reservations release on drop. Terminal-entry retirement
+and durable process-crash reconciliation still need implementation.
+
+Primary isolated tests: six real-worker synthetic acquisition tests passed;
+broader broker filter 53 passed; handoff filter 49 passed, 3 ignored. Counts
+overlap. Acquisition/dispatch/detach uses the real worker, held kernel lease and
+synthetic CDP peer; the peer now assigns distinct session IDs. Coverage includes
+no raw endpoint, exact idempotent detach, retained-process preservation, cancelled
+attach cleanup, wrong rendered URL, changed identity, ambiguous browser and missing
+build proof. No real Chrome or ChatGPT input was used. Dev build, strict Clippy,
+format and both worktree diff checks passed. Final broker rerun passed all 53
+tests against the canonical-handle change. No TypeScript source changed or new
+TypeScript validation is claimed. Plan audit retains three pre-existing errors:
+responsesServer.ts:4328 route regex and Plan 0357 Status/missing State headers.
+
+Delegation: /root/broker_transport_contract implemented only registry reservation
+and uncertainty handling; primary fully read/integrated it and ran tests. Bounded
+review found confirmed execution temporarily removes policy settings. Accepted
+as blocking: acquisition now rejects that context before attachment, with a
+regression. Closed-world source review accepted the fix; reviewer did not run tests.
+Confirmed acquisition is unsupported, not silently authorized. CodeGraph remains
+uninitialized; direct source inspection was used without creating an index.
+
+Remaining gates: task-aware events, unsuppressed confirmed-policy capture,
+required-mode lifecycle task issuance, explicit send-once AuraCall routing,
+registry retirement, durable crash reconciliation, fresh-pipe custody, provider
+download/descendant-target migration, selective source integration, paired install
+and live no-prompt validation. No install/restart, GitHub write, live browser input,
+provider submission or unrelated cleanup. Plan 0359 remains OPEN.
+
+Source SHA-256: actions.rs
+fcc2f51e45548b53f03240e78e08b588706e44b534d2a262a37f63006c00dd2f;
+broker_registry.rs
+1386bfcbf2d0f2551cf54ec9ff805d4a2bc4a59143fd7a59e5452d569a350ef6;
+broker_attachment.rs
+f639c55b180e1fc956a2dc9ff9b6a851090f25c078b48da7237945ff92ccad36.
+
+## 2026-09-13 | Staged broker authority and authenticated concurrent ingress
+
+Superseded acquisition gap: the next checkpoint above this section now wires
+explicit worker acquisition. This older receipt remains historical evidence.
+
+Added and compiled handoff-only broker_authority.rs against original held custody.
+It checks exact binding and URL, captured/reloaded action policy, profile lease,
+task admission and ordered outcomes. Caller parameters remain bound to the
+request; inherited confirmation IDs and reload script injection are rejected.
+Task issuance, admission, finalization, revoke and reconcile now share a
+nonblocking OS file lock per session. Contention fails before dispatch; the lock
+file is retained so different processes cannot acquire different lock inodes.
+Publication checks expiry, envelope/ledger and applicable issuance/revocation,
+then holds the same lock through response delivery without reserving again.
+
+broker_registry.rs supplies a bounded concurrent route selected only after daemon
+token authentication. JSON cannot acquire authority or choose a raw endpoint.
+The worker and route share the same registry. Cleanup seals dispatch and requires
+exact detach acknowledgment before lifecycle changes. Browserless or unsupported
+handoff does not seal the registry. Production acquisition is not wired: the
+registry remains empty outside fixtures. No HTTP/MCP action or retrying CLI
+connector selects this transport. These changes are staged, not operational.
+
+Primary isolated validation: broker filter 43 passed; task_authority filter 31
+passed; handoff filter 49 passed, 3 ignored. Counts overlap. Tests prove concurrent
+single-action budget protection, separate-process exclusion/release, no-launch
+daemon authentication/rejection, expiry/revocation, original-custody teardown and
+browserless lifecycle behavior. The first broker run caught an early handoff
+health probe before revocation; it was moved after revocation and retested. The
+first strict Clippy run caught a boolean simplification in the new adapter; fixed.
+Final broker rerun, Cargo check/dev build, strict Clippy, format and both diff
+checks passed. AuraCall plan audit still fails with three pre-existing violations:
+responsesServer.ts:4328 raw route regex, and Plan 0357 Status/missing State headers.
+No TypeScript source changed in this slice; no new TypeScript typecheck is claimed.
+
+Delegated worker implemented the adapter; primary read it, wired compilation,
+implemented registry/daemon/lifecycle/ledger integration and ran tests. Bounded
+review found reload script laundering and expired-task publication; both were
+accepted as blocking and fixed. Closed-world source review accepted both fixes;
+the reviewer did not run tests. CodeGraph is uninitialized in this checkout, so
+source inspection was used without creating an index.
+
+Remaining gates: request-aware event authorization (currently denied), real
+worker-owned acquisition, bounded verified-detach registry retirement (current
+capacity 128 fails closed), explicit send-once client routing, crash reconciliation,
+fresh-pipe custody, all AuraCall provider/download/descendant-target paths, selective
+integration preserving installed/main maintenance, paired install and live tests.
+No install, restart, browser input, ChatGPT submission, GitHub write or unrelated
+cleanup. Plan 0359 remains OPEN; seamless operation is not yet verified.
+
+Source SHA-256: broker_authority.rs
+a3786e3569df1b76cb26ff54f7101a352a90266c3ec9e961ef9880799d282566;
+broker_registry.rs
+6c07ab6d1f7b0f5a40b9e48e9fff6eedf99d0e6afbbf827193f26a9fe4214e81;
+task_authority.rs
+2841417934d099ad0967187494530425a6607f848d5a9835d94cda0e984312f5.
+
+## 2026-09-13 | Shared original custody integrated with worker lifecycle
+
+Progress checkpoint: committed ActiveHandoffCustody now moves into a non-cloneable
+SharedCustodyOwner. Opaque weak handles can acquire concurrent read permits over
+the original DestinationLease, not a copied receipt. Owner drop or revocation
+seals new admission; active permits retain the original kernel lock. Stale weak
+handles do not retain that lock after the owner and final permit are gone.
+
+HandoffBrokerCustody/Permit verify the held kernel lease, current receipt/service
+snapshot, exact browser/profile/session/target and generation. Close and handoff
+revoke then wait up to five seconds for permits before changing browser state or
+writing a new handoff descriptor. Cancellation/timeout stays revoked and preserves
+the browser and close policy; cleanup may be retried. Successful close drops the
+owner. Automatic browser relaunch under transferred custody is rejected rather
+than replacing a target still covered by old capabilities.
+
+Primary isolated tests: broker filter 30 passed; widened handoff filter 48 passed,
+3 ignored. The three new integration tests occur in both filters. Kernel-lease
+retention/release, cancellation before lifecycle mutation, binding and snapshot
+drift are tested against the existing synthetic child/CDP peer, not live Chrome.
+Cargo check, format, strict Clippy, dev build and both worktree diff checks passed.
+Plan audit retains the same three pre-existing AuraCall route/header violations.
+
+Delegation: /root/broker_transport_contract implemented only broker_custody.rs.
+Primary inspected it, requested weak handles to avoid retaining stale locks,
+integrated actions.rs and ran all reported tests. Bounded source-only integration
+review found no critical issue. Shared transfer custody is now implemented; the
+real BrokerAuthority adapter, fresh-pipe counterpart, concurrent authenticated
+ingress, crash reconciliation and AuraCall wiring are still required. The goal
+remains active and no end-to-end or flawless-operation claim is made. No runtime
+install/restart, live browser action, prompt, GitHub write or unrelated cleanup.
+
+Custody source SHA-256: 4e3ca5914e47ca65ee71a810f32bf62cadae84cb81c9c2eaca8ada4ae3a71280.
+Actions source SHA-256: 0ce9bf59dbb8fdaed04e13dbdde5f88f2c2b450635cc6119153b774440f1cc7b.
+
+## 2026-09-13 | Request-aware authority contract repair; production wiring blocked
+
+The attempt to connect real daemon authority exposed an insufficient interface:
+method-only admission cannot enforce script/destination/task scope or reserve and
+finalize ordered-step budgets. Replaced that command path with mandatory async
+request-aware admission. BrokerCommandRequest owns binding, request ID, method,
+params and task context; fresh exact-session target/URL observations precede
+admission and outcome publication. The same typed permit finalizes the result and
+stays held through socket write. No production method-only fallback exists.
+
+Review also caught duplicate IDs reserving budget before journal rejection. The
+durable journal now precedes observation/reservation, with cancellation sealing
+armed immediately. Sequential and concurrent duplicates reserve and dispatch only
+once. Tests cover denied task/script context, admission and publication URL drift,
+and outcome-finalization failure with no replay. Primary isolated broker filter:
+22 passed. This is source/fixture evidence, not a production authority adapter.
+Format check, strict Clippy, dev build and diff checks passed. Plan audit still
+fails on the same three pre-existing AuraCall route/Plan 0357 header violations.
+Broker core SHA-256: 70015bd25b18a6087705c812b471173c1a2a58bf06f4fa32bfb2ea9358a20959.
+
+Delegation: /root/broker_transport_contract returned a concrete adapter blocker,
+not a fabricated permissive implementation. Primary accepted it and repaired the
+request/permit interface. Closed-world source review accepted the repair after one
+ordering correction; primary ran tests. No broker_authority.rs, registry, daemon
+fast lane or service action was enabled. Actual held DestinationLease/process
+evidence is still private worker-owned state and lacks a shared lifecycle
+revocation/publication barrier. Next integration must expose that real owned
+capability, retain all profile/task/custody gates, and then wire authenticated
+concurrent send-once ingress. No runtime restart/install/browser action, ChatGPT
+submission, GitHub write or dirty-worktree cleanup occurred.
+
+## 2026-09-13 | Native broker core staged, ingress still disabled
+
+Primary validation: isolated `broker_` filter 18 passed; CDP client module 17
+passed; inspect-server module 10 passed (44 distinct tests, one shared regression
+appears in two filters). Cargo check, format check, strict Clippy, dev build and
+both worktree diff checks passed. No Chrome launched: peers are synthetic local
+WebSocket fixtures under the isolated test home. Plan 0359 audit remains failing
+on the same three pre-existing AuraCall route/Plan 0357 header violations.
+Native core SHA-256: d11538c6c91e77360a2286aef04742baa4ebaee4e0f337b8d5790bbd3579b81b.
+CDP client SHA-256: 41f51b0e21dfbebb82509ed2a8c39f9478ba7af4946a67c0d668d327c52cc5b2.
+Journal reopen is tested; it is not proof of complete process-crash reconciliation.
+
+Implemented internal broker_attachment.rs plus opt-in strict session checking
+in CdpClient. The core acquires a dedicated flattened page session, persists
+protected identity evidence and create-new/fsynced no-replay admission records,
+filters and bounds session events independently of pending commands, and performs
+one verified detach without closing the retained browser. Output owns its privacy
+and authority barriers through socket write. No new public service action exists.
+
+Delegation: /root/broker_transport_contract traced concurrent ingress and performed
+source-only closed-world review. Two findings were accepted as blocking: cancelled
+commands must seal admission, and queued writes must recheck the seal inside the
+transport lock. Both were fixed, regression-tested by primary and confirmed by
+source-only reviewer recheck. Existing dirty custody/pipe work stays preserved;
+do not merge this recovery branch wholesale over main maintenance/private renewal.
+
+Remaining gates: real daemon BrokerAuthority enforcing profile lease, task policy,
+exact target/URL/ready health and live custody generation; lifecycle revocation;
+durable attachment reconciliation after process death; authenticated concurrent
+ingress; send-once client routing; AuraCall transport/provider wiring. The fast
+lane belongs after daemon authentication and before control_plane.submit. Each
+concurrent operation needs a separate connection: the worker and each socket
+process commands serially. Ordinary connection.rs retries after EOF/reset, so it
+must not carry this traffic without explicit send-once behavior. Core tests do not
+waive these gates. No installation, restart, live browser action, ChatGPT
+submission or GitHub write occurred.
+
+## 2026-09-12 | Recovery candidate attestation repair, not installation
+
+Superseding transport-prerequisite checkpoint: the existing inspect proxy is not
+an AuraCall-ready guarded transport. It exports a page-session proxy without the
+required custody admission protocol, and custody modes deliberately prohibit it.
+Do not expose it as a substitute or relax the cdp_attach prohibition.
+
+The reusable cleanup path is now hardened: inspector disconnect/server shutdown
+sends one detach for the owned page session and waits up to five seconds for the
+matching browser-level acknowledgment. Server shutdown signals connected tasks
+and allows bounded cleanup before any forced cancellation; timeout, rejected or
+wrong-session acknowledgment and task errors propagate through idempotent
+shutdown. Browser close verifies inspector cleanup before taking close-policy
+fields or tearing down the upstream transport. Failure preserves the browser.
+
+Primary isolated synthetic tests: all 10 inspect-server tests passed, including
+rejection, missing acknowledgment, wrong-session acknowledgment, repeated cleanup
+with exactly one detach, connected shutdown and incomplete HTTP cancellation.
+The synthetic close-ordering regression passed with one detach, no Browser.close
+and successful repeated close. These are not real-Chrome or live-AuraCall proofs.
+Reviewer /root/proxy_cleanup_review identified the teardown-order regression;
+primary accepted/fixed it, then reviewer confirmed the fix in source-only
+closed-world review. No browser launch/input, runtime install/restart, provider
+submission or GitHub action occurred. Installed lineage is unchanged. Full
+candidate validation and broker-mediated AuraCall transport remain outstanding.
+
+Scope: b385fd18 plus preserved dirty recovery work, not the installed/main
+lineage. Source comparison to c284351a spans 44 files and removes private-renewal
+work that main must preserve. Do not merge or publish this branch wholesale.
+CodeGraph is uninitialized here; direct source and diff inspection were used.
+
+Primary corrected transfer proof admission: exact embedded session/profile/browser
+identities, valid unexpired optional lease expiry, ready browser/tab records and
+exact active-session membership are now required. Added an eight-case snapshot
+drift regression with a positive baseline. Failed proof diagnostics share one
+contract including displayOwner.verified=false. Successful kernel display proof
+now reports verified=true while retaining exclusiveOwnershipAttested=false.
+README, CLI help, repo skill and command docs describe these proof semantics.
+
+Primary validation: custody filter 6 passed; handoff filter 3 passed; display
+proof 5 passed. Earlier unchanged owned-pipe and publication-admission suites
+passed 9 and 8 respectively. Rust formatting, strict production Clippy and
+diff checks passed. Added real-pipe e2e assertions are compiled but were not run;
+no real browser launch, retained input, ChatGPT submission, installation, restart
+or GitHub write was performed. Full candidate suite and live integration remain
+unverified. Source-only independent review by /root/custody_contract_review
+returned two contract blockers; primary fixed both, then reviewer accepted both
+in closed-world verification with no directly introduced regression found.
+
+Critical integration constraint: fresh-pipe dispatch rejects cdp_attach/detach;
+transferred custody also permits only a governed-command allowlist excluding
+those actions. AuraCall agentBrowserBridge currently requires cdp_attach.
+These fixes do not resolve that transport contract. Next reconcile the required
+broker transport with custody enforcement without raw-CDP bypass, preserve main's
+private-renewal and maintenance fixes, then validate a scoped integration before
+any approved retained-runtime migration. Legacy records still cannot earn custody
+merely from process existence, an idle queue, or restarting the same executable.
+
 ## 2026-09-10 | Approved timer pause and broker-owned SAM recovery
 
 User approved pausing the failing maintenance timer and broker-owned recovery.

@@ -615,6 +615,26 @@ fn disconnect_stale_daemon(session: &str) {
 }
 
 pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult, String> {
+    ensure_daemon_mode(session, opts, false)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn ensure_migration_destination(
+    session: &str,
+    opts: &DaemonOptions,
+) -> Result<DaemonResult, String> {
+    let bytes = crate::native::legacy_migration::read_private(
+        &get_socket_dir().join(format!("{session}.handoff.json")),
+    )?;
+    crate::native::legacy_migration::load_for_resume(session, &bytes)?;
+    ensure_daemon_mode(session, opts, true)
+}
+
+fn ensure_daemon_mode(
+    session: &str,
+    opts: &DaemonOptions,
+    migration: bool,
+) -> Result<DaemonResult, String> {
     let mut prepared_handoff = false;
     let mut prepared_handoff_pid = None;
     // Socket connectivity is the sole liveness check — no PID check — so
@@ -639,6 +659,20 @@ pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult
             };
             let version_matches = daemon_version_matches(session);
             let auth_token_available = daemon_auth_token_available(session);
+            if migration {
+                #[cfg(target_os = "linux")]
+                {
+                    MigrationConnection::open(session)?.require_current_executable()?;
+                    if !auth_token_available {
+                        return Err("migration_destination_auth_missing".into());
+                    }
+                    return Ok(DaemonResult {
+                        already_running: true,
+                    });
+                }
+                #[cfg(not(target_os = "linux"))]
+                return Err("migration_linux_required".into());
+            }
             if opts.allow_stale_daemon_handoff && auth_token_available {
                 return Ok(DaemonResult {
                     already_running: true,
@@ -1000,7 +1034,7 @@ fn is_command_response_read_timeout(error: &str) -> bool {
             || error.contains("Resource temporarily unavailable"))
 }
 
-fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
+pub(crate) fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
     let mut stream = connect(session)?;
 
     stream.set_read_timeout(Some(Duration::from_secs(300))).ok();
@@ -1021,6 +1055,95 @@ fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
         .map_err(|e| format!("Failed to read: {}", e))?;
 
     serde_json::from_str(&response_line).map_err(|e| format!("Invalid response: {}", e))
+}
+
+/// Operator-only migration transport. Never launches a daemon, reconnects or
+/// retries a command; its peer witness and requests use the same Unix socket.
+#[cfg(target_os = "linux")]
+pub(crate) struct MigrationConnection {
+    reader: BufReader<UnixStream>,
+    session: String,
+    pub(crate) peer: crate::native::handoff_custody::ProcessIdentity,
+}
+
+#[cfg(target_os = "linux")]
+impl MigrationConnection {
+    pub(crate) fn require_current_executable(&self) -> Result<(), String> {
+        let current = crate::native::handoff_custody::ProcessIdentity::capture(std::process::id())?;
+        if self.peer.executable_device != current.executable_device
+            || self.peer.executable_inode != current.executable_inode
+        {
+            return Err("migration_destination_executable_mismatch".into());
+        }
+        self.peer.verify_current()
+    }
+    pub(crate) fn open(session: &str) -> Result<Self, String> {
+        let Connection::Unix(stream) = connect(session)? else {
+            return Err("migration_unix_socket_required".into());
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .map_err(|e| e.to_string())?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|e| e.to_string())?;
+        let peer = crate::native::handoff_custody::ProcessIdentity::capture_unix_peer(&stream)?;
+        Ok(Self {
+            reader: BufReader::new(stream),
+            session: session.into(),
+            peer,
+        })
+    }
+
+    pub(crate) fn request_once(&mut self, command: Value) -> Result<Value, String> {
+        if crate::native::handoff_custody::ProcessIdentity::capture_unix_peer(
+            self.reader.get_ref(),
+        )? != self.peer
+        {
+            return Err("migration_peer_changed".into());
+        }
+        let id = command
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("migration_request_id_required")?
+            .to_string();
+        let mut bytes = serde_json::to_vec(&attach_daemon_auth_token(&command, &self.session)?)
+            .map_err(|e| e.to_string())?;
+        bytes.push(b'\n');
+        self.reader
+            .get_mut()
+            .write_all(&bytes)
+            .map_err(|_| "migration_dispatch_indeterminate:write")?;
+        let mut response = String::new();
+        self.reader
+            .read_line(&mut response)
+            .map_err(|_| "migration_dispatch_indeterminate:read")?;
+        let response: Value = serde_json::from_str(&response)
+            .map_err(|_| "migration_dispatch_indeterminate:response")?;
+        if response.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+            return Err("migration_dispatch_indeterminate:response_id".into());
+        }
+        if response["success"] != true {
+            return Err("migration_source_command_rejected".into());
+        }
+        Ok(response["data"].clone())
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn send_migration_resume_once(
+    command: Value,
+    session: &str,
+) -> Result<Response, String> {
+    let mut connection = MigrationConnection::open(session)?;
+    connection.require_current_executable()?;
+    let data = connection.request_once(command)?;
+    Ok(Response {
+        success: true,
+        data: Some(data),
+        error: None,
+        warning: None,
+    })
 }
 
 #[cfg(test)]

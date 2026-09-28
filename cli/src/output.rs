@@ -4274,13 +4274,19 @@ Examples:
             r##"
 agent-browser handoff - Transfer a live browser to a replacement daemon
 
-Usage: agent-browser handoff <prepare|resume>
+Usage: agent-browser handoff <prepare|resume|migration-plan|migration-prepare|migration-resume>
 
 Subcommands:
   prepare    Persist the browser PID and CDP endpoint, relinquish process
              ownership, and stop the current daemon without closing the browser
   resume     Start a replacement daemon, reconnect to the same browser and
              targets, then remove the durable retry record
+  migration-plan <target-id> <canonical-url>
+             Read-only Linux legacy source/target plan; returns planSha256
+  migration-prepare <target-id> <canonical-url> <plan-sha256>
+             Verify approved plan and prepare once on the witnessed source socket
+  migration-resume
+             Explicitly resume prospective migration after verified source exit
 
 This command is used by the local development publisher and runtime interlock.
 The browser process, DevTools port, profile, and open tabs remain live during
@@ -4296,6 +4302,21 @@ controlPlaneAttestation including remote display ownership. Legacy v1 records
 never qualify as complete proof. Pending recovery blocks ordinary work.
 V2 sessions deny direct dashboard CDP input, background handlers, private
 journeys and unsupported commands; use governed queued commands.
+
+Migration preserves original v1 bytes plus separate prospective evidence; it
+does not fabricate historical source custody. Install and verify the reviewed
+runtime before enrollment and hold maintenance exclusion during migration.
+Unknown acknowledgements require reconciliation, never prepare replay, forced
+kills or ordinary publisher recovery. Verify fresh complete proof before input.
+After the initial exact commit, later daemon recovery permits an evolved
+canonical URL only for the same target and origin, with the matching committed
+receipt and proven-dead prior destination. Target or origin drift fails closed.
+A reviewed schema-3 stale-snapshot descriptor may bind one explicit successor
+target only when the enrolled target is no longer ready, the successor is ready
+on the enrolled origin and the prior destination is proven gone. The operator
+recovery is plan-digest-bound; ordinary resume never chooses a successor target.
+Linux display proof allows the same-name abstract socket only on filesystem
+absence, never as a fallback after access or ownership failure.
 
 Global Options:
   --json               Output as JSON
@@ -4317,7 +4338,9 @@ default browser. The proxy routes DevTools traffic through the daemon's
 existing CDP connection, so both DevTools and agent-browser commands work
 simultaneously.
 
-Replacing an inspect proxy waits for its connection tasks to stop. On Linux and
+Replacing or closing an inspect proxy verifies one acknowledged detach per session.
+Cleanup uncertainty is retained on retry; browser teardown waits for this cleanup.
+On Linux and
 macOS, cooperative CDP privacy receipts live under the configured runtime home's
 private-gates directory. Private locks deny commands and observation; interrupted
 or raw traffic denies private admission until verified reconciliation. Do not
@@ -4325,6 +4348,18 @@ delete these receipts to force a retry. Automated private login is not enabled.
 Internal page cleanup does not unlock observation. Old connection generations
 stay revoked; private commands require a persisted target scope and matching
 CDP session. Live broker coordination is not enabled.
+
+Experimental source-only broker acquisition: cdp_attach with brokerTransport=true,
+exact serviceTabHandle and expectedUrl, on a Linux transferred-custody worker.
+Returns an opaque binding, never a Chrome endpoint. Commands/detach use internal
+authenticated __broker_transport. Events require requestId, cursor, taskContext
+and broker_events admission; taskEvidenceBytes defaults to 4096 for the full
+serialized result. Empty polls consume issued task steps too. Never retry IDs.
+Confirmed acquisition retains original policy; later commands need their own
+authority. Ordered issuance permits exact-current-URL cdp_attach only with broker
+transport and v2 authority; acquisition still needs confirmation. No raw attach
+or other lifecycle grant. Do not use the retrying CLI connector. Crash reconciliation and
+AuraCall selection are not enabled; this is not installed readiness.
 
 Source-checkout Slack token setup: python3 scripts/setup-private-slack.py
 Linux/WSL only; hidden operator input, auth.test only, owner-only plaintext
@@ -5567,6 +5602,20 @@ Example:
         "connect" => {
             r##"
 agent-browser connect - Connect to browser via CDP
+
+Experimental Linux owned launches: AGENT_BROWSER_CDP_TRANSPORT=pipe (default: websocket).
+Pipe mode has no debugging port; connect, providers, detach/leave-open, handoff,
+inspect/stream export, recording, and automatic recovery relaunch are unsupported.
+Existing browsers require an approved controlled restart. Pipe identity is not a URL.
+After initial launch/tab_new, pipe commands require service custody with or without a handle.
+Pipe timeouts never automatically replace or close the active target.
+This is not OS-account isolation or complete control-plane attestation.
+Pipe service health/tab observations expire after 15s and never grant lifecycle authority.
+Fresh pipe custody requires held launch proof, exclusive service lease, exact target,
+and any required display-owner proof. Saved observations cannot grant custody.
+Transfer custody rejects expired leases, non-ready records and mismatched identities.
+Display proofs expose verified; verification does not establish OS-account isolation.
+Retained deployment still requires a backup-protected controlled restart.
 
 Usage: agent-browser connect <port|url>
 

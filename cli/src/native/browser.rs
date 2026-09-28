@@ -242,7 +242,7 @@ impl WaitUntil {
 }
 
 pub enum BrowserProcess {
-    Chrome(ChromeProcess),
+    Chrome(Box<ChromeProcess>),
     Lightpanda(LightpandaProcess),
 }
 
@@ -461,6 +461,9 @@ impl BrowserManager {
 
     pub async fn launch(options: LaunchOptions, engine: Option<&str>) -> Result<Self, String> {
         let engine = engine.unwrap_or("chrome");
+        if super::cdp::chrome::pipe_transport_requested()? && engine != "chrome" {
+            return Err("cdp_pipe_requires_owned_linux_chrome".into());
+        }
 
         match engine {
             "chrome" => {
@@ -505,13 +508,30 @@ impl BrowserManager {
                     .await
                     .map_err(|e| format!("Chrome launch task failed: {}", e))??;
                 let url = chrome.ws_url.clone();
-                (url, BrowserProcess::Chrome(chrome))
+                (url, BrowserProcess::Chrome(Box::new(chrome)))
             }
         };
 
         let manager = if engine == "lightpanda" {
             initialize_lightpanda_manager(ws_url, process).await?
         } else {
+            #[cfg(target_os = "linux")]
+            let (process, client) = {
+                let mut process = process;
+                let pipe = match &mut process {
+                    BrowserProcess::Chrome(chrome) => chrome.take_pipe_transport(),
+                    _ => None,
+                };
+                let client = if let Some(pipe) = pipe {
+                    CdpClient::connect_pipe(
+                        pipe.into_transport().map_err(|error| error.to_string())?,
+                    )
+                } else {
+                    CdpClient::connect(&ws_url).await?
+                };
+                (process, Arc::new(client))
+            };
+            #[cfg(not(target_os = "linux"))]
             let client = Arc::new(CdpClient::connect(&ws_url).await?);
             let mut manager = Self {
                 client,
@@ -1056,6 +1076,9 @@ impl BrowserManager {
     }
 
     pub async fn reconnect_client(&mut self) -> Result<(), String> {
+        if self.uses_pipe_transport() {
+            return Err("cdp_pipe_reconnect_requires_controlled_restart".into());
+        }
         let previous_active_target = self.active_target_id().ok().map(|s| s.to_string());
         let new_client = Arc::new(CdpClient::connect(&self.ws_url).await?);
         self.client = new_client;
@@ -1494,6 +1517,9 @@ impl BrowserManager {
     /// shutting it down. This intentionally relinquishes process ownership so
     /// the daemon can end while Chrome keeps running for later reuse.
     pub fn detach_runtime_browser(&mut self) -> Result<(), String> {
+        if self.uses_pipe_transport() {
+            return Err("cdp_pipe_detach_unsupported".into());
+        }
         let runtime_profile = self
             .browser_process
             .as_ref()
@@ -1515,6 +1541,23 @@ impl BrowserManager {
 
     pub fn has_pages(&self) -> bool {
         !self.pages.is_empty()
+    }
+
+    /// Opaque identity only: a pipe cannot be rediscovered or externally attached.
+    pub(crate) fn uses_pipe_transport(&self) -> bool {
+        self.ws_url.starts_with("pipe:")
+    }
+
+    /// Verify still-held launch-time evidence, never supplied by saved observations.
+    pub(crate) fn verify_fresh_pipe_launch(&self) -> Result<Value, String> {
+        if !self.uses_pipe_transport() {
+            return Err("fresh_pipe_transport_required".into());
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(BrowserProcess::Chrome(process)) = self.browser_process.as_ref() {
+            return process.verify_fresh_pipe_launch();
+        }
+        Err("fresh_pipe_launch_proof_missing".into())
     }
 
     pub fn default_timeout_ms(&self) -> u64 {
@@ -1681,7 +1724,11 @@ impl BrowserManager {
     /// The timed-out action is never replayed. A blank target is prepared and
     /// activated before the affected target is closed, which preserves the
     /// browser process and every unrelated tab in the session.
+    /// Owned pipe targets require a separately controlled restart instead.
     pub async fn replace_active_page_after_timeout(&mut self) -> Result<(String, String), String> {
+        if self.uses_pipe_transport() {
+            return Err("cdp_pipe_recovery_requires_controlled_restart".into());
+        }
         let timed_out_target_id = self.active_target_id()?.to_string();
         let result: CreateTargetResult = self
             .client
@@ -3502,6 +3549,19 @@ mod tests {
             ignore_https_errors: false,
             visited_origins: HashSet::new(),
         };
+
+        // A pipe identity must fail before even creating a replacement target.
+        // This existing mock transport records every attempted CDP effect.
+        let websocket_url = manager.ws_url.clone();
+        manager.ws_url = format!("pipe:{}", uuid::Uuid::new_v4());
+        assert_eq!(
+            manager.replace_active_page_after_timeout().await,
+            Err("cdp_pipe_recovery_requires_controlled_restart".to_string())
+        );
+        assert!(observed.lock().unwrap().is_empty());
+        assert_eq!(manager.active_target_id().unwrap(), "timed-out-target");
+        assert_eq!(manager.page_count(), 1);
+        manager.ws_url = websocket_url;
 
         let replaced = manager.replace_active_page_after_timeout().await.unwrap();
         assert_eq!(

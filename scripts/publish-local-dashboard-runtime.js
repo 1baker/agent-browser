@@ -178,7 +178,12 @@ try {
     })
     : null;
   options.retainedRequirementPath = resolve(options.retainedRequirementPath);
+  // An explicit requirement write is the controlled recovery path after the
+  // retained browser itself was replaced.  Do not merge it with the previous
+  // durable target: that target is precisely the stale identity being
+  // superseded, while the replacement is still independently verified below.
   options.retainedBrowserRequirement = options.journalStatus || options.recoverOnly
+    || (options.writeRetainedRequirement && options.explicitRetainedBrowserExpectation)
     ? null
     : readRetainedBrowserRequirement(options.retainedRequirementPath);
   options.retainedBrowserExpectation = resolveRetainedBrowserExpectation({
@@ -822,17 +827,33 @@ async function verifyRetainedBrowserExpectation(_binary, { expectation, stage })
     };
     throw error;
   }
+  // An attached-existing browser can retain its exact CDP endpoint and target
+  // through a daemon handoff before the replacement daemon has projected its
+  // PID back into Service State.  The runtime profile record is the bounded
+  // owner of that process identity, so use it only when its profile and CDP
+  // endpoint agree with the selected service browser.  This repairs a missing
+  // projection; it never substitutes a different browser.
+  const runtimeStatus = serviceReadback.browser?.pid == null
+    ? runtimeStatusForProfile(_binary, expectation.profileId)
+    : null;
+  const browser = runtimeStatus?.browserAlive === true
+    && Number.isInteger(runtimeStatus.browserPid)
+    && runtimeStatus.browserPid > 0
+    && runtimeStatus.runtimeProfile === expectation.profileId
+    && runtimeStatus.wsUrl === serviceReadback.browser?.cdpEndpoint
+    ? { ...serviceReadback.browser, pid: runtimeStatus.browserPid }
+    : serviceReadback.browser;
   let cdpTargets = null;
   let cdpError = null;
-  if (serviceReadback.browser?.cdpEndpoint) {
+  if (browser?.cdpEndpoint) {
     try {
-      cdpTargets = await readCdpTargetInventory(serviceReadback.browser.cdpEndpoint);
+      cdpTargets = await readCdpTargetInventory(browser.cdpEndpoint);
     } catch (error) {
       cdpError = error instanceof Error ? error.message : String(error);
     }
   }
   const evidence = evaluateRetainedBrowserExpectation({
-    browser: serviceReadback.browser,
+    browser,
     cdpTargets,
     expectation,
     stage,
@@ -847,6 +868,24 @@ async function verifyRetainedBrowserExpectation(_binary, { expectation, stage })
     throw error;
   }
   return evidence;
+}
+
+function runtimeStatusForProfile(binary, profileId) {
+  if (typeof profileId !== 'string' || !profileId.trim()) return null;
+  const result = spawnSync(binary, ['--json', '--runtime-profile', profileId, 'runtime', 'status'], {
+    cwd: rootDir,
+    env: process.env,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 30_000,
+  });
+  if (result.status !== 0) return null;
+  try {
+    return JSON.parse(String(result.stdout || '').trim());
+  } catch {
+    return null;
+  }
 }
 
 async function readCdpTargetInventory(cdpUrl) {

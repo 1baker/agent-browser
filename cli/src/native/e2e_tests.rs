@@ -13,6 +13,135 @@
 //! the directory during cleanup. Do not let tests depend on or mutate
 //! ~/.agent-browser/runtime-profiles/default/user-data.
 
+/// Opt-in two-daemon WebSocket custody test. The existing isolated runner owns
+/// HOME and service-state isolation; this test never touches a retained profile.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore]
+async fn e2e_websocket_owned_v2_handoff_diagnostics() {
+    assert_eq!(
+        std::env::var("AGENT_BROWSER_TEST_ISOLATED").as_deref(),
+        Ok("1")
+    );
+    let binary =
+        std::env::var("AGENT_BROWSER_HANDOFF_TEST_BIN").expect("candidate binary required");
+    let chrome = std::env::var("AGENT_BROWSER_PIPE_TEST_CHROME").expect("Linux Chrome required");
+    let session = format!("v2-fixture-{}", std::process::id());
+    let (profile_path, profile) = e2e_temp_profile("websocket-v2");
+    let guard = EnvGuard::new(&[
+        "AGENT_BROWSER_CDP_TRANSPORT",
+        "AGENT_BROWSER_PROFILE",
+        "AGENT_BROWSER_EXECUTABLE_PATH",
+        "AGENT_BROWSER_CDP",
+        "AGENT_BROWSER_AUTO_CONNECT",
+        "AGENT_BROWSER_PROVIDER",
+        "AGENT_BROWSER_HEADED",
+    ]);
+    for key in [
+        "AGENT_BROWSER_CDP",
+        "AGENT_BROWSER_AUTO_CONNECT",
+        "AGENT_BROWSER_PROVIDER",
+        "AGENT_BROWSER_HEADED",
+    ] {
+        guard.remove(key);
+    }
+    guard.set("AGENT_BROWSER_CDP_TRANSPORT", "websocket");
+    guard.set("AGENT_BROWSER_PROFILE", &profile);
+    guard.set("AGENT_BROWSER_EXECUTABLE_PATH", &chrome);
+    let cache = crate::install::get_browsers_dir();
+    std::fs::create_dir_all(&cache).unwrap();
+    std::os::unix::fs::symlink(
+        std::path::Path::new(&chrome).parent().unwrap(),
+        cache.join("chrome-v2-fixture"),
+    )
+    .unwrap();
+
+    async fn cli(binary: &str, session: &str, args: &[&str]) -> Value {
+        let mut command = tokio::process::Command::new(binary);
+        command
+            .args(["--json", "--session", session])
+            .args(args)
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(20), command.output())
+            .await
+            .expect("fixture CLI timed out")
+            .expect("fixture CLI spawn failed");
+        let value: Value = serde_json::from_slice(&output.stdout).expect("fixture CLI JSON");
+        assert_success(&value);
+        value
+    }
+    fn request(session: &str, value: Value) -> Value {
+        serde_json::to_value(
+            crate::connection::send_command(value, session).expect("fixture daemon response"),
+        )
+        .unwrap()
+    }
+    let mut browser_pid = None;
+    use futures_util::FutureExt;
+    let verification = std::panic::AssertUnwindSafe(async {
+        cli(&binary, &session, &["--runtime-profile", &session, "--profile", &profile,
+            "--executable-path", &chrome, "--browser-build", "stock_chrome", "open", "about:blank"]).await;
+        let tab = request(&session, json!({
+            "id":"v2-tab", "action":"tab_new", "runtimeProfile":session,
+            "profile":profile, "browserBuild":"stock_chrome", "headless":true,
+            "url":"data:text/html,<title>V2 fixture</title><input id='probe'>",
+            "serviceName":"HandoffFixture", "agentName":"test", "taskName":"v2-handoff"
+        }));
+        assert_success(&tab);
+        let handle = get_data(&tab)["serviceTabHandle"].clone();
+        assert_eq!(handle["valid"], true);
+        let before = request(&session, json!({"id":"v2-before", "action":"diagnostics", "serviceTabHandle":handle, "includeScreenshot":false}));
+        assert_success(&before);
+        browser_pid = get_data(&before)["browser"]["pid"].as_u64();
+        assert!(browser_pid.is_some());
+        let prepared = cli(&binary, &session, &["handoff", "prepare"]).await;
+        assert_eq!(get_data(&prepared)["prepared"], true);
+        let descriptor_path = get_data(&prepared)["handoffPath"].as_str().unwrap();
+        let descriptor: Value = serde_json::from_slice(&std::fs::read(descriptor_path).unwrap()).unwrap();
+        assert_eq!(descriptor["schemaVersion"], 2);
+        let pid_path = crate::connection::get_socket_dir().join(format!("{session}.pid"));
+        for _ in 0..100 {
+            if !pid_path.exists() { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(!pid_path.exists(), "source daemon must exit before resume");
+        let resumed = cli(&binary, &session, &["handoff", "resume"]).await;
+        assert_eq!(get_data(&resumed)["resumed"], true);
+        let after = request(&session, json!({"id":"v2-after", "action":"diagnostics", "serviceTabHandle":handle, "includeScreenshot":false}));
+        assert_success(&after);
+        assert_eq!(get_data(&after)["controlPlaneAttestation"]["complete"], true);
+        assert_eq!(get_data(&after)["controlPlaneAttestation"]["missingProofs"], json!([]));
+        assert_eq!(get_data(&after)["browser"]["pid"].as_u64(), browser_pid);
+        assert_eq!(get_data(&before)["targetId"], get_data(&after)["targetId"]);
+        let fill = request(&session, json!({"id":"v2-fill", "action":"fill", "serviceTabHandle":handle, "selector":"#probe", "value":"verified"}));
+        assert_success(&fill);
+        let read = request(&session, json!({"id":"v2-read", "action":"evaluate", "serviceTabHandle":handle, "script":"document.querySelector('#probe').value", "timeoutMs":5000, "maxReturnBytes":1000}));
+        assert_success(&read);
+        assert_eq!(get_data(&read)["result"], "verified");
+    }).catch_unwind().await;
+    // The fixture owns this unique session. Always request its normal close.
+    let close = std::panic::AssertUnwindSafe(cli(&binary, &session, &["close"]))
+        .catch_unwind()
+        .await;
+    if let Some(pid) = browser_pid {
+        for _ in 0..100 {
+            if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "fixture browser must exit before cleanup"
+        );
+    }
+    close.expect("fixture close failed");
+    let _ = std::fs::remove_dir_all(profile_path);
+    if let Err(panic) = verification {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -123,6 +252,499 @@ fn kill_browser_process(pid: u32) {
 // ---------------------------------------------------------------------------
 // Core: launch, navigate, evaluate, url, title, close
 // ---------------------------------------------------------------------------
+
+/// Opt-in real-Chrome transport smoke. Uses no retained profile, service tab,
+/// website, or installed daemon. Run through test:rust-isolated with an explicit
+/// AGENT_BROWSER_PIPE_TEST_CHROME executable and --ignored.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore]
+async fn e2e_pipe_owned_chrome_without_debugging_listener() {
+    assert_eq!(
+        std::env::var("AGENT_BROWSER_TEST_ISOLATED").as_deref(),
+        Ok("1")
+    );
+    let executable = std::env::var("AGENT_BROWSER_PIPE_TEST_CHROME")
+        .expect("Set AGENT_BROWSER_PIPE_TEST_CHROME to an installed Linux Chrome executable");
+    let guard = EnvGuard::new(&["AGENT_BROWSER_CDP_TRANSPORT"]);
+    guard.set("AGENT_BROWSER_CDP_TRANSPORT", "pipe");
+    let (profile_path, profile) = e2e_temp_profile("pipe-owned");
+    let mut browser = super::browser::BrowserManager::launch(
+        super::cdp::chrome::LaunchOptions {
+            executable_path: Some(executable),
+            profile: Some(profile),
+            ..Default::default()
+        },
+        Some("chrome"),
+    )
+    .await
+    .expect("isolated pipe Chrome launch");
+    let pid = browser.browser_pid().expect("owned Chrome PID");
+    let verification = async {
+        assert!(browser.uses_pipe_transport());
+        assert!(!profile_path.join("DevToolsActivePort").exists());
+        let command_line = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap();
+        // This Chrome build rewrites argv as a space-joined process title.
+        // These fixture paths/flags contain no spaces. This normalization is
+        // test-only and must not be reused as production ownership evidence.
+        let arguments: Vec<_> = command_line
+            .split(|byte| *byte == 0 || byte.is_ascii_whitespace())
+            .collect();
+        assert!(arguments.contains(&b"--remote-debugging-pipe".as_slice()));
+        assert_eq!(
+            std::fs::read_link(format!("/proc/{pid}/exe")).unwrap(),
+            browser
+                .launched_chrome_executable()
+                .unwrap()
+                .canonicalize()
+                .unwrap()
+        );
+        assert_eq!(
+            browser
+                .browser_user_data_dir()
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            profile_path.canonicalize().unwrap()
+        );
+        assert!(!arguments
+            .iter()
+            .any(|arg| arg.starts_with(b"--remote-debugging-port")));
+        for fd in [3, 4] {
+            let endpoint = std::fs::read_link(format!("/proc/{pid}/fd/{fd}")).unwrap();
+            assert!(endpoint.to_string_lossy().starts_with("pipe:["));
+        }
+        let sockets: std::collections::HashSet<_> = std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+            .filter_map(|target| {
+                target
+                    .to_str()?
+                    .strip_prefix("socket:[")?
+                    .strip_suffix(']')
+                    .map(str::to_owned)
+            })
+            .collect();
+        for table in ["tcp", "tcp6"] {
+            let entries = std::fs::read_to_string(format!("/proc/{pid}/net/{table}")).unwrap();
+            for row in entries.lines().skip(1) {
+                let columns: Vec<_> = row.split_whitespace().collect();
+                assert!(
+                    !(columns.get(3) == Some(&"0A")
+                        && columns.get(9).is_some_and(|inode| sockets.contains(*inode))),
+                    "test Chrome unexpectedly owns a TCP listener"
+                );
+            }
+        }
+        let version = browser
+            .client
+            .send_command_no_params("Browser.getVersion", None)
+            .await
+            .unwrap();
+        assert!(version["product"]
+            .as_str()
+            .is_some_and(|product| product.contains("Chrome/")));
+        let targets = browser
+            .client
+            .send_command_no_params("Target.getTargets", None)
+            .await
+            .unwrap();
+        assert!(targets["targetInfos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|target| target["type"] == "page"));
+        // Reconcile actual pipe responses without publishing a network endpoint.
+        let observation = super::pipe_observation::capture(&browser, "pipe-fixture")
+            .await
+            .unwrap();
+        let mut service = super::service_model::ServiceState::default();
+        let browser_id = "session:pipe-fixture";
+        service.browsers.insert(
+            browser_id.into(),
+            super::service_model::BrowserProcess {
+                id: browser_id.into(),
+                pid: Some(pid),
+                health: ServiceBrowserHealth::Ready,
+                pipe_observation: Some(observation),
+                active_session_ids: vec!["pipe-fixture".into()],
+                ..Default::default()
+            },
+        );
+        super::service_health::reconcile_service_state(&mut service).await;
+        assert_eq!(
+            service.browsers[browser_id].health,
+            ServiceBrowserHealth::Ready
+        );
+        assert!(service.browsers[browser_id].cdp_endpoint.is_none());
+        let target_id = browser.active_target_id().unwrap();
+        assert!(service
+            .tabs
+            .values()
+            .any(|tab| tab.target_id.as_deref() == Some(target_id)
+                && tab.lifecycle == super::service_model::TabLifecycle::Ready));
+        for prior_pipe in [false, true] {
+            let mut before = service.clone();
+            let old = before.browsers.get_mut(browser_id).unwrap();
+            if prior_pipe {
+                let observation = old.pipe_observation.as_mut().unwrap();
+                observation["observedBootMs"] = json!(observation["observedBootMs"]
+                    .as_u64()
+                    .unwrap()
+                    .saturating_sub(1));
+            } else {
+                old.pipe_observation = None;
+                old.cdp_endpoint = Some("http://127.0.0.1:1".into());
+            }
+            before.tabs.insert(
+                "target:obsolete".into(),
+                super::service_model::BrowserTab {
+                    id: "target:obsolete".into(),
+                    browser_id: browser_id.into(),
+                    lifecycle: super::service_model::TabLifecycle::Ready,
+                    ..Default::default()
+                },
+            );
+            let reconciled = before.clone();
+            let mut current = service.clone();
+            super::service_health::merge_reconciled_service_state(
+                &mut current,
+                &before,
+                &reconciled,
+            );
+            assert_eq!(
+                current.browsers[browser_id].health,
+                ServiceBrowserHealth::Ready
+            );
+            assert!(!current.tabs.contains_key("target:obsolete"));
+        }
+        service
+            .browsers
+            .get_mut(browser_id)
+            .unwrap()
+            .pipe_observation
+            .as_mut()
+            .unwrap()["observedBootMs"] = json!(0);
+        super::service_health::reconcile_service_state(&mut service).await;
+        assert_eq!(
+            service.browsers[browser_id].health,
+            ServiceBrowserHealth::CdpDisconnected
+        );
+        assert!(service
+            .tabs
+            .values()
+            .all(|tab| tab.lifecycle == super::service_model::TabLifecycle::Closed));
+        assert!(browser
+            .reconnect_client()
+            .await
+            .unwrap_err()
+            .contains("controlled_restart"));
+        let retained_target = browser.active_target_id().unwrap().to_string();
+        let retained_pages = browser.page_count();
+        assert!(browser
+            .replace_active_page_after_timeout()
+            .await
+            .unwrap_err()
+            .contains("controlled_restart"));
+        assert_eq!(browser.active_target_id().unwrap(), retained_target);
+        assert_eq!(browser.page_count(), retained_pages);
+        println!("pipe smoke: real Chrome replied; fd3/fd4 are pipes; no debugging port file or owned TCP listener");
+    };
+    // Catch assertion panics so the exact test child still receives orderly close.
+    use futures_util::FutureExt;
+    let result = std::panic::AssertUnwindSafe(verification)
+        .catch_unwind()
+        .await;
+    // Exercise the actual daemon publisher and its throttle after a failed write.
+    let mut state = DaemonState::new();
+    state.session_id = "pipe-fixture".into();
+    let pipe_identity = browser.get_cdp_url().to_string();
+    state.browser = Some(browser);
+    let persistence = std::panic::AssertUnwindSafe(async {
+        use super::service_store::{LockedServiceStateRepository, ServiceStateRepository};
+        let first = state
+            .refresh_pipe_service_observation(false)
+            .await
+            .unwrap_err();
+        assert!(first.contains("record_missing"));
+        assert_eq!(
+            state
+                .refresh_pipe_service_observation(false)
+                .await
+                .unwrap_err(),
+            first
+        );
+        let repository = LockedServiceStateRepository::default_json().unwrap();
+        super::service_health::persist_service_browser_record_in_repository(
+            &repository,
+            "pipe-fixture",
+            super::service_model::BrowserHost::LocalHeadless,
+            ServiceBrowserHealth::Ready,
+            Some(pid),
+            Some(pipe_identity.clone()),
+            None,
+            None,
+        )
+        .unwrap();
+        state.refresh_pipe_service_observation(true).await.unwrap();
+        {
+            let mut pending = Box::pin(state.refresh_pipe_service_observation(true));
+            assert!(futures_util::poll!(pending.as_mut()).is_pending());
+        }
+        assert!(state
+            .refresh_pipe_service_observation(false)
+            .await
+            .unwrap_err()
+            .contains("incomplete"));
+        state.refresh_pipe_service_observation(true).await.unwrap();
+        super::service_health::reconcile_service_state_in_repository(&repository)
+            .await
+            .unwrap();
+        let saved = repository.load_snapshot().unwrap();
+        let launch = state
+            .browser
+            .as_ref()
+            .unwrap()
+            .verify_fresh_pipe_launch()
+            .unwrap();
+        assert_eq!(launch["basis"], "fresh_owned_pipe_launch");
+        assert!(super::owned_pipe_proof::PendingLaunch::acquire(&profile_path).is_err());
+        let mut governed = saved.clone();
+        let browser_id = "session:pipe-fixture";
+        let target = state
+            .browser
+            .as_ref()
+            .unwrap()
+            .active_target_id()
+            .unwrap()
+            .to_string();
+        governed.profiles.insert(
+            "pipe-profile".into(),
+            super::service_model::BrowserProfile {
+                id: "pipe-profile".into(),
+                user_data_dir: Some(profile_path.to_string_lossy().to_string()),
+                ..Default::default()
+            },
+        );
+        governed.browsers.get_mut(browser_id).unwrap().profile_id = Some("pipe-profile".into());
+        governed.sessions.insert(
+            "pipe-fixture".into(),
+            super::service_model::BrowserSession {
+                id: "pipe-fixture".into(),
+                profile_id: Some("pipe-profile".into()),
+                lease: super::service_model::LeaseState::Exclusive,
+                browser_ids: vec![browser_id.into()],
+                tab_ids: vec![format!("target:{target}")],
+                ..Default::default()
+            },
+        );
+        let custody = super::actions::verify_fresh_pipe_custody_against(&state, &governed).unwrap();
+        assert_eq!(custody["complete"], true);
+        assert_eq!(custody["ownerCustody"]["basis"], "fresh_owned_pipe_launch");
+        assert!(governed.runtime_custody_receipts.is_empty());
+        let mut wrong = governed.clone();
+        wrong.sessions.get_mut("pipe-fixture").unwrap().lease =
+            super::service_model::LeaseState::Released;
+        assert!(super::actions::verify_fresh_pipe_custody_against(&state, &wrong).is_err());
+        repository.mutate(|snapshot| { *snapshot = wrong.clone(); Ok(()) }).unwrap();
+        let denied_diagnostics = execute_command(
+            &json!({"id":"released-pipe-diagnostics","action":"diagnostics","includeScreenshot":true,
+                "serviceTabHandle":{"browserId":browser_id,"targetId":target}}),
+            &mut state,
+        ).await;
+        assert_eq!(denied_diagnostics["success"], false);
+        assert_eq!(denied_diagnostics["data"]["snapshotOnly"], true);
+        assert_eq!(denied_diagnostics["data"]["controlPlaneAttestation"]["complete"], false);
+        assert_eq!(denied_diagnostics["data"]["action"], "diagnostics");
+        assert_eq!(denied_diagnostics["data"]["controlPlaneAttestation"]["displayOwner"]["verified"], false);
+        let missing = denied_diagnostics["data"]["controlPlaneAttestation"]["missingProofs"].as_array().unwrap();
+        assert!(!missing.is_empty());
+        assert!(missing.iter().all(|reason| reason.as_str().is_some_and(|reason| !reason.is_empty())));
+        assert!(denied_diagnostics["data"].get("screenshot").is_none());
+        let handleless = execute_command(
+            &json!({"id":"released-pipe-handleless", "action":"evaluate",
+                "script":"document.title = 'unauthorized'"}),
+            &mut state,
+        ).await;
+        assert_eq!(handleless["success"], false);
+        assert!(handleless["error"].as_str().unwrap().contains("exclusive_service_lease"));
+        assert_ne!(state.browser.as_ref().unwrap().evaluate("document.title", None).await.unwrap(), json!("unauthorized"));
+        repository.mutate(|snapshot| { *snapshot = saved.clone(); Ok(()) }).unwrap();
+        wrong = governed.clone();
+        wrong.sessions.get_mut("pipe-fixture").unwrap().expires_at =
+            Some("2000-01-01T00:00:00Z".into());
+        assert!(super::actions::verify_fresh_pipe_custody_against(&state, &wrong).is_err());
+        wrong = governed.clone();
+        wrong.browsers.get_mut(browser_id).unwrap().host =
+            super::service_model::BrowserHost::RemoteHeaded;
+        assert!(super::actions::verify_fresh_pipe_custody_against(&state, &wrong).is_err());
+        repository.mutate(|snapshot| { *snapshot = wrong.clone(); Ok(()) }).unwrap();
+        let missing_display = execute_command(
+            &json!({"id":"display-pipe-handleless", "action":"evaluate",
+                "script":"document.title = 'unauthorized'"}),
+            &mut state,
+        ).await;
+        assert_eq!(missing_display["success"], false);
+        assert!(missing_display["error"].as_str().unwrap().contains("owned_display_missing"));
+        repository.mutate(|snapshot| { *snapshot = saved.clone(); Ok(()) }).unwrap();
+        wrong.browsers.get_mut(browser_id).unwrap().host =
+            super::service_model::BrowserHost::LocalHeaded;
+        assert!(super::actions::verify_fresh_pipe_custody_against(&state, &wrong).is_err());
+        wrong = governed.clone();
+        wrong
+            .tabs
+            .get_mut(&format!("target:{target}"))
+            .unwrap()
+            .owner_session_id = Some("other".into());
+        assert!(super::actions::verify_fresh_pipe_custody_against(&state, &wrong).is_err());
+        let denied = execute_command(
+            &json!({"id":"wrong-pipe-target","action":"evaluate", "script":"1+2",
+            "serviceTabHandle":{"browserId":browser_id,"targetId":"wrong"}}),
+            &mut state,
+        )
+        .await;
+        assert_eq!(denied["success"], false);
+        assert!(denied
+            .to_string()
+            .contains("fresh_pipe_requested_target_mismatch"));
+        assert!(saved.browsers["session:pipe-fixture"]
+            .cdp_endpoint
+            .is_none());
+        assert_eq!(
+            saved.browsers["session:pipe-fixture"].health,
+            ServiceBrowserHealth::Ready
+        );
+        assert!(saved
+            .tabs
+            .values()
+            .any(|tab| tab.lifecycle == super::service_model::TabLifecycle::Ready));
+        repository
+            .mutate(|snapshot| {
+                snapshot
+                    .browsers
+                    .get_mut("session:pipe-fixture")
+                    .unwrap()
+                    .pipe_observation = Some(json!({"pipeIdentity":"pipe:replacement"}));
+                Ok(())
+            })
+            .unwrap();
+        let mismatch = state
+            .refresh_pipe_service_observation(true)
+            .await
+            .unwrap_err();
+        assert!(mismatch.contains("record_changed"));
+        assert_eq!(
+            state
+                .refresh_pipe_service_observation(false)
+                .await
+                .unwrap_err(),
+            mismatch
+        );
+    })
+    .catch_unwind()
+    .await;
+    let mut browser = state.browser.take().unwrap();
+    let shutdown = browser.close_with_outcome().await.unwrap();
+    assert!(shutdown.polite_close_succeeded, "{shutdown:?}");
+    assert!(!shutdown.force_kill_attempted, "{shutdown:?}");
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    drop(browser);
+    std::fs::remove_dir_all(profile_path).unwrap();
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+    if let Err(panic) = persistence {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// Exercise queue-created service records and generated handles, not a hand-built
+/// custody snapshot. The isolated runner keeps this away from retained profiles.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore]
+async fn e2e_pipe_governed_diagnostics_and_input() {
+    assert_eq!(
+        std::env::var("AGENT_BROWSER_TEST_ISOLATED").as_deref(),
+        Ok("1")
+    );
+    let executable = std::env::var("AGENT_BROWSER_PIPE_TEST_CHROME")
+        .expect("Set AGENT_BROWSER_PIPE_TEST_CHROME to an installed Linux Chrome");
+    // Expose only the installed executable bundle through the isolated cache.
+    // No retained profile or service state is copied into this test.
+    let cache = crate::install::get_browsers_dir();
+    std::fs::create_dir_all(&cache).unwrap();
+    std::os::unix::fs::symlink(
+        std::path::Path::new(&executable).parent().unwrap(),
+        cache.join("chrome-pipe-fixture"),
+    )
+    .unwrap();
+    let guard = EnvGuard::new(&["AGENT_BROWSER_CDP_TRANSPORT", "AGENT_BROWSER_PROFILE"]);
+    guard.set("AGENT_BROWSER_CDP_TRANSPORT", "pipe");
+    let (profile_path, profile) = e2e_temp_profile("pipe-governed");
+    guard.set("AGENT_BROWSER_PROFILE", &profile);
+    let mut state = DaemonState::new();
+    state.session_id = "pipe-governed-fixture".into();
+    let worker = ControlPlaneWorker::start(state);
+    use futures_util::FutureExt;
+    let verification =
+        std::panic::AssertUnwindSafe(async {
+            let tab = worker
+                .submit(json!({
+                    "id":"pipe-governed-tab", "action":"tab_new",
+                    "url":"data:text/html,<title>Pipe fixture</title><input id='probe'>",
+                    "headless":true, "executablePath":executable, "profile":profile,
+                    "browserBuild":"stock_chrome", "browserHost":"local_headless",
+                    "runtimeProfile":"pipe-governed-fixture",
+                    "serviceName":"PipeFixture", "agentName":"test", "taskName":"governed-input"
+                }))
+                .await;
+            assert_success(&tab);
+            let handle = get_data(&tab)["serviceTabHandle"].clone();
+            assert_eq!(handle["valid"], true);
+            let diagnostic = worker
+                .submit(json!({
+                    "id":"pipe-governed-diagnostics", "action":"diagnostics",
+                    "serviceTabHandle":handle, "includeScreenshot":false,
+                    "serviceName":"PipeFixture", "agentName":"test", "taskName":"governed-input"
+                }))
+                .await;
+            assert_success(&diagnostic);
+            assert_eq!(
+                get_data(&diagnostic)["controlPlaneAttestation"]["complete"],
+                true
+            );
+            assert_eq!(
+                get_data(&diagnostic)["controlPlaneAttestation"]["missingProofs"],
+                json!([])
+            );
+            let fill = worker.submit(json!({
+            "id":"pipe-governed-fill", "action":"fill", "selector":"#probe", "value":"verified",
+            "serviceTabHandle":handle,
+            "serviceName":"PipeFixture", "agentName":"test", "taskName":"governed-input"
+        })).await;
+            assert_success(&fill);
+            let readback = worker
+                .submit(json!({
+                    "id":"pipe-governed-readback", "action":"evaluate",
+                    "script":"document.querySelector('#probe').value", "serviceTabHandle":handle,
+                    "timeoutMs":5000, "maxReturnBytes":1000,
+                    "serviceName":"PipeFixture", "agentName":"test", "taskName":"governed-input"
+                }))
+                .await;
+            assert_success(&readback);
+            assert_eq!(get_data(&readback)["ok"], true);
+            assert_eq!(get_data(&readback)["result"], "verified");
+        })
+        .catch_unwind()
+        .await;
+    worker.shutdown().await;
+    let _ = std::fs::remove_dir_all(&profile_path);
+    if let Err(panic) = verification {
+        std::panic::resume_unwind(panic);
+    }
+}
 
 #[tokio::test]
 #[ignore]

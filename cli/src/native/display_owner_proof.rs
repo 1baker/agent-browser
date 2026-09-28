@@ -30,6 +30,22 @@ mod linux {
 
     const CONNECT_BUDGET: Duration = Duration::from_millis(250);
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum SocketNamespace {
+        Filesystem,
+        Abstract,
+    }
+
+    fn socket_namespace(path: &str) -> Result<SocketNamespace, String> {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => Ok(SocketNamespace::Filesystem),
+            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
+                Ok(SocketNamespace::Abstract)
+            }
+            Err(_) => Err(failure("local display socket metadata unavailable")),
+        }
+    }
+
     fn failure(reason: &str) -> String {
         format!("display_owner_proof_failed: {reason}")
     }
@@ -57,7 +73,11 @@ mod linux {
         Ok(format!("/tmp/.X11-unix/X{number}"))
     }
 
-    fn connect(path: &str, deadline: Instant) -> Result<OwnedFd, String> {
+    fn connect(
+        path: &str,
+        namespace: SocketNamespace,
+        deadline: Instant,
+    ) -> Result<OwnedFd, String> {
         if Instant::now() >= deadline {
             return Err(failure("local display socket connection timed out"));
         }
@@ -80,15 +100,23 @@ mod linux {
         if path.len() >= address.sun_path.len() || path.as_bytes().contains(&0) {
             return Err(failure("invalid socket path"));
         }
-        for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes()) {
+        // Abstract addresses are the exact same derived X socket name, prefixed
+        // by NUL. No arbitrary address, namespace traversal or protocol fallback.
+        let offset = usize::from(namespace == SocketNamespace::Abstract);
+        for (slot, byte) in address.sun_path.iter_mut().skip(offset).zip(path.bytes()) {
             *slot = byte as libc::c_char;
         }
+        let address_length = if namespace == SocketNamespace::Abstract {
+            std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + path.len()
+        } else {
+            size_of::<libc::sockaddr_un>()
+        };
         // SAFETY: address points to an initialized sockaddr_un of supplied size.
         let connected = unsafe {
             libc::connect(
                 fd.as_raw_fd(),
                 (&address as *const libc::sockaddr_un).cast(),
-                size_of::<libc::sockaddr_un>() as libc::socklen_t,
+                address_length as libc::socklen_t,
             )
         };
         if connected == 0 && Instant::now() < deadline {
@@ -214,7 +242,10 @@ mod linux {
 
     fn observe(path: &str, expected_uid: u32) -> Result<Value, String> {
         let deadline = Instant::now() + CONNECT_BUDGET;
-        let fd = connect(path, deadline)?;
+        // Only proven filesystem absence permits the Linux abstract namespace.
+        // A refused connection, wrong owner or unreadable path never falls back.
+        let namespace = socket_namespace(path)?;
+        let fd = connect(path, namespace, deadline)?;
         let before = peer(&fd)?;
         if before.pid <= 0 || before.uid != expected_uid {
             return Err(failure(
@@ -225,16 +256,28 @@ mod linux {
         // A fresh connection brackets the observed peer with process samples.
         // Re-reading SO_PEERCRED on the same fd alone would only repeat cached
         // connect-time credentials, potentially hiding an earlier PID reuse.
-        let observed_fd = connect(path, deadline)?;
+        if socket_namespace(path)? != namespace {
+            return Err(failure(
+                "display socket namespace changed during observation",
+            ));
+        }
+        let observed_fd = connect(path, namespace, deadline)?;
         let after = peer(&observed_fd)?;
         if after.pid <= 0 || after.uid != expected_uid || after != before {
             return Err(failure("peer process identity changed during observation"));
         }
         let start_after = start_ticks(after.pid)?;
         validate(expected_uid, before, after, start_before, start_after)?;
+        if socket_namespace(path)? != namespace || Instant::now() >= deadline {
+            return Err(failure(
+                "display socket namespace changed or observation timed out",
+            ));
+        }
         Ok(json!({
+            "verified": true,
             "proofKind": "linux_x_socket_peer_credentials",
             "socketPath": path,
+            "socketNamespace": match namespace { SocketNamespace::Filesystem => "filesystem", SocketNamespace::Abstract => "abstract" },
             "peerPid": before.pid,
             "peerUid": before.uid,
             "peerGid": before.gid,
@@ -309,7 +352,8 @@ mod linux {
 
         #[test]
         fn exhausted_connection_budget_fails_before_socket_access() {
-            assert!(connect("/not-accessed", Instant::now()).is_err());
+            assert!(connect("/not-accessed", SocketNamespace::Filesystem, Instant::now()).is_err());
+            assert!(connect("/not-accessed", SocketNamespace::Abstract, Instant::now()).is_err());
         }
 
         #[test]
@@ -326,13 +370,60 @@ mod linux {
             // SAFETY: geteuid has no preconditions and reads only this process UID.
             let uid = unsafe { libc::geteuid() };
             let proof = observe(path.to_str().unwrap(), uid).unwrap();
+            assert_eq!(proof["verified"], true);
             assert_eq!(proof["peerUid"], uid);
             assert_eq!(proof["peerPid"], std::process::id());
             assert!(proof["processStartTicks"].as_u64().unwrap() > 0);
             assert_eq!(proof["exclusiveOwnershipAttested"], false);
+            assert_eq!(proof["socketNamespace"], "filesystem");
             assert!(observe(path.to_str().unwrap(), uid.wrapping_add(1)).is_err());
             drop(listener);
             assert!(observe(path.to_str().unwrap(), uid).is_err());
+            std::fs::remove_file(path).unwrap();
+            std::fs::remove_dir(root).unwrap();
+        }
+
+        #[test]
+        fn abstract_fixture_socket_proves_owner_and_rejects_mismatch() {
+            use std::os::linux::net::SocketAddrExt;
+            use std::os::unix::net::SocketAddr;
+            let path = format!(
+                "/tmp/ab-display-abstract-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            );
+            let address = SocketAddr::from_abstract_name(path.as_bytes()).unwrap();
+            let listener = UnixListener::bind_addr(&address).unwrap();
+            let uid = unsafe { libc::geteuid() };
+            let proof = observe(&path, uid).unwrap();
+            assert_eq!(proof["socketNamespace"], "abstract");
+            assert_eq!(proof["verified"], true);
+            assert_eq!(proof["socketPath"], path);
+            assert_eq!(proof["peerUid"], uid);
+            assert_eq!(proof["peerPid"], std::process::id());
+            assert!(proof["processStartTicks"].as_u64().unwrap() > 0);
+            assert!(observe(&path, uid.wrapping_add(1)).is_err());
+            drop(listener);
+            assert!(observe(&path, uid).is_err());
+            assert!(!std::path::Path::new(&path).exists());
+        }
+
+        #[test]
+        fn existing_filesystem_endpoint_never_falls_back_to_abstract() {
+            use std::os::linux::net::SocketAddrExt;
+            use std::os::unix::net::SocketAddr;
+            let root = std::env::temp_dir()
+                .join(format!("ab-display-no-fallback-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&root).unwrap();
+            let path = root.join("socket");
+            let name = path.to_str().unwrap();
+            let listener =
+                UnixListener::bind_addr(&SocketAddr::from_abstract_name(name.as_bytes()).unwrap())
+                    .unwrap();
+            std::fs::write(&path, "not a socket").unwrap();
+            assert_eq!(socket_namespace(name).unwrap(), SocketNamespace::Filesystem);
+            assert!(observe(name, unsafe { libc::geteuid() }).is_err());
+            drop(listener);
             std::fs::remove_file(path).unwrap();
             std::fs::remove_dir(root).unwrap();
         }

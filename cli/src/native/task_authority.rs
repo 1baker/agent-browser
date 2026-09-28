@@ -260,6 +260,8 @@ pub struct TaskAuthorityIssueRequest {
     pub issuer: TaskAuthorityIssuer,
     pub approval_reference: String,
     pub expires_in_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consequence_ceiling: Option<String>,
     pub steps: Vec<TaskAuthorityPlanStep>,
 }
 
@@ -278,6 +280,8 @@ pub struct TaskAuthorityReconcileRequest {
     pub issuer: TaskAuthorityIssuer,
     pub approval_reference: String,
     pub expires_in_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consequence_ceiling: Option<String>,
     pub steps: Vec<TaskAuthorityPlanStep>,
 }
 
@@ -413,6 +417,34 @@ fn safe_component(value: &str) -> String {
 fn ledger_path(root: &Path, session_id: &str, authority_id: &str) -> PathBuf {
     root.join(safe_component(session_id))
         .join(format!("{}.json", safe_component(authority_id)))
+}
+
+/// All authority writers share one OS lock per session, including concurrent
+/// broker adapters and separate processes. Never wait on a synchronous lock in
+/// the daemon: contention rejects admission before dispatch. Keep the lock file
+/// in place; unlinking it could split ownership across different inodes.
+fn lock_authority_session(root: &Path, session_id: &str) -> Result<fs::File, String> {
+    let directory = root.join(safe_component(session_id));
+    fs::create_dir_all(&directory).map_err(|_| "task_authority_lock_unavailable")?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(directory.join(".authority.lock"))
+        .map_err(|_| "task_authority_lock_unavailable")?;
+    if !file
+        .metadata()
+        .map_err(|_| "task_authority_lock_unavailable")?
+        .is_file()
+    {
+        return Err("task_authority_lock_unavailable".into());
+    }
+    file.try_lock().map_err(|_| "task_authority_lock_busy")?;
+    Ok(file)
 }
 
 fn issuance_path(root: &Path, session_id: &str, authority_id: &str) -> PathBuf {
@@ -1582,6 +1614,18 @@ pub fn finalize_task_authority_step(
     context: &TaskAuthorityContext<'_>,
     response: &Value,
 ) -> Result<(), String> {
+    if cmd.get("taskAuthority").is_none() {
+        return Ok(());
+    }
+    let _ledger_guard = lock_authority_session(&context.ledger_root, context.session_id)?;
+    finalize_task_authority_step_locked(cmd, context, response)
+}
+
+fn finalize_task_authority_step_locked(
+    cmd: &Value,
+    context: &TaskAuthorityContext<'_>,
+    response: &Value,
+) -> Result<(), String> {
     let Some(raw_authority) = cmd.get("taskAuthority") else {
         return Ok(());
     };
@@ -1666,10 +1710,84 @@ pub fn finalize_task_authority_step(
     write_ledger(&path, &ledger)
 }
 
+/// Validate an already reserved command without advancing the plan cursor.
+/// The returned guard keeps revocation and budget writers out through response
+/// publication; it must be held by the broker output, not dropped on return.
+pub(crate) fn authorize_task_authority_publication(
+    cmd: &Value,
+    context: &TaskAuthorityContext<'_>,
+    response: &Value,
+    ordered: bool,
+) -> Result<Option<fs::File>, String> {
+    authorize_task_authority_publication_at(cmd, context, response, ordered, Utc::now())
+}
+
+fn authorize_task_authority_publication_at(
+    cmd: &Value,
+    context: &TaskAuthorityContext<'_>,
+    response: &Value,
+    ordered: bool,
+    now: DateTime<Utc>,
+) -> Result<Option<fs::File>, String> {
+    let Some(raw) = cmd.get("taskAuthority") else {
+        return if context.require_authority {
+            Err("task_authority_publication_missing".into())
+        } else {
+            Ok(None)
+        };
+    };
+    let guard = lock_authority_session(&context.ledger_root, context.session_id)?;
+    let envelope: TaskAuthorityEnvelope =
+        serde_json::from_value(raw.clone()).map_err(|_| "task_authority_publication_invalid")?;
+    let expires = DateTime::parse_from_rfc3339(&envelope.expires_at)
+        .map_err(|_| "task_authority_publication_invalid")?;
+    if expires.with_timezone(&Utc) <= now {
+        return Err("task_authority_publication_expired".into());
+    }
+    let hash = envelope_sha256(&envelope)?;
+    let ledger = read_ledger(&ledger_path(
+        &context.ledger_root,
+        context.session_id,
+        &envelope.id,
+    ))?
+    .ok_or("task_authority_publication_not_admitted")?;
+    if ledger.envelope_sha256 != hash
+        || ledger.session_id != context.session_id
+        || ledger.authority_id != envelope.id
+        || ledger.admitted_actions == 0
+        || context.target_id != Some(envelope.target_binding.target_id.as_str())
+    {
+        return Err("task_authority_publication_identity_mismatch".into());
+    }
+    let issued = read_issuance(&issuance_path(
+        &context.ledger_root,
+        context.session_id,
+        &envelope.id,
+    ))?;
+    if context.require_authority && issued.is_none() {
+        return Err("task_authority_publication_issuance_missing".into());
+    }
+    if let Some(record) = issued {
+        if record.session_id != context.session_id
+            || record.envelope != envelope
+            || record.envelope_sha256 != hash
+            || record.revocation.is_some()
+            || (context.require_authority
+                && record.schema != "agent-browser.task-authority-issuance.v2")
+        {
+            return Err("task_authority_publication_issuance_invalid".into());
+        }
+    }
+    if ordered {
+        finalize_task_authority_step_locked(cmd, context, response)?;
+    }
+    Ok(Some(guard))
+}
+
 /// Mint an immutable authority from bounded plan steps and the exact active
 /// target observed by the broker. This initial issuer intentionally permits
-/// only read and navigation actions; navigation remains above the read-only
-/// consequence ceiling and therefore requires a fresh target confirmation.
+/// read/navigation and exact retained broker attachment. Navigation and attach
+/// remain above the read-only ceiling and require fresh target confirmation.
 pub fn issue_task_authority(
     raw_request: &Value,
     session_id: &str,
@@ -1677,6 +1795,7 @@ pub fn issue_task_authority(
     current_url: &str,
     root: &Path,
 ) -> Result<Value, String> {
+    let _ledger_guard = lock_authority_session(root, session_id)?;
     issue_task_authority_with_identity(
         raw_request,
         session_id,
@@ -1734,6 +1853,22 @@ fn issue_task_authority_with_identity(
             "Task authority steps must contain between 1 and {MAX_ISSUED_AUTHORITY_STEPS} entries"
         ));
     }
+    let consequence_ceiling_explicit = request.consequence_ceiling.is_some();
+    let requested_ceiling = request
+        .consequence_ceiling
+        .as_deref()
+        .unwrap_or(ActionConsequence::ReadOnly.as_str());
+    let consequence_ceiling = ActionConsequence::parse(requested_ceiling).ok_or_else(|| {
+        format!("Invalid task authority consequenceCeiling '{requested_ceiling}'")
+    })?;
+    if consequence_ceiling.authority_rank() > ActionConsequence::ScriptExecution.authority_rank()
+        && consequence_ceiling != ActionConsequence::BrowserLifecycle
+    {
+        return Err(format!(
+            "Task authority issuer does not permit consequence ceiling '{}'",
+            consequence_ceiling.as_str()
+        ));
+    }
 
     let authority_id =
         authority_id.unwrap_or_else(|| format!("authority-{}", uuid::Uuid::new_v4()));
@@ -1748,15 +1883,57 @@ fn issue_task_authority_with_identity(
             return Err("Task authority plan action must be non-empty".to_string());
         }
         let consequence = super::policy::action_consequence(action);
-        if consequence.authority_rank() > ActionConsequence::Navigation.authority_rank() {
+        if consequence == ActionConsequence::Credentials {
+            return Err(format!(
+                "Task authority issuer does not permit credential action '{action}'"
+            ));
+        }
+        if matches!(
+            consequence,
+            ActionConsequence::BrowserLifecycle | ActionConsequence::ControlPlane
+        ) && action != "cdp_attach"
+        {
+            return Err(format!(
+                "Task authority issuer does not permit '{}' ({}) in an approved plan",
+                action,
+                consequence.as_str()
+            ));
+        }
+        if action == "cdp_attach"
+            && consequence_ceiling_explicit
+            && consequence_ceiling != ActionConsequence::BrowserLifecycle
+        {
+            return Err(
+                "Task authority broker attach requires browser_lifecycle consequenceCeiling".into(),
+            );
+        }
+        if action != "cdp_attach"
+            && !consequence_ceiling_explicit
+            && consequence.authority_rank() > ActionConsequence::Navigation.authority_rank()
+        {
             return Err(format!(
                 "Task authority issuer does not yet permit '{}' ({}) in an approved plan",
                 action,
                 consequence.as_str()
             ));
         }
+        if action != "cdp_attach"
+            && consequence_ceiling_explicit
+            && consequence.authority_rank() > consequence_ceiling.authority_rank()
+        {
+            return Err(format!(
+                "Task authority action '{}' ({}) exceeds consequence ceiling '{}'",
+                action,
+                consequence.as_str(),
+                consequence_ceiling.as_str()
+            ));
+        }
         actions.insert(action.to_string());
         let requested_url = step.url.as_deref().map(normalized_url).transpose()?;
+        if action == "cdp_attach" && requested_url.as_deref() != Some(expected_current_url.as_str())
+        {
+            return Err("Task authority broker attach requires the exact current url".into());
+        }
         if consequence == ActionConsequence::Navigation && requested_url.is_none() {
             return Err(format!(
                 "Task authority navigation step '{}' requires an exact url",
@@ -1817,7 +1994,7 @@ fn issue_task_authority_with_identity(
                 .map_err(|_| "Task authority action count overflow")?,
             max_evidence_bytes: evidence_bytes,
         },
-        consequence_ceiling: ActionConsequence::ReadOnly.as_str().to_string(),
+        consequence_ceiling: consequence_ceiling.as_str().to_string(),
         expires_at: expires_at.to_rfc3339(),
     };
     let hash = envelope_sha256(&envelope)?;
@@ -1922,6 +2099,7 @@ pub fn revoke_task_authority(
     target_id: &str,
     current_url: &str,
 ) -> Result<Value, String> {
+    let _ledger_guard = lock_authority_session(root, session_id)?;
     if revoked_by.trim().is_empty() || reason.trim().is_empty() {
         return Err("Task authority revoke requires revokedBy and reason".to_string());
     }
@@ -1980,6 +2158,7 @@ pub fn reconcile_task_authority(
     target_id: &str,
     current_url: &str,
 ) -> Result<Value, String> {
+    let _ledger_guard = lock_authority_session(root, session_id)?;
     reconcile_task_authority_inner(
         root,
         session_id,
@@ -2221,6 +2400,7 @@ fn reconcile_task_authority_inner(
             issuer: request.issuer.clone(),
             approval_reference: request.approval_reference.clone(),
             expires_in_seconds: request.expires_in_seconds,
+            consequence_ceiling: request.consequence_ceiling.clone(),
             steps: request.steps.clone(),
         })
         .map_err(|error| format!("Failed to prepare replacement authority: {error}"))?;
@@ -2275,6 +2455,31 @@ pub fn admit_task_authority(
         }
         return Ok(TaskAuthorityDecision::NotPresent);
     };
+    // Issued attach permission cannot be repurposed for raw endpoint export or
+    // another target. Full browser/profile/custody checks still occur in worker
+    // acquisition; these checks precede confirmation and budget reservation.
+    if action == "cdp_attach" {
+        // The loopback service envelope can retain command fields either at
+        // its top level or under `params`.  Treat those shapes identically,
+        // but require every exact-target binding field in whichever one is
+        // used; this is compatibility for the envelope, not a relaxation of
+        // the broker attachment boundary.
+        let attach = cmd
+            .get("params")
+            .filter(|value| value.is_object())
+            .unwrap_or(cmd);
+        if attach.get("brokerTransport") != Some(&json!(true))
+            || attach.get("expectedUrl").and_then(Value::as_str) != context.url
+            || attach.get("url").and_then(Value::as_str) != context.url
+            || attach
+                .pointer("/serviceTabHandle/targetId")
+                .and_then(Value::as_str)
+                != context.target_id
+        {
+            return Err("Task authority attach requires exact-target broker transport".into());
+        }
+    }
+    let _ledger_guard = lock_authority_session(&context.ledger_root, context.session_id)?;
     let envelope: TaskAuthorityEnvelope = serde_json::from_value(raw.clone())
         .map_err(|error| format!("Invalid taskAuthority envelope: {error}"))?;
     if envelope.id.trim().is_empty() || envelope.task_name.trim().is_empty() {
@@ -2359,7 +2564,7 @@ pub fn admit_task_authority(
         context.session_id,
         &envelope.id,
     ))?;
-    if context.require_authority && issued.is_none() {
+    if (context.require_authority || action == "cdp_attach") && issued.is_none() {
         return Err(format!(
             "Task authority '{}' was not issued by this broker",
             envelope.id
@@ -2376,7 +2581,8 @@ pub fn admit_task_authority(
         {
             return Err("Task authority broker issuance does not match the envelope".to_string());
         }
-        if context.require_authority && record.schema != "agent-browser.task-authority-issuance.v2"
+        if (context.require_authority || action == "cdp_attach")
+            && record.schema != "agent-browser.task-authority-issuance.v2"
         {
             return Err(format!(
                 "Task authority '{}' uses legacy broker issuance; required mode accepts only ordered v2 authority",
@@ -2639,6 +2845,259 @@ mod tests {
             require_authority: false,
             ledger_root: root,
         }
+    }
+
+    #[test]
+    fn broker_session_lock_child_probe() {
+        let Some(root) = std::env::var_os("AGENT_BROWSER_AUTHORITY_LOCK_TEST_ROOT") else {
+            return;
+        };
+        let result = lock_authority_session(Path::new(&root), "session-1");
+        if std::env::var("AGENT_BROWSER_AUTHORITY_LOCK_TEST_HELD").as_deref() == Ok("1") {
+            assert_eq!(result.unwrap_err(), "task_authority_lock_busy");
+        } else {
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn broker_session_lock_excludes_other_processes_and_recovers_after_drop() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-browser-process-lock-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let held = lock_authority_session(&root, "session-1").unwrap();
+        let probe = |held: bool| {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "native::task_authority::tests::broker_session_lock_child_probe",
+                    "--test-threads=1",
+                ])
+                .env("AGENT_BROWSER_AUTHORITY_LOCK_TEST_ROOT", &root)
+                .env(
+                    "AGENT_BROWSER_AUTHORITY_LOCK_TEST_HELD",
+                    if held { "1" } else { "0" },
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        probe(true);
+        drop(held);
+        probe(false);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn broker_publication_rechecks_expiry_and_holds_original_reservation() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-browser-publication-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let ctx = context(root.clone(), "https://example.com/start");
+        let cmd = command(authority(
+            (Utc::now() + chrono::Duration::minutes(5)).fixed_offset(),
+        ));
+        admit_task_authority(&cmd, "title", ActionConsequence::ReadOnly, &ctx, true).unwrap();
+        let response = json!({"success":true});
+        assert_eq!(
+            authorize_task_authority_publication_at(
+                &cmd,
+                &ctx,
+                &response,
+                false,
+                Utc::now() + chrono::Duration::minutes(6)
+            )
+            .unwrap_err(),
+            "task_authority_publication_expired"
+        );
+        let guard = authorize_task_authority_publication(&cmd, &ctx, &response, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            admit_task_authority(&cmd, "title", ActionConsequence::ReadOnly, &ctx, true)
+                .unwrap_err(),
+            "task_authority_lock_busy"
+        );
+        drop(guard);
+        assert_eq!(
+            read_ledger(&ledger_path(&root, ctx.session_id, "authority-1"))
+                .unwrap()
+                .unwrap()
+                .admitted_actions,
+            1
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn broker_publication_rejects_revoked_ordered_authority_without_replaying() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-browser-publication-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut ctx = context(root.clone(), "https://example.com/start");
+        ctx.require_authority = true;
+        let issued = issue_task_authority(
+            &issue_request(json!([{"action":"title", "evidenceBytes":4096}])),
+            ctx.session_id,
+            "target-1",
+            ctx.url.unwrap(),
+            &root,
+        )
+        .unwrap();
+        let mut cmd = command(issued["envelope"].clone());
+        cmd["id"] = json!("original-command");
+        cmd["taskStepId"] = issued["approvedPlan"]["steps"][0]["stepId"].clone();
+        admit_task_authority(&cmd, "title", ActionConsequence::ReadOnly, &ctx, true).unwrap();
+        assert_eq!(
+            authorize_task_authority_publication_at(
+                &cmd,
+                &ctx,
+                &json!({"success":true}),
+                true,
+                Utc::now() + chrono::Duration::minutes(6)
+            )
+            .unwrap_err(),
+            "task_authority_publication_expired"
+        );
+        revoke_task_authority(
+            &root,
+            ctx.session_id,
+            cmd["taskAuthority"]["id"].as_str().unwrap(),
+            "operator",
+            "stop",
+            "target-1",
+            ctx.url.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            authorize_task_authority_publication(&cmd, &ctx, &json!({"success":true}), true)
+                .unwrap_err(),
+            "task_authority_publication_issuance_invalid"
+        );
+        let ledger = read_ledger(&ledger_path(
+            &root,
+            ctx.session_id,
+            cmd["taskAuthority"]["id"].as_str().unwrap(),
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(ledger.admitted_actions, 1);
+        assert!(ledger.step_receipts[0].outcome.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn broker_session_lock_covers_every_authority_writer_and_releases_on_drop() {
+        let temporary =
+            std::env::temp_dir().join(format!("agent-browser-lock-{}", uuid::Uuid::new_v4()));
+        let root = temporary.as_path();
+        let ctx = context(root.into(), "https://example.com/start");
+        let cmd = command(authority(
+            (Utc::now() + chrono::Duration::minutes(5)).fixed_offset(),
+        ));
+        let held = lock_authority_session(root, ctx.session_id).unwrap();
+        assert_eq!(
+            admit_task_authority(&cmd, "title", ActionConsequence::ReadOnly, &ctx, true)
+                .unwrap_err(),
+            "task_authority_lock_busy"
+        );
+        assert_eq!(
+            finalize_task_authority_step(&cmd, &ctx, &json!({})).unwrap_err(),
+            "task_authority_lock_busy"
+        );
+        assert_eq!(
+            issue_task_authority(
+                &json!({}),
+                ctx.session_id,
+                "target-1",
+                ctx.url.unwrap(),
+                root
+            )
+            .unwrap_err(),
+            "task_authority_lock_busy"
+        );
+        assert_eq!(
+            revoke_task_authority(
+                root,
+                ctx.session_id,
+                "authority-1",
+                "operator",
+                "test",
+                "target-1",
+                ctx.url.unwrap()
+            )
+            .unwrap_err(),
+            "task_authority_lock_busy"
+        );
+        assert_eq!(
+            reconcile_task_authority(
+                root,
+                ctx.session_id,
+                "authority-1",
+                &json!({}),
+                "target-1",
+                ctx.url.unwrap()
+            )
+            .unwrap_err(),
+            "task_authority_lock_busy"
+        );
+        assert!(!ledger_path(root, ctx.session_id, "authority-1").exists());
+        // A different session is independent, while the same lock remains held.
+        drop(lock_authority_session(root, "other-session").unwrap());
+        drop(held);
+        assert!(
+            admit_task_authority(&cmd, "title", ActionConsequence::ReadOnly, &ctx, true).is_ok()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn broker_concurrent_reservations_cannot_overspend_one_action() {
+        let temporary =
+            std::env::temp_dir().join(format!("agent-browser-lock-{}", uuid::Uuid::new_v4()));
+        let root = temporary.as_path();
+        let mut raw = authority((Utc::now() + chrono::Duration::minutes(5)).fixed_offset());
+        raw["evidenceBudget"]["maxActions"] = json!(1);
+        let cmd = command(raw);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let admitted = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..16)
+                .map(|_| {
+                    let barrier = barrier.clone();
+                    let cmd = &cmd;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        admit_task_authority(
+                            cmd,
+                            "title",
+                            ActionConsequence::ReadOnly,
+                            &context(root.into(), "https://example.com/start"),
+                            true,
+                        )
+                        .is_ok()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .filter(|admitted| *admitted)
+                .count()
+        });
+        assert_eq!(admitted, 1);
+        let ledger = read_ledger(&ledger_path(root, "session-1", "authority-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(ledger.admitted_actions, 1);
+        assert_eq!(ledger.reserved_evidence_bytes, 4096);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2906,6 +3365,133 @@ mod tests {
         .unwrap_err();
         assert!(mutation_error.contains("does not yet permit"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn broker_issue_binds_explicit_non_credential_consequence_ceiling() {
+        let root =
+            std::env::temp_dir().join(format!("agent-browser-authority-{}", uuid::Uuid::new_v4()));
+        let mut request = issue_request(json!([{"action": "evaluate", "evidenceBytes": 4096}]));
+        request["consequenceCeiling"] = json!("script_execution");
+        let issued = issue_task_authority(
+            &request,
+            "session-1",
+            "target-1",
+            "https://example.com/start",
+            &root,
+        )
+        .unwrap();
+        assert_eq!(issued["envelope"]["consequenceCeiling"], "script_execution");
+
+        let mut cmd = json!({
+            "id": "evaluate-1",
+            "action": "evaluate",
+            "taskName": "research-task",
+            "serviceName": "research-service",
+            "agentName": "codex",
+            "taskAuthority": issued["envelope"],
+            "taskStepId": issued["approvedPlan"]["steps"][0]["stepId"],
+            "taskEvidenceBytes": 4096
+        });
+        let mut required = context(root.clone(), "https://example.com/start");
+        required.require_authority = true;
+        assert!(matches!(
+            admit_task_authority(
+                &cmd,
+                "evaluate",
+                ActionConsequence::ScriptExecution,
+                &required,
+                true,
+            )
+            .unwrap(),
+            TaskAuthorityDecision::Admitted(_)
+        ));
+
+        cmd["id"] = json!("credential-1");
+        let mut credential_request = issue_request(json!([{"action": "cookies_set"}]));
+        credential_request["consequenceCeiling"] = json!("script_execution");
+        assert!(issue_task_authority(
+            &credential_request,
+            "session-1",
+            "target-1",
+            "https://example.com/start",
+            &root,
+        )
+        .unwrap_err()
+        .contains("credential action"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn broker_attach_explicit_lifecycle_ceiling_is_exact_target_only() {
+        let root =
+            std::env::temp_dir().join(format!("broker-attach-ceiling-{}", uuid::Uuid::new_v4()));
+        let mut request = issue_request(json!([{
+            "action": "cdp_attach",
+            "url": "https://example.com/start",
+            "evidenceBytes": 4096
+        }]));
+        request["consequenceCeiling"] = json!("browser_lifecycle");
+        let issued = issue_task_authority(
+            &request,
+            "session-1",
+            "target-1",
+            "https://example.com/start",
+            &root,
+        )
+        .unwrap();
+        let cmd = json!({
+            "id": "attach-1",
+            "action": "cdp_attach",
+            "brokerTransport": true,
+            "expectedUrl": "https://example.com/start",
+            "url": "https://example.com/start",
+            "serviceTabHandle": {"targetId": "target-1"},
+            "taskName": "research-task",
+            "serviceName": "research-service",
+            "agentName": "codex",
+            "taskAuthority": issued["envelope"],
+            "taskStepId": issued["approvedPlan"]["steps"][0]["stepId"],
+            "taskEvidenceBytes": 4096
+        });
+        let mut required = context(root.clone(), "https://example.com/start");
+        required.require_authority = true;
+        assert!(matches!(
+            admit_task_authority(
+                &cmd,
+                "cdp_attach",
+                ActionConsequence::BrowserLifecycle,
+                &required,
+                true,
+            )
+            .unwrap(),
+            TaskAuthorityDecision::Admitted(_)
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn broker_attach_issuance_does_not_enable_other_lifecycle_or_url_changes() {
+        let root =
+            std::env::temp_dir().join(format!("broker-attach-issue-{}", uuid::Uuid::new_v4()));
+        for step in [
+            json!({"action":"cdp_attach"}),
+            json!({"action":"cdp_attach","url":"https://example.com/other"}),
+            json!({"action":"launch"}),
+            json!({"action":"close"}),
+            json!({"action":"cdp_detach"}),
+            json!({"action":"evaluate"}),
+        ] {
+            assert!(issue_task_authority(
+                &issue_request(json!([step])),
+                "session-1",
+                "target-1",
+                "https://example.com/start",
+                &root
+            )
+            .is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

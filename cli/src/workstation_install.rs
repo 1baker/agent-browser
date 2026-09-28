@@ -56,6 +56,7 @@ const OPEN_ROUTE_DISPLAYS_SCRIPT: &str =
     include_str!("../../scripts/open-rdp-guac-route-displays.js");
 const ROUTE_DISPLAY_SELECTION_SCRIPT: &str =
     include_str!("../../scripts/lib/rdp-route-display-selection.js");
+const TEMPORARY_RDP_ROUTE_SCRIPT: &str = include_str!("../../scripts/lib/temporary-rdp-route.js");
 const ENSURE_POSTGRES_SCRIPT: &str = include_str!("../../scripts/ensure-rdp-guac-postgres.sh");
 const POSTGRES_DURABILITY_SCRIPT: &str =
     include_str!("../../scripts/guacamole-postgres-durability.sh");
@@ -81,7 +82,7 @@ const RETAINED_BROWSER_PREPARATION_SCRIPT: &str =
 const RETAINED_BROWSER_REQUIREMENT_SCRIPT: &str =
     include_str!("../../scripts/lib/local-dashboard-retained-browser-requirement.js");
 const CONTROLLER_PACKAGE_JSON: &str = "{\n  \"private\": true,\n  \"type\": \"module\"\n}\n";
-const CONTROLLER_ASSETS: [(&str, &str, bool); 19] = [
+const CONTROLLER_ASSETS: [(&str, &str, bool); 20] = [
     (
         "scripts/smoke-rdp-guac-route-pool-readiness.js",
         ROUTE_POOL_READINESS_SCRIPT,
@@ -125,6 +126,11 @@ const CONTROLLER_ASSETS: [(&str, &str, bool); 19] = [
     (
         "scripts/lib/rdp-route-display-selection.js",
         ROUTE_DISPLAY_SELECTION_SCRIPT,
+        false,
+    ),
+    (
+        "scripts/lib/temporary-rdp-route.js",
+        TEMPORARY_RDP_ROUTE_SCRIPT,
         false,
     ),
     (
@@ -2855,6 +2861,17 @@ mod tests {
             assert_eq!(asset.1, expected_content);
             assert!(!asset.2);
         }
+    }
+
+    #[test]
+    fn route_pool_controller_packages_temporary_route_dependency() {
+        let asset = CONTROLLER_ASSETS
+            .iter()
+            .find(|(candidate, _, _)| *candidate == "scripts/lib/temporary-rdp-route.js")
+            .expect("route-pool controller temporary-route dependency must be packaged");
+
+        assert_eq!(asset.1, TEMPORARY_RDP_ROUTE_SCRIPT);
+        assert!(!asset.2);
     }
 
     #[test]

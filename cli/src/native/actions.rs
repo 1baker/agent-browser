@@ -230,6 +230,66 @@ struct ActiveHandoffCustody {
     receipt_path: PathBuf,
 }
 
+/// An internal handle to the original held lease. No serialized attestation or
+/// caller-provided service snapshot can construct this capability.
+#[cfg(target_os = "linux")]
+pub(crate) struct HandoffBrokerCustody {
+    session_name: String,
+    handle: super::broker_custody::SharedCustodyHandle<ActiveHandoffCustody>,
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct HandoffBrokerPermit {
+    session_name: String,
+    permit: super::broker_custody::SharedCustodyPermit<ActiveHandoffCustody>,
+}
+
+#[cfg(target_os = "linux")]
+impl HandoffBrokerCustody {
+    pub(crate) fn is_revoked(&self) -> bool {
+        self.handle.is_revoked()
+    }
+    pub(crate) async fn acquire(&self) -> Result<HandoffBrokerPermit, String> {
+        let permit = HandoffBrokerPermit {
+            session_name: self.session_name.clone(),
+            permit: self.handle.acquire().await?,
+        };
+        permit.verify()?;
+        Ok(permit)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl HandoffBrokerPermit {
+    pub(crate) fn verify(&self) -> Result<Value, String> {
+        let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+        verify_handoff_custody_payload(self.permit.payload(), &self.session_name, &snapshot)
+    }
+
+    pub(crate) fn verify_binding(
+        &self,
+        binding: &super::broker_attachment::BrokerBinding,
+    ) -> Result<(), String> {
+        let custody = self.permit.payload();
+        let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+        verify_handoff_custody_payload(custody, &self.session_name, &snapshot)?;
+        let browser_id = service_browser_id(&self.session_name);
+        let profile = snapshot
+            .browsers
+            .get(&browser_id)
+            .and_then(|browser| browser.profile_id.as_deref());
+        if binding.session_name != self.session_name
+            || binding.browser_id != browser_id
+            || binding.target_id != custody.receipt.target_id
+            || binding.generation != custody.receipt.descriptor_sha256
+            || profile != Some(binding.profile_id.as_str())
+        {
+            return Err("handoff_broker_binding_mismatch".into());
+        }
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn handoff_receipt_path(receipt: &super::handoff_custody::CustodyReceipt) -> PathBuf {
     get_socket_dir().join(format!(
@@ -271,6 +331,17 @@ async fn relaunch_and_restore_page(
     state: &mut DaemonState,
     desired_url: Option<String>,
 ) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if state.handoff_custody.is_some() {
+        return Err("handoff_broker_relaunch_requires_controlled_recovery".into());
+    }
+    if state
+        .browser
+        .as_ref()
+        .is_some_and(BrowserManager::uses_pipe_transport)
+    {
+        return Err("cdp_pipe_recovery_requires_controlled_restart".into());
+    }
     if let Some(ref mut mgr) = state.browser {
         let _ = mgr.close().await;
     }
@@ -299,7 +370,7 @@ pub(crate) async fn recover_owned_browser_after_timeout(
     let Some(manager) = state.browser.as_ref() else {
         return Ok(false);
     };
-    if manager.is_cdp_connection() {
+    if manager.is_cdp_connection() || manager.uses_pipe_transport() {
         return Ok(false);
     }
 
@@ -336,6 +407,57 @@ pub struct ConfirmationTargetBinding {
 }
 
 const CONFIRMATION_TTL: Duration = Duration::from_secs(60);
+
+fn handoff_custody_allows_action(action: &str, broker_acquire: bool) -> bool {
+    broker_acquire
+        || matches!(
+            action,
+            "confirm"
+                | "deny"
+                | "task_authority_issue"
+                | "task_authority_status"
+                | "task_authority_revoke"
+                | "task_authority_reconcile"
+                | "diagnostics"
+                | "snapshot"
+                | "evaluate"
+                | "click"
+                | "fill"
+                | "type"
+                | "press"
+                | "gettext"
+                | "url"
+                | "title"
+                | "screenshot"
+                | "file_transfer"
+                | "ui_action"
+                | "upload"
+                | "download"
+                | "runtime_handoff_prepare"
+                | "close"
+                | "service_status"
+                | "service_resources"
+                | "service_resources_monitor_summary"
+                | "service_access_plan"
+                | "service_browser_capability_preflight"
+                | "service_browser_capability_preference_guide"
+                | "service_trace"
+                | "service_profiles"
+                | "service_profile_lookup"
+                | "service_profile_seeding_handoff"
+                | "service_sessions"
+                | "service_browsers"
+                | "service_tabs"
+                | "service_monitors"
+                | "service_site_policies"
+                | "service_providers"
+                | "service_challenges"
+                | "service_jobs"
+                | "service_incidents"
+                | "service_incident_activity"
+                | "service_events"
+        )
+}
 
 pub(crate) fn action_skips_browser_launch(action: &str) -> bool {
     matches!(
@@ -732,7 +854,14 @@ fn launch_command_with_effective_service_defaults(
 
 fn service_access_plan_from_command(command: &Value) -> Option<Value> {
     let service_state = browser_capability_service_state(command).ok()?;
-    let request = ServiceAccessPlanRequest {
+    Some(service_access_plan_for_state(
+        &service_state,
+        service_access_plan_request_from_command(command),
+    ))
+}
+
+fn service_access_plan_request_from_command(command: &Value) -> ServiceAccessPlanRequest {
+    ServiceAccessPlanRequest {
         service_name: optional_command_string(command, "serviceName"),
         agent_name: optional_command_string(command, "agentName"),
         task_name: optional_command_string(command, "taskName"),
@@ -768,8 +897,7 @@ fn service_access_plan_from_command(command: &Value) -> Option<Value> {
             })
             .and_then(|value| parse_control_input_provider(&value)),
         display_isolation: remote_headed_display_isolation_from_command(command),
-    };
-    Some(service_access_plan_for_state(&service_state, request))
+    }
 }
 
 fn apply_planned_launch_defaults(
@@ -2231,7 +2359,9 @@ fn cdp_screencast_view_stream(
         return None;
     }
 
-    let (ready, reason) = if health != ServiceBrowserHealth::Ready {
+    let (ready, reason) = if cdp_endpoint.is_some_and(|endpoint| endpoint.starts_with("pipe:")) {
+        (false, "pipe_transport_export_unsupported")
+    } else if health != ServiceBrowserHealth::Ready {
         (false, "browser_not_ready")
     } else if cdp_endpoint
         .map(str::trim)
@@ -2978,9 +3108,19 @@ fn persist_closed_browser_health(state: &DaemonState, outcome: Option<&BrowserSh
     }
 }
 
+/// Original settings retained while a single confirmed command runs with its
+/// confirmation check suppressed. Never supplied by request JSON.
+struct ConfirmedBrokerPolicy {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    command_id: String,
+    policy: Option<ActionPolicy>,
+    confirm_actions: Option<ConfirmActions>,
+}
+
 pub struct DaemonState {
+    pub(crate) broker_registry: Arc<super::broker_registry::BrokerRegistry>,
     #[cfg(target_os = "linux")]
-    handoff_custody: Option<ActiveHandoffCustody>,
+    handoff_custody: Option<super::broker_custody::SharedCustodyOwner<ActiveHandoffCustody>>,
     #[cfg(target_os = "linux")]
     handoff_source_lease: Option<super::handoff_custody::DestinationLease>,
     /// Preparation permanently fences this worker, even before process exit.
@@ -3009,6 +3149,7 @@ pub struct DaemonState {
     task_authority_ledger_root: PathBuf,
     confirmed_task_authority_id: Option<String>,
     confirmed_control_plane_command_id: Option<String>,
+    confirmed_broker_policy: Option<ConfirmedBrokerPolicy>,
     pub inspect_server: Option<InspectServer>,
     pub routes: Arc<RwLock<Vec<RouteEntry>>>,
     pub tracked_requests: Vec<TrackedRequest>,
@@ -3043,6 +3184,9 @@ pub struct DaemonState {
     pub stream_server: Option<Arc<StreamServer>>,
     /// Hash of launch options used for the current browser, for relaunch detection.
     launch_hash: Option<u64>,
+    /// Limits owner-side pipe observations; persisted evidence expires independently.
+    last_pipe_observation_at: Option<std::time::Instant>,
+    last_pipe_observation_error: Option<String>,
     /// Runtime profile for a browser attached through CDP that this daemon owns logically.
     attached_runtime_profile: Option<String>,
     /// Process ID for an attached runtime-profile browser, used for explicit close.
@@ -3067,9 +3211,43 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn handoff_broker_custody(&self) -> Result<HandoffBrokerCustody, String> {
+        if self.handoff_retired || self.handoff_recovery_pending {
+            return Err("handoff_broker_custody_unavailable".into());
+        }
+        verify_active_handoff_custody(self)?;
+        let owner = self
+            .handoff_custody
+            .as_ref()
+            .ok_or("handoff_custody_missing")?;
+        if owner.is_revoked() {
+            return Err("handoff_broker_custody_revoked".into());
+        }
+        Ok(HandoffBrokerCustody {
+            session_name: self.session_id.clone(),
+            handle: owner.handle(),
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn revoke_handoff_broker_custody(&self) -> Result<(), String> {
+        if let Some(owner) = &self.handoff_custody {
+            owner.revoke(Duration::from_secs(5)).await?;
+        }
+        Ok(())
+    }
+
     /// Auxiliary direct-CDP paths cannot bypass the transferred session's gate.
     pub(crate) fn allows_unfenced_cdp(&self) -> bool {
         if self.handoff_retired || self.handoff_recovery_pending {
+            return false;
+        }
+        if self
+            .browser
+            .as_ref()
+            .is_some_and(BrowserManager::uses_pipe_transport)
+        {
             return false;
         }
         #[cfg(target_os = "linux")]
@@ -3094,6 +3272,7 @@ impl DaemonState {
 
     pub fn new() -> Self {
         Self {
+            broker_registry: Arc::new(super::broker_registry::BrokerRegistry::default()),
             #[cfg(target_os = "linux")]
             handoff_custody: None,
             #[cfg(target_os = "linux")]
@@ -3130,6 +3309,7 @@ impl DaemonState {
             task_authority_ledger_root: task_authority_ledger_root(),
             confirmed_task_authority_id: None,
             confirmed_control_plane_command_id: None,
+            confirmed_broker_policy: None,
             inspect_server: None,
             routes: Arc::new(RwLock::new(Vec::new())),
             tracked_requests: Vec::new(),
@@ -3149,6 +3329,8 @@ impl DaemonState {
             stream_client: None,
             stream_server: None,
             launch_hash: None,
+            last_pipe_observation_at: None,
+            last_pipe_observation_error: None,
             attached_runtime_profile: None,
             attached_browser_pid: None,
             close_behavior: CloseBehavior::CloseBrowser,
@@ -3162,6 +3344,69 @@ impl DaemonState {
             pending_shared_profile_acquisition: None,
             tracked_origin_storage: HashMap::new(),
         }
+    }
+
+    /// Publish bounded health/target evidence from the owned client. This never
+    /// exposes a reconnectable endpoint or grants lifecycle/custody authority.
+    pub(crate) async fn refresh_pipe_service_observation(
+        &mut self,
+        force: bool,
+    ) -> Result<(), String> {
+        let Some(browser) = self
+            .browser
+            .as_ref()
+            .filter(|browser| browser.uses_pipe_transport())
+        else {
+            self.last_pipe_observation_at = None;
+            self.last_pipe_observation_error = None;
+            return Ok(());
+        };
+        if self.handoff_retired || self.handoff_recovery_pending {
+            return Err("pipe_observation_owner_fenced".into());
+        }
+        if !force
+            && self
+                .last_pipe_observation_at
+                .is_some_and(|time| time.elapsed() < std::time::Duration::from_secs(5))
+        {
+            return self.last_pipe_observation_error.clone().map_or(Ok(()), Err);
+        }
+        self.last_pipe_observation_at = Some(std::time::Instant::now());
+        // Cancellation drops the future before its final assignment. Never let
+        // an unfinished observation reuse an earlier cached success.
+        self.last_pipe_observation_error = Some("pipe_observation_incomplete".into());
+        let result = async {
+        let observation = super::pipe_observation::capture(browser, &self.session_id).await;
+        let id = service_browser_id(&self.session_id);
+        let pid = browser.browser_pid();
+        let pipe_identity = browser.get_cdp_url();
+        let repository = LockedServiceStateRepository::default_json()?;
+        repository.mutate(|service_state| {
+            let record = service_state.browsers.get_mut(&id).ok_or("pipe_observation_browser_record_missing")?;
+            if record.pid != pid || record.active_session_ids != [self.session_id.clone()]
+                || record.pipe_observation.as_ref().and_then(|value| value["pipeIdentity"].as_str()) != Some(pipe_identity)
+                || record.cdp_endpoint.is_some()
+            {
+                return Err("pipe_observation_record_changed".into());
+            }
+            match &observation {
+                Ok(value) => {
+                    record.pipe_observation = Some(value.clone());
+                    record.health = ServiceBrowserHealth::Ready;
+                    record.last_error = None;
+                }
+                Err(error) => {
+                    record.pipe_observation = Some(json!({"transport":"anonymous_pipe", "pipeIdentity":pipe_identity, "status":"unavailable"}));
+                    record.health = ServiceBrowserHealth::CdpDisconnected;
+                    record.last_error = Some(error.clone());
+                }
+            }
+            Ok(())
+        })?;
+        observation.map(|_| ())
+        }.await;
+        self.last_pipe_observation_error = result.as_ref().err().cloned();
+        result
     }
 
     /// Extract the timeout from a command JSON, falling back to the
@@ -4707,8 +4952,39 @@ fn task_authority_control_requires_confirmation(action: &str) -> bool {
     )
 }
 
-fn task_authority_active_target(state: &DaemonState) -> Result<(String, String), String> {
-    let binding = confirmation_target_binding(&json!({}), state);
+fn task_authority_page_binding(
+    pages: &[PageInfo],
+    requested_target_id: &str,
+) -> Option<ConfirmationTargetBinding> {
+    pages
+        .iter()
+        .find(|page| page.target_id == requested_target_id)
+        .map(|page| ConfirmationTargetBinding {
+            target_id: Some(page.target_id.clone()),
+            url: Some(page.url.clone()),
+        })
+}
+
+fn task_authority_command_target(
+    cmd: &Value,
+    state: &DaemonState,
+) -> Result<(String, String), String> {
+    let requested_target_id = cmd
+        .get("serviceTabHandle")
+        .and_then(|handle| handle.get("targetId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let binding = if let Some(requested_target_id) = requested_target_id {
+        state
+            .browser
+            .as_ref()
+            .and_then(|manager| {
+                task_authority_page_binding(&manager.pages_list(), requested_target_id)
+            })
+            .ok_or("Task authority control requires its exact retained target to remain live")?
+    } else {
+        confirmation_target_binding(&json!({}), state)
+    };
     Ok((
         binding
             .target_id
@@ -4735,7 +5011,7 @@ async fn handle_task_authority_issue(cmd: &Value, state: &DaemonState) -> Result
             ));
         }
     }
-    let (target_id, url) = task_authority_active_target(state)?;
+    let (target_id, url) = task_authority_command_target(cmd, state)?;
     issue_task_authority(
         request,
         &state.session_id,
@@ -4753,7 +5029,7 @@ async fn handle_task_authority_revoke(cmd: &Value, state: &DaemonState) -> Resul
         .ok_or("Task authority revoke requires authorityId")?;
     let revoked_by = cmd.get("revokedBy").and_then(Value::as_str).unwrap_or("");
     let reason = cmd.get("reason").and_then(Value::as_str).unwrap_or("");
-    let (target_id, url) = task_authority_active_target(state)?;
+    let (target_id, url) = task_authority_command_target(cmd, state)?;
     revoke_task_authority(
         &state.task_authority_ledger_root,
         &state.session_id,
@@ -4789,7 +5065,7 @@ async fn handle_task_authority_reconcile(
             ));
         }
     }
-    let (target_id, url) = task_authority_active_target(state)?;
+    let (target_id, url) = task_authority_command_target(cmd, state)?;
     reconcile_task_authority(
         &state.task_authority_ledger_root,
         &state.session_id,
@@ -4801,13 +5077,52 @@ async fn handle_task_authority_reconcile(
 }
 
 async fn handle_task_authority_status(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
-    let mut status = task_authority_status(
-        &state.task_authority_ledger_root,
-        &state.session_id,
-        cmd.get("authorityId").and_then(Value::as_str),
-    )?;
-    status["confirmationStatus"] =
-        task_authority_confirmation_status(&state.task_authority_ledger_root, &state.session_id)?;
+    let binding_only = cmd
+        .get("bindingOnly")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut status = if binding_only {
+        json!({"schema": "agent-browser.task-authority-current-binding.v1"})
+    } else {
+        let mut status = task_authority_status(
+            &state.task_authority_ledger_root,
+            &state.session_id,
+            cmd.get("authorityId").and_then(Value::as_str),
+        )?;
+        status["confirmationStatus"] = task_authority_confirmation_status(
+            &state.task_authority_ledger_root,
+            &state.session_id,
+        )?;
+        status
+    };
+    #[cfg(target_os = "linux")]
+    if let Some(custody) = state.handoff_custody.as_ref() {
+        let target_id = custody.payload().receipt.target_id.as_str();
+        let page = state
+            .browser
+            .as_ref()
+            .and_then(|manager| {
+                manager
+                    .pages_list()
+                    .into_iter()
+                    .find(|page| page.target_id == target_id)
+            })
+            .ok_or("task_authority_current_target_missing")?;
+        let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+        if snapshot
+            .tabs
+            .get(&format!("target:{target_id}"))
+            .and_then(|tab| tab.url.as_deref())
+            != Some(page.url.as_str())
+        {
+            return Err("task_authority_live_target_snapshot_mismatch".into());
+        }
+        status["currentTargetBinding"] = json!({
+            "targetId": page.target_id,
+            "url": page.url,
+            "source": "daemon_live_target_inventory",
+        });
+    }
     Ok(status)
 }
 
@@ -5096,7 +5411,18 @@ async fn handle_dependent_batch(cmd: &Value, state: &mut DaemonState) -> Result<
 }
 
 pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
+    // The dispatcher contains many large async branches. Keeping it inline in
+    // callers can overflow ordinary thread stacks during nested confirmation.
+    // Preserve the public async API while heap-owning the dispatch frame.
+    Box::pin(execute_command_inner(cmd, state)).await
+}
+
+async fn execute_command_inner(cmd: &Value, state: &mut DaemonState) -> Value {
     let action = cmd.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    // Only an explicit first acquisition may precede service target creation.
+    // Once a browser exists, omitting a handle cannot relax custody checks.
+    #[cfg(target_os = "linux")]
+    let pipe_bootstrap = state.browser.is_none() && matches!(action, "launch" | "tab_new");
     let id = cmd
         .get("id")
         .and_then(|v| v.as_str())
@@ -5115,12 +5441,106 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         );
     }
 
+    let pipe_requested = match super::cdp::chrome::pipe_transport_requested() {
+        Ok(value) => value,
+        Err(error) => return error_response(&id, &error),
+    };
+    if pipe_requested
+        && state
+            .browser
+            .as_ref()
+            .is_some_and(|browser| !browser.uses_pipe_transport())
+    {
+        return error_response(
+            &id,
+            "cdp_pipe_transport_mismatch_requires_controlled_restart",
+        );
+    }
+    if (pipe_requested
+        || state
+            .browser
+            .as_ref()
+            .is_some_and(BrowserManager::uses_pipe_transport))
+        && (matches!(action, "route" | "unroute")
+            || ["headers", "allowedDomains"]
+                .iter()
+                .any(|key| cmd.get(key).is_some())
+            || state.domain_filter.read().await.is_some()
+            || !state.routes.read().await.is_empty()
+            || !state.origin_headers.read().await.is_empty()
+            || state.proxy_credentials.read().await.is_some())
+    {
+        return error_response(&id, "cdp_pipe_request_interception_unsupported");
+    }
+    if (pipe_requested
+        || state
+            .browser
+            .as_ref()
+            .is_some_and(BrowserManager::uses_pipe_transport))
+        && matches!(
+            action,
+            "runtime_handoff_prepare"
+                | "runtime_handoff_resume"
+                | "cdp_attach"
+                | "cdp_detach"
+                | "inspect"
+                | "stream_enable"
+                | "recording_start"
+                | "recording_restart"
+        )
+    {
+        return error_response(
+            &id,
+            "cdp_pipe_lifecycle_or_raw_transport_export_unsupported",
+        );
+    }
+
+    if let Some(browser) = state
+        .browser
+        .as_ref()
+        .filter(|browser| browser.uses_pipe_transport())
+    {
+        let proof = browser.verify_fresh_pipe_launch();
+        if let Err(error) = proof {
+            let mut response = error_response(&id, &error);
+            if action == "diagnostics" {
+                response["data"] = custody_denied_diagnostics(&error);
+            }
+            return response;
+        }
+        if let Some(handle) = cmd.get("serviceTabHandle") {
+            if handle.get("targetId").and_then(Value::as_str) != browser.active_target_id().ok()
+                || handle.get("browserId").and_then(Value::as_str)
+                    != Some(service_browser_id(&state.session_id).as_str())
+            {
+                return error_response(&id, "fresh_pipe_requested_target_mismatch");
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let proof = LockedServiceStateRepository::default_json()
+                .and_then(|repository| repository.load_snapshot())
+                .and_then(|snapshot| verify_fresh_pipe_custody_against(state, &snapshot));
+            if let Err(error) = proof {
+                let mut response = error_response(&id, &error);
+                if action == "diagnostics" {
+                    response["data"] = custody_denied_diagnostics(&error);
+                }
+                return response;
+            }
+        }
+    }
+
     #[cfg(target_os = "linux")]
     if let Some(custody) = state.handoff_custody.as_ref() {
+        if custody.is_revoked() && !matches!(action, "close" | "runtime_handoff_prepare") {
+            return error_response(&id, "handoff_broker_custody_revoked");
+        }
+        let custody = custody.payload();
         if let Err(error) = verify_active_handoff_custody(state) {
             if action == "diagnostics" {
                 let mut response = error_response(&id, &error);
-                response["data"] = json!({"action": "diagnostics", "snapshotOnly": true, "controlPlaneAttestation": {"complete": false, "missingProofs": [error], "displayOwner": {"verified": false}}});
+                response["data"] = custody_denied_diagnostics(&error);
                 return response;
             }
             return error_response(&id, &error);
@@ -5134,26 +5554,9 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                 return error_response(&id, "runtime_handoff_requested_target_mismatch");
             }
         }
-        if !matches!(
-            action,
-            "diagnostics"
-                | "snapshot"
-                | "evaluate"
-                | "click"
-                | "fill"
-                | "type"
-                | "press"
-                | "gettext"
-                | "url"
-                | "title"
-                | "screenshot"
-                | "file_transfer"
-                | "ui_action"
-                | "upload"
-                | "download"
-                | "runtime_handoff_prepare"
-                | "close"
-        ) {
+        let broker_acquire =
+            action == "cdp_attach" && cmd.get("brokerTransport") == Some(&json!(true));
+        if !handoff_custody_allows_action(action, broker_acquire) {
             return error_response(&id, "runtime_handoff_action_not_governed");
         }
     }
@@ -5273,6 +5676,20 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         let mut needs_launch = stale_state.needs_launch;
 
         if needs_launch
+            && state
+                .browser
+                .as_ref()
+                .is_some_and(BrowserManager::uses_pipe_transport)
+        {
+            return finalize_ordered_task_response(
+                cmd,
+                state,
+                ordered_step_admitted,
+                error_response(&id, "cdp_pipe_recovery_requires_controlled_restart"),
+            );
+        }
+
+        if needs_launch
             && state.browser.is_some()
             && state
                 .try_recover_browser_connection()
@@ -5283,6 +5700,10 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         }
 
         if needs_launch {
+            #[cfg(target_os = "linux")]
+            if state.handoff_custody.is_some() {
+                return error_response(&id, "handoff_broker_relaunch_requires_controlled_recovery");
+            }
             let mut recovery_persistence = BrowserRecoveryPersistence::NotRecorded;
             if state.browser.is_some() {
                 if let (Some(health), Some(reason_kind), Some(message)) = (
@@ -5372,6 +5793,48 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         );
     }
 
+    // Auto-launch may have created a pipe browser after the entry guard.
+    if let Some(browser) = state
+        .browser
+        .as_ref()
+        .filter(|browser| browser.uses_pipe_transport())
+    {
+        let proof = browser.verify_fresh_pipe_launch();
+        if let Err(error) = proof {
+            return finalize_ordered_task_response(
+                cmd,
+                state,
+                ordered_step_admitted,
+                error_response(&id, &error),
+            );
+        }
+        if let Some(handle) = cmd.get("serviceTabHandle") {
+            if handle.get("targetId").and_then(Value::as_str) != browser.active_target_id().ok()
+                || handle.get("browserId").and_then(Value::as_str)
+                    != Some(service_browser_id(&state.session_id).as_str())
+            {
+                return finalize_ordered_task_response(
+                    cmd,
+                    state,
+                    ordered_step_admitted,
+                    error_response(&id, "fresh_pipe_requested_target_mismatch"),
+                );
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if !pipe_bootstrap {
+            if let Err(error) = LockedServiceStateRepository::default_json()
+                .and_then(|repository| repository.load_snapshot())
+                .and_then(|snapshot| verify_fresh_pipe_custody_against(state, &snapshot))
+            {
+                let mut response = error_response(&id, &error);
+                if action == "diagnostics" {
+                    response["data"] = custody_denied_diagnostics(&error);
+                }
+                return finalize_ordered_task_response(cmd, state, ordered_step_admitted, response);
+            }
+        }
+    }
     let command_preparation_ms = u64::try_from(cmd_start.elapsed().as_millis()).unwrap_or(u64::MAX);
     let action_started = std::time::Instant::now();
     let result = match action {
@@ -5395,7 +5858,15 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "read_page" => handle_read_page(cmd, state).await,
         "evaluate" => handle_evaluate(cmd, state).await,
         "runtime_handoff_prepare" => handle_runtime_handoff_prepare(state).await,
-        "runtime_handoff_resume" => handle_runtime_handoff_resume(state).await,
+        "runtime_handoff_resume" => {
+            handle_runtime_handoff_resume_with_migration(
+                state,
+                cmd.get("prospectiveMigration")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            )
+            .await
+        }
         "close" => handle_close(state).await,
         "snapshot" => handle_snapshot(cmd, state).await,
         "screenshot" => handle_screenshot(cmd, state).await,
@@ -5712,6 +6183,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         }
     }
 
+    let _ = state.refresh_pipe_service_observation(true).await;
     let resp = finalize_ordered_task_response(cmd, state, ordered_step_admitted, resp);
 
     if let Some(ref server) = state.stream_server {
@@ -5728,10 +6200,12 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
 
             // Keep the stream server's CDP session in sync with the active tab
             // so screencasting always targets the correct page.
-            if matches!(
-                action,
-                "tab_new" | "tab_switch" | "tab_close" | "open" | "navigate" | "view_focus"
-            ) {
+            if state.allows_unfenced_cdp()
+                && matches!(
+                    action,
+                    "tab_new" | "tab_switch" | "tab_close" | "open" | "navigate" | "view_focus"
+                )
+            {
                 let session_id = mgr.active_session_id().ok().map(|s| s.to_string());
                 server.set_cdp_session_id(session_id).await;
                 server.notify_client_changed();
@@ -5819,7 +6293,49 @@ async fn launch_browser_with_transient_retry(
     }
 }
 
+fn validate_pipe_launch_request(command: &Value) -> Result<(), String> {
+    if !super::cdp::chrome::pipe_transport_requested()? {
+        return Ok(());
+    }
+    let enabled = |name: &str| {
+        env::var(name)
+            .is_ok_and(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | ""))
+    };
+    let incompatible = ["leaveOpen", "autoConnect", "runtimeAttachManaged"]
+        .iter()
+        .any(|key| command.get(key).and_then(Value::as_bool) == Some(true))
+        || ["cdpUrl", "cdpPort", "provider"]
+            .iter()
+            .any(|key| command.get(key).is_some_and(|v| !v.is_null()))
+        || [
+            "AGENT_BROWSER_CDP",
+            "AGENT_BROWSER_AUTO_CONNECT",
+            "AGENT_BROWSER_PROVIDER",
+            "AGENT_BROWSER_ALLOWED_DOMAINS",
+            "AGENT_BROWSER_PROXY_USERNAME",
+            "AGENT_BROWSER_PROXY_PASSWORD",
+        ]
+        .iter()
+        .any(|key| env::var_os(key).is_some())
+        || command.get("allowedDomains").is_some()
+        || command.get("proxy").is_some_and(|proxy| {
+            proxy.get("username").is_some() || proxy.get("password").is_some()
+        })
+        || enabled("AGENT_BROWSER_LEAVE_OPEN")
+        || enabled("AGENT_BROWSER_RUNTIME_ATTACH_MANAGED")
+        || command
+            .get("engine")
+            .and_then(Value::as_str)
+            .is_some_and(|v| v != "chrome")
+        || env::var("AGENT_BROWSER_ENGINE").is_ok_and(|v| v != "chrome");
+    if incompatible {
+        return Err("cdp_pipe_requires_owned_linux_chrome_without_attachment_or_detach".into());
+    }
+    Ok(())
+}
+
 async fn auto_launch(state: &mut DaemonState, command: &Value) -> Result<(), String> {
+    validate_pipe_launch_request(command)?;
     state.pending_shared_profile_acquisition = None;
     let mut options = launch_options_from_env();
     let leave_open = env::var("AGENT_BROWSER_LEAVE_OPEN")
@@ -6109,6 +6625,7 @@ async fn try_auto_restore_state(state: &mut DaemonState) {
 // ---------------------------------------------------------------------------
 
 async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    validate_pipe_launch_request(cmd)?;
     let headless = cmd
         .get("headless")
         .and_then(|v| v.as_bool())
@@ -7063,6 +7580,15 @@ fn cdp_free_launch_response(
 }
 
 async fn handle_cdp_attach(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    if let Some(mode) = cmd.get("brokerTransport") {
+        if mode != &json!(true) {
+            return Err("broker_transport_mode_invalid".into());
+        }
+        #[cfg(target_os = "linux")]
+        return handle_broker_acquire(cmd, state).await;
+        #[cfg(not(target_os = "linux"))]
+        return Err("broker_custody_platform_unsupported".into());
+    }
     validate_cdp_attach_request(cmd, &state.session_id)?;
     let mgr = state.browser.as_mut().ok_or_else(|| {
         "Cannot attach CDP: target browser session is not running; request a service tab first"
@@ -7121,6 +7647,209 @@ async fn handle_cdp_attach(cmd: &Value, state: &mut DaemonState) -> Result<Value
         "serviceTabHandle": cmd.get("serviceTabHandle").cloned().unwrap_or(Value::Null),
         "attachedAt": attached_at,
     }))
+}
+
+#[cfg(target_os = "linux")]
+async fn handle_broker_acquire(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    use super::broker_attachment::{BrokerAttachment, BrokerBinding, BrokerJournal};
+    use super::broker_authority::{HandoffAuthorityConfig, HandoffBrokerAuthority};
+    use sha2::{Digest, Sha256};
+    // Confirmation approves this acquisition only. A long-lived capability must
+    // retain original settings, not the temporarily suppressed worker fields.
+    let (policy, confirm_actions) = match (
+        state.confirmed_control_plane_command_id.as_deref(),
+        state.confirmed_broker_policy.as_ref(),
+    ) {
+        (None, None) => (state.policy.clone(), state.confirm_actions.clone()),
+        (Some(id), Some(original))
+            if original.command_id == id && cmd.get("id").and_then(Value::as_str) == Some(id) =>
+        {
+            (original.policy.clone(), original.confirm_actions.clone())
+        }
+        _ => return Err("broker_acquisition_confirmed_policy_capture_unsupported".into()),
+    };
+    validate_cdp_attach_request(cmd, &state.session_id)?;
+    let request_id = cmd
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control))
+        .ok_or("broker_acquisition_request_id_invalid")?
+        .to_owned();
+    let expected_url = cmd
+        .get("expectedUrl")
+        .and_then(Value::as_str)
+        .ok_or("broker_acquisition_expected_url_required")?
+        .to_owned();
+    let handle = &cmd["serviceTabHandle"];
+    let capability = state.handoff_broker_custody()?;
+    let custody = state
+        .handoff_custody
+        .as_ref()
+        .ok_or("handoff_custody_missing")?
+        .payload();
+    let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+    let profile = snapshot
+        .sessions
+        .get(&state.session_id)
+        .and_then(|session| session.profile_id.as_deref())
+        .ok_or("handoff_profile_missing")?;
+    let target = &custody.receipt.target_id;
+    let tab_id = format!("target:{target}");
+    let browser_id = service_browser_id(&state.session_id);
+    if handle.get("profileId").and_then(Value::as_str) != Some(profile)
+        || handle.get("sessionName").and_then(Value::as_str) != Some(state.session_id.as_str())
+        || handle.get("browserId").and_then(Value::as_str) != Some(browser_id.as_str())
+        || handle.get("targetId").and_then(Value::as_str) != Some(target)
+        || handle.get("tabId").and_then(Value::as_str) != Some(tab_id.as_str())
+        || handle.get("url").and_then(Value::as_str) != Some(expected_url.as_str())
+        || snapshot
+            .tabs
+            .get(&tab_id)
+            .and_then(|tab| tab.url.as_deref())
+            != Some(expected_url.as_str())
+    {
+        return Err("broker_acquisition_handle_mismatch".into());
+    }
+    let canonical_handle = snapshot
+        .service_tab_handle(&tab_id)
+        .filter(|handle| handle.valid)
+        .ok_or("broker_acquisition_stored_handle_invalid")?;
+    let retained_handle = serde_json::to_value(canonical_handle)
+        .map_err(|_| "broker_acquisition_stored_handle_invalid")?;
+    for key in [
+        "leaseId",
+        "leaseState",
+        "ownerSessionId",
+        "cleanupPolicy",
+        "profileOrigin",
+    ] {
+        if handle
+            .get(key)
+            .is_some_and(|value| !value.is_null() && Some(value) != retained_handle.get(key))
+        {
+            return Err("broker_acquisition_handle_mismatch".into());
+        }
+    }
+    // Recompute from stored state. Neither client accessPlan nor serviceState
+    // can authorize reuse, override launch_new_browser, or select a stale lane.
+    let mut plan_request = service_access_plan_request_from_command(cmd);
+    if plan_request
+        .runtime_profile
+        .as_deref()
+        .is_some_and(|requested| requested != profile)
+        || plan_request
+            .target_url
+            .as_deref()
+            .is_some_and(|requested| requested != expected_url)
+    {
+        return Err("broker_acquisition_requested_scope_mismatch".into());
+    }
+    plan_request.runtime_profile = Some(profile.into());
+    plan_request.target_url = Some(expected_url.clone());
+    let plan = service_access_plan_for_state(&snapshot, plan_request);
+    if plan.pointer("/selectedProfile/id").and_then(Value::as_str) != Some(profile)
+        || plan.pointer("/decision/launchPosture/cdpAttachmentAllowed") != Some(&json!(true))
+        || plan
+            .pointer("/decision/profileReuse/recommendedAction")
+            .and_then(Value::as_str)
+            != Some("reuse_existing_browser")
+        || plan.pointer("/decision/profileReuse/reusableBrowserIds") != Some(&json!([browser_id]))
+    {
+        return Err("broker_acquisition_access_plan_denied".into());
+    }
+    let binding = BrokerBinding {
+        attachment_id: format!(
+            "broker-{:x}",
+            Sha256::digest(format!(
+                "{}:{}:{}",
+                state.session_id, custody.receipt.descriptor_sha256, request_id
+            ))
+        ),
+        browser_id,
+        profile_id: profile.into(),
+        session_name: state.session_id.clone(),
+        target_id: target.clone(),
+        generation: custody.receipt.descriptor_sha256.clone(),
+    };
+    let reservation = state.broker_registry.reserve(binding.clone())?;
+    let authority = Arc::new(
+        HandoffBrokerAuthority::new(
+            capability,
+            binding.clone(),
+            expected_url.clone(),
+            HandoffAuthorityConfig {
+                policy,
+                confirm_actions,
+                require_task_authority: state.require_task_authority,
+                ledger_root: state.task_authority_ledger_root.clone(),
+            },
+        )
+        .await?,
+    );
+    let client = state
+        .browser
+        .as_ref()
+        .ok_or("handoff_browser_missing")?
+        .client
+        .clone();
+    let journal_root = get_socket_dir().join("broker-journal");
+    fs::create_dir_all(&journal_root).map_err(|_| "broker_journal_unavailable")?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    // A dropped caller cannot cancel a possibly dispatched attach. This owner
+    // task reconciles abandoned results; its guard seals uncertainty on panic.
+    tokio::spawn(async move {
+        struct InFlight(Option<super::broker_registry::BrokerReservation>);
+        impl Drop for InFlight {
+            fn drop(&mut self) {
+                if let Some(reservation) = self.0.take() {
+                    reservation.mark_uncertain();
+                }
+            }
+        }
+        let mut in_flight = InFlight(Some(reservation));
+        let acquired = BrokerAttachment::acquire(
+            binding.clone(),
+            client,
+            authority,
+            BrokerJournal(journal_root),
+            &request_id,
+        )
+        .await;
+        let attachment = match acquired {
+            Ok(attachment) => Arc::new(attachment),
+            Err(error) => {
+                let _ = sender.send(Err(error));
+                return;
+            }
+        };
+        let committed = in_flight.0.take().unwrap().commit(attachment.clone());
+        let verified = match committed {
+            Ok(()) => attachment.verify_acquired_url(&expected_url).await,
+            Err(failure) => {
+                debug_assert!(Arc::ptr_eq(&failure.attachment, &attachment));
+                Err(failure.error)
+            }
+        };
+        if let Err(error) = verified {
+            let cleanup = attachment
+                .detach(&binding, "failed-acquisition-detach")
+                .await;
+            let _ = sender.send(Err(cleanup.err().unwrap_or(error)));
+            return;
+        }
+        let response = json!({"attached":true,"controlPlaneMode":"broker","binding":binding,
+            "serviceTabHandle":retained_handle,"browserProcessPreserved":true,"closeBrowserOnDetach":false,
+            "detachRequired":true,"transportAction":"__broker_transport"});
+        if sender.send(Ok(response)).is_err() {
+            // Registry retains the exact attachment even when cleanup fails.
+            let _ = attachment
+                .detach(&binding, "abandoned-acquisition-detach")
+                .await;
+        }
+    });
+    receiver
+        .await
+        .map_err(|_| "broker_acquisition_owner_failed")?
 }
 
 async fn handle_cdp_detach(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
@@ -7536,6 +8265,9 @@ fn handle_cdp_url(state: &DaemonState) -> Result<Value, String> {
 
 async fn handle_inspect(state: &mut DaemonState) -> Result<Value, String> {
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
+    if mgr.uses_pipe_transport() {
+        return Err("cdp_pipe_raw_transport_export_unsupported".into());
+    }
 
     // Shut down any existing inspect server so we always target the current page
     if let Some(server) = state.inspect_server.as_mut() {
@@ -9952,7 +10684,17 @@ fn service_guess_mime_type(path: &Path) -> Value {
 
 async fn handle_service_diagnostics(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     #[cfg(target_os = "linux")]
+    if state
+        .browser
+        .as_ref()
+        .is_some_and(|browser| browser.uses_pipe_transport())
+    {
+        let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+        verify_fresh_pipe_custody_against(state, &snapshot)?;
+    }
+    #[cfg(target_os = "linux")]
     if let Some(custody) = state.handoff_custody.as_ref() {
+        let custody = custody.payload();
         if cmd
             .pointer("/serviceTabHandle/targetId")
             .and_then(Value::as_str)
@@ -10106,7 +10848,17 @@ async fn handle_service_diagnostics(cmd: &Value, state: &mut DaemonState) -> Res
     let custody_attestation = service_state
         .as_ref()
         .ok_or_else(|| "handoff_service_snapshot_missing".to_string())
-        .and_then(|snapshot| verify_active_handoff_custody_against(state, snapshot));
+        .and_then(|snapshot| {
+            if state
+                .browser
+                .as_ref()
+                .is_some_and(BrowserManager::uses_pipe_transport)
+            {
+                verify_fresh_pipe_custody_against(state, snapshot)
+            } else {
+                verify_active_handoff_custody_against(state, snapshot)
+            }
+        });
     #[cfg(not(target_os = "linux"))]
     let custody_attestation: Result<Value, String> =
         Err("handoff_custody_platform_unsupported".into());
@@ -10207,6 +10959,19 @@ async fn handle_service_diagnostics(cmd: &Value, state: &mut DaemonState) -> Res
             "jobId": cmd.get("id").cloned().unwrap_or(Value::Null),
         },
     }))
+}
+
+/// Keep failed launch, snapshot and transfer proofs on one fail-closed contract.
+fn custody_denied_diagnostics(reason: &str) -> Value {
+    json!({
+        "action": "diagnostics",
+        "snapshotOnly": true,
+        "controlPlaneAttestation": {
+            "complete": false,
+            "missingProofs": [reason],
+            "displayOwner": {"verified": false},
+        },
+    })
 }
 
 fn bounded_usize(cmd: &Value, key: &str, default_value: usize, max_value: usize) -> usize {
@@ -10380,7 +11145,8 @@ fn current_service_browser_host(session_name: &str) -> ServiceBrowserHost {
 }
 
 #[cfg(target_os = "linux")]
-fn verify_handoff_snapshot(
+/// Require a current exclusive lease and internally matching ready service records.
+pub(crate) fn verify_handoff_snapshot(
     snapshot: &ServiceState,
     session_id: &str,
     browser: &super::handoff_custody::BrowserIdentity,
@@ -10394,7 +11160,8 @@ fn verify_handoff_snapshot(
         .profile_id
         .as_deref()
         .ok_or("handoff_profile_missing")?;
-    if session.lease != LeaseState::Exclusive
+    if session.id != session_id
+        || session.lease != LeaseState::Exclusive
         || snapshot.sessions.values().any(|other| {
             other.id != session_id
                 && other.profile_id.as_deref() == Some(profile_id)
@@ -10402,6 +11169,13 @@ fn verify_handoff_snapshot(
         })
     {
         return Err("handoff_exclusive_service_lease_required".into());
+    }
+    if let Some(expiry) = session.expires_at.as_deref() {
+        let expiry =
+            DateTime::parse_from_rfc3339(expiry).map_err(|_| "handoff_lease_expiry_invalid")?;
+        if expiry.timestamp() <= OffsetDateTime::now_utc().unix_timestamp() {
+            return Err("handoff_service_lease_expired".into());
+        }
     }
     let profile = snapshot
         .profiles
@@ -10411,8 +11185,9 @@ fn verify_handoff_snapshot(
         .user_data_dir
         .as_deref()
         .ok_or("handoff_profile_path_missing")?;
-    if fs::canonicalize(path).map_err(|_| "handoff_profile_path_unreadable")?
-        != browser.canonical_profile
+    if profile.id != profile_id
+        || fs::canonicalize(path).map_err(|_| "handoff_profile_path_unreadable")?
+            != browser.canonical_profile
     {
         return Err("handoff_profile_path_mismatch".into());
     }
@@ -10423,7 +11198,10 @@ fn verify_handoff_snapshot(
         .ok_or("handoff_browser_missing")?;
     let tab_id = format!("target:{target_id}");
     let tab = snapshot.tabs.get(&tab_id).ok_or("handoff_target_missing")?;
-    if record.pid != Some(browser.process.pid)
+    if record.id != browser_id
+        || record.pid != Some(browser.process.pid)
+        || record.health != ServiceBrowserHealth::Ready
+        || record.active_session_ids != [session_id.to_string()]
         || record.cdp_endpoint.as_deref() != Some(browser.cdp_endpoint.as_str())
         || record.profile_id.as_deref() != Some(profile_id)
         || !session.browser_ids.contains(&browser_id)
@@ -10431,6 +11209,7 @@ fn verify_handoff_snapshot(
         || tab.browser_id != browser_id
         || tab.owner_session_id.as_deref() != Some(session_id)
         || tab.target_id.as_deref() != Some(target_id)
+        || tab.lifecycle != super::service_model::TabLifecycle::Ready
     {
         return Err("handoff_snapshot_identity_mismatch".into());
     }
@@ -10438,7 +11217,10 @@ fn verify_handoff_snapshot(
 }
 
 #[cfg(target_os = "linux")]
-fn handoff_display_proof(snapshot: &ServiceState, session_id: &str) -> Result<Value, String> {
+pub(crate) fn handoff_display_proof(
+    snapshot: &ServiceState,
+    session_id: &str,
+) -> Result<Value, String> {
     let browser_id = service_browser_id(session_id);
     let browser = snapshot
         .browsers
@@ -10497,6 +11279,124 @@ fn handoff_display_proof(snapshot: &ServiceState, session_id: &str) -> Result<Va
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn verify_fresh_pipe_custody_against(
+    state: &DaemonState,
+    snapshot: &ServiceState,
+) -> Result<Value, String> {
+    let manager = state.browser.as_ref().ok_or("fresh_pipe_browser_missing")?;
+    let launch = manager.verify_fresh_pipe_launch()?;
+    let session_id = state.session_id.as_str();
+    let browser_id = service_browser_id(session_id);
+    let target_id = manager.active_target_id()?;
+    let tab_id = format!("target:{target_id}");
+    let session = snapshot
+        .sessions
+        .get(session_id)
+        .ok_or("fresh_pipe_session_missing")?;
+    let profile_id = session
+        .profile_id
+        .as_deref()
+        .ok_or("fresh_pipe_profile_missing")?;
+    if session.id != session_id
+        || session.lease != LeaseState::Exclusive
+        || snapshot.sessions.values().any(|other| {
+            other.id != session_id
+                && other.profile_id.as_deref() == Some(profile_id)
+                && !matches!(other.lease, LeaseState::Released | LeaseState::Expired)
+        })
+    {
+        return Err("fresh_pipe_exclusive_service_lease_required".into());
+    }
+    if let Some(expiry) = session.expires_at.as_deref() {
+        let expiry =
+            DateTime::parse_from_rfc3339(expiry).map_err(|_| "fresh_pipe_lease_expiry_invalid")?;
+        if expiry.timestamp() <= OffsetDateTime::now_utc().unix_timestamp() {
+            return Err("fresh_pipe_service_lease_expired".into());
+        }
+    }
+    let profile = snapshot
+        .profiles
+        .get(profile_id)
+        .ok_or("fresh_pipe_profile_missing")?;
+    let path = profile
+        .user_data_dir
+        .as_deref()
+        .ok_or("fresh_pipe_profile_path_missing")?;
+    let canonical_profile =
+        fs::canonicalize(path).map_err(|_| "fresh_pipe_profile_path_unreadable")?;
+    if profile.id != profile_id
+        || Some(canonical_profile.as_path())
+            != manager
+                .browser_user_data_dir()
+                .and_then(|path| path.canonicalize().ok())
+                .as_deref()
+        || launch["canonicalProfile"].as_str() != canonical_profile.to_str()
+    {
+        return Err("fresh_pipe_profile_path_mismatch".into());
+    }
+    let record = snapshot
+        .browsers
+        .get(&browser_id)
+        .ok_or("fresh_pipe_browser_record_missing")?;
+    let tab = snapshot
+        .tabs
+        .get(&tab_id)
+        .ok_or("fresh_pipe_target_missing")?;
+    if record.id != browser_id
+        || record.pid != manager.browser_pid()
+        || record.cdp_endpoint.is_some()
+        || record.health != ServiceBrowserHealth::Ready
+        || record.profile_id.as_deref() != Some(profile_id)
+        || record.active_session_ids != [session_id.to_string()]
+        || !session.browser_ids.contains(&browser_id)
+        || !session.tab_ids.contains(&tab_id)
+        || tab.browser_id != browser_id
+        || tab.owner_session_id.as_deref() != Some(session_id)
+        || tab.target_id.as_deref() != Some(target_id)
+        || tab.lifecycle != super::service_model::TabLifecycle::Ready
+    {
+        return Err("fresh_pipe_snapshot_identity_mismatch".into());
+    }
+    let observation = record
+        .pipe_observation
+        .as_ref()
+        .ok_or("fresh_pipe_observation_missing")?;
+    let targets = super::pipe_observation::validate(
+        observation,
+        &browser_id,
+        record.pid,
+        &record.active_session_ids,
+    )?;
+    if observation["owner"] != launch["owner"]
+        || observation["browser"] != launch["browser"]
+        || observation["pipeIdentity"].as_str() != Some(manager.get_cdp_url())
+        || observation["canonicalProfile"] != launch["canonicalProfile"]
+        || !targets
+            .iter()
+            .any(|target| target["id"] == target_id && target["type"] == "page")
+    {
+        return Err("fresh_pipe_observation_binding_mismatch".into());
+    }
+    if let Some(display) = manager.browser_display_name() {
+        if record.host != ServiceBrowserHost::RemoteHeaded
+            || record.display_name.as_deref() != Some(display)
+        {
+            return Err("fresh_pipe_display_binding_mismatch".into());
+        }
+    } else if record.host != ServiceBrowserHost::LocalHeadless {
+        return Err("fresh_pipe_owned_display_missing".into());
+    }
+    let display = handoff_display_proof(snapshot, session_id)?;
+    // Recheck held kernel/process evidence after the service/display observations.
+    manager.verify_fresh_pipe_launch()?;
+    Ok(
+        json!({"complete":true,"missingProofs":[],"ownerCustody":launch,
+        "serviceTarget":{"browserId":browser_id,"sessionId":session_id,"targetId":target_id},
+        "displayOwner":display}),
+    )
+}
+
+#[cfg(target_os = "linux")]
 fn verify_active_handoff_custody(state: &DaemonState) -> Result<Value, String> {
     let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
     verify_active_handoff_custody_against(state, &snapshot)
@@ -10510,21 +11410,8 @@ fn verify_active_handoff_custody_against(
     let custody = state
         .handoff_custody
         .as_ref()
-        .ok_or("handoff_custody_missing")?;
-    if custody.receipt.phase != super::handoff_custody::CustodyPhase::Committed {
-        return Err("handoff_custody_not_committed".into());
-    }
-    custody._lease.verify_receipt(&custody.receipt)?;
-    let expected = serde_json::to_value(&custody.receipt).map_err(|error| error.to_string())?;
-    if snapshot.runtime_custody_receipts.get(&state.session_id) != Some(&expected) {
-        return Err("handoff_custody_receipt_snapshot_mismatch".into());
-    }
-    verify_handoff_snapshot(
-        snapshot,
-        &state.session_id,
-        &custody.receipt.browser,
-        &custody.receipt.target_id,
-    )?;
+        .ok_or("handoff_custody_missing")?
+        .payload();
     if state
         .browser
         .as_ref()
@@ -10533,17 +11420,76 @@ fn verify_active_handoff_custody_against(
     {
         return Err("handoff_active_target_mismatch".into());
     }
-    let display_owner = handoff_display_proof(snapshot, &state.session_id)?;
+    verify_handoff_custody_payload(custody, &state.session_id, snapshot)
+}
+
+#[cfg(target_os = "linux")]
+fn verify_handoff_custody_payload(
+    custody: &ActiveHandoffCustody,
+    session_name: &str,
+    snapshot: &ServiceState,
+) -> Result<Value, String> {
+    if custody.receipt.phase != super::handoff_custody::CustodyPhase::Committed {
+        return Err("handoff_custody_not_committed".into());
+    }
+    custody._lease.verify_receipt(&custody.receipt)?;
+    let expected = serde_json::to_value(&custody.receipt).map_err(|error| error.to_string())?;
+    if snapshot.runtime_custody_receipts.get(session_name) != Some(&expected) {
+        return Err("handoff_custody_receipt_snapshot_mismatch".into());
+    }
+    verify_handoff_snapshot(
+        snapshot,
+        session_name,
+        &custody.receipt.browser,
+        &custody.receipt.target_id,
+    )?;
+    let display_owner = handoff_display_proof(snapshot, session_name)?;
+    let basis = if let Some(plan) = &custody.receipt.prospective_migration {
+        if plan.browser != custody.receipt.browser || plan.session != session_name {
+            return Err("migration_receipt_binding_mismatch".into());
+        }
+        if plan.target == custody.receipt.target_id {
+            super::legacy_migration::verify_committed_plan(plan, snapshot)?;
+            if plan.source != custody.receipt.source {
+                return Err("migration_receipt_binding_mismatch".into());
+            }
+            "verified_prospective_migration_receipt"
+        } else {
+            super::legacy_migration::verify_recovered_committed_plan(
+                plan,
+                &custody.receipt.target_id,
+                snapshot,
+            )?;
+            "verified_stale_snapshot_recovery_receipt"
+        }
+    } else {
+        "verified_transfer_receipt"
+    };
     Ok(
-        json!({"complete": true, "missingProofs": [], "ownerCustody": {"basis": "verified_transfer_receipt", "descriptorSha256": custody.receipt.descriptor_sha256}, "displayOwner": display_owner}),
+        json!({"complete": true, "missingProofs": [], "ownerCustody": {"basis": basis, "descriptorSha256": custody.receipt.descriptor_sha256}, "displayOwner": display_owner}),
     )
 }
 
 async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value, String> {
-    let Some(manager) = state.browser.as_mut() else {
+    if state
+        .browser
+        .as_ref()
+        .is_some_and(BrowserManager::uses_pipe_transport)
+    {
+        return Err("cdp_pipe_handoff_requires_transport_transfer_support".into());
+    }
+    if state.browser.is_none() {
         let path = runtime_handoff_path(&state.session_id);
         return browserless_runtime_handoff_prepare(&path, &state.session_id);
-    };
+    }
+
+    // Unsupported and browserless handoffs must not permanently seal a worker
+    // that has not transferred custody. Once supported teardown starts, seal
+    // and reconcile the registry before mutating any lifecycle evidence.
+    state.broker_registry.close_all().await?;
+    #[cfg(target_os = "linux")]
+    state.revoke_handoff_broker_custody().await?;
+    let manager = state.browser.as_mut().ok_or("handoff_browser_missing")?;
     if !manager.is_connection_alive().await {
         return Err(format!(
             "Cannot prepare runtime handoff for session '{}': browser CDP connection is not alive",
@@ -10574,6 +11520,7 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
             browser,
         })
     } else if let Some(active) = state.handoff_custody.as_ref() {
+        let active = active.payload();
         Some(RuntimeHandoffCustodyProof {
             source: super::handoff_custody::ProcessIdentity::capture(std::process::id())?,
             browser: active.receipt.browser.clone(),
@@ -10638,6 +11585,13 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
 }
 
 async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value, String> {
+    handle_runtime_handoff_resume_with_migration(state, false).await
+}
+
+async fn handle_runtime_handoff_resume_with_migration(
+    state: &mut DaemonState,
+    migration_requested: bool,
+) -> Result<Value, String> {
     if state.browser.is_some() {
         return Err(format!(
             "Cannot resume runtime handoff for session '{}': daemon already has a browser",
@@ -10647,11 +11601,52 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
     state.handoff_recovery_pending |= !matches!(fs::symlink_metadata(runtime_handoff_path(&state.session_id)), Err(error) if error.kind() == std::io::ErrorKind::NotFound);
     let descriptor = read_runtime_handoff(&state.session_id)?;
     state.handoff_recovery_pending = true;
-    if !matches!(descriptor.schema_version, 1 | 2) || descriptor.session_name != state.session_id {
+    if !matches!(descriptor.schema_version, 1..=3) || descriptor.session_name != state.session_id {
         return Err(format!(
             "Runtime handoff identity mismatch for session '{}'",
             state.session_id
         ));
+    }
+    #[cfg(target_os = "linux")]
+    let migration = if migration_requested {
+        if descriptor.schema_version != 1 {
+            return Err("migration_legacy_descriptor_required".into());
+        }
+        let bytes =
+            super::legacy_migration::read_private(&runtime_handoff_path(&state.session_id))?;
+        Some(super::legacy_migration::load_for_resume(
+            &state.session_id,
+            &bytes,
+        )?)
+    } else {
+        if descriptor.schema_version == 1 && super::legacy_migration::exists(&state.session_id) {
+            return Err("migration_explicit_resume_required".into());
+        }
+        None
+    };
+    #[cfg(target_os = "linux")]
+    let stale_snapshot = if descriptor.schema_version == 3 {
+        let proof = descriptor
+            .custody
+            .as_ref()
+            .ok_or("migration_recovery_custody_missing")?;
+        let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+        Some(super::legacy_migration::stale_snapshot_receipt(
+            &snapshot,
+            &state.session_id,
+            descriptor
+                .active_target_id
+                .as_deref()
+                .ok_or("migration_recovery_target_missing")?,
+            &proof.source,
+            &proof.browser,
+        )?)
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    if migration_requested {
+        return Err("migration_linux_required".into());
     }
     let stale_attached_pid_dropped = descriptor
         .browser_pid
@@ -10669,10 +11664,27 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
     }
 
     #[cfg(target_os = "linux")]
-    let mut destination_custody = if descriptor.schema_version == 2 {
-        let proof = descriptor
-            .custody
+    let migration_proof = stale_snapshot
+        .as_ref()
+        .map(|receipt| RuntimeHandoffCustodyProof {
+            source: receipt.destination.clone(),
+            browser: receipt.browser.clone(),
+        })
+        .or_else(|| {
+            migration
+                .as_ref()
+                .map(|enrollment| RuntimeHandoffCustodyProof {
+                    source: enrollment.plan.source.clone(),
+                    browser: enrollment.plan.browser.clone(),
+                })
+        });
+    #[cfg(target_os = "linux")]
+    let mut destination_custody = if matches!(descriptor.schema_version, 2 | 3)
+        || migration.is_some()
+    {
+        let proof = migration_proof
             .as_ref()
+            .or(descriptor.custody.as_ref())
             .ok_or("handoff_v2_custody_missing")?;
         if descriptor.browser_pid != Some(proof.browser.process.pid)
             || descriptor.cdp_url != proof.browser.cdp_endpoint
@@ -10705,10 +11717,19 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
             destination: super::handoff_custody::ProcessIdentity::capture(std::process::id())?,
             browser: proof.browser.clone(),
             target_id: target.to_string(),
-            descriptor_sha256: format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(&descriptor).map_err(|error| error.to_string())?)
-            ),
+            descriptor_sha256: migration
+                .as_ref()
+                .map(|enrollment| enrollment.descriptor_sha256.clone())
+                .unwrap_or(format!(
+                    "{:x}",
+                    Sha256::digest(
+                        serde_json::to_vec(&descriptor).map_err(|error| error.to_string())?
+                    )
+                )),
+            prospective_migration: stale_snapshot
+                .as_ref()
+                .and_then(|receipt| receipt.prospective_migration.clone())
+                .or_else(|| migration.as_ref().map(|enrollment| enrollment.plan.clone())),
         };
         let receipt_path = handoff_receipt_path(&receipt);
         lease.persist_receipt(&receipt_path, &receipt)?;
@@ -10721,7 +11742,7 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
         None
     };
     #[cfg(not(target_os = "linux"))]
-    if descriptor.schema_version == 2 {
+    if matches!(descriptor.schema_version, 2 | 3) {
         return Err("handoff_v2_platform_unsupported".into());
     }
 
@@ -10734,6 +11755,26 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
     if let Some(custody) = destination_custody.as_mut() {
         if manager.active_target_id()? != custody.receipt.target_id {
             return Err("handoff_v2_attached_target_mismatch".into());
+        }
+        if let Some(plan) = &custody.receipt.prospective_migration {
+            let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+            let current_url = snapshot
+                .tabs
+                .get(&format!("target:{}", custody.receipt.target_id))
+                .and_then(|tab| tab.url.as_deref())
+                .ok_or("migration_target_url_missing")?;
+            if manager.get_url().await? != current_url {
+                return Err("migration_rendered_url_changed".into());
+            }
+            if plan.target == custody.receipt.target_id {
+                super::legacy_migration::verify_committed_plan(plan, &snapshot)?;
+            } else {
+                super::legacy_migration::verify_recovered_committed_plan(
+                    plan,
+                    &custody.receipt.target_id,
+                    &snapshot,
+                )?;
+            }
         }
         custody.receipt.phase = super::handoff_custody::CustodyPhase::Committed;
         custody
@@ -10755,7 +11796,8 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
     }
     #[cfg(target_os = "linux")]
     {
-        state.handoff_custody = destination_custody;
+        state.handoff_custody =
+            destination_custody.map(super::broker_custody::SharedCustodyOwner::new);
     }
     state.reset_input_state();
     state.attached_runtime_profile = descriptor.runtime_profile.clone();
@@ -10802,6 +11844,17 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
 }
 
 async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
+    state.broker_registry.close_all().await?;
+    // Stop new broker operations and drain publication guards before consuming
+    // policy, closing Chrome, or releasing the real profile custody lease.
+    #[cfg(target_os = "linux")]
+    state.revoke_handoff_broker_custody().await?;
+    // Inspector sessions need the still-live upstream transport to acknowledge
+    // detach. Preserve browser state and close policy if that cleanup fails.
+    if let Some(server) = state.inspect_server.as_mut() {
+        server.shutdown_and_wait().await?;
+    }
+    state.inspect_server = None;
     let attached_runtime_profile = state.attached_runtime_profile.take();
     let attached_browser_pid = state.attached_browser_pid.take();
     let close_behavior = std::mem::take(&mut state.close_behavior);
@@ -10887,6 +11940,10 @@ async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
     state.reset_input_state();
     state.update_stream_client().await;
     persist_closed_browser_health(state, Some(&shutdown_outcome));
+    #[cfg(target_os = "linux")]
+    {
+        state.handoff_custody = None;
+    }
 
     // Stop background Fetch handler
     if let Some(task) = state.fetch_handler_task.take() {
@@ -10911,11 +11968,6 @@ async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
     }
     state.safari_driver = None;
     state.backend_type = BackendType::Cdp;
-
-    if let Some(server) = state.inspect_server.as_mut() {
-        server.shutdown_and_wait().await?;
-    }
-    state.inspect_server = None;
 
     state.ref_map.clear();
     Ok(json!({ "closed": true }))
@@ -24401,7 +25453,19 @@ fn decide_durable_task_authority_confirmation(
         .filter(|value| !value.is_empty())
         .ok_or("Task authority confirmation requires expectedAction")?;
     let actor = task_authority_decision_actor(cmd)?;
-    let current = confirmation_target_binding(&json!({}), state);
+    let current = if decision == "confirm" {
+        let durable_command = durable
+            .as_ref()
+            .ok_or("No pending task authority confirmation")?
+            .command();
+        let (target_id, url) = task_authority_command_target(durable_command, state)?;
+        ConfirmationTargetBinding {
+            target_id: Some(target_id),
+            url: Some(url),
+        }
+    } else {
+        confirmation_target_binding(&json!({}), state)
+    };
     let decided = decide_task_authority_confirmation(DecideTaskAuthorityConfirmation {
         root: &state.task_authority_ledger_root,
         session_id: &state.session_id,
@@ -24436,6 +25500,22 @@ async fn handle_confirm(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
     // Temporarily remove policy and confirm_actions to avoid re-triggering confirmation
     let policy = state.policy.take();
     let confirm_actions = state.confirm_actions.take();
+    let previous_broker_policy = state.confirmed_broker_policy.take();
+    state.confirmed_broker_policy =
+        pending
+            .cmd
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|id| ConfirmedBrokerPolicy {
+                command_id: id.to_owned(),
+                policy: previous_broker_policy
+                    .as_ref()
+                    .map_or_else(|| policy.clone(), |original| original.policy.clone()),
+                confirm_actions: previous_broker_policy.as_ref().map_or_else(
+                    || confirm_actions.clone(),
+                    |original| original.confirm_actions.clone(),
+                ),
+            });
     let previous_confirmed_authority = state.confirmed_task_authority_id.take();
     let previous_confirmed_control_plane = state.confirmed_control_plane_command_id.take();
     state.confirmed_task_authority_id = pending
@@ -24452,6 +25532,7 @@ async fn handle_confirm(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
     let result = Box::pin(execute_command(&pending.cmd, state)).await;
     state.confirmed_task_authority_id = previous_confirmed_authority;
     state.confirmed_control_plane_command_id = previous_confirmed_control_plane;
+    state.confirmed_broker_policy = previous_broker_policy;
     state.policy = policy;
     state.confirm_actions = confirm_actions;
     if let Some(record) = durable_record.as_ref() {
@@ -24972,6 +26053,52 @@ mod tests {
     use crate::test_utils::EnvGuard;
     use std::collections::BTreeMap;
     use std::fs;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_pipe_browserless_exports_and_interception_fail_before_launch() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_CDP_TRANSPORT"]);
+        guard.set("AGENT_BROWSER_CDP_TRANSPORT", "pipe");
+        let mut state = DaemonState::new();
+        for action in [
+            "inspect",
+            "stream_enable",
+            "recording_start",
+            "recording_restart",
+            "runtime_handoff_prepare",
+            "cdp_attach",
+            "cdp_detach",
+            "route",
+            "unroute",
+        ] {
+            let response =
+                execute_command(&json!({"id":"pipe-preflight", "action":action}), &mut state).await;
+            assert_eq!(response["success"], false, "{action}: {response}");
+            assert!(response.to_string().contains("cdp_pipe_"));
+            assert!(state.browser.is_none());
+            assert!(state.inspect_server.is_none());
+        }
+        let response = execute_command(&json!({"id":"pipe-headers", "action":"navigate", "url":"about:blank", "headers":{"X-Test":"value"}}), &mut state).await;
+        assert_eq!(response["success"], false);
+        assert!(state.browser.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_pipe_launch_rejects_attachment_and_fetch_configuration() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_CDP_TRANSPORT"]);
+        guard.set("AGENT_BROWSER_CDP_TRANSPORT", "pipe");
+        for command in [
+            json!({"leaveOpen":true}),
+            json!({"autoConnect":true}),
+            json!({"cdpUrl":"http://127.0.0.1:9222"}),
+            json!({"allowedDomains":"example.com"}),
+            json!({"proxy":{"username":"fixture"}}),
+            json!({"engine":"lightpanda"}),
+        ] {
+            assert!(validate_pipe_launch_request(&command).is_err(), "{command}");
+        }
+    }
 
     fn confirm_actions(categories: &[&str]) -> ConfirmActions {
         ConfirmActions {
@@ -26791,6 +27918,32 @@ mod tests {
             ),
             "incompatible_tab"
         );
+    }
+
+    #[test]
+    fn task_authority_binding_resolves_the_requested_live_target_not_the_active_tab() {
+        let pages = vec![
+            PageInfo {
+                target_id: "active-other-target".to_string(),
+                session_id: "session-active".to_string(),
+                url: "https://chatgpt.com/c/other".to_string(),
+                title: "Other conversation".to_string(),
+                target_type: "page".to_string(),
+            },
+            PageInfo {
+                target_id: "retained-root-target".to_string(),
+                session_id: "session-root".to_string(),
+                url: "https://chatgpt.com/".to_string(),
+                title: "ChatGPT".to_string(),
+                target_type: "page".to_string(),
+            },
+        ];
+
+        let binding = task_authority_page_binding(&pages, "retained-root-target").unwrap();
+
+        assert_eq!(binding.target_id.as_deref(), Some("retained-root-target"));
+        assert_eq!(binding.url.as_deref(), Some("https://chatgpt.com/"));
+        assert!(task_authority_page_binding(&pages, "missing-target").is_none());
     }
 
     #[test]
@@ -29108,6 +30261,26 @@ mod tests {
     }
 
     #[test]
+    fn test_cdp_screencast_view_stream_pipe_never_advertises_control() {
+        let stream = cdp_screencast_view_stream(
+            "pipe-fixture",
+            ServiceBrowserHost::LocalHeadless,
+            ServiceBrowserHealth::Ready,
+            Some("pipe:fixture"),
+            Some(44841),
+        )
+        .unwrap();
+        assert!(stream.url.is_none());
+        assert!(stream.frame_url.is_none());
+        assert!(stream.control_input.is_none());
+        assert!(stream.read_only);
+        assert_eq!(
+            stream.readiness.unwrap()["reason"],
+            "pipe_transport_export_unsupported"
+        );
+    }
+
+    #[test]
     fn test_cdp_screencast_view_stream_ready_for_non_remote_cdp_browser() {
         let stream = cdp_screencast_view_stream(
             "stream-session",
@@ -30120,6 +31293,16 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[tokio::test]
+    async fn test_broker_browserless_handoff_does_not_seal_registry() {
+        let mut state = DaemonState::new();
+        state.session_id = format!("browserless-broker-{}", uuid::Uuid::new_v4());
+        assert!(state.browser.is_none());
+        let response = handle_runtime_handoff_prepare(&mut state).await.unwrap();
+        assert_eq!(response["browserPresent"], false);
+        assert!(!state.broker_registry.is_closing());
+    }
+
     #[cfg(target_os = "linux")]
     fn custody_resume_fixture(
         target: &str,
@@ -30140,7 +31323,7 @@ mod tests {
         let tab = format!("target:{target}");
         let snapshot: ServiceState = serde_json::from_value(json!({
             "profiles": {"custody-test": {"id": "custody-test", "userDataDir": fixture.root}},
-            "browsers": {"session:custody-test": {"id": "session:custody-test", "profileId": "custody-test", "pid": fixture.browser.process.pid, "cdpEndpoint": fixture.browser.cdp_endpoint, "host": "local_headless"}},
+            "browsers": {"session:custody-test": {"id": "session:custody-test", "profileId": "custody-test", "pid": fixture.browser.process.pid, "cdpEndpoint": fixture.browser.cdp_endpoint, "host": "local_headless", "health": "ready", "activeSessionIds": ["custody-test"]}},
             "sessions": {"custody-test": {"id": "custody-test", "profileId": "custody-test", "lease": "exclusive", "browserIds": ["session:custody-test"], "tabIds": [tab]}},
             "tabs": {tab.clone(): {"id": tab, "browserId": "session:custody-test", "targetId": target, "ownerSessionId": "custody-test", "lifecycle": "ready"}}
         })).unwrap();
@@ -30169,6 +31352,132 @@ mod tests {
         };
         write_runtime_handoff(&descriptor).unwrap();
         (guard, fixture, descriptor)
+    }
+
+    #[test]
+    fn test_custody_denied_diagnostics_contract() {
+        for reason in [
+            "owned_pipe_browser_not_direct_child",
+            "fresh_pipe_exclusive_service_lease_required",
+            "handoff_custody_receipt_snapshot_mismatch",
+        ] {
+            let data = custody_denied_diagnostics(reason);
+            assert_eq!(data["action"], "diagnostics");
+            assert_eq!(data["snapshotOnly"], true);
+            let proof = &data["controlPlaneAttestation"];
+            assert_eq!(proof["complete"], false);
+            assert_eq!(proof["missingProofs"], json!([reason]));
+            assert_eq!(proof["displayOwner"]["verified"], false);
+            assert!(proof.get("ownerCustody").is_none());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_handoff_snapshot_rejects_expired_unready_and_mismatched_records() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let snapshot = LockedServiceStateRepository::default_json()
+            .unwrap()
+            .load_snapshot()
+            .unwrap();
+        verify_handoff_snapshot(&snapshot, "custody-test", &fixture.browser, "exact-target")
+            .unwrap();
+        let baseline = serde_json::to_value(snapshot).unwrap();
+        for (pointer, value) in [
+            ("/sessions/custody-test/id", json!("different-session")),
+            (
+                "/sessions/custody-test/expiresAt",
+                json!("2000-01-01T00:00:00Z"),
+            ),
+            ("/sessions/custody-test/expiresAt", json!("invalid")),
+            ("/profiles/custody-test/id", json!("different-profile")),
+            (
+                "/browsers/session:custody-test/id",
+                json!("different-browser"),
+            ),
+            ("/browsers/session:custody-test/health", json!("faulted")),
+            ("/browsers/session:custody-test/activeSessionIds", json!([])),
+            ("/tabs/target:exact-target/lifecycle", json!("closed")),
+        ] {
+            let mut changed = baseline.clone();
+            // expiresAt may be omitted by serialization when unset.
+            if pointer.ends_with("/expiresAt") {
+                changed["sessions"]["custody-test"]["expiresAt"] = value;
+            } else {
+                *changed.pointer_mut(pointer).unwrap() = value;
+            }
+            let changed: ServiceState = serde_json::from_value(changed).unwrap();
+            assert!(
+                verify_handoff_snapshot(&changed, "custody-test", &fixture.browser, "exact-target")
+                    .is_err(),
+                "accepted drift at {pointer}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_close_verifies_inspector_detach_before_transport_teardown() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        // Synthetic transport only: bypass the inspect UI opener and exercise
+        // the close handler directly with an actual connected inspector task.
+        let manager = state.browser.as_ref().unwrap();
+        let inspector = InspectServer::start(
+            manager.client.inspect_handle(),
+            "exact-target".into(),
+            "127.0.0.1:1".into(),
+        )
+        .await
+        .unwrap();
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/ws", inspector.port()))
+                .await
+                .unwrap();
+        ws.send(Message::Text(
+            json!({"id": 71, "method": "Runtime.enable"}).to_string(),
+        ))
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        state.inspect_server = Some(inspector);
+        assert_eq!(handle_close(&mut state).await.unwrap()["closed"], true);
+        assert!(state.inspect_server.is_none());
+        assert!(state.browser.is_none());
+        assert_eq!(
+            fixture
+                .methods()
+                .iter()
+                .filter(|method| *method == "Target.detachFromTarget")
+                .count(),
+            1
+        );
+        assert!(!fixture
+            .methods()
+            .iter()
+            .any(|method| method == "Browser.close"));
+        assert_eq!(handle_close(&mut state).await.unwrap()["closed"], true);
+    }
+
+    #[test]
+    fn handoff_custody_allows_read_only_service_inventory_but_not_mutation() {
+        assert!(handoff_custody_allows_action("service_browsers", false));
+        assert!(handoff_custody_allows_action("service_tabs", false));
+        assert!(handoff_custody_allows_action("service_access_plan", false));
+        assert!(!handoff_custody_allows_action(
+            "service_profile_upsert",
+            false
+        ));
+        assert!(!handoff_custody_allows_action("navigate", false));
+        assert!(handoff_custody_allows_action("cdp_attach", true));
     }
 
     #[cfg(target_os = "linux")]
@@ -30206,6 +31515,841 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
+    async fn test_handoff_broker_original_lease_survives_owner_until_permit_drains() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let capability = state.handoff_broker_custody().unwrap();
+        let permit = capability.acquire().await.unwrap();
+        permit.verify().unwrap();
+        drop(state);
+        assert!(capability.acquire().await.is_err());
+        assert!(super::super::handoff_custody::DestinationLease::acquire(
+            &get_socket_dir(),
+            &fixture.browser
+        )
+        .is_err());
+        permit.verify().unwrap();
+        drop(permit);
+        // The stale weak capability is deliberately still alive here.
+        let _replacement = super::super::handoff_custody::DestinationLease::acquire(
+            &get_socket_dir(),
+            &fixture.browser,
+        )
+        .unwrap();
+        assert!(capability.acquire().await.is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn broker_acquisition_fixture_request() -> Value {
+        LockedServiceStateRepository::default_json()
+            .unwrap()
+            .mutate(|snapshot| {
+                snapshot.tabs.get_mut("target:exact-target").unwrap().url =
+                    Some("https://example.test/custody".into());
+                snapshot
+                    .browsers
+                    .get_mut("session:custody-test")
+                    .unwrap()
+                    .browser_build = Some(BrowserBuild::StockChrome);
+                snapshot
+                    .browsers
+                    .get_mut("session:custody-test")
+                    .unwrap()
+                    .view_streams = serde_json::from_value(json!([
+                    {"id":"fixture-view", "provider":"cdp_screencast", "controlInput":"cdp_input"}
+                ]))
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let snapshot = LockedServiceStateRepository::default_json()
+            .unwrap()
+            .load_snapshot()
+            .unwrap();
+        let plan = service_access_plan_for_state(
+            &snapshot,
+            ServiceAccessPlanRequest {
+                service_name: Some("fixture-service".into()),
+                target_url: Some("https://example.test/custody".into()),
+                runtime_profile: Some("custody-test".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            plan["decision"]["profileReuse"]["reusableBrowserIds"],
+            json!(["session:custody-test"]),
+            "{}",
+            json!({"profile":plan["selectedProfile"],"reuse":plan["decision"]["profileReuse"],"posture":plan["decision"]["launchPosture"]})
+        );
+        json!({"id":"broker-acquire-test", "action":"cdp_attach", "brokerTransport":true,
+        "cdpAttachmentAllowed":true,"expectedUrl":"https://example.test/custody",
+        "serviceName":"fixture-service", "serviceTabHandle":{
+            "valid":true,"browserId":"session:custody-test", "profileId":"custody-test",
+            "sessionName":"custody-test","tabId":"target:exact-target","targetId":"exact-target",
+            "url":"https://example.test/custody"
+        }})
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_broker_worker_acquisition_dispatch_and_verified_detach() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let cmd = broker_acquisition_fixture_request();
+        let before = fixture
+            .methods()
+            .iter()
+            .filter(|m| *m == "Target.attachToTarget")
+            .count();
+        let response = execute_command(&cmd, &mut state).await;
+        assert_eq!(response["success"], true, "{response}");
+        let data = &response["data"];
+        assert!(data.get("browserWebSocketUrl").is_none());
+        assert!(data.get("pageSessionId").is_none());
+        assert_eq!(data["serviceTabHandle"]["leaseId"], "custody-test");
+        let binding = data["binding"].clone();
+        let output = state.broker_registry.dispatch(json!({"operation":"command", "binding":binding,
+            "requestId":"read-once", "method":"Runtime.enable", "params":{}, "taskContext":{"serviceName":"fixture-service"}})).await.unwrap();
+        output.write_json(&mut tokio::io::sink()).await.unwrap();
+        assert!(state.broker_registry.dispatch(json!({"operation":"command", "binding":binding,
+            "requestId":"read-once", "method":"Runtime.enable", "params":{}, "taskContext":{"serviceName":"fixture-service"}})).await.is_err());
+        for request_id in ["detach-one", "detach-two"] {
+            state
+                .broker_registry
+                .dispatch(json!({"operation":"detach", "binding":binding, "requestId":request_id}))
+                .await
+                .unwrap()
+                .write_json(&mut tokio::io::sink())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            fixture
+                .methods()
+                .iter()
+                .filter(|m| *m == "Target.attachToTarget")
+                .count(),
+            before + 1
+        );
+        assert_eq!(
+            fixture
+                .methods()
+                .iter()
+                .filter(|m| *m == "Target.detachFromTarget")
+                .count(),
+            1
+        );
+        fixture.browser.verify_current().unwrap();
+        assert!(!fixture.methods().iter().any(|m| m == "Browser.close"));
+        assert_eq!(execute_command(&cmd, &mut state).await["success"], false);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_broker_events_use_ordered_task_authority_and_finalize_once() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let cmd = broker_acquisition_fixture_request();
+        let acquired = execute_command(&cmd, &mut state).await;
+        assert_eq!(acquired["success"], true, "{acquired}");
+        let binding = acquired["data"]["binding"].clone();
+        fs::write(
+            fixture.root.join("emit-broker-events"),
+            "synthetic fixture only",
+        )
+        .unwrap();
+        state
+            .broker_registry
+            .dispatch(json!({"operation":"command", "binding":binding,
+            "requestId":"enable-event-fixture", "method":"Runtime.enable", "params":{},
+            "taskContext":{"serviceName":"fixture-service"}}))
+            .await
+            .unwrap()
+            .write_json(&mut tokio::io::sink())
+            .await
+            .unwrap();
+        let issued = issue_task_authority(&json!({
+            "taskName":"event-read", "serviceName":"fixture-service", "expectedTargetId":"exact-target",
+            "expectedUrl":"https://example.test/custody", "issuer":{"kind":"operator","id":"fixture"},
+            "approvalReference":"fixture-approval", "expiresInSeconds":300,
+            "steps":[{"action":"broker_events","evidenceBytes":2048}]
+        }), &state.session_id, "exact-target", "https://example.test/custody", &state.task_authority_ledger_root).unwrap();
+        let request = json!({"operation":"events", "binding":binding, "requestId":"event-read-once", "cursor":0,
+            "taskContext":{"serviceName":"fixture-service", "taskName":"event-read", "taskEvidenceBytes":2048,
+                "taskAuthority":issued["envelope"], "taskStepId":issued["approvedPlan"]["steps"][0]["stepId"]}});
+        let output = state
+            .broker_registry
+            .dispatch(request.clone())
+            .await
+            .unwrap();
+        let mut bytes = Vec::new();
+        output
+            .write_daemon_response("event-read-outer", &mut bytes)
+            .await
+            .unwrap();
+        let response: Value = serde_json::from_slice(&bytes).unwrap();
+        let batch = &response["data"];
+        assert_eq!(batch["requestId"], "event-read-once");
+        assert_eq!(batch["cursor"], 1);
+        assert_eq!(batch["events"].as_array().unwrap().len(), 1);
+        assert_eq!(batch["events"][0]["method"], "Page.loadEventFired");
+        assert!(bytes.len() <= 2048); // Includes daemon framing and newline.
+        assert!(state.broker_registry.dispatch(request).await.is_err());
+        let status = task_authority_status(
+            &state.task_authority_ledger_root,
+            &state.session_id,
+            issued["envelope"]["id"].as_str(),
+        )
+        .unwrap();
+        assert_eq!(status["usage"]["admittedActions"], 1, "{status}");
+        assert_eq!(
+            status["usage"]["outcomeSummary"]["completed"], 1,
+            "{status}"
+        );
+        state
+            .broker_registry
+            .dispatch(json!({"operation":"detach", "binding":binding, "requestId":"event-cleanup"}))
+            .await
+            .unwrap()
+            .write_json(&mut tokio::io::sink())
+            .await
+            .unwrap();
+        fixture.browser.verify_current().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires explicit AURACALL_NATIVE_BROKER_FIXTURE and freshly built AuraCall"]
+    async fn test_broker_cross_process_auracall_native_authority() {
+        use tokio::io::AsyncWriteExt;
+        let script = std::env::var("AURACALL_NATIVE_BROKER_FIXTURE")
+            .expect("set the explicit AuraCall fixture script path");
+        assert!(std::path::Path::new(&script).is_absolute());
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let acquired = execute_command(&broker_acquisition_fixture_request(), &mut state).await;
+        assert_eq!(acquired["success"], true, "{acquired}");
+        fs::write(fixture.root.join("emit-broker-events"), "fixture only").unwrap();
+        let issued = issue_task_authority(&json!({
+            "taskName":"cross-process", "serviceName":"fixture-service", "expectedTargetId":"exact-target",
+            "expectedUrl":"https://example.test/custody", "issuer":{"kind":"operator","id":"fixture"},
+            "approvalReference":"fixture-approval", "expiresInSeconds":300,
+            "steps":[{"action":"diagnostics","evidenceBytes":4096},{"action":"broker_events","evidenceBytes":4096}]
+        }), &state.session_id, "exact-target", "https://example.test/custody", &state.task_authority_ledger_root).unwrap();
+        let ledger_root = state.task_authority_ledger_root.clone();
+        let session = state.session_id.clone();
+        let enables_before_connector = fixture
+            .methods()
+            .iter()
+            .filter(|method| *method == "Runtime.enable")
+            .count();
+        let socket_path = get_socket_dir().join("cross-process.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let control_plane = super::super::control_plane::ControlPlaneWorker::start(state);
+        let server_handle = control_plane.clone();
+        let server = tokio::spawn(async move {
+            let mut handlers = tokio::task::JoinSet::new();
+            for _ in 0..6 {
+                let (stream, _) = listener.accept().await.unwrap();
+                handlers.spawn(super::super::daemon::broker_fixture_connection(
+                    stream,
+                    server_handle.clone(),
+                ));
+            }
+            while let Some(result) = handlers.join_next().await {
+                result.unwrap();
+            }
+        });
+        let mut child = tokio::process::Command::new("node")
+            .arg(script)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        input.write_all(json!({"fixture":"native-broker-cross-process-v1", "socketPath":socket_path,
+            "authToken":"cross-process-fixture-token", "binding":acquired["data"]["binding"], "issued":issued
+        }).to_string().as_bytes()).await.unwrap();
+        input.shutdown().await.unwrap();
+        drop(input);
+        let output = tokio::time::timeout(Duration::from_secs(20), child.wait_with_output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(receipt["verified"], true, "{receipt}");
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        let status =
+            task_authority_status(&ledger_root, &session, issued["envelope"]["id"].as_str())
+                .unwrap();
+        assert_eq!(status["usage"]["admittedActions"], 2, "{status}");
+        assert_eq!(
+            status["usage"]["outcomeSummary"]["completed"], 2,
+            "{status}"
+        );
+        assert_eq!(
+            fixture
+                .methods()
+                .iter()
+                .filter(|method| *method == "Target.detachFromTarget")
+                .count(),
+            1
+        );
+        assert_eq!(
+            fixture
+                .methods()
+                .iter()
+                .filter(|method| *method == "Runtime.enable")
+                .count(),
+            enables_before_connector + 1
+        );
+        assert!(!fixture
+            .methods()
+            .iter()
+            .any(|method| method == "Browser.close"));
+        fixture.browser.verify_current().unwrap();
+        control_plane.shutdown().await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_broker_events_over_budget_publish_nothing_and_keep_cleanup() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let acquired = execute_command(&broker_acquisition_fixture_request(), &mut state).await;
+        assert_eq!(acquired["success"], true, "{acquired}");
+        let binding = acquired["data"]["binding"].clone();
+        let result = state.broker_registry.dispatch(json!({"operation":"events", "binding":binding,
+            "requestId":"event-small-budget", "cursor":0, "taskContext":{"serviceName":"fixture-service", "taskEvidenceBytes":1}})).await;
+        assert!(
+            matches!(result, Err(ref error) if error == "broker_event_evidence_budget_exceeded")
+        );
+        assert!(state.broker_registry.dispatch(json!({"operation":"events", "binding":binding,
+            "requestId":"event-retry", "cursor":0, "taskContext":{"serviceName":"fixture-service"}})).await.is_err());
+        state
+            .broker_registry
+            .dispatch(json!({"operation":"detach", "binding":binding, "requestId":"event-cleanup"}))
+            .await
+            .unwrap()
+            .write_json(&mut tokio::io::sink())
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture
+                .methods()
+                .iter()
+                .filter(|method| *method == "Target.detachFromTarget")
+                .count(),
+            1
+        );
+        fixture.browser.verify_current().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_broker_worker_acquisition_rejects_wrong_identity_before_attach() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let cmd = broker_acquisition_fixture_request();
+        let before = fixture.methods();
+        for key in [
+            "profileId",
+            "browserId",
+            "sessionName",
+            "targetId",
+            "url",
+            "tabId",
+        ] {
+            let mut changed = cmd.clone();
+            changed["serviceTabHandle"][key] = json!("wrong");
+            assert!(
+                handle_broker_acquire(&changed, &mut state).await.is_err(),
+                "{key}"
+            );
+        }
+        let mut changed = cmd.clone();
+        changed["expectedUrl"] = json!("https://example.test/wrong");
+        assert!(handle_broker_acquire(&changed, &mut state).await.is_err());
+        assert_eq!(fixture.methods(), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_broker_worker_acquisition_cancellation_finishes_exact_cleanup() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let cmd = broker_acquisition_fixture_request();
+        let before = fixture
+            .methods()
+            .iter()
+            .filter(|m| *m == "Target.attachToTarget")
+            .count();
+        let gate = fixture.root.join("hold-broker-attach");
+        fs::write(&gate, "synthetic fixture only").unwrap();
+        let mut acquiring = Box::pin(handle_broker_acquire(&cmd, &mut state));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                result = &mut acquiring => panic!("acquisition unexpectedly completed: {result:?}"),
+                _ = async {
+                    while fixture.methods().iter().filter(|m| *m == "Target.attachToTarget").count() == before {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                } => {}
+            }
+        }).await.unwrap();
+        drop(acquiring);
+        fs::remove_file(gate).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if state.broker_registry.close_all().await.is_ok() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            fixture
+                .methods()
+                .iter()
+                .filter(|m| *m == "Target.attachToTarget")
+                .count(),
+            before + 1
+        );
+        assert_eq!(
+            fixture
+                .methods()
+                .iter()
+                .filter(|m| *m == "Target.detachFromTarget")
+                .count(),
+            1
+        );
+        fixture.browser.verify_current().unwrap();
+        assert!(!fixture.methods().iter().any(|m| m == "Browser.close"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_broker_worker_acquisition_does_not_capture_confirmed_policy_suppression() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let cmd = broker_acquisition_fixture_request();
+        let before = fixture.methods();
+        state.confirmed_control_plane_command_id = Some(cmd["id"].as_str().unwrap().into());
+        assert_eq!(
+            handle_broker_acquire(&cmd, &mut state).await.unwrap_err(),
+            "broker_acquisition_confirmed_policy_capture_unsupported"
+        );
+        assert_eq!(fixture.methods(), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_broker_confirmed_acquisition_preserves_original_action_confirmation() {
+        for (deny_policy, expected_error) in [
+            (false, "broker_authority_confirmation_required"),
+            (true, "broker_authority_policy_denied"),
+        ] {
+            let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+            let mut state = DaemonState::new();
+            handle_runtime_handoff_resume(&mut state).await.unwrap();
+            state.confirm_actions = Some(confirm_actions(&["cdp_attach", "diagnostics"]));
+            if deny_policy {
+                let policy_path = fixture.root.join("broker-policy.json");
+                fs::write(
+                    &policy_path,
+                    r#"{"default":"allow","deny":["diagnostics"]}"#,
+                )
+                .unwrap();
+                state.policy = Some(ActionPolicy::load(policy_path.to_str().unwrap()).unwrap());
+            }
+            let command = broker_acquisition_fixture_request();
+            let pending = execute_command(&command, &mut state).await;
+            assert_eq!(pending["data"]["confirmation_required"], true, "{pending}");
+            let confirmed = execute_command(
+                &json!({"id":"approve-broker", "action":"confirm",
+            "confirmationId":command["id"], "expectedAction":"cdp_attach"}),
+                &mut state,
+            )
+            .await;
+            assert_eq!(confirmed["success"], true, "{confirmed}");
+            assert_eq!(confirmed["data"]["result"]["success"], true, "{confirmed}");
+            let binding = confirmed["data"]["result"]["data"]["binding"].clone();
+            assert!(state.confirmed_broker_policy.is_none());
+            assert!(state.confirmed_control_plane_command_id.is_none());
+            assert!(state
+                .confirm_actions
+                .as_ref()
+                .unwrap()
+                .categories
+                .contains("diagnostics"));
+            // Even replacing the worker settings after acquisition cannot remove the
+            // original confirmation requirement captured by the attachment.
+            state.confirm_actions = None;
+            state.policy = None;
+            let before = fixture.methods();
+            let result = state
+                .broker_registry
+                .dispatch(json!({"operation":"command", "binding":binding,
+            "requestId":"must-confirm-diagnostics", "method":"Runtime.enable", "params":{},
+            "taskContext":{"serviceName":"fixture-service"}}))
+                .await;
+            assert!(
+                matches!(result, Err(ref error) if error == expected_error),
+                "unexpected admission"
+            );
+            let after = fixture.methods();
+            assert_eq!(
+                after
+                    .iter()
+                    .filter(|method| *method == "Runtime.enable")
+                    .count(),
+                before
+                    .iter()
+                    .filter(|method| *method == "Runtime.enable")
+                    .count()
+            );
+            state
+            .broker_registry
+            .dispatch(
+                json!({"operation":"detach", "binding":binding, "requestId":"confirmed-cleanup"}),
+            )
+            .await
+            .unwrap()
+            .write_json(&mut tokio::io::sink())
+            .await
+            .unwrap();
+            assert_eq!(
+                fixture
+                    .methods()
+                    .iter()
+                    .filter(|method| *method == "Target.detachFromTarget")
+                    .count(),
+                1
+            );
+            fixture.browser.verify_current().unwrap();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_broker_required_mode_issues_confirms_and_consumes_exact_attach() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let mut acquire = broker_acquisition_fixture_request();
+        assert!(std::mem::size_of_val(&execute_command(&acquire, &mut state)) <= 1024);
+        state.require_task_authority = true;
+        let issue = json!({"id":"required-issue", "action":"task_authority_issue",
+        "taskName":"required-attach", "serviceName":"fixture-service", "request": {
+            "taskName":"required-attach", "serviceName":"fixture-service",
+            "expectedTargetId":"exact-target", "expectedUrl":"https://example.test/custody",
+            "issuer":{"kind":"operator","id":"fixture"}, "approvalReference":"fixture-approval",
+            "expiresInSeconds":300, "steps":[
+                {"action":"cdp_attach","url":"https://example.test/custody","evidenceBytes":4096},
+                {"action":"diagnostics","evidenceBytes":4096}
+            ]
+        }});
+        let pending = execute_command(&issue, &mut state).await;
+        assert_eq!(pending["data"]["confirmation_required"], true, "{pending}");
+        let approved = execute_command(
+            &json!({"id":"confirm-required-issue", "action":"confirm", "decidedBy":{"kind":"operator","id":"fixture"},
+            "confirmationId":"required-issue", "expectedAction":"task_authority_issue"}),
+            &mut state,
+        )
+        .await;
+        assert_eq!(approved["data"]["result"]["success"], true, "{approved}");
+        let issued = approved["data"]["result"]["data"].clone();
+        assert_eq!(issued["envelope"]["consequenceCeiling"], "read_only");
+        acquire["taskAuthority"] = issued["envelope"].clone();
+        acquire["taskName"] = json!("required-attach");
+        acquire["taskStepId"] = issued["approvedPlan"]["steps"][0]["stepId"].clone();
+        acquire["taskEvidenceBytes"] = json!(4096);
+        acquire["url"] = json!("https://example.test/custody");
+        for (field, value) in [
+            ("brokerTransport", json!(false)),
+            ("expectedUrl", json!("https://example.test/other")),
+            ("url", json!("https://example.test/other")),
+            ("serviceTabHandle", json!({"targetId":"other"})),
+        ] {
+            let mut changed = acquire.clone();
+            changed[field] = value;
+            assert!(task_authority_decision(&changed, &state, "cdp_attach", false).is_err());
+        }
+        let pending = execute_command(&acquire, &mut state).await;
+        assert_eq!(pending["data"]["confirmation_required"], true, "{pending}");
+        let attached = execute_command(
+            &json!({"id":"confirm-required-attach", "action":"confirm", "decidedBy":{"kind":"operator","id":"fixture"},
+            "confirmationId":acquire["id"], "expectedAction":"cdp_attach"}),
+            &mut state,
+        )
+        .await;
+        assert_eq!(attached["data"]["result"]["success"], true, "{attached}");
+        let binding = attached["data"]["result"]["data"]["binding"].clone();
+        let replay = execute_command(&acquire, &mut state).await;
+        assert_eq!(replay["success"], false, "{replay}");
+        state.broker_registry.dispatch(json!({"operation":"command", "binding":binding,
+            "requestId":"required-diagnostics", "method":"Runtime.enable", "params":{}, "taskContext":{
+                "taskAuthority":issued["envelope"], "taskName":"required-attach", "serviceName":"fixture-service",
+                "taskStepId":issued["approvedPlan"]["steps"][1]["stepId"], "taskEvidenceBytes":4096
+            }})).await.unwrap().write_json(&mut tokio::io::sink()).await.unwrap();
+        assert!(state
+            .broker_registry
+            .dispatch(json!({"operation":"command", "binding":binding,
+            "requestId":"missing-authority", "method":"Runtime.enable", "params":{},
+            "taskContext":{"serviceName":"fixture-service"}}))
+            .await
+            .is_err());
+        let status = task_authority_status(
+            &state.task_authority_ledger_root,
+            &state.session_id,
+            issued["envelope"]["id"].as_str(),
+        )
+        .unwrap();
+        assert_eq!(status["usage"]["admittedActions"], 2, "{status}");
+        assert_eq!(
+            status["usage"]["outcomeSummary"]["completed"], 2,
+            "{status}"
+        );
+        state
+            .broker_registry
+            .dispatch(
+                json!({"operation":"detach", "binding":binding, "requestId":"required-cleanup"}),
+            )
+            .await
+            .unwrap()
+            .write_json(&mut tokio::io::sink())
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture
+                .methods()
+                .iter()
+                .filter(|method| *method == "Target.detachFromTarget")
+                .count(),
+            1
+        );
+        fixture.browser.verify_current().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_broker_confirmed_policy_rejects_a_different_command_identity() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let command = broker_acquisition_fixture_request();
+        state.confirmed_control_plane_command_id = Some("other".into());
+        state.confirmed_broker_policy = Some(ConfirmedBrokerPolicy {
+            command_id: "other".into(),
+            policy: None,
+            confirm_actions: None,
+        });
+        let before = fixture.methods();
+        assert_eq!(
+            handle_broker_acquire(&command, &mut state)
+                .await
+                .unwrap_err(),
+            "broker_acquisition_confirmed_policy_capture_unsupported"
+        );
+        assert_eq!(fixture.methods(), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_broker_worker_acquisition_rejects_wrong_rendered_url_and_detaches() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let mut cmd = broker_acquisition_fixture_request();
+        cmd["expectedUrl"] = json!("https://example.test/other-conversation");
+        cmd["serviceTabHandle"]["url"] = cmd["expectedUrl"].clone();
+        LockedServiceStateRepository::default_json()
+            .unwrap()
+            .mutate(|snapshot| {
+                snapshot.tabs.get_mut("target:exact-target").unwrap().url =
+                    cmd["expectedUrl"].as_str().map(str::to_owned);
+                Ok(())
+            })
+            .unwrap();
+        let before = fixture.methods().len();
+        assert_eq!(
+            handle_broker_acquire(&cmd, &mut state).await.unwrap_err(),
+            "broker_acquisition_live_url_mismatch"
+        );
+        let methods = fixture.methods();
+        let new_methods = &methods[before..];
+        assert_eq!(
+            new_methods
+                .iter()
+                .filter(|m| *m == "Target.attachToTarget")
+                .count(),
+            1
+        );
+        assert_eq!(
+            new_methods
+                .iter()
+                .filter(|m| *m == "Target.detachFromTarget")
+                .count(),
+            1
+        );
+        assert!(new_methods.iter().all(|m| m.starts_with("Target.")));
+        fixture.browser.verify_current().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_broker_worker_acquisition_recomputes_plan_and_rejects_ambiguous_browser() {
+        let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let mut cmd = broker_acquisition_fixture_request();
+        let repository = LockedServiceStateRepository::default_json().unwrap();
+        let valid = repository.load_snapshot().unwrap();
+        cmd["serviceState"] = serde_json::to_value(&valid).unwrap();
+        cmd["accessPlan"] = json!({"decision":{"profileReuse":{"recommendedAction":"reuse_existing_browser","reusableBrowserIds":["session:custody-test"]}}});
+        let before = fixture.methods();
+        repository
+            .mutate(|snapshot| {
+                let mut duplicate = snapshot.browsers["session:custody-test"].clone();
+                duplicate.id = "session:other".into();
+                snapshot.browsers.insert(duplicate.id.clone(), duplicate);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            handle_broker_acquire(&cmd, &mut state).await.unwrap_err(),
+            "broker_acquisition_access_plan_denied"
+        );
+        repository
+            .mutate(|snapshot| {
+                *snapshot = valid;
+                snapshot
+                    .browsers
+                    .get_mut("session:custody-test")
+                    .unwrap()
+                    .browser_build = None;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            handle_broker_acquire(&cmd, &mut state).await.unwrap_err(),
+            "broker_acquisition_access_plan_denied"
+        );
+        assert_eq!(fixture.methods(), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_handoff_broker_revocation_precedes_close_and_handoff_mutations() {
+        for operation in ["close", "handoff"] {
+            let (_guard, fixture, _) = custody_resume_fixture("exact-target");
+            let mut state = DaemonState::new();
+            handle_runtime_handoff_resume(&mut state).await.unwrap();
+            let capability = state.handoff_broker_custody().unwrap();
+            let permit = capability.acquire().await.unwrap();
+            let before = fixture.methods();
+            let result = tokio::time::timeout(Duration::from_millis(20), async {
+                if operation == "close" {
+                    handle_close(&mut state).await
+                } else {
+                    handle_runtime_handoff_prepare(&mut state).await
+                }
+            })
+            .await;
+            assert!(result.is_err());
+            assert!(state.browser.is_some());
+            assert!(state.attached_runtime_profile.is_some());
+            assert!(!state.handoff_retired);
+            assert_eq!(fixture.methods(), before);
+            assert!(!runtime_handoff_path("custody-test").exists());
+            assert!(capability.acquire().await.is_err());
+            assert!(state.handoff_broker_custody().is_err());
+            let blocked =
+                execute_command(&json!({"id":"after-revoke","action":"title"}), &mut state).await;
+            assert_eq!(blocked["success"], false);
+            assert_eq!(fixture.methods(), before);
+            drop(permit);
+            handle_close(&mut state).await.unwrap();
+            assert!(state.browser.is_none());
+            assert!(state.handoff_custody.is_none());
+            fixture.browser.verify_current().unwrap();
+            assert!(!fixture
+                .methods()
+                .iter()
+                .any(|method| method == "Browser.close"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_handoff_broker_permit_rejects_binding_and_snapshot_drift() {
+        let (_guard, _fixture, _) = custody_resume_fixture("exact-target");
+        let mut state = DaemonState::new();
+        handle_runtime_handoff_resume(&mut state).await.unwrap();
+        let capability = state.handoff_broker_custody().unwrap();
+        let permit = capability.acquire().await.unwrap();
+        let binding = super::super::broker_attachment::BrokerBinding {
+            attachment_id: "attachment".into(),
+            browser_id: "session:custody-test".into(),
+            profile_id: "custody-test".into(),
+            session_name: "custody-test".into(),
+            target_id: "exact-target".into(),
+            generation: state
+                .handoff_custody
+                .as_ref()
+                .unwrap()
+                .payload()
+                .receipt
+                .descriptor_sha256
+                .clone(),
+        };
+        permit.verify_binding(&binding).unwrap();
+        for key in [
+            "browserId",
+            "profileId",
+            "sessionName",
+            "targetId",
+            "generation",
+        ] {
+            let mut changed = serde_json::to_value(&binding).unwrap();
+            changed[key] = json!("wrong");
+            assert!(permit
+                .verify_binding(&serde_json::from_value(changed).unwrap())
+                .is_err());
+        }
+        LockedServiceStateRepository::default_json()
+            .unwrap()
+            .mutate(|snapshot| {
+                snapshot.runtime_custody_receipts.clear();
+                Ok(())
+            })
+            .unwrap();
+        assert!(permit.verify().is_err());
+        assert!(capability.acquire().await.is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
     async fn test_handoff_v2_failed_resume_blocks_launch_and_preserves_evidence() {
         let (_guard, fixture, _descriptor) = custody_resume_fixture("missing-target");
         let path = runtime_handoff_path("custody-test");
@@ -30233,6 +32377,410 @@ mod tests {
         let restarted = DaemonState::new();
         assert!(restarted.handoff_recovery_pending);
         assert!(!restarted.allows_unfenced_cdp());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_legacy_resume_does_not_establish_v2_custody() {
+        let (_guard, fixture, mut descriptor) = custody_resume_fixture("exact-target");
+        descriptor.schema_version = 1;
+        descriptor.custody = None;
+        // Replace only this synthetic fixture's descriptor, never a live retry record.
+        fs::write(
+            runtime_handoff_path("custody-test"),
+            serde_json::to_vec(&descriptor).unwrap(),
+        )
+        .unwrap();
+        let mut state = DaemonState::new();
+        let result = handle_runtime_handoff_resume(&mut state).await.unwrap();
+        assert_eq!(result["resumed"], true);
+        assert_eq!(result["browserPid"], fixture.browser.process.pid);
+        assert!(verify_active_handoff_custody(&state).is_err());
+        let prepared = handle_runtime_handoff_prepare(&mut state).await.unwrap();
+        assert_eq!(prepared["prepared"], true);
+        let retained = read_runtime_handoff("custody-test").unwrap();
+        assert_eq!(retained.schema_version, 1);
+        assert!(retained.custody.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_migration_resume_establishes_only_prospective_custody() {
+        use super::super::legacy_migration;
+        let (_guard, fixture, mut source) = legacy_migration::tests::setup(false);
+        let plan = legacy_migration::coordinate(
+            "migration-test",
+            "exact-target",
+            "https://example.test/custody",
+            None,
+        )
+        .unwrap();
+        legacy_migration::coordinate(
+            "migration-test",
+            "exact-target",
+            "https://example.test/custody",
+            plan["planSha256"].as_str(),
+        )
+        .unwrap();
+        source.0.wait().unwrap();
+        let original =
+            legacy_migration::read_private(&runtime_handoff_path("migration-test")).unwrap();
+        let mut state = DaemonState::new();
+        assert_eq!(
+            handle_runtime_handoff_resume(&mut state).await.unwrap_err(),
+            "migration_explicit_resume_required"
+        );
+        let result = handle_runtime_handoff_resume_with_migration(&mut state, true)
+            .await
+            .unwrap();
+        assert_eq!(result["resumed"], true);
+        let proof = verify_active_handoff_custody(&state).unwrap();
+        assert_eq!(
+            proof["ownerCustody"]["basis"],
+            "verified_prospective_migration_receipt"
+        );
+        assert_eq!(proof["complete"], true);
+        let evolved_url = "https://example.test/c/new-conversation";
+        state
+            .browser
+            .as_mut()
+            .unwrap()
+            .set_active_page_url(evolved_url);
+        LockedServiceStateRepository::default_json()
+            .unwrap()
+            .mutate(|snapshot| {
+                snapshot.tabs.get_mut("target:exact-target").unwrap().url =
+                    Some(evolved_url.into());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            verify_active_handoff_custody(&state).unwrap()["complete"],
+            true
+        );
+        let status = handle_task_authority_status(&json!({"bindingOnly": true}), &state)
+            .await
+            .unwrap();
+        assert_eq!(
+            status["schema"],
+            "agent-browser.task-authority-current-binding.v1"
+        );
+        assert!(status.get("confirmationStatus").is_none());
+        assert_eq!(
+            status["currentTargetBinding"],
+            json!({
+                "targetId": "exact-target",
+                "url": evolved_url,
+                "source": "daemon_live_target_inventory",
+            })
+        );
+        state
+            .browser
+            .as_mut()
+            .unwrap()
+            .set_active_page_url("https://example.test/c/not-yet-published");
+        assert_eq!(
+            handle_task_authority_status(&json!({}), &state)
+                .await
+                .unwrap_err(),
+            "task_authority_live_target_snapshot_mismatch"
+        );
+        state
+            .browser
+            .as_mut()
+            .unwrap()
+            .set_active_page_url(evolved_url);
+        let foreign_url = "https://foreign.example/c/new-conversation";
+        state
+            .browser
+            .as_mut()
+            .unwrap()
+            .set_active_page_url(foreign_url);
+        LockedServiceStateRepository::default_json()
+            .unwrap()
+            .mutate(|snapshot| {
+                snapshot.tabs.get_mut("target:exact-target").unwrap().url =
+                    Some(foreign_url.into());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            verify_active_handoff_custody(&state).unwrap_err(),
+            "migration_target_origin_changed"
+        );
+        state
+            .browser
+            .as_mut()
+            .unwrap()
+            .set_active_page_url(evolved_url);
+        LockedServiceStateRepository::default_json()
+            .unwrap()
+            .mutate(|snapshot| {
+                snapshot.tabs.get_mut("target:exact-target").unwrap().url =
+                    Some(evolved_url.into());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            legacy_migration::read_private(
+                &get_socket_dir().join("migration-test.legacy-migration/legacy-descriptor.json")
+            )
+            .unwrap(),
+            original
+        );
+        let attachments = fixture
+            .methods()
+            .iter()
+            .filter(|method| *method == "Target.attachToTarget")
+            .count();
+        assert!(
+            handle_runtime_handoff_resume_with_migration(&mut state, true)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            fixture
+                .methods()
+                .iter()
+                .filter(|method| *method == "Target.attachToTarget")
+                .count(),
+            attachments
+        );
+        assert!(!fixture
+            .methods()
+            .iter()
+            .any(|method| method == "Browser.close" || method.starts_with("Input.")));
+        handle_close(&mut state).await.unwrap();
+        fixture.browser.verify_current().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn stale_snapshot_recovery_fixture() -> (
+        EnvGuard<'static>,
+        super::super::handoff_custody::TestBrowserFixture,
+        RuntimeHandoffDescriptor,
+    ) {
+        use super::super::handoff_custody::{CustodyPhase, CustodyReceipt};
+        use super::super::legacy_migration::MigrationPlan;
+
+        let (guard, fixture, mut descriptor) = custody_resume_fixture("exact-target");
+        let original_source = super::super::handoff_custody::stopped_source();
+        let prior_destination = super::super::handoff_custody::stopped_source();
+        let plan = MigrationPlan {
+            schema: "agent-browser.prospective-legacy-migration.v1".into(),
+            source: original_source.clone(),
+            browser: fixture.browser.clone(),
+            session: "custody-test".into(),
+            profile: "custody-test".into(),
+            target: "retired-target".into(),
+            url: "https://example.test/".into(),
+            display: json!({"required": false, "verified": true}),
+        };
+        let prior = CustodyReceipt {
+            schema_version: 2,
+            phase: CustodyPhase::Committed,
+            source: original_source,
+            destination: prior_destination.clone(),
+            browser: fixture.browser.clone(),
+            target_id: "retired-target".into(),
+            descriptor_sha256: "a".repeat(64),
+            prospective_migration: Some(plan),
+        };
+        LockedServiceStateRepository::default_json()
+            .unwrap()
+            .mutate(|snapshot| {
+                snapshot.tabs.get_mut("target:exact-target").unwrap().url =
+                    Some("https://example.test/custody".into());
+                snapshot.tabs.insert(
+                    "target:retired-target".into(),
+                    serde_json::from_value(json!({
+                        "id": "target:retired-target",
+                        "browserId": "session:custody-test",
+                        "targetId": "retired-target",
+                        "ownerSessionId": "custody-test",
+                        "url": "https://example.test/",
+                        "lifecycle": "closed"
+                    }))
+                    .unwrap(),
+                );
+                snapshot
+                    .runtime_custody_receipts
+                    .insert("custody-test".into(), serde_json::to_value(&prior).unwrap());
+                Ok(())
+            })
+            .unwrap();
+        descriptor.schema_version = 3;
+        descriptor.custody = Some(RuntimeHandoffCustodyProof {
+            source: prior_destination,
+            browser: fixture.browser.clone(),
+        });
+        fs::write(
+            runtime_handoff_path("custody-test"),
+            serde_json::to_vec_pretty(&descriptor).unwrap(),
+        )
+        .unwrap();
+        (guard, fixture, descriptor)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_stale_snapshot_recovery_advances_target_with_same_origin() {
+        let (_guard, fixture, _descriptor) = stale_snapshot_recovery_fixture();
+        let mut state = DaemonState::new();
+
+        let result = handle_runtime_handoff_resume(&mut state).await.unwrap();
+
+        assert_eq!(result["resumed"], true);
+        assert_eq!(result["activeTargetId"], "exact-target");
+        let proof = verify_active_handoff_custody(&state).unwrap();
+        assert_eq!(proof["complete"], true);
+        assert_eq!(
+            proof["ownerCustody"]["basis"],
+            "verified_stale_snapshot_recovery_receipt"
+        );
+        let snapshot = LockedServiceStateRepository::default_json()
+            .unwrap()
+            .load_snapshot()
+            .unwrap();
+        let receipt = &snapshot.runtime_custody_receipts["custody-test"];
+        assert_eq!(receipt["targetId"], "exact-target");
+        assert_eq!(receipt["prospectiveMigration"]["target"], "retired-target");
+        assert!(!fixture
+            .methods()
+            .iter()
+            .any(|method| method == "Browser.close" || method.starts_with("Input.")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_stale_snapshot_recovery_rejects_ready_old_target_before_attach() {
+        let (_guard, fixture, _descriptor) = stale_snapshot_recovery_fixture();
+        LockedServiceStateRepository::default_json()
+            .unwrap()
+            .mutate(|snapshot| {
+                snapshot
+                    .tabs
+                    .get_mut("target:retired-target")
+                    .unwrap()
+                    .lifecycle = super::super::service_model::TabLifecycle::Ready;
+                Ok(())
+            })
+            .unwrap();
+        let before = fixture.methods();
+        let mut state = DaemonState::new();
+
+        assert_eq!(
+            handle_runtime_handoff_resume(&mut state).await.unwrap_err(),
+            "migration_recovery_stale_target_still_ready"
+        );
+        assert_eq!(fixture.methods(), before);
+        assert!(runtime_handoff_path("custody-test").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_migration_resume_rejects_live_source_before_attach() {
+        use super::super::legacy_migration;
+        let (_guard, fixture, mut source) = legacy_migration::tests::setup(false);
+        let plan = legacy_migration::coordinate(
+            "migration-test",
+            "exact-target",
+            "https://example.test/custody",
+            None,
+        )
+        .unwrap();
+        legacy_migration::coordinate(
+            "migration-test",
+            "exact-target",
+            "https://example.test/custody",
+            plan["planSha256"].as_str(),
+        )
+        .unwrap();
+        source.0.wait().unwrap();
+        // Alter only isolated test records to emulate a still-draining source.
+        let root = get_socket_dir().join("migration-test.legacy-migration");
+        let mut enrollment: legacy_migration::Enrollment =
+            serde_json::from_slice(&fs::read(root.join("acknowledged.json")).unwrap()).unwrap();
+        enrollment.plan.source =
+            super::super::handoff_custody::ProcessIdentity::capture(std::process::id()).unwrap();
+        fs::write(
+            root.join("pending.json"),
+            serde_json::to_vec(&enrollment.plan).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("acknowledged.json"),
+            serde_json::to_vec(&enrollment).unwrap(),
+        )
+        .unwrap();
+        let mut state = DaemonState::new();
+        assert_eq!(
+            handle_runtime_handoff_resume_with_migration(&mut state, true)
+                .await
+                .unwrap_err(),
+            "handoff_custody_source_still_alive"
+        );
+        assert!(!fixture
+            .methods()
+            .iter()
+            .any(|method| method == "Target.attachToTarget"));
+        assert!(runtime_handoff_path("migration-test").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_migration_indeterminate_prepare_restart_cannot_attach_or_launch() {
+        use super::super::legacy_migration;
+        let (_guard, fixture, mut source) = legacy_migration::tests::setup(true);
+        let plan = legacy_migration::coordinate(
+            "migration-test",
+            "exact-target",
+            "https://example.test/custody",
+            None,
+        )
+        .unwrap();
+        assert!(legacy_migration::coordinate(
+            "migration-test",
+            "exact-target",
+            "https://example.test/custody",
+            plan["planSha256"].as_str()
+        )
+        .is_err());
+        source.0.wait().unwrap();
+        let before = fs::read(runtime_handoff_path("migration-test")).unwrap();
+        for _ in 0..2 {
+            let mut restarted = DaemonState::new();
+            assert!(restarted.handoff_recovery_pending);
+            assert!(
+                handle_runtime_handoff_resume_with_migration(&mut restarted, true)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                handle_runtime_handoff_resume(&mut restarted)
+                    .await
+                    .unwrap_err(),
+                "migration_explicit_resume_required"
+            );
+            let response = execute_command(&json!({"id":"migration-no-launch","action":"navigate","url":"https://example.test/forbidden"}), &mut restarted).await;
+            assert_eq!(response["success"], false);
+            assert!(response["error"]
+                .as_str()
+                .unwrap()
+                .contains("recovery_pending"));
+            assert!(restarted.browser.is_none());
+        }
+        assert_eq!(
+            fs::read(runtime_handoff_path("migration-test")).unwrap(),
+            before
+        );
+        assert!(!fixture
+            .methods()
+            .iter()
+            .any(|method| method == "Target.attachToTarget"
+                || method == "Browser.close"
+                || method.starts_with("Input.")));
+        fixture.browser.verify_current().unwrap();
     }
 
     #[test]

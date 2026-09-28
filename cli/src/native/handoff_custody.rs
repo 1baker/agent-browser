@@ -35,6 +35,23 @@ fn start_ticks(pid: u32) -> Result<u64, String> {
 }
 
 impl ProcessIdentity {
+    /// Observe a same-user Unix peer through kernel credentials. This witnesses
+    /// a process, not its authority over a browser or a handoff descriptor.
+    pub(crate) fn capture_unix_peer(
+        stream: &std::os::unix::net::UnixStream,
+    ) -> Result<Self, String> {
+        let before = unix_peer_credentials(stream)?;
+        let effective_uid = unsafe { libc::geteuid() };
+        if before.pid <= 0 || before.uid != effective_uid {
+            return Err("handoff_custody_peer_identity_invalid".into());
+        }
+        let process = Self::capture(before.pid as u32)?;
+        let after = unix_peer_credentials(stream)?;
+        validate_unix_peer(&before, &after, &process, effective_uid)?;
+        process.verify_current()?;
+        Ok(process)
+    }
+
     pub(crate) fn capture(pid: u32) -> Result<Self, String> {
         if pid == 0 {
             return Err("handoff_custody_invalid_pid".into());
@@ -103,6 +120,51 @@ impl ProcessIdentity {
     }
 }
 
+fn unix_peer_credentials(stream: &std::os::unix::net::UnixStream) -> Result<libc::ucred, String> {
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // Both pointers address initialized, correctly sized values for SO_PEERCRED.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut length,
+        )
+    };
+    if result != 0 {
+        return Err(failure(io::Error::last_os_error()));
+    }
+    if length as usize != std::mem::size_of::<libc::ucred>() {
+        return Err("handoff_custody_peer_credentials_length_invalid".into());
+    }
+    Ok(credentials)
+}
+
+fn validate_unix_peer(
+    before: &libc::ucred,
+    after: &libc::ucred,
+    process: &ProcessIdentity,
+    effective_uid: u32,
+) -> Result<(), String> {
+    if before.pid <= 0
+        || before.pid != after.pid
+        || before.uid != after.uid
+        || before.gid != after.gid
+        || before.uid != effective_uid
+        || process.pid != before.pid as u32
+        || process.uid != before.uid
+    {
+        return Err("handoff_custody_peer_identity_invalid".into());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct BrowserIdentity {
@@ -114,14 +176,84 @@ pub(crate) struct BrowserIdentity {
     pub cdp_endpoint: String,
 }
 
-fn process_profile(pid: u32) -> Result<PathBuf, String> {
+/// Match the conservative normalization used by runtime_attach_proof: Chrome
+/// may flatten argv, but only a same-PID profile lock and a verified executable
+/// permit interpreting an unquoted, switch-only title. Never shell-split it.
+fn normalize_process_arguments<'a>(
+    arguments: Vec<&'a str>,
+    executable: &Path,
+    profile: &Path,
+    pid: u32,
+    singleton_pid: Option<u32>,
+) -> Result<Vec<&'a str>, String> {
+    if arguments.len() != 1 {
+        return Ok(arguments);
+    }
+    if singleton_pid != Some(pid) {
+        return Err("handoff_custody_profile_lock_mismatch".into());
+    }
+    let title = arguments[0];
+    let executable = executable
+        .to_str()
+        .ok_or("handoff_custody_arguments_unreadable")?;
+    let profile = profile
+        .to_str()
+        .ok_or("handoff_custody_arguments_unreadable")?;
+    if executable.chars().any(char::is_whitespace)
+        || profile.chars().any(char::is_whitespace)
+        || title
+            .chars()
+            .any(|c| matches!(c, '\'' | '"' | '\\') || (c.is_whitespace() && c != ' '))
+        || !title.starts_with(&format!("{executable} "))
+    {
+        return Err("handoff_custody_arguments_ambiguous".into());
+    }
+    let arguments = title
+        .split(' ')
+        .filter(|argument| !argument.is_empty())
+        .collect::<Vec<_>>();
+    if arguments
+        .iter()
+        .skip(1)
+        .any(|argument| !argument.starts_with("--"))
+    {
+        return Err("handoff_custody_arguments_ambiguous".into());
+    }
+    Ok(arguments)
+}
+
+fn process_profile(pid: u32, profile: &Path) -> Result<PathBuf, String> {
     let bytes = fs::read(format!("/proc/{pid}/cmdline")).map_err(failure)?;
-    let arguments = bytes
+    let mut arguments = bytes
         .split(|byte| *byte == 0)
         .filter(|argument| !argument.is_empty())
         .map(std::str::from_utf8)
         .collect::<Result<Vec<_>, _>>()
         .map_err(failure)?;
+    if arguments.len() == 1 {
+        let process_executable = PathBuf::from(format!("/proc/{pid}/exe"));
+        let executable = fs::read_link(&process_executable).map_err(failure)?;
+        let actual = fs::metadata(&process_executable).map_err(failure)?;
+        let installed = fs::metadata(&executable).map_err(failure)?;
+        if !executable.is_absolute()
+            || !installed.is_file()
+            || (actual.dev(), actual.ino()) != (installed.dev(), installed.ino())
+        {
+            return Err("handoff_custody_executable_replaced".into());
+        }
+        let singleton = fs::read_link(profile.join("SingletonLock")).map_err(failure)?;
+        let singleton_pid = singleton
+            .to_str()
+            .and_then(|value| value.rsplit_once('-'))
+            .and_then(|(_, value)| value.parse().ok());
+        arguments =
+            normalize_process_arguments(arguments, &executable, profile, pid, singleton_pid)?;
+    }
+    let profile = profile_argument(&arguments)?;
+    fs::canonicalize(profile).map_err(failure)
+}
+
+fn profile_argument<'a>(arguments: &[&'a str]) -> Result<&'a str, String> {
     let mut profiles = Vec::new();
     for (index, argument) in arguments.iter().enumerate() {
         if argument.starts_with("--type=") || *argument == "--type" {
@@ -139,7 +271,7 @@ fn process_profile(pid: u32) -> Result<PathBuf, String> {
     if !Path::new(profile).is_absolute() {
         return Err("handoff_custody_profile_argument_not_absolute".into());
     }
-    fs::canonicalize(profile).map_err(failure)
+    Ok(profile)
 }
 
 impl BrowserIdentity {
@@ -152,7 +284,7 @@ impl BrowserIdentity {
             || !profile_canonical.is_dir()
             || profile_before.dev() != profile_canonical.dev()
             || profile_before.ino() != profile_canonical.ino()
-            || process_profile(pid)? != canonical_profile
+            || process_profile(pid, &canonical_profile)? != canonical_profile
         {
             return Err("handoff_custody_browser_profile_mismatch".into());
         }
@@ -204,7 +336,7 @@ impl BrowserIdentity {
         if !owns_listener {
             return Err("handoff_custody_listener_not_owned".into());
         }
-        if process_profile(pid)? != canonical_profile {
+        if process_profile(pid, &canonical_profile)? != canonical_profile {
             return Err("handoff_custody_browser_profile_changed".into());
         }
         process.verify_current()?;
@@ -403,6 +535,9 @@ pub(crate) struct CustodyReceipt {
     pub browser: BrowserIdentity,
     pub target_id: String,
     pub descriptor_sha256: String,
+    /// Present only for an explicitly witnessed prospective legacy migration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prospective_migration: Option<super::legacy_migration::MigrationPlan>,
 }
 
 #[cfg(test)]
@@ -416,6 +551,129 @@ mod tests {
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
     use tokio_tungstenite::tungstenite::Message;
+
+    #[test]
+    fn custody_process_arguments_accept_normal_and_verified_joined_title() {
+        let executable = Path::new("/opt/chrome/chrome");
+        let profile = Path::new("/profiles/exact");
+        let normal = vec!["/opt/chrome/chrome", "--user-data-dir", "/profiles/exact"];
+        let normalized =
+            normalize_process_arguments(normal.clone(), executable, profile, 123, None).unwrap();
+        assert_eq!(normalized, normal);
+        assert_eq!(profile_argument(&normalized).unwrap(), "/profiles/exact");
+        let joined = vec!["/opt/chrome/chrome --user-data-dir=/profiles/exact --headless=new"];
+        let normalized =
+            normalize_process_arguments(joined, executable, profile, 123, Some(123)).unwrap();
+        assert_eq!(profile_argument(&normalized).unwrap(), "/profiles/exact");
+    }
+
+    #[test]
+    fn custody_process_arguments_reject_ambiguous_or_mismatched_title() {
+        let executable = Path::new("/opt/chrome/chrome");
+        let profile = Path::new("/profiles/exact");
+        for title in [
+            "/other/chrome --user-data-dir=/profiles/exact",
+            "/opt/chrome/chrome --user-data-dir='/profiles/exact'",
+            "/opt/chrome/chrome --user-data-dir=\"/profiles/exact\"",
+            "/opt/chrome/chrome --user-data-dir=/profiles/exact\\ suffix",
+            "/opt/chrome/chrome --user-data-dir=/profiles/exact suffix",
+            "/opt/chrome/chrome\t--user-data-dir=/profiles/exact",
+            "/opt/chrome/chrome --user-data-dir /profiles/exact",
+        ] {
+            assert!(
+                normalize_process_arguments(vec![title], executable, profile, 123, Some(123))
+                    .is_err(),
+                "{title}"
+            );
+        }
+        let title = vec!["/opt/chrome/chrome --user-data-dir=/profiles/exact"];
+        for lock in [None, Some(124)] {
+            assert!(
+                normalize_process_arguments(title.clone(), executable, profile, 123, lock).is_err()
+            );
+        }
+        assert!(normalize_process_arguments(
+            title.clone(),
+            executable,
+            Path::new("/profiles/exact suffix"),
+            123,
+            Some(123)
+        )
+        .is_err());
+        assert!(normalize_process_arguments(
+            title,
+            Path::new("/opt/chrome path/chrome"),
+            profile,
+            123,
+            Some(123)
+        )
+        .is_err());
+        assert!(profile_argument(&[
+            "chrome",
+            "--user-data-dir=/profiles/exact",
+            "--user-data-dir=/profiles/other"
+        ])
+        .is_err());
+        assert!(profile_argument(&[
+            "chrome",
+            "--user-data-dir=/profiles/exact",
+            "--type=renderer"
+        ])
+        .is_err());
+        assert!(profile_argument(&["chrome", "--user-data-dir=relative"]).is_err());
+    }
+
+    #[test]
+    fn unix_peer_capture_matches_current_process() {
+        let (first, second) = std::os::unix::net::UnixStream::pair().unwrap();
+        let expected = ProcessIdentity::capture(std::process::id()).unwrap();
+        assert_eq!(
+            ProcessIdentity::capture_unix_peer(&first).unwrap(),
+            expected
+        );
+        assert_eq!(
+            ProcessIdentity::capture_unix_peer(&second).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn unix_peer_validation_rejects_invalid_or_changed_identity() {
+        let process = ProcessIdentity::capture(std::process::id()).unwrap();
+        let peer = libc::ucred {
+            pid: process.pid as libc::pid_t,
+            uid: process.uid,
+            gid: unsafe { libc::getegid() },
+        };
+        assert!(validate_unix_peer(&peer, &peer, &process, process.uid).is_ok());
+        for changed in [
+            libc::ucred { pid: 0, ..peer },
+            libc::ucred { pid: -1, ..peer },
+            libc::ucred {
+                pid: peer.pid + 1,
+                ..peer
+            },
+            libc::ucred {
+                uid: peer.uid.wrapping_add(1),
+                ..peer
+            },
+            libc::ucred {
+                gid: peer.gid.wrapping_add(1),
+                ..peer
+            },
+        ] {
+            assert!(validate_unix_peer(&peer, &changed, &process, process.uid).is_err());
+            if changed.gid == peer.gid {
+                assert!(validate_unix_peer(&changed, &changed, &process, process.uid).is_err());
+            }
+        }
+        assert!(validate_unix_peer(&peer, &peer, &process, process.uid.wrapping_add(1)).is_err());
+        let changed_process = ProcessIdentity {
+            uid: process.uid.wrapping_add(1),
+            ..process
+        };
+        assert!(validate_unix_peer(&peer, &peer, &changed_process, peer.uid).is_err());
+    }
 
     pub(crate) struct TestBrowserFixture {
         pub(crate) root: PathBuf,
@@ -492,7 +750,12 @@ mod tests {
                 "targetId": "exact-target", "type": "page", "title": "Synthetic custody page",
                 "url": "https://example.test/custody", "attached": false, "canAccessOpener": false
             }]}),
-            "Target.attachToTarget" => json!({"sessionId": "synthetic-session"}),
+            "Target.attachToTarget" => {
+                json!({"sessionId": format!("synthetic-session-{}", command["id"])})
+            }
+            "Target.getTargetInfo" => json!({"targetInfo": {
+                "targetId": "exact-target", "type": "page", "url": "https://example.test/custody"
+            }}),
             "Runtime.evaluate" => {
                 let expression = command["params"]["expression"].as_str().unwrap_or_default();
                 let value = if expression.contains("document.title") {
@@ -532,6 +795,31 @@ mod tests {
                     .open(&method_log)
                     .unwrap();
                 writeln!(log, "{method}").unwrap();
+            }
+            if command["method"] == "Target.attachToTarget" {
+                let gate = method_log.parent().unwrap().join("hold-broker-attach");
+                while gate.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            }
+            if command["method"] == "Runtime.enable"
+                && method_log
+                    .parent()
+                    .unwrap()
+                    .join("emit-broker-events")
+                    .exists()
+            {
+                for session in [json!("foreign-session"), command["sessionId"].clone()] {
+                    websocket
+                        .send(Message::Text(
+                            json!({"sessionId":session,
+                                "method":"Page.loadEventFired", "params":{"timestamp":1.0}
+                            })
+                            .to_string(),
+                        ))
+                        .await
+                        .unwrap();
+                }
             }
             let mut response =
                 json!({"id": command["id"], "result": synthetic_cdp_result(&command)});
@@ -652,6 +940,7 @@ mod tests {
             browser: fixture.browser.clone(),
             target_id: "exact-target".into(),
             descriptor_sha256: "a".repeat(64),
+            prospective_migration: None,
         };
         let path = fixture.root.join("handoff-custody/receipt.json");
         assert!(lease.persist_receipt(&path, &receipt).is_err());

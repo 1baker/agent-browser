@@ -99,6 +99,7 @@ fn channel(capacity: usize) -> (ControlPlaneHandle, mpsc::Receiver<WorkerMessage
     let (tx, rx) = mpsc::channel(capacity);
     (
         ControlPlaneHandle {
+            broker_registry: Arc::new(super::super::broker_registry::BrokerRegistry::default()),
             tx,
             status: Arc::new(ControlPlaneStatus::new()),
             service_job_timeout_ms: None,

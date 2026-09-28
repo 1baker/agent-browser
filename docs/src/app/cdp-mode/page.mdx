@@ -1,5 +1,56 @@
 # CDP Mode
 
+The source-only experimental broker path accepts `cdp_attach` with
+`brokerTransport: true`, an exact `serviceTabHandle`, and `expectedUrl` in a Linux
+worker holding transferred custody. It recomputes access-plan reuse from stored
+state, reserves capacity before attachment, and verifies the rendered target URL.
+It returns an opaque binding, never a Chrome endpoint. Authenticated internal
+`__broker_transport` carries commands and acknowledged detach. Cancellation keeps
+cleanup with the owner; uncertain acquisition blocks further broker lifecycle work.
+Event reads use unique `requestId`, exact `cursor`, and `taskContext` with separate
+`broker_events` admission. A positive `taskEvidenceBytes` limit defaults to 4096
+bytes and covers the complete serialized response before publication. Each poll,
+even an empty batch, consumes an issued task step. Events are restricted to the
+owned page session; failed publication seals further reads but permits cleanup.
+Confirmed acquisition retains original policy and confirmation rules bound to the
+approved command ID. It never inherits temporary policy suppression or authorizes
+subsequent page operations. Confirmation and denial retain existing target checks.
+Required-mode task issuance accepts an ordered `cdp_attach` step only with the
+exact current `url`. Admission requires broker transport, matching command `url`,
+`expectedUrl` and handle target, and a broker-issued v2 envelope. The read-only
+ceiling is unchanged: both issuance and acquisition retain confirmation gates.
+Raw attach and other lifecycle grants remain excluded. Existing governed task
+issue/status/revoke/reconcile controls are available under transferred custody.
+Do not use the ordinary retrying CLI connector for this path. Crash reconciliation
+and AuraCall selection remain unsupported. No installed readiness is claimed.
+
+Experimental Linux owned-browser launches may select `AGENT_BROWSER_CDP_TRANSPORT=pipe`
+for controlled fresh launches. After initial `launch` or `tab_new`, all commands
+require current service custody, including commands without a tab handle. Timeout
+recovery never automatically replaces or closes a pipe-controlled target.
+This setting uses anonymous pipes without a debugging port. Default transport is `websocket`.
+Pipe mode rejects external attachment, providers, leave-open/detach, handoff,
+inspection/stream export, recording, and automatic relaunch after connection loss.
+Private journeys requiring reattachment are unsupported. Existing browsers require
+a separately approved controlled restart; there is no live migration. This removes
+network CDP access, not access by a compromised OS account, and does not by itself prove full
+control-plane attestation. A `pipe:` identity is not a connectable URL.
+Proxy authentication, domain filtering, request routes, and origin-scoped headers
+are also rejected because pipe mode does not run the background Fetch handler.
+Service health and tab reconciliation use owner-produced pipe observations with
+exact process/session binding and a 15-second monotonic expiry, refreshed every
+five seconds while the daemon is idle and after commands. The service stores no
+network endpoint and fails closed on invalid or expired observations. These are
+health snapshots, not authentication or lifecycle authority.
+Fresh Linux pipe launches separately retain an in-memory profile lock and exact
+process/descriptor proof created before and immediately after spawn. Diagnostics
+use the distinct `fresh_owned_pipe_launch` basis only when the exclusive service
+lease, profile, observed active target, and required remote-display owner also
+match. Saved JSON cannot restore this proof or adopt a legacy process. Governed
+commands recheck it before effects. Retained deployment still requires the
+backup-protected controlled restart; headless smoke tests do not verify the live
+remote desktop or authorize a broader runtime replacement.
+
 Connect to an existing browser via Chrome DevTools Protocol:
 
 ```bash

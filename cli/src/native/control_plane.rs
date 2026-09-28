@@ -44,6 +44,7 @@ mod private_tests;
 
 #[derive(Clone)]
 pub struct ControlPlaneHandle {
+    pub(crate) broker_registry: Arc<super::broker_registry::BrokerRegistry>,
     tx: mpsc::Sender<WorkerMessage>,
     status: Arc<ControlPlaneStatus>,
     service_job_timeout_ms: Option<u64>,
@@ -173,6 +174,7 @@ impl ControlPlaneWorker {
         service_monitor_interval_ms: Option<u64>,
     ) -> ControlPlaneHandle {
         let (tx, rx) = mpsc::channel(capacity);
+        let broker_registry = state.broker_registry.clone();
         let status = Arc::new(ControlPlaneStatus::new());
         let running_cancellations = Arc::new(Mutex::new(HashMap::new()));
         let runtime_options = WorkerRuntimeOptions {
@@ -189,6 +191,7 @@ impl ControlPlaneWorker {
             runtime_options,
         ));
         ControlPlaneHandle {
+            broker_registry,
             tx,
             status,
             service_job_timeout_ms,
@@ -611,7 +614,8 @@ fn persist_process_exited_browser_health_in_repository(
                 .as_ref()
                 .and_then(|browser| browser.display_allocation_id.clone()),
             pid,
-            cdp_endpoint,
+            cdp_endpoint: cdp_endpoint.filter(|endpoint| !endpoint.starts_with("pipe:")),
+            pipe_observation: previous.as_ref().and_then(|browser| browser.pipe_observation.as_ref()).map(|observation| json!({"transport":"anonymous_pipe", "pipeIdentity":observation["pipeIdentity"], "status":"process_exited"})),
             view_streams: previous
                 .as_ref()
                 .map(|browser| browser.view_streams.clone())
@@ -1743,7 +1747,8 @@ async fn run_worker(
                         cleanup_exited_browser(&mut state).await;
                     } else {
                         state.drain_cdp_events_background().await;
-                        status.set_browser_health(BrowserHealth::Ready);
+                        let pipe_health = state.refresh_pipe_service_observation(false).await;
+                        status.set_browser_health(if pipe_health.is_ok() { BrowserHealth::Ready } else { BrowserHealth::CdpDisconnected });
                     }
                     status.set_state(WorkerState::Ready);
                 }
@@ -1847,12 +1852,22 @@ fn command_requires_post_timeout_renderer_circuit(command: &Value) -> bool {
 
 /// Run only after the caller has received its timeout result. The circuit uses
 /// browser-level CDP first, never replays the timed-out action, and refuses to
-/// mutate externally attached or service-handle-owned targets.
+/// mutate externally attached, pipe-owned, or service-handle-owned targets.
 async fn run_post_timeout_health_circuit(
     state: &mut DaemonState,
     status: &ControlPlaneStatus,
     command: &Value,
 ) {
+    // A pipe timeout requires a controlled restart decision. Do not probe into
+    // an automatic target-replacement or browser-recovery path after dispatch.
+    if state
+        .browser
+        .as_ref()
+        .is_some_and(|browser| browser.uses_pipe_transport())
+    {
+        status.set_browser_health(BrowserHealth::CdpDisconnected);
+        return;
+    }
     let Ok(_privacy_lease) = state.public_browser_lease() else {
         return;
     };

@@ -6,6 +6,59 @@ allowed-tools: Bash(npx agent-browser:*), Bash(agent-browser:*)
 
 # Browser Automation with agent-browser
 
+Experimental source-only broker acquisition uses `cdp_attach` plus
+`brokerTransport: true`, exact `serviceTabHandle`, and `expectedUrl`. The owning
+Linux transferred-custody worker recomputes reuse authority, reserves capacity,
+and verifies the actual target URL. Only an opaque binding is returned; commands
+and exact detach use authenticated internal `__broker_transport`. Never route
+this through the retrying CLI transport or substitute raw CDP. Event reads need
+a unique `requestId`, exact `cursor`, and `taskContext` admitted as `broker_events`.
+Their positive `taskEvidenceBytes` limit defaults to 4096 and covers the full
+serialized response. Empty polls also consume an issued task step; do not poll
+without enough approved steps or retry a consumed request ID. Confirmed acquisition
+retains original policy and confirmation rules; it does not approve later commands.
+Missing or mismatched original policy capture fails closed. Ordered task plans
+can issue `cdp_attach` only for the exact current `url`. Execution needs
+`brokerTransport: true`, matching `url`, `expectedUrl` and handle target, ordered
+v2 authority and separate confirmation. No ceiling elevation, raw attach, launch
+or close grant is implied. Crash reconciliation and
+AuraCall selection remain unsupported. Do not claim installed readiness.
+
+Inspector replacement/close requires acknowledged session cleanup. If cleanup
+fails, preserve the browser and report the failure; repeated close does not
+authorize replay or raw CDP bypass. Existing custody-mode export bans still apply.
+
+Custody diagnostics reject expired or malformed lease expiry, non-ready records,
+and mismatched identities. Require `displayOwner.verified` as well as complete
+attestation; display verification does not establish OS-account isolation.
+
+Experimental `AGENT_BROWSER_CDP_TRANSPORT=pipe` selects anonymous CDP pipes for
+owned Linux Chrome only. After initial `launch` or `tab_new`, all commands require
+current service custody even without a tab handle. Timeout recovery must not
+replace or close the active target; use a separately controlled restart.
+The default is `websocket`. Never use pipe mode to attach to or
+migrate a retained browser. A separately approved controlled restart is required.
+Pipe mode rejects external attachment/providers, leave-open/detach, handoff,
+inspection/stream export, recording, and automatic relaunch after connection loss.
+Private journeys requiring reattachment are unsupported. Its opaque `pipe:`
+identity is not a URL. Removing the debugging port does not isolate a compromised
+OS account or by itself prove complete control-plane attestation.
+Proxy authentication, domain filtering, request routes, and origin-scoped headers
+are also rejected because pipe mode does not run the background Fetch handler.
+Service health and tab reconciliation use owner-produced pipe observations with
+exact process/session binding and a 15-second monotonic expiry, refreshed every
+five seconds while the daemon is idle and after commands. The service stores no
+network endpoint and fails closed on invalid or expired observations. These are
+health snapshots, not authentication or lifecycle authority.
+Fresh Linux pipe launches separately retain an in-memory profile lock and exact
+process/descriptor proof created before and immediately after spawn. Diagnostics
+use the distinct `fresh_owned_pipe_launch` basis only when the exclusive service
+lease, profile, observed active target, and required remote-display owner also
+match. Saved JSON cannot restore this proof or adopt a legacy process. Governed
+commands recheck it before effects. Retained deployment still requires the
+backup-protected controlled restart; headless smoke tests do not verify the live
+remote desktop or authorize a broader runtime replacement.
+
 Retained-browser URL verification recognizes optional human-readable slugs only
 in strict HTTPS ChatGPT project-conversation URLs with identical project ID and
 conversation UUID. This does not authorize another target, profile, or session.
@@ -596,6 +649,27 @@ For v2, use governed queued commands; direct dashboard CDP input, background
 handlers, private journeys and commands outside the governed allowlist are denied.
 Do not install this candidate or promote legacy evidence merely because unit
 tests pass. Existing legacy controllers require a separately verified transition.
+The explicit Linux transition is `handoff migration-plan <target-id> <canonical-url>`,
+then `handoff migration-prepare <target-id> <canonical-url> <plan-sha256>`, then
+`handoff migration-resume`. This is operator-local maintenance, not an automatic
+response to a missing proof. Install and independently verify the reviewed runtime
+before enrollment; hold the maintenance exclusion during the transition. Plan
+does not launch or replace a daemon. Prepare uses one authenticated kernel-witnessed
+connection and preserves original legacy bytes with separate prospective evidence.
+Resume must prove source exit and unchanged browser, profile, session, exact target,
+rendered URL and display before granting custody. Unknown acknowledgement or
+identity drift requires reconciliation, not replay, ordinary resume, publisher
+recovery or a forced kill. Re-read complete attestation before any browser input.
+After that initial exact commit, replacement-daemon recovery may accept a changed
+canonical URL only on the same target and enrolled origin, when every other
+identity matches the committed receipt and the prior destination is proven gone.
+A reviewed schema-3 stale-snapshot descriptor may instead bind one successor
+target when the enrolled target is no longer ready, the successor is ready on the
+enrolled origin, and the prior destination is proven gone. Require the recovery
+plan digest and exact descriptor; ordinary resume must never discover or choose a
+successor. Reject unbound target drift and cross-origin navigation.
+Linux display proof may use the same-name abstract X socket only on proven
+filesystem absence; it still requires the configured route owner's kernel UID.
 Set `runtimeProfiles.<name>.browserFamily` to `chrome`, `chromium`, `brave`,
 `edge`, or `unknown`. Do not attach patched Chromium to a Chrome-owned profile
 or otherwise mix browser families unless the operator explicitly forces it with

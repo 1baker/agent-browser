@@ -20,6 +20,64 @@ use crate::runtime_profile::{
 use crate::native::service_store::{JsonServiceStateStore, ServiceStateStore};
 
 use super::discovery::discover_cdp_url;
+#[cfg(target_os = "linux")]
+use super::pipe::PreparedPipe;
+
+/// Select the owned Linux transport explicitly, never falling back on invalid input.
+pub fn pipe_transport_requested() -> Result<bool, String> {
+    let value = match std::env::var("AGENT_BROWSER_CDP_TRANSPORT") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => return Err("AGENT_BROWSER_CDP_TRANSPORT must be valid Unicode".into()),
+    };
+    parse_pipe_transport(value.as_deref())
+}
+
+fn parse_pipe_transport(value: Option<&str>) -> Result<bool, String> {
+    match value {
+        None | Some("websocket") => Ok(false),
+        Some("pipe") if cfg!(target_os = "linux") => Ok(true),
+        Some("pipe") => Err("CDP pipe transport requires owned local Linux Chrome".into()),
+        Some(_) => Err("AGENT_BROWSER_CDP_TRANSPORT must be websocket or pipe".into()),
+    }
+}
+
+fn validate_pipe_arguments(args: &[String]) -> Result<(), String> {
+    if args.iter().any(|arg| {
+        let flag = arg.trim_start_matches('-');
+        flag.starts_with("remote-debugging")
+            || flag == "user-data-dir"
+            || flag.starts_with("user-data-dir=")
+    }) {
+        return Err("CDP pipe transport forbids user debugging flags and profile overrides".into());
+    }
+    Ok(())
+}
+
+fn validate_pipe_executable(path: &Path) -> Result<(), String> {
+    if path
+        .extension()
+        .is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("exe"))
+    {
+        return Err("CDP pipe transport requires a native Linux executable".into());
+    }
+    #[cfg(target_os = "linux")]
+    if is_wsl_mounted_windows_executable(path) {
+        return Err("CDP pipe transport does not support Windows browser launches".into());
+    }
+    Ok(())
+}
+
+fn ensure_pipe_profile_unoccupied(user_data_dir: &Path) -> Result<(), String> {
+    // Never clean or adopt existing singleton evidence in the exclusive lane.
+    for name in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+        match fs::symlink_metadata(user_data_dir.join(name)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(format!("CDP pipe profile has existing or unreadable {name}; require a verified stopped profile before launch")),
+        }
+    }
+    ensure_profile_not_in_use(user_data_dir)
+}
 
 const MAX_CHROME_STDERR_LINES: usize = 80;
 
@@ -70,6 +128,10 @@ pub struct ChromeProcess {
     aux_processes: Vec<Child>,
     #[cfg(target_os = "linux")]
     windows_browser: Option<WslWindowsBrowserIdentity>,
+    #[cfg(target_os = "linux")]
+    pipe_transport: Option<Box<PreparedPipe>>,
+    #[cfg(target_os = "linux")]
+    owned_pipe_proof: Option<Box<crate::native::owned_pipe_proof::OwnedPipeProof>>,
     pub ws_url: String,
     /// Exact executable selected for this newly owned process, never an attach hint.
     pub launched_executable_path: Box<Path>,
@@ -149,6 +211,18 @@ impl ChromeStderrLogBuffer {
 }
 
 impl ChromeProcess {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn verify_fresh_pipe_launch(&self) -> Result<Value, String> {
+        self.owned_pipe_proof
+            .as_ref()
+            .ok_or("fresh_pipe_launch_proof_missing")?
+            .verify()
+    }
+    /// Move the sole anonymous control channel into the async client.
+    #[cfg(target_os = "linux")]
+    pub fn take_pipe_transport(&mut self) -> Option<PreparedPipe> {
+        self.pipe_transport.take().map(|pipe| *pipe)
+    }
     /// Relinquish process ownership without closing Chrome.
     ///
     /// This is used by daemon executable handoff. `std::process::Child` does
@@ -156,6 +230,11 @@ impl ChromeProcess {
     /// the browser PID, CDP listener, profile, and helper processes while a
     /// replacement daemon reconnects.
     pub fn relinquish_for_handoff(&mut self) {
+        // Higher-level handoff rejects pipe before effects. Never abandon cleanup
+        // even if a future caller bypasses that guard.
+        if self.ws_url.starts_with("pipe:") {
+            return;
+        }
         self.owns_process = false;
         self.temp_user_data_dir = None;
     }
@@ -699,6 +778,13 @@ fn build_chrome_args(
     options: &LaunchOptions,
     remote_debugging: bool,
 ) -> Result<ChromeArgs, String> {
+    let pipe = pipe_transport_requested()?;
+    if pipe {
+        validate_pipe_arguments(&options.args)?;
+        if !remote_debugging {
+            return Err("CDP pipe transport requires an attached controller".into());
+        }
+    }
     let manual_login_mode = options.manual_login && !options.headless;
     let mut args = if manual_login_mode {
         // Google and other security-sensitive login flows reject Chrome
@@ -726,7 +812,14 @@ fn build_chrome_args(
     };
 
     if remote_debugging {
-        args.push("--remote-debugging-port=0".to_string());
+        args.push(
+            if pipe {
+                "--remote-debugging-pipe"
+            } else {
+                "--remote-debugging-port=0"
+            }
+            .to_string(),
+        );
     }
 
     if !options.use_real_keychain && !manual_login_mode {
@@ -828,6 +921,10 @@ fn build_chrome_args(
 }
 
 pub fn launch_chrome(options: &LaunchOptions) -> Result<ChromeProcess, String> {
+    let pipe = pipe_transport_requested()?;
+    if pipe {
+        validate_pipe_arguments(&options.args)?;
+    }
     let chrome_path = match &options.executable_path {
         Some(p) => PathBuf::from(p),
         None => find_chrome().ok_or_else(|| {
@@ -844,6 +941,9 @@ pub fn launch_chrome(options: &LaunchOptions) -> Result<ChromeProcess, String> {
         })?,
     };
     validate_profile_browser_family(options, &chrome_path)?;
+    if pipe {
+        validate_pipe_executable(&chrome_path)?;
+    }
 
     let max_attempts = 3;
     let mut last_err = String::new();
@@ -852,8 +952,13 @@ pub fn launch_chrome(options: &LaunchOptions) -> Result<ChromeProcess, String> {
     let linux_keyring_env = unlock_linux_keyring(options.keychain_password.as_deref())?;
 
     for attempt in 1..=max_attempts {
-        cleanup_stale_profile_lock(&build_chrome_args(options, true)?.user_data_dir);
-        ensure_profile_not_in_use(&build_chrome_args(options, true)?.user_data_dir)?;
+        let profile_dir = build_chrome_args(options, true)?.user_data_dir;
+        if pipe {
+            ensure_pipe_profile_unoccupied(&profile_dir)?;
+        } else {
+            cleanup_stale_profile_lock(&profile_dir);
+            ensure_profile_not_in_use(&profile_dir)?;
+        }
         match try_launch_chrome(&chrome_path, options, &linux_keyring_env, true) {
             Ok(process) => {
                 return Ok(process);
@@ -886,6 +991,12 @@ pub struct ManualChromeLaunch {
 }
 
 pub fn launch_chrome_detached(options: &LaunchOptions) -> Result<ManualChromeLaunch, String> {
+    if pipe_transport_requested()? {
+        return Err(
+            "CDP pipe transport cannot launch detached or leave Chrome open without its controller"
+                .into(),
+        );
+    }
     let chrome_path = match &options.executable_path {
         Some(p) => PathBuf::from(p),
         None => find_chrome().ok_or_else(|| {
@@ -1263,12 +1374,24 @@ fn try_launch_chrome(
     extra_env: &HashMap<String, String>,
     remote_debugging: bool,
 ) -> Result<ChromeProcess, String> {
+    let pipe = pipe_transport_requested()?;
+    if pipe {
+        validate_pipe_executable(chrome_path)?;
+    }
     let ChromeArgs {
         mut args,
         user_data_dir,
         temp_user_data_dir,
         runtime_profile,
     } = build_chrome_args(options, remote_debugging)?;
+    #[cfg(target_os = "linux")]
+    let pending_pipe_launch = if pipe {
+        Some(crate::native::owned_pipe_proof::PendingLaunch::acquire(
+            &user_data_dir,
+        )?)
+    } else {
+        None
+    };
     translate_wsl_mounted_paths_for_windows_chrome(chrome_path, &mut args);
     #[cfg(target_os = "linux")]
     let wsl_windows_launch = is_wsl_mounted_windows_executable(chrome_path);
@@ -1277,7 +1400,16 @@ fn try_launch_chrome(
 
     // Mitigate stale DevToolsActivePort risk (e.g., previous crash left it behind).
     // Puppeteer does similar cleanup before spawning.
-    let _ = std::fs::remove_file(user_data_dir.join("DevToolsActivePort"));
+    if !pipe {
+        let _ = std::fs::remove_file(user_data_dir.join("DevToolsActivePort"));
+    }
+
+    #[cfg(target_os = "linux")]
+    let mut pipe_transport = if pipe {
+        Some(PreparedPipe::new().map_err(|error| format!("Failed to create CDP pipe: {error}"))?)
+    } else {
+        None
+    };
 
     let cleanup_temp_dir = |dir: &Option<PathBuf>| {
         if let Some(ref d) = dir {
@@ -1347,7 +1479,18 @@ fn try_launch_chrome(
         }
     }
 
-    let mut child = cmd.spawn().map_err(|e| {
+    #[cfg(target_os = "linux")]
+    if let Some(prepared) = pipe_transport.as_mut() {
+        if let Err(error) = prepared.configure_command(&mut cmd) {
+            let mut outcome = ProcessShutdownOutcome::default();
+            kill_aux_processes(&mut aux_processes, &mut outcome);
+            return Err(format!("Failed to configure CDP pipe: {error}"));
+        }
+    }
+    let spawn_result = cmd.spawn();
+    // The pre-exec closure owns child pipe ends; retaining Command would prevent EOF.
+    drop(cmd);
+    let mut child = spawn_result.map_err(|e| {
         let mut outcome = ProcessShutdownOutcome::default();
         kill_aux_processes(&mut aux_processes, &mut outcome);
         cleanup_temp_dir(&temp_user_data_dir);
@@ -1372,7 +1515,9 @@ fn try_launch_chrome(
 
     // Prefer DevToolsActivePort, but also watch the drained stderr buffer for
     // platforms that only emit "DevTools listening on ...".
-    let mut ws_url = if remote_debugging {
+    let mut ws_url = if pipe {
+        format!("pipe:{}", uuid::Uuid::new_v4())
+    } else if remote_debugging {
         match wait_for_devtools_endpoint(
             &mut child,
             &user_data_dir,
@@ -1474,12 +1619,12 @@ fn try_launch_chrome(
             } else {
                 "manual".to_string()
             },
-            devtools_port: if remote_debugging {
+            devtools_port: if remote_debugging && !pipe {
                 ws_debug_port(&ws_url).or_else(|| read_runtime_devtools_port(&user_data_dir))
             } else {
                 None
             },
-            ws_url: if remote_debugging {
+            ws_url: if remote_debugging && !pipe {
                 Some(ws_url.clone())
             } else {
                 None
@@ -1488,7 +1633,8 @@ fn try_launch_chrome(
         });
     }
 
-    Ok(ChromeProcess {
+    #[allow(unused_mut)] // The fresh proof is Linux-only.
+    let mut process = ChromeProcess {
         child,
         ws_url,
         launched_executable_path: chrome_path.into(),
@@ -1496,18 +1642,41 @@ fn try_launch_chrome(
         temp_user_data_dir,
         user_data_dir,
         runtime_profile,
-        display_name: options
-            .remote_headed
-            .then(|| launched_display.clone())
-            .flatten(),
+        display_name: if pipe && !options.headless {
+            launched_display.clone()
+        } else {
+            options
+                .remote_headed
+                .then(|| launched_display.clone())
+                .flatten()
+        },
         stderr_log_path,
         stderr_drainer: Some(stderr_drainer),
         aux_processes,
         #[cfg(target_os = "linux")]
         windows_browser,
+        #[cfg(target_os = "linux")]
+        pipe_transport: pipe_transport.map(Box::new),
+        #[cfg(target_os = "linux")]
+        owned_pipe_proof: None,
         #[cfg(unix)]
         pgid,
-    })
+    };
+    #[cfg(target_os = "linux")]
+    if let Some(pending) = pending_pipe_launch {
+        let (read, write) = process
+            .pipe_transport
+            .as_ref()
+            .ok_or("fresh_pipe_transport_missing")?
+            .parent_descriptors();
+        process.owned_pipe_proof = Some(Box::new(pending.bind(
+            process.id(),
+            chrome_path,
+            read,
+            write,
+        )?));
+    }
+    Ok(process)
 }
 
 #[cfg(target_os = "linux")]
@@ -3245,6 +3414,65 @@ mod tests {
     use super::*;
     use crate::test_utils::EnvGuard;
 
+    #[test]
+    fn test_pipe_transport_selection_is_explicit() {
+        assert!(!parse_pipe_transport(None).unwrap());
+        assert!(!parse_pipe_transport(Some("websocket")).unwrap());
+        assert!(parse_pipe_transport(Some("")).is_err());
+        assert!(parse_pipe_transport(Some("auto")).is_err());
+        assert!(parse_pipe_transport(Some("PIPE")).is_err());
+        #[cfg(target_os = "linux")]
+        assert!(parse_pipe_transport(Some("pipe")).unwrap());
+        #[cfg(not(target_os = "linux"))]
+        assert!(parse_pipe_transport(Some("pipe")).is_err());
+    }
+
+    #[test]
+    fn test_pipe_transport_rejects_conflicting_arguments() {
+        for flag in [
+            "--remote-debugging-port=9222",
+            "-remote-debugging-port=9222",
+            "--remote-debugging-pipe",
+            "--remote-debugging-address=0.0.0.0",
+            "--user-data-dir=/other",
+            "--user-data-dir",
+        ] {
+            assert!(validate_pipe_arguments(&[flag.into()]).is_err(), "{flag}");
+        }
+        assert!(validate_pipe_arguments(&["--window-size=1280,720".into()]).is_ok());
+        assert!(validate_pipe_executable(Path::new("/tmp/chrome.EXE")).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_pipe_transport_args_and_detached_refusal() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_CDP_TRANSPORT"]);
+        guard.set("AGENT_BROWSER_CDP_TRANSPORT", "pipe");
+        let profile = TempDir::new("pipe-args");
+        let options = LaunchOptions {
+            profile: Some(profile.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let built = build_chrome_args(&options, true).unwrap();
+        assert!(built
+            .args
+            .iter()
+            .any(|arg| arg == "--remote-debugging-pipe"));
+        assert!(!built
+            .args
+            .iter()
+            .any(|arg| arg.starts_with("--remote-debugging-port")));
+        assert!(build_chrome_args(&options, false).is_err());
+        assert!(launch_chrome_detached(&options)
+            .err()
+            .unwrap()
+            .contains("cannot launch detached"));
+        assert!(ensure_pipe_profile_unoccupied(&profile).is_ok());
+        std::os::unix::fs::symlink("missing-host-999999", profile.join("SingletonLock")).unwrap();
+        assert!(ensure_pipe_profile_unoccupied(&profile).is_err());
+        assert!(fs::symlink_metadata(profile.join("SingletonLock")).is_ok());
+    }
+
     #[cfg(unix)]
     fn spawn_noop_child() -> Child {
         Command::new("/bin/sh")
@@ -4159,6 +4387,10 @@ mod tests {
                 aux_processes: Vec::new(),
                 #[cfg(target_os = "linux")]
                 windows_browser: None,
+                #[cfg(target_os = "linux")]
+                pipe_transport: None,
+                #[cfg(target_os = "linux")]
+                owned_pipe_proof: None,
                 ws_url: String::new(),
                 launched_executable_path: PathBuf::new().into_boxed_path(),
                 owns_process: true,
@@ -4192,6 +4424,10 @@ mod tests {
             aux_processes: Vec::new(),
             #[cfg(target_os = "linux")]
             windows_browser: None,
+            #[cfg(target_os = "linux")]
+            pipe_transport: None,
+            #[cfg(target_os = "linux")]
+            owned_pipe_proof: None,
             ws_url: "ws://127.0.0.1:9222/devtools/browser/handoff".to_string(),
             launched_executable_path: PathBuf::new().into_boxed_path(),
             owns_process: true,

@@ -79,6 +79,10 @@
     "cdpEndpoint": {
       "type": ["string", "null"]
     },
+    "pipeObservation": {
+      "description": "Optional ephemeral owner-bound anonymous-pipe health and target observation. Presence disables network probing; invalid or expired evidence fails closed. Never custody or restart authorization.",
+      "type": ["object", "null"]
+    },
     "viewStreams": {
       "type": "array",
       "items": {

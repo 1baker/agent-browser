@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::io::Write;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use serde_json::Value;
 use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -193,6 +194,9 @@ impl CdpClient {
         headers: Option<Vec<(String, String)>>,
         recovery: Option<&PrivatePermit>,
     ) -> Result<Self, String> {
+        if super::chrome::pipe_transport_requested()? {
+            return Err("cdp_pipe_mode_refuses_network_attachment".into());
+        }
         // Unsupported platforms keep ordinary CDP support, but cannot admit a
         // private interval. On supported platforms all same-endpoint clients
         // share the persistent gate before any reader or observer starts.
@@ -263,7 +267,32 @@ impl CdpClient {
 
         enable_tcp_keepalive(ws_stream.get_ref());
 
-        let (ws_tx, mut ws_rx) = ws_stream.split();
+        let (ws_tx, ws_rx) = ws_stream.split();
+        Ok(Self::from_transport(
+            Box::pin(ws_tx),
+            Box::pin(ws_rx),
+            privacy_gate,
+            privacy_observer,
+            true,
+        ))
+    }
+
+    /// An owned anonymous pipe has no reconnectable address or shared endpoint
+    /// privacy gate. Private journeys requiring endpoint reattachment are not
+    /// supported by this transport; the owning manager must refuse them.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn connect_pipe(pipe: super::pipe::PipeTransport) -> Self {
+        let (tx, rx) = pipe.split();
+        Self::from_transport(Box::pin(tx), Box::pin(rx), None, None, false)
+    }
+
+    fn from_transport(
+        ws_tx: TransportSink,
+        mut ws_rx: TransportStream,
+        privacy_gate: Option<Arc<PrivacyGate>>,
+        privacy_observer: Option<PrivacyObserver>,
+        websocket_keepalive: bool,
+    ) -> Self {
         let ws_tx = Arc::new(Mutex::new(Some(ws_tx)));
         let transport_sealed = Arc::new(AtomicBool::new(false));
 
@@ -377,27 +406,29 @@ impl CdpClient {
         // send fails, the connection is dead and we stop pinging.
         let keepalive_tx = ws_tx.clone();
         let keepalive_sealed = Arc::clone(&transport_sealed);
-        let keepalive_handle = tokio::spawn(async move {
-            let interval = std::time::Duration::from_secs(WS_KEEPALIVE_INTERVAL_SECS);
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(interval) => {}
-                    _ = cancel_rx.changed() => break,
+        let keepalive_handle = websocket_keepalive.then(|| {
+            tokio::spawn(async move {
+                let interval = std::time::Duration::from_secs(WS_KEEPALIVE_INTERVAL_SECS);
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(interval) => {}
+                        _ = cancel_rx.changed() => break,
+                    }
+                    let mut tx = keepalive_tx.lock().await;
+                    if keepalive_sealed.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let Some(tx) = tx.as_mut() else {
+                        break;
+                    };
+                    if tx.send(Message::Ping(Vec::new())).await.is_err() {
+                        break;
+                    }
                 }
-                let mut tx = keepalive_tx.lock().await;
-                if keepalive_sealed.load(Ordering::SeqCst) {
-                    break;
-                }
-                let Some(tx) = tx.as_mut() else {
-                    break;
-                };
-                if tx.send(Message::Ping(Vec::new())).await.is_err() {
-                    break;
-                }
-            }
+            })
         });
 
-        Ok(Self {
+        Self {
             privacy_gate,
             privacy_observer,
             ws_tx,
@@ -408,11 +439,11 @@ impl CdpClient {
             raw_tx,
             shutdown: Mutex::new(TransportShutdown {
                 reader: Some(reader_handle),
-                keepalive: Some(keepalive_handle),
+                keepalive: keepalive_handle,
                 binding: None,
                 failed: false,
             }),
-        })
+        }
     }
 
     pub async fn send_command(
@@ -437,6 +468,33 @@ impl CdpClient {
         session_id: Option<&str>,
         timeout: std::time::Duration,
     ) -> Result<Value, CdpCommandError> {
+        self.send_public_command(method, params, session_id, timeout, false, None)
+            .await
+    }
+
+    /// Broker sessions require an exact flattened-session acknowledgment, not
+    /// merely a matching numeric command id. Legacy callers remain unchanged.
+    pub(crate) async fn send_broker_command(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        session_id: Option<&str>,
+        timeout: std::time::Duration,
+        admission_sealed: Option<&AtomicBool>,
+    ) -> Result<Value, CdpCommandError> {
+        self.send_public_command(method, params, session_id, timeout, true, admission_sealed)
+            .await
+    }
+
+    async fn send_public_command(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        session_id: Option<&str>,
+        timeout: std::time::Duration,
+        strict_session: bool,
+        admission_sealed: Option<&AtomicBool>,
+    ) -> Result<Value, CdpCommandError> {
         let _privacy_lease = self
             .public_lease()
             .map_err(|reason| CdpCommandError::Privacy { reason })?;
@@ -449,7 +507,14 @@ impl CdpClient {
             .transpose()
             .map_err(|reason| CdpCommandError::Privacy { reason })?;
         let result = self
-            .send_command_inner(method, params, session_id, timeout)
+            .send_command_inner_checked(
+                method,
+                params,
+                session_id,
+                timeout,
+                strict_session,
+                admission_sealed,
+            )
             .await;
         if matches!(&result, Ok(_) | Err(CdpCommandError::Protocol { .. })) {
             if let Some(lease) = &mut command_lease {
@@ -605,6 +670,19 @@ impl CdpClient {
         session_id: Option<&str>,
         timeout: std::time::Duration,
     ) -> Result<Value, CdpCommandError> {
+        self.send_command_inner_checked(method, params, session_id, timeout, false, None)
+            .await
+    }
+
+    async fn send_command_inner_checked(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        session_id: Option<&str>,
+        timeout: std::time::Duration,
+        strict_session: bool,
+        admission_sealed: Option<&AtomicBool>,
+    ) -> Result<Value, CdpCommandError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let method_name = method.to_string();
 
@@ -624,6 +702,13 @@ impl CdpClient {
 
         let mut registration = {
             let mut ws_tx = self.ws_tx.lock().await;
+            // Linearize page admission inside the same transport lock used by
+            // detach dispatch. Do not hold this lock while awaiting responses.
+            if admission_sealed.is_some_and(|sealed| sealed.load(Ordering::SeqCst)) {
+                return Err(CdpCommandError::Privacy {
+                    reason: "broker_attachment_sealed",
+                });
+            }
             if self.transport_sealed.load(Ordering::SeqCst) {
                 return Err(CdpCommandError::Privacy {
                     reason: "cdp_transport_closed",
@@ -662,6 +747,16 @@ impl CdpClient {
             }
         };
 
+        if strict_session
+            && (response.session_id.as_deref() != session_id.filter(|s| !s.is_empty())
+                || (response.error.is_none()
+                    && !response.result.as_ref().is_some_and(Value::is_object))
+                || (response.error.is_some() && response.result.is_some()))
+        {
+            return Err(CdpCommandError::Privacy {
+                reason: "broker_cdp_acknowledgment_invalid",
+            });
+        }
         if let Some(error) = response.error {
             return Err(CdpCommandError::Protocol {
                 method: method_name,
@@ -977,18 +1072,11 @@ impl Drop for CdpClient {
     }
 }
 
-type WsTx = Arc<
-    Mutex<
-        Option<
-            futures_util::stream::SplitSink<
-                tokio_tungstenite::WebSocketStream<
-                    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-                >,
-                Message,
-            >,
-        >,
-    >,
->;
+type TransportSink =
+    Pin<Box<dyn Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Send>>;
+type TransportStream =
+    Pin<Box<dyn Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Send>>;
+type WsTx = Arc<Mutex<Option<TransportSink>>>;
 
 /// Lightweight handle for the inspect WebSocket proxy, holding only
 /// the cloneable parts of CdpClient needed for bidirectional message forwarding.
@@ -1063,6 +1151,40 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message;
 
     use super::{CdpClient, CdpCommandError};
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn broker_seal_rejects_command_queued_at_transport_boundary() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (client, peer) = idle_private_peer().await;
+        let client = Arc::new(client);
+        let sealed = Arc::new(AtomicBool::new(false));
+        let lock = client.ws_tx.lock().await;
+        let queued_client = client.clone();
+        let queued_sealed = sealed.clone();
+        let command = tokio::spawn(async move {
+            queued_client
+                .send_broker_command(
+                    "Runtime.enable",
+                    Some(json!({})),
+                    Some("owned"),
+                    Duration::from_secs(1),
+                    Some(&queued_sealed),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        sealed.store(true, Ordering::SeqCst);
+        drop(lock);
+        assert!(matches!(
+            command.await.unwrap(),
+            Err(CdpCommandError::Privacy {
+                reason: "broker_attachment_sealed"
+            })
+        ));
+        assert!(client.pending.lock().unwrap().is_empty());
+        peer.abort();
+    }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     async fn idle_private_peer() -> (CdpClient, tokio::task::JoinHandle<usize>) {

@@ -4591,7 +4591,7 @@ fn task_authority_issue_tool_schema() -> Value {
     json!({
         "name": SERVICE_TASK_AUTHORITY_ISSUE_MCP_TOOL_NAME,
         "title": "Issue bounded browser task authority",
-        "description": "Ask the broker to derive and durably issue the smallest read/navigation authority for an approved plan on one exact retained target. The operation always requires target-bound confirmation.",
+        "description": "Ask the broker to derive and durably issue exact-step browser authority for an approved plan on one exact retained target. Read/navigation remains the compatibility default; higher non-credential consequences require an explicit ceiling and target-bound confirmation.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
@@ -4613,6 +4613,10 @@ fn task_authority_issue_tool_schema() -> Value {
                 },
                 "approvalReference": { "type": "string" },
                 "expiresInSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+                "consequenceCeiling": {
+                    "type": "string",
+                    "enum": ["read_only", "navigation", "page_mutation", "external_mutation", "file_transfer", "script_execution", "browser_lifecycle"]
+                },
                 "steps": {
                     "type": "array",
                     "minItems": 1,
@@ -4699,6 +4703,10 @@ fn task_authority_reconcile_tool_schema() -> Value {
                 },
                 "approvalReference": { "type": "string" },
                 "expiresInSeconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+                "consequenceCeiling": {
+                    "type": "string",
+                    "enum": ["read_only", "navigation", "page_mutation", "external_mutation", "file_transfer", "script_execution", "browser_lifecycle"]
+                },
                 "steps": {
                     "type": "array",
                     "minItems": 1,

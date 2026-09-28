@@ -179,11 +179,15 @@ pub(crate) fn service_access_plan_for_state(
                 .and_then(|selection| service_state.profiles.get(&selection.profile_id))
                 .cloned()
         });
-    let readiness_id = request.readiness_profile_id.clone().or_else(|| {
-        selection
-            .as_ref()
-            .map(|selection| selection.profile_id.clone())
-    });
+    let readiness_id = request
+        .readiness_profile_id
+        .clone()
+        .or_else(|| request.runtime_profile.clone())
+        .or_else(|| {
+            selection
+                .as_ref()
+                .map(|selection| selection.profile_id.clone())
+        });
     let readiness_profile = readiness_id
         .as_deref()
         .and_then(|profile_id| service_state.profiles.get(profile_id));
@@ -5784,5 +5788,67 @@ mod tests {
             .unwrap()
             .iter()
             .any(|reason| reason == "selected_profile_has_readiness_evidence"));
+    }
+
+    #[test]
+    fn explicit_runtime_profile_also_owns_readiness_selection() {
+        let state = ServiceState {
+            profiles: BTreeMap::from([
+                (
+                    "auracall-alias".to_string(),
+                    BrowserProfile {
+                        id: "auracall-alias".to_string(),
+                        name: "AuraCall alias requiring seeding".to_string(),
+                        shared_service_ids: vec!["AuraCall".to_string()],
+                        target_service_ids: vec!["chatgpt".to_string()],
+                        target_readiness: vec![ProfileTargetReadiness {
+                            target_service_id: "chatgpt".to_string(),
+                            state: ProfileReadinessState::NeedsManualSeeding,
+                            manual_seeding_required: true,
+                            evidence: "alias_not_seeded".to_string(),
+                            recommended_action: "seed_alias".to_string(),
+                            ..ProfileTargetReadiness::default()
+                        }],
+                        ..BrowserProfile::default()
+                    },
+                ),
+                (
+                    "chatgpt-pro".to_string(),
+                    BrowserProfile {
+                        id: "chatgpt-pro".to_string(),
+                        name: "Explicit retained profile".to_string(),
+                        target_service_ids: vec!["chatgpt".to_string()],
+                        authenticated_service_ids: vec!["chatgpt".to_string()],
+                        target_readiness: vec![ProfileTargetReadiness {
+                            target_service_id: "chatgpt".to_string(),
+                            state: ProfileReadinessState::Fresh,
+                            evidence: "bounded_auth_probe".to_string(),
+                            recommended_action: "use_profile".to_string(),
+                            ..ProfileTargetReadiness::default()
+                        }],
+                        ..BrowserProfile::default()
+                    },
+                ),
+            ]),
+            ..ServiceState::default()
+        };
+
+        let plan = service_access_plan_for_state(
+            &state,
+            ServiceAccessPlanRequest {
+                service_name: Some("AuraCall".to_string()),
+                target_service_ids: vec!["chatgpt".to_string()],
+                runtime_profile: Some("chatgpt-pro".to_string()),
+                ..ServiceAccessPlanRequest::default()
+            },
+        );
+
+        assert_eq!(plan["selectedProfile"]["id"], "chatgpt-pro");
+        assert_eq!(plan["readiness"]["profileId"], "chatgpt-pro");
+        assert_eq!(plan["readinessSummary"]["manualSeedingRequired"], false);
+        assert_eq!(
+            plan["decision"]["launchPosture"]["cdpAttachmentAllowed"],
+            true
+        );
     }
 }

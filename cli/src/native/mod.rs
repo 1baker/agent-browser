@@ -3,6 +3,15 @@ pub mod actions;
 #[allow(dead_code)]
 pub mod auth;
 #[allow(dead_code)]
+pub(crate) mod broker_attachment;
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) mod broker_authority;
+#[allow(dead_code)]
+pub(crate) mod broker_custody;
+#[allow(dead_code)]
+pub(crate) mod broker_registry;
+#[allow(dead_code)]
 pub mod browser;
 #[allow(dead_code)]
 pub mod browser_session_authority;
@@ -27,13 +36,18 @@ mod display_owner_proof;
 #[allow(dead_code)]
 pub mod element;
 #[cfg(target_os = "linux")]
-mod handoff_custody;
+pub(crate) mod handoff_custody;
 #[allow(dead_code)]
 pub mod inspect_server;
 #[allow(dead_code)]
 pub mod interaction;
+#[cfg(target_os = "linux")]
+pub(crate) mod legacy_migration;
 #[allow(dead_code)]
 pub mod network;
+#[cfg(target_os = "linux")]
+pub(crate) mod owned_pipe_proof;
+pub(crate) mod pipe_observation;
 #[allow(dead_code)]
 pub mod policy;
 #[allow(dead_code)]
@@ -66,6 +80,9 @@ pub mod private_recovery;
 pub mod private_secret_store;
 #[allow(dead_code)]
 pub mod providers;
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) mod publication_admission;
 #[allow(dead_code)]
 pub mod publication_status;
 #[allow(dead_code)]

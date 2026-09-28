@@ -4944,6 +4944,10 @@ pub struct BrowserProcess {
     pub display_allocation_id: Option<String>,
     pub pid: Option<u32>,
     pub cdp_endpoint: Option<String>,
+    /// Ephemeral owner-bound pipe health/target observation, never custody authority.
+    /// Presence selects pipe reconciliation; invalid/stale data must not fall back to HTTP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipe_observation: Option<Value>,
     pub view_streams: Vec<ViewStream>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachability: Option<Value>,
@@ -4968,6 +4972,7 @@ impl Default for BrowserProcess {
             display_allocation_id: None,
             pid: None,
             cdp_endpoint: None,
+            pipe_observation: None,
             view_streams: Vec::new(),
             attachability: None,
             active_session_ids: Vec::new(),

@@ -694,6 +694,18 @@ pub fn persist_service_browser_record_in_repository(
                         .and_then(|browser| browser.browser_build_proof.clone()),
                 )
             };
+        let pipe_identity = cdp_endpoint.as_deref().filter(|endpoint| endpoint.starts_with("pipe:"));
+        let pipe_observation = if let Some(identity) = pipe_identity {
+            previous.as_ref().filter(|browser| browser.pid == pid)
+                .and_then(|browser| browser.pipe_observation.clone())
+                .filter(|observation| observation["pipeIdentity"] == identity)
+                .or_else(|| Some(json!({"transport":"anonymous_pipe", "pipeIdentity":identity, "status":"pending"})))
+        } else { None };
+        let health = if pipe_identity.is_some() && pipe_observation.as_ref().is_none_or(|observation|
+            super::pipe_observation::validate(observation, &id, pid, &[session_id.to_string()]).is_err()) {
+            BrowserHealth::CdpDisconnected
+        } else { health };
+        let cdp_endpoint = if pipe_identity.is_some() { None } else { cdp_endpoint.clone() };
         let mut browser = BrowserProcess {
             id: id.clone(),
             profile_id: profile_id.clone(),
@@ -709,6 +721,7 @@ pub fn persist_service_browser_record_in_repository(
                 .and_then(|browser| browser.display_allocation_id.clone()),
             pid,
             cdp_endpoint,
+            pipe_observation,
             view_streams,
             active_session_ids: vec![session_id.to_string()],
             tab_handles: previous
@@ -1105,7 +1118,8 @@ pub(crate) fn stale_browser_process_record(
         display_name: previous.and_then(|browser| browser.display_name.clone()),
         display_allocation_id: previous.and_then(|browser| browser.display_allocation_id.clone()),
         pid,
-        cdp_endpoint,
+        cdp_endpoint: cdp_endpoint.filter(|endpoint| !endpoint.starts_with("pipe:")),
+        pipe_observation: previous.and_then(|browser| browser.pipe_observation.as_ref()).map(|observation| json!({"transport":"anonymous_pipe", "pipeIdentity":observation["pipeIdentity"], "status":"unavailable"})),
         view_streams: previous
             .map(|browser| browser.view_streams.clone())
             .unwrap_or_default(),
@@ -1519,6 +1533,21 @@ pub fn merge_reconciled_service_state(
     before: &ServiceState,
     reconciled: &ServiceState,
 ) {
+    // A concurrent pipe heartbeat/replacement wins over an older reconciliation.
+    // In particular, never resurrect tabs from the previous owner snapshot.
+    let changed_pipe_browsers: BTreeSet<String> = before
+        .browsers
+        .keys()
+        .chain(target.browsers.keys())
+        .filter(|id| {
+            let old = before.browsers.get(*id);
+            let current = target.browsers.get(*id);
+            (old.is_some_and(|browser| browser.pipe_observation.is_some())
+                || current.is_some_and(|browser| browser.pipe_observation.is_some()))
+                && old != current
+        })
+        .cloned()
+        .collect();
     if reconciled.control_plane.is_some() {
         target.control_plane = reconciled.control_plane.clone();
     }
@@ -1527,6 +1556,9 @@ pub fn merge_reconciled_service_state(
     }
 
     for (id, reconciled_browser) in &reconciled.browsers {
+        if changed_pipe_browsers.contains(id) {
+            continue;
+        }
         match target.browsers.get_mut(id) {
             Some(target_browser) => {
                 target_browser.health = reconciled_browser.health;
@@ -1556,9 +1588,19 @@ pub fn merge_reconciled_service_state(
     }
 
     for (id, reconciled_tab) in &reconciled.tabs {
+        if changed_pipe_browsers.contains(&reconciled_tab.browser_id) {
+            continue;
+        }
         target.tabs.insert(id.clone(), reconciled_tab.clone());
     }
     for id in before.tabs.keys() {
+        if before
+            .tabs
+            .get(id)
+            .is_some_and(|tab| changed_pipe_browsers.contains(&tab.browser_id))
+        {
+            continue;
+        }
         if reconciled.tabs.contains_key(id) {
             continue;
         }
@@ -1573,6 +1615,13 @@ pub fn merge_reconciled_service_state(
     }
 
     for (id, reconciled_session) in &reconciled.sessions {
+        if reconciled_session
+            .browser_ids
+            .iter()
+            .any(|id| changed_pipe_browsers.contains(id))
+        {
+            continue;
+        }
         let lease_changed_after_reconcile_started = before
             .sessions
             .get(id)
@@ -1699,6 +1748,34 @@ pub fn merge_reconciled_service_state(
         push_service_event(target, event.clone());
     }
 
+    let invalid_pipe_browsers = target
+        .browsers
+        .iter_mut()
+        .filter_map(|(id, browser)| {
+            let observation = browser.pipe_observation.as_ref()?;
+            let error = super::pipe_observation::validate(
+                observation,
+                id,
+                browser.pid,
+                &browser.active_session_ids,
+            )
+            .err()
+            .or_else(|| {
+                browser
+                    .cdp_endpoint
+                    .as_ref()
+                    .map(|_| "pipe_observation_network_endpoint_forbidden".into())
+            });
+            error.map(|error| {
+                browser.health = BrowserHealth::CdpDisconnected;
+                browser.last_error = Some(error);
+                id.clone()
+            })
+        })
+        .collect::<Vec<_>>();
+    for id in invalid_pipe_browsers {
+        close_browser_tabs(target, &id);
+    }
     target.refresh_derived_views();
 }
 
@@ -1709,6 +1786,37 @@ pub async fn refresh_persisted_browser_health(state: &mut ServiceState) {
 }
 
 async fn refresh_browser_record_health(browser: &mut BrowserProcess) {
+    if browser.pipe_observation.is_some()
+        && matches!(
+            browser.health,
+            BrowserHealth::Closing | BrowserHealth::NotStarted | BrowserHealth::Launching
+        )
+    {
+        return;
+    }
+    if let Some(observation) = browser.pipe_observation.as_ref() {
+        match super::pipe_observation::validate(
+            observation,
+            &browser.id,
+            browser.pid,
+            &browser.active_session_ids,
+        ) {
+            Ok(_) if browser.cdp_endpoint.is_none() => {
+                browser.health = BrowserHealth::Ready;
+                browser.last_error = None;
+                browser.last_health_observation = None;
+            }
+            result => {
+                browser.health = BrowserHealth::CdpDisconnected;
+                browser.last_error = Some(
+                    result
+                        .err()
+                        .unwrap_or_else(|| "pipe_observation_network_endpoint_forbidden".into()),
+                );
+            }
+        }
+        return;
+    }
     if matches!(
         browser.health,
         BrowserHealth::NotStarted | BrowserHealth::Launching | BrowserHealth::Closing
@@ -1769,6 +1877,26 @@ async fn reconcile_live_browser_targets(state: &mut ServiceState) {
         .collect::<Vec<_>>();
 
     for (browser_id, browser) in browser_records {
+        if let Some(observation) = browser.pipe_observation.as_ref() {
+            let targets = super::pipe_observation::validate(
+                observation,
+                &browser_id,
+                browser.pid,
+                &browser.active_session_ids,
+            )
+            .and_then(|targets| {
+                serde_json::from_value::<Vec<CdpHttpTargetInfo>>(json!(targets))
+                    .map_err(|error| error.to_string())
+            });
+            if browser.health == BrowserHealth::Ready && browser.cdp_endpoint.is_none() {
+                if let Ok(targets) = targets {
+                    reconcile_browser_targets(state, &browser_id, &browser, targets);
+                    continue;
+                }
+            }
+            close_browser_tabs(state, &browser_id);
+            continue;
+        }
         if browser.health != BrowserHealth::Ready {
             close_browser_tabs(state, &browser_id);
             continue;
@@ -2940,6 +3068,97 @@ mod tests {
             browsers: BTreeMap::from([(browser.id.clone(), browser)]),
             ..ServiceState::default()
         }
+    }
+
+    #[tokio::test]
+    async fn pipe_observation_pending_never_probes_even_supplied_network_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut state = service_state_with_browser(BrowserProcess {
+            id: "session:pipe".into(),
+            pid: Some(std::process::id()),
+            health: BrowserHealth::Ready,
+            active_session_ids: vec!["pipe".into()],
+            cdp_endpoint: Some(format!("http://{}", listener.local_addr().unwrap())),
+            pipe_observation: Some(json!({"transport":"anonymous_pipe", "status":"pending"})),
+            ..Default::default()
+        });
+        reconcile_service_state(&mut state).await;
+        assert_eq!(
+            state.browsers["session:pipe"].health,
+            BrowserHealth::CdpDisconnected
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pipe_observation_merge_preserves_replacement_and_newer_heartbeat() {
+        for prior_pipe in [false, true] {
+            let mut before = service_state_with_browser(BrowserProcess {
+                id: "session:pipe".into(),
+                pid: Some(123),
+                health: BrowserHealth::Ready,
+                pipe_observation: prior_pipe.then(|| json!({"pipeIdentity":"old"})),
+                ..Default::default()
+            });
+            before.tabs.insert(
+                "target:old".into(),
+                BrowserTab {
+                    id: "target:old".into(),
+                    browser_id: "session:pipe".into(),
+                    lifecycle: TabLifecycle::Closed,
+                    ..Default::default()
+                },
+            );
+            let mut reconciled = before.clone();
+            reconciled.tabs.get_mut("target:old").unwrap().lifecycle = TabLifecycle::Ready;
+            let mut current = before.clone();
+            let browser = current.browsers.get_mut("session:pipe").unwrap();
+            browser.pipe_observation = Some(json!({"pipeIdentity":"new"}));
+            browser.health = BrowserHealth::CdpDisconnected;
+            let expected = current.clone();
+            merge_reconciled_service_state(&mut current, &before, &reconciled);
+            assert_eq!(
+                current.browsers["session:pipe"].pipe_observation,
+                expected.browsers["session:pipe"].pipe_observation
+            );
+            assert_eq!(
+                current.browsers["session:pipe"].health,
+                BrowserHealth::CdpDisconnected
+            );
+            assert_eq!(current.tabs["target:old"].lifecycle, TabLifecycle::Closed);
+        }
+    }
+
+    #[test]
+    fn pipe_observation_persistence_has_no_network_endpoint() {
+        let home = temp_home("pipe-observation-persistence");
+        let repository =
+            LockedServiceStateRepository::new(JsonServiceStateStore::new(home.join("state.json")));
+        persist_service_browser_record_in_repository(
+            &repository,
+            "pipe",
+            BrowserHost::LocalHeadless,
+            BrowserHealth::Ready,
+            Some(std::process::id()),
+            Some("pipe:fixture".into()),
+            None,
+            None,
+        )
+        .unwrap();
+        let state = repository.load_snapshot().unwrap();
+        assert!(state.browsers["session:pipe"].cdp_endpoint.is_none());
+        assert_eq!(
+            state.browsers["session:pipe"]
+                .pipe_observation
+                .as_ref()
+                .unwrap()["status"],
+            "pending"
+        );
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     fn temp_home(label: &str) -> PathBuf {

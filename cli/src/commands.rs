@@ -2033,6 +2033,14 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                 }
             })?;
             match subcommand {
+                "migration-plan" | "migration-prepare" => {
+                    let expected = if subcommand == "migration-plan" { 3 } else { 4 };
+                    if rest.len() != expected {
+                        return Err(ParseError::MissingArguments { context:"handoff migration".into(), usage:"handoff migration-plan <target-id> <canonical-url> | handoff migration-prepare <target-id> <canonical-url> <plan-sha256>" });
+                    }
+                    Ok(json!({"id":id,"action":"runtime_legacy_migration","targetId":rest[1],"url":rest[2],"approvedDigest":rest.get(3)}))
+                }
+                "migration-resume" if rest.len() == 1 => Ok(json!({"id":id,"action":"runtime_handoff_resume","prospectiveMigration":true})),
                 "prepare" => Ok(json!({ "id": id, "action": "runtime_handoff_prepare" })),
                 "resume" => Ok(json!({ "id": id, "action": "runtime_handoff_resume" })),
                 _ => Err(ParseError::UnknownSubcommand {

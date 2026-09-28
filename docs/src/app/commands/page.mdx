@@ -124,11 +124,38 @@ retained browser's process, profile and debugging listener. The replacement hold
 a profile-scoped exclusive lock and persists claimed and committed receipts.
 Failed transfers preserve evidence and block ordinary work across restarts.
 Diagnostics exposes `controlPlaneAttestation`, checked against the current
-service receipt, lease and target. Remote-headed operation additionally requires
+service receipt, lease and target. All transfer proofs require ready browser/tab
+records, valid lease expiry and matching record identities.
+Successful display proofs expose `verified: true`; failure diagnostics expose
+`displayOwner.verified: false`. Display verification is not OS-account isolation.
+Remote-headed operation additionally requires
 the configured route user's verified kernel display identity. Legacy records
 never qualify as complete proof. Transferred sessions deny direct dashboard CDP
 input, background handlers, private journeys and unsupported commands; use the
 governed command queue. This does not automatically migrate a live legacy daemon.
+
+Explicit Linux migration uses `handoff migration-plan <target-id> <canonical-url>`,
+`handoff migration-prepare <target-id> <canonical-url> <plan-sha256>` and
+`handoff migration-resume`. The read-only plan witnesses the existing authenticated
+source without starting or replacing a daemon. Prepare verifies the approved plan
+and dispatches once on the same kernel-witnessed socket. Separate prospective
+enrollment preserves the original legacy descriptor bytes; it does not fabricate
+historical v2 source ownership. Resume requires source exit, exact retained
+browser/profile/session/target/URL/display bindings and a destination lease before
+committing custody. Unknown acknowledgements and identity drift fail closed.
+After the initial exact commit, replacement-daemon recovery may accept an evolved
+canonical URL only for that same target and origin, with all other identity bound
+to the committed receipt and the prior destination proven gone. Target drift and
+cross-origin navigation continue to fail closed. A reviewed schema-3
+stale-snapshot descriptor can bind one explicit successor target when the enrolled
+target is no longer ready, the successor is ready on the enrolled origin, and the
+prior destination is proven gone. This operator recovery is plan-digest-bound;
+ordinary resume does not discover or choose a successor target.
+Install the reviewed runtime before enrollment, keep maintenance exclusion held
+during migration, and do not use ordinary publisher recovery on an enrolled
+session. Verify fresh complete attestation before browser input.
+Linux display verification supports the same-name abstract X socket only when
+the filesystem endpoint is absent; owner or access failures never fall back.
 
 The local development publisher runs this protocol automatically around
 executable replacement. Browser PIDs, DevTools ports, profiles, and tabs remain
@@ -814,6 +841,11 @@ agent-browser errors --clear          # Clear error log
 agent-browser highlight <sel>         # Highlight element
 agent-browser inspect                 # Open Chrome DevTools for the active page
 ```
+
+Inspector replacement and browser close wait for verified inspector-session
+detach before tearing down the browser transport. Rejected or missing detach
+acknowledgments remain cleanup failures on retry. Existing custody restrictions
+on inspector/raw CDP access remain unchanged.
 
 ## Auth vault
 

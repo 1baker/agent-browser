@@ -2,6 +2,23 @@
 
 Browser automation CLI for AI agents. Fast native Rust CLI.
 
+Experimental source-only broker transport: Linux transferred-custody workers can
+accept `cdp_attach` with `brokerTransport: true`, an exact `serviceTabHandle`, and
+`expectedUrl`. Acquisition recomputes the access plan and returns an opaque binding,
+not a Chrome endpoint. Authenticated internal `__broker_transport` carries commands
+and verified detach. Event reads require a unique `requestId`, `cursor`, and
+`taskContext`, with explicit `broker_events` admission and a positive
+`taskEvidenceBytes` limit (default 4096 bytes for the full serialized response).
+Every authorized poll, including an empty poll, consumes its issued task step.
+Confirmed acquisition retains the original policy and confirmation rules for
+subsequent commands; approval to attach is not approval to operate the page.
+Required-mode ordered plans may include `cdp_attach` with the exact current `url`.
+Execution requires `brokerTransport: true`, matching `url`/`expectedUrl`/target,
+broker-issued v2 authority and its own confirmation; the read-only ceiling is
+unchanged. Raw attach and other lifecycle actions are not issued by this path.
+Do not invoke it through the retrying CLI connector. Crash reconciliation
+and AuraCall routing are not enabled; this is not installed or operational readiness.
+
 ## Installation
 
 ### GitHub Release Binary (recommended)
@@ -371,10 +388,37 @@ Legacy version-1 records remain readable but never provide complete custody proo
 Diagnostics reports `controlPlaneAttestation`; complete proof requires the
 committed receipt to match current service lease/tab state and, for remote-headed
 browsers, the configured route user's kernel-observed display owner.
+Expired or malformed lease expiry, non-ready browser/tab state, and mismatched
+record identities fail closed. Successful display proofs report `verified: true`
+without claiming exclusive OS-account isolation; denied diagnostics report false.
 Transferred sessions use governed queued commands only: direct dashboard CDP
 input, background handlers, private journeys, and unsupported commands are denied.
 This implementation does not automatically upgrade an already running legacy
 controller or authorize installation into an unverified live runtime.
+
+Linux operators can explicitly enroll a legacy retained session prospectively
+with `handoff migration-plan <target-id> <canonical-url>`, followed by
+`handoff migration-prepare <target-id> <canonical-url> <plan-sha256>` and
+`handoff migration-resume`. Plan reads the authenticated source without launching
+or replacing a daemon. Prepare rechecks the approved identity, uses that same
+kernel-witnessed socket exactly once, and preserves the original v1 descriptor
+alongside separate migration evidence. Resume requires verified source exit,
+unchanged browser/profile/session/target/URL/display bindings and an exclusive
+destination lease before committing custody. An uncertain acknowledgement stops
+the sequence; do not repeat prepare or use ordinary recovery to bypass it.
+After that first exact commit, a replacement daemon may recover the same target
+at an evolved canonical URL only when the prior committed receipt matches every
+other identity, the prior destination is proven gone, and the URL remains on the
+enrolled origin. A separately reviewed schema-3 stale-snapshot descriptor may
+advance to one explicitly bound successor target only when the enrolled target is
+no longer ready, the successor is ready on the enrolled origin, and the prior
+committed destination is proven gone. This path is digest-bound operator recovery;
+ordinary resume never guesses a replacement target. Unbound target drift and
+cross-origin navigation still fail closed.
+Install and verify the reviewed runtime before enrollment. Do not run the ordinary
+publisher across an enrolled migration. Unit tests are not live custody proof.
+Linux display ownership accepts the exact same-name abstract X socket only when
+the filesystem endpoint is absent. Ownership failures never trigger fallback.
 
 Service mode is the persistent control plane for long-lived automation. It keeps profile, session, browser, tab, monitor, job, incident, event, site-policy, provider, and challenge state aligned across CLI commands, the HTTP API, MCP resources/tools, and the dashboard. Agents should include `serviceName`, `agentName`, and `taskName` when available so multi-service work remains traceable. The normal service request is identity-first: ask for a tab or browser action, target site or login identity, and the owning service, agent, and task. agent-browser selects or reuses the managed profile and browser, serializes CDP work through the queue, and records the state needed for debugging. Service profile records and profile allocation rows include `targetReadiness`, a no-launch readiness view for target services. Google targets without authenticated evidence report `needs_manual_seeding` and recommend detached `runtime login` before attachable automation. Once a managed profile lists the target in `authenticatedServiceIds`, readiness changes to `seeded_unknown_freshness` and access-plan no longer treats first-login seeding as a required manual action. Access-plan responses also include `monitorFindings` and `decision.monitorAttentionRequired` when an active `profile_readiness` monitor is faulted for the requested target identity. When a matching active `profile_readiness` monitor is due or never checked, access-plan sets `monitorFindings.profileReadinessProbeDue`, fills `decision.monitorRunDue`, and recommends `run_due_profile_readiness_monitor` before the caller trusts the profile. Use an explicit managed runtime profile when you know where the needed login state lives; use `--profile <path>` only when bringing an external profile is part of the contract.
 
@@ -639,6 +683,11 @@ agent-browser state clear [name]      # Clear states for session
 agent-browser state clear --all       # Clear all saved states
 agent-browser state clean --older-than <days>  # Delete old states
 ```
+
+Inspector replacement and browser close wait for an acknowledged detach of each
+inspector session. A failed or missing acknowledgment remains a cleanup error on
+retry; browser teardown does not proceed after that error. This does not enable
+inspector access on custody modes that already prohibit raw CDP export.
 
 ### Navigation
 
@@ -2205,6 +2254,34 @@ The `--allow-file-access` flag adds Chromium flags (`--allow-file-access-from-fi
 **Note:** This flag only works with Chromium. For security, it's disabled by default.
 
 ## CDP Mode
+
+Experimental Linux owned-browser launches can opt into `AGENT_BROWSER_CDP_TRANSPORT=pipe`.
+After initial `launch` or `tab_new` acquisition, every pipe command requires current
+service custody checks, even if it omits a tab handle. A timeout never replaces or
+closes the active pipe target automatically; recovery requires a controlled restart.
+This uses anonymous command/response pipes instead of a debugging port. The default
+remains `websocket`. Pipe mode refuses external attachment, cloud providers,
+leave-open/detach, handoff, raw inspection/stream export, recording, and automatic
+relaunch after connection loss. It does not support private journeys requiring
+reattachment. An existing browser needs a separately approved controlled restart;
+setting this variable cannot migrate a live browser. This removes network CDP
+access, not access by a compromised OS account, and does not by itself establish complete
+control-plane attestation. The opaque `pipe:` identity is not a connectable URL.
+Proxy authentication, domain filtering, request routes, and origin-scoped headers
+are also rejected because pipe mode does not run the background Fetch handler.
+Service health and tab reconciliation use owner-produced pipe observations with
+exact process/session binding and a 15-second monotonic expiry, refreshed every
+five seconds while the daemon is idle and after commands. The service stores no
+network endpoint and fails closed on invalid or expired observations. These are
+health snapshots, not authentication or lifecycle authority.
+Fresh Linux pipe launches separately retain an in-memory profile lock and exact
+process/descriptor proof created before and immediately after spawn. Diagnostics
+use the distinct `fresh_owned_pipe_launch` basis only when the exclusive service
+lease, profile, observed active target, and required remote-display owner also
+match. Saved JSON cannot restore this proof or adopt a legacy process. Governed
+commands recheck it before effects. Retained deployment still requires the
+backup-protected controlled restart; headless smoke tests do not verify the live
+remote desktop or authorize a broader runtime replacement.
 
 Connect to an existing browser via Chrome DevTools Protocol:
 

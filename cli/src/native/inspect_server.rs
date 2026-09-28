@@ -5,7 +5,7 @@ use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -111,12 +111,13 @@ async fn accept_loop(
 ) -> Result<(), String> {
     let mut connections = JoinSet::new();
     let mut task_failed = false;
+    let (connection_stop, _) = watch::channel(false);
     loop {
         let (stream, _) = tokio::select! {
             biased;
             _ = &mut stop_rx => break,
             joined = connections.join_next(), if !connections.is_empty() => {
-                task_failed |= joined.is_some_and(|result| result.is_err());
+                task_failed |= joined.is_some_and(|result| !matches!(result, Ok(Ok(()))));
                 continue;
             }
             accepted = listener.accept() => match accepted {
@@ -128,19 +129,26 @@ async fn accept_loop(
         let proxy = proxy.clone();
         let tid = target_id.clone();
         let chp = chrome_host_port.clone();
+        let stop = connection_stop.subscribe();
 
         connections.spawn(async move {
-            if let Err(e) = handle_connection(stream, proxy, tid, chp, proxy_port).await {
-                let _ = writeln!(std::io::stderr(), "[inspect] connection error: {}", e);
-            }
+            handle_connection(stream, proxy, tid, chp, proxy_port, stop).await
         });
     }
     drop(listener);
-    connections.abort_all();
-    while let Some(result) = connections.join_next().await {
-        if let Err(error) = result {
-            task_failed |= !error.is_cancelled();
+    let _ = connection_stop.send(true);
+    // Let acquired sessions complete one acknowledged detach. Cancellation of
+    // the outer waiter does not cancel this server-owned cleanup task.
+    let drained = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        while let Some(result) = connections.join_next().await {
+            task_failed |= !matches!(result, Ok(Ok(())));
         }
+    })
+    .await;
+    if drained.is_err() {
+        task_failed = true;
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
     }
     if task_failed {
         Err("inspect_connection_cleanup_unverified".to_string())
@@ -155,24 +163,30 @@ async fn handle_connection(
     target_id: String,
     chrome_host_port: String,
     proxy_port: u16,
+    mut stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
     // Peek at the request line to determine routing WITHOUT consuming bytes.
     // This is critical: tokio_tungstenite::accept_async needs to read the full
     // HTTP upgrade request itself, so we must not consume anything for WS paths.
     let mut peek_buf = [0u8; 32];
-    let n = stream
-        .peek(&mut peek_buf)
-        .await
-        .map_err(|e| e.to_string())?;
+    let n = tokio::select! {
+        biased;
+        _ = wait_for_stop(&mut stop) => return Ok(()),
+        result = stream.peek(&mut peek_buf) => result.map_err(|e| e.to_string())?,
+    };
     let peek = String::from_utf8_lossy(&peek_buf[..n]);
 
     if peek.starts_with("GET /ws") {
-        return handle_ws_proxy(stream, proxy, target_id).await;
+        return handle_ws_proxy(stream, proxy, target_id, stop).await;
     }
 
     if peek.starts_with("GET / ") {
         let buf_reader = BufReader::new(stream);
-        return handle_http_redirect(buf_reader, chrome_host_port, proxy_port).await;
+        return tokio::select! {
+            biased;
+            _ = wait_for_stop(&mut stop) => Ok(()),
+            result = handle_http_redirect(buf_reader, chrome_host_port, proxy_port) => result,
+        };
     }
 
     // Unknown request -- consume and respond 404
@@ -231,10 +245,14 @@ async fn handle_ws_proxy(
     stream: tokio::net::TcpStream,
     proxy: Arc<InspectProxyHandle>,
     target_id: String,
+    mut stop: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let ws_stream = tokio_tungstenite::accept_async(stream)
-        .await
-        .map_err(|e| format!("WebSocket handshake failed: {}", e))?;
+    let ws_stream = tokio::select! {
+        biased;
+        _ = wait_for_stop(&mut stop) => return Ok(()),
+        result = tokio_tungstenite::accept_async(stream) =>
+            result.map_err(|e| format!("WebSocket handshake failed: {}", e))?,
+    };
 
     // Create a dedicated CDP session for this DevTools connection.
     // Each connection gets its own session so domain enablements (DOM.enable, etc.)
@@ -335,19 +353,63 @@ async fn handle_ws_proxy(
     };
 
     tokio::select! {
+        biased;
+        _ = wait_for_stop(&mut stop) => {},
         _ = chrome_to_devtools => {},
         _ = devtools_to_chrome => {},
     }
 
-    // Clean up the CDP session so Chrome doesn't leak attached targets
-    let detach_cmd = format!(
-        r#"{{"id":{},"method":"Target.detachFromTarget","params":{{"sessionId":"{}"}}}}"#,
-        ATTACH_ID.fetch_sub(1, Ordering::SeqCst),
-        session_id
-    );
-    let _ = proxy.send_raw(detach_cmd).await;
+    detach_session(&proxy, &session_id).await
+}
 
-    Ok(())
+async fn wait_for_stop(stop: &mut watch::Receiver<bool>) {
+    while !*stop.borrow_and_update() {
+        if stop.changed().await.is_err() {
+            break;
+        }
+    }
+}
+
+/// Send exactly once and require a matching browser-level acknowledgment.
+/// Timeout, channel loss and protocol errors are cleanup uncertainty, not success.
+async fn detach_session(proxy: &InspectProxyHandle, session_id: &str) -> Result<(), String> {
+    let id = ATTACH_ID.fetch_sub(1, Ordering::SeqCst);
+    let mut responses = proxy.subscribe_raw();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        proxy
+            .send_raw(
+                serde_json::json!({
+                    "id": id,
+                    "method": "Target.detachFromTarget",
+                    "params": {"sessionId": session_id},
+                })
+                .to_string(),
+            )
+            .await?;
+        loop {
+            let raw = responses
+                .recv()
+                .await
+                .map_err(|_| "inspect_detach_channel_lost")?;
+            let Ok(response) = serde_json::from_str::<serde_json::Value>(&raw.text) else {
+                continue;
+            };
+            if response.get("id").and_then(serde_json::Value::as_i64) != Some(id) {
+                continue;
+            }
+            if response.get("sessionId").is_some()
+                || response.get("error").is_some()
+                || !response
+                    .get("result")
+                    .is_some_and(serde_json::Value::is_object)
+            {
+                return Err("inspect_detach_acknowledgment_invalid".into());
+            }
+            return Ok(());
+        }
+    })
+    .await
+    .map_err(|_| "inspect_detach_acknowledgment_timeout".to_string())?
 }
 
 fn inject_session_id(json: &str, session_id: &str) -> String {
@@ -380,11 +442,29 @@ mod tests {
     use super::super::cdp::client::CdpClient;
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
+    #[derive(Clone, Copy, Debug)]
+    enum DetachReply {
+        Accepted,
+        Rejected,
+        Missing,
+        WrongSession,
+    }
+
     async fn synthetic_proxy() -> (CdpClient, JoinHandle<()>) {
+        let (client, peer, _) = synthetic_proxy_with_detach_reply(DetachReply::Accepted).await;
+        (client, peer)
+    }
+
+    async fn synthetic_proxy_with_detach_reply(
+        detach_reply: DetachReply,
+    ) -> (CdpClient, JoinHandle<()>, Arc<AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let detaches = Arc::new(AtomicUsize::new(0));
+        let peer_detaches = detaches.clone();
         let peer = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
@@ -396,6 +476,20 @@ mod tests {
                     json!({"method": request["method"]})
                 };
                 let mut response = json!({"id": request["id"], "result": result});
+                if request["method"] == "Target.detachFromTarget" {
+                    assert_eq!(request["params"]["sessionId"], "synthetic-inspect-session");
+                    peer_detaches.fetch_add(1, Ordering::SeqCst);
+                    match detach_reply {
+                        DetachReply::Accepted => {}
+                        DetachReply::Rejected => {
+                            response = json!({"id": request["id"], "error": {"code": -32000, "message": "synthetic rejection"}});
+                        }
+                        DetachReply::Missing => continue,
+                        DetachReply::WrongSession => {
+                            response["sessionId"] = json!("foreign-session")
+                        }
+                    }
+                }
                 if let Some(session_id) = request.get("sessionId") {
                     response["sessionId"] = session_id.clone();
                 }
@@ -405,12 +499,13 @@ mod tests {
             }
         });
         let client = CdpClient::connect(&format!("ws://{addr}")).await.unwrap();
-        (client, peer)
+        (client, peer, detaches)
     }
 
     #[tokio::test]
     async fn shutdown_joins_connected_websocket_and_preserves_upstream() {
-        let (client, peer) = synthetic_proxy().await;
+        let (client, peer, detaches) =
+            synthetic_proxy_with_detach_reply(DetachReply::Accepted).await;
         let mut server = InspectServer::start(
             client.inspect_handle(),
             "synthetic-target".into(),
@@ -438,6 +533,7 @@ mod tests {
             .unwrap()
             .unwrap();
         server.shutdown_and_wait().await.unwrap();
+        assert_eq!(detaches.load(Ordering::SeqCst), 1);
         let closed = tokio::time::timeout(Duration::from_secs(2), ws.next())
             .await
             .unwrap();
@@ -448,6 +544,52 @@ mod tests {
         assert!(tokio::net::TcpStream::connect(("127.0.0.1", server.port()))
             .await
             .is_err());
+        client
+            .send_command("Browser.getVersion", None, None)
+            .await
+            .unwrap();
+        peer.abort();
+        let _ = peer.await;
+    }
+
+    #[tokio::test]
+    async fn detach_rejection_is_propagated_and_not_replayed_on_shutdown_retry() {
+        assert_detach_failure(DetachReply::Rejected).await;
+        assert_detach_failure(DetachReply::Missing).await;
+        assert_detach_failure(DetachReply::WrongSession).await;
+    }
+
+    async fn assert_detach_failure(reply: DetachReply) {
+        let (client, peer, detaches) = synthetic_proxy_with_detach_reply(reply).await;
+        let mut server = InspectServer::start(
+            client.inspect_handle(),
+            "synthetic-target".into(),
+            "127.0.0.1:1".into(),
+        )
+        .await
+        .unwrap();
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/ws", server.port()))
+                .await
+                .unwrap();
+        ws.send(Message::Text(
+            json!({"id": 51, "method": "Runtime.enable"}).to_string(),
+        ))
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        for _ in 0..2 {
+            let error = tokio::time::timeout(Duration::from_secs(7), server.shutdown_and_wait())
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(error, "inspect_connection_cleanup_unverified");
+        }
+        assert_eq!(detaches.load(Ordering::SeqCst), 1);
         client
             .send_command("Browser.getVersion", None, None)
             .await

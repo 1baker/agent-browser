@@ -506,6 +506,24 @@ fn successful_exit_response(exits_daemon: bool, response: &Value) -> bool {
     exits_daemon && response.get("success").and_then(Value::as_bool) == Some(true)
 }
 
+/// Cross-repository fixture enters the production authenticated handler, not a
+/// test implementation of dispatch. It is absent from production binaries.
+#[cfg(all(test, target_os = "linux"))]
+pub(super) async fn broker_fixture_connection(
+    stream: tokio::net::UnixStream,
+    control_plane: ControlPlaneHandle,
+) {
+    handle_connection(
+        stream,
+        control_plane,
+        None,
+        None,
+        Arc::new(Notify::new()),
+        Arc::new("cross-process-fixture-token".into()),
+    )
+    .await;
+}
+
 async fn handle_connection<S>(
     stream: S,
     control_plane: ControlPlaneHandle,
@@ -571,6 +589,42 @@ async fn handle_connection<S>(
                 }
 
                 let action = cmd.get("action").and_then(|v| v.as_str());
+                // Internal capability traffic is authenticated above and must
+                // not queue behind a pending evaluation. One socket per
+                // concurrent operation; no action here can create a capability.
+                if action == Some("__broker_transport") {
+                    let id = cmd.get("id").and_then(Value::as_str).unwrap_or("");
+                    let result = if cmd.as_object().is_some_and(|object| {
+                        object
+                            .keys()
+                            .all(|key| matches!(key.as_str(), "id" | "action" | "brokerRequest"))
+                    }) {
+                        control_plane
+                            .broker_registry
+                            .dispatch(cmd.get("brokerRequest").cloned().unwrap_or(Value::Null))
+                            .await
+                    } else {
+                        Err("broker_request_invalid".into())
+                    };
+                    match result {
+                        Ok(output) => {
+                            if output.write_daemon_response(id, &mut writer).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            let mut bytes = serde_json::to_vec(
+                                &serde_json::json!({"id":id,"success":false,"error":error}),
+                            )
+                            .unwrap_or_default();
+                            bytes.push(b'\n');
+                            if writer.write_all(&bytes).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let exits_daemon = matches!(action, Some("close" | "runtime_handoff_prepare"));
 
                 let response = if action == Some("worker_status") {
@@ -690,6 +744,63 @@ fn get_port_for_session(session: &str) -> u16 {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+
+    #[tokio::test]
+    async fn broker_transport_authentication_precedes_registry_and_never_launches() {
+        let control_plane = ControlPlaneWorker::start(DaemonState::new());
+        let (client, server) = tokio::io::duplex(8192);
+        let handler = tokio::spawn(handle_connection(
+            server,
+            control_plane,
+            None,
+            None,
+            Arc::new(Notify::new()),
+            Arc::new("fixture-secret".into()),
+        ));
+        let (reader, mut writer) = tokio::io::split(client);
+        let mut reader = BufReader::new(reader);
+        for (authenticated, request, expected) in [
+            (
+                false,
+                serde_json::json!({"operation":"attach", "endpoint":"ws://invalid"}),
+                "Unauthorized daemon command",
+            ),
+            (
+                true,
+                serde_json::json!({"operation":"attach", "endpoint":"ws://invalid"}),
+                "broker_request_invalid",
+            ),
+            (
+                true,
+                serde_json::json!({"operation":"events", "requestId":"fixture-events", "taskContext":{}, "cursor":0, "binding":{
+                    "attachmentId":"a", "browserId":"b", "profileId":"p", "sessionName":"s", "targetId":"t", "generation":"g"
+                }}),
+                "broker_attachment_unknown",
+            ),
+        ] {
+            let mut command = serde_json::json!({"id":"test", "action":"__broker_transport", "brokerRequest":request});
+            if authenticated {
+                command[DAEMON_AUTH_FIELD] = serde_json::json!("fixture-secret");
+            }
+            writer
+                .write_all(format!("{command}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line))
+                .await
+                .unwrap()
+                .unwrap();
+            let response: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(response["success"], false);
+            assert_eq!(response["error"], expected);
+        }
+        writer.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), handler)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     #[test]
     fn denied_close_or_handoff_does_not_exit_daemon() {
