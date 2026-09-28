@@ -568,13 +568,16 @@ fn browser_capability_evidence_for_access_plan(
         .profile_compatibility
         .iter()
         .filter(|compatibility| {
-            selected_profile_id.as_ref().is_some_and(|profile_id| {
+            let profile_matches = selected_profile_id.as_ref().is_none_or(|profile_id| {
                 string_field(compatibility, "profileId")
                     .is_some_and(|candidate| candidate == *profile_id)
-            }) || string_field(compatibility, "hostId").is_some_and(|id| host_ids.contains(&id))
+            });
+            let browser_binding_matches = string_field(compatibility, "hostId")
+                .is_some_and(|id| host_ids.contains(&id))
                 || string_field(compatibility, "executableId").is_some_and(|id| {
                     executable_ids.contains(&id) || executable_ids_from_bindings.contains(&id)
-                })
+                });
+            profile_matches && browser_binding_matches
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -637,6 +640,15 @@ fn browser_build_for_evidence(
     selected_profile: Option<&BrowserProfile>,
     site_policy: Option<&SitePolicy>,
 ) -> Option<BrowserBuild> {
+    // Evidence must describe the build the access plan will enforce. A CDP-free
+    // site policy is mandatory; otherwise an explicit caller choice outranks a
+    // selected profile that may have been chosen for identity rather than build.
+    if site_policy.is_some_and(|policy| policy.requires_cdp_free) {
+        return Some(BrowserBuild::CdpFreeHeaded);
+    }
+    if request.browser_build_explicit {
+        return request.browser_build;
+    }
     site_policy
         .and_then(|policy| policy.browser_build)
         .or_else(|| selected_profile.and_then(|profile| profile.browser_build))
@@ -5174,6 +5186,122 @@ mod tests {
         assert_eq!(
             plan["decision"]["serviceRequest"]["request"]["browserBuild"],
             "stock_chrome"
+        );
+    }
+
+    #[test]
+    fn explicit_build_evidence_excludes_other_profile_and_build_rows() {
+        let state = ServiceState {
+            profiles: BTreeMap::from([(
+                "litscout-iastate".to_string(),
+                BrowserProfile {
+                    id: "litscout-iastate".to_string(),
+                    name: "LitScout Iowa State".to_string(),
+                    target_service_ids: vec!["elsevier".to_string()],
+                    authenticated_service_ids: vec!["elsevier".to_string()],
+                    browser_build: Some(BrowserBuild::StockChrome),
+                    ..BrowserProfile::default()
+                },
+            )]),
+            browser_capability_registry: BrowserCapabilityRegistry {
+                browser_hosts: vec![
+                    json!({"id": "linux-stock", "name": "Linux stock"}),
+                    json!({"id": "linux-stealth", "name": "Linux stealth"}),
+                ],
+                browser_executables: vec![
+                    json!({
+                        "id": "stock-current",
+                        "hostId": "linux-stock",
+                        "buildLabel": "stock_chrome"
+                    }),
+                    json!({
+                        "id": "stealth-current",
+                        "hostId": "linux-stealth",
+                        "buildLabel": "stealthcdp_chromium"
+                    }),
+                ],
+                browser_capabilities: vec![
+                    json!({
+                        "id": "stock-cdp",
+                        "hostId": "linux-stock",
+                        "executableId": "stock-current",
+                        "cdpSupported": true
+                    }),
+                    json!({
+                        "id": "stealth-cdp",
+                        "hostId": "linux-stealth",
+                        "executableId": "stealth-current",
+                        "cdpSupported": true
+                    }),
+                ],
+                profile_compatibility: vec![
+                    json!({
+                        "id": "litscout-stock-only",
+                        "profileId": "litscout-iastate",
+                        "hostId": "linux-stock",
+                        "executableId": "stock-current",
+                        "compatible": true
+                    }),
+                    json!({
+                        "id": "other-profile-stealth",
+                        "profileId": "other-profile",
+                        "hostId": "linux-stealth",
+                        "executableId": "stealth-current",
+                        "compatible": true
+                    }),
+                ],
+                validation_evidence: vec![
+                    json!({
+                        "id": "stock-smoke",
+                        "hostId": "linux-stock",
+                        "executableId": "stock-current",
+                        "capabilityId": "stock-cdp",
+                        "state": "passed"
+                    }),
+                    json!({
+                        "id": "stealth-smoke",
+                        "hostId": "linux-stealth",
+                        "executableId": "stealth-current",
+                        "capabilityId": "stealth-cdp",
+                        "state": "passed"
+                    }),
+                ],
+                ..BrowserCapabilityRegistry::default()
+            },
+            ..ServiceState::default()
+        };
+
+        let plan = service_access_plan_for_state(
+            &state,
+            ServiceAccessPlanRequest {
+                target_service_ids: vec!["elsevier".to_string()],
+                browser_build: Some(BrowserBuild::StealthcdpChromium),
+                browser_build_explicit: true,
+                ..ServiceAccessPlanRequest::default()
+            },
+        );
+
+        assert_eq!(plan["selectedProfile"]["id"], "litscout-iastate");
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["browserBuildLabel"],
+            "stealthcdp_chromium"
+        );
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["browserExecutables"][0]["id"],
+            "stealth-current"
+        );
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["validationEvidence"][0]["id"],
+            "stealth-smoke"
+        );
+        assert_eq!(
+            plan["browserCapabilityEvidence"]["counts"]["profileCompatibility"],
+            0
+        );
+        assert_eq!(
+            plan["decision"]["launchPosture"]["browserBuildSelection"]["profileCompatibility"]
+                ["status"],
+            "not_declared"
         );
     }
 
