@@ -9329,6 +9329,7 @@ fn resolve_runtime_source_session_with_probe(
 enum RuntimeTransactionCommandFailureKind {
     ProtocolUnavailable,
     LegacyTransferredOwnerRejected,
+    CustodyProjectionMismatch,
     ObservationOnlyAlias,
     BrowserUnavailableAlias,
     CommandFailed,
@@ -9357,6 +9358,8 @@ fn runtime_transaction_failure_kind(
     let legacy_transferred_owner_rejected = command_args == ["handoff", "prepare"]
         && (normalized.contains("runtime_owner_current_evidence_mismatch:")
             || normalized.contains("runtime_owner_generation_stale:"));
+    let custody_projection_mismatch = command_args == ["handoff", "prepare"]
+        && normalized.contains("handoff_custody_receipt_snapshot_mismatch");
     let observation_only_alias = command_args == ["handoff", "prepare"]
         && normalized.contains("runtime_owner_observation_only:");
     let browser_unavailable_alias =
@@ -9365,6 +9368,11 @@ fn runtime_transaction_failure_kind(
         RuntimeTransactionCommandFailureKind::ProtocolUnavailable
     } else if legacy_transferred_owner_rejected {
         RuntimeTransactionCommandFailureKind::LegacyTransferredOwnerRejected
+    } else if custody_projection_mismatch {
+        // A committed private receipt without its shared projection is not a
+        // missing handoff protocol. Revoking this owner before validating and
+        // reconciling that exact receipt would discard live custody evidence.
+        RuntimeTransactionCommandFailureKind::CustodyProjectionMismatch
     } else if observation_only_alias {
         RuntimeTransactionCommandFailureKind::ObservationOnlyAlias
     } else if browser_unavailable_alias {
@@ -17333,6 +17341,22 @@ mod tests {
         assert_eq!(
             runtime_transaction_failure_kind(
                 Some(&runtime_failure),
+                "handoff_reconcile_rejected: handoff_custody_receipt_snapshot_mismatch",
+                &["handoff", "prepare"]
+            ),
+            RuntimeTransactionCommandFailureKind::CustodyProjectionMismatch
+        );
+        assert_eq!(
+            runtime_transaction_failure_kind(
+                Some(&runtime_failure),
+                "handoff_custody_receipt_snapshot_mismatch",
+                &["handoff", "resume"]
+            ),
+            RuntimeTransactionCommandFailureKind::CommandFailed
+        );
+        assert_eq!(
+            runtime_transaction_failure_kind(
+                Some(&runtime_failure),
                 "runtime_owner_current_evidence_mismatch: existing profile owner does not match the preparing daemon",
                 &["handoff", "resume"]
             ),
@@ -18286,6 +18310,44 @@ mod tests {
         assert_eq!(selected_session, "owner-route");
         assert_eq!(retired_sessions, vec!["transferred-alias"]);
         assert_eq!(retired_aliases, vec!["transferred-alias"]);
+    }
+
+    #[test]
+    fn runtime_handoff_prepare_preserves_custody_projection_mismatch_alias() {
+        let mut retired_sessions = Vec::new();
+        let (failed_session, error) = prepare_runtime_handoff_candidates(
+            "session:logical-browser",
+            "owner-route",
+            vec!["owner-route".to_string(), "receipt-mismatch".to_string()],
+            |session| {
+                if session == "owner-route" {
+                    Ok(serde_json::json!({
+                        "data": {
+                            "prepared": true,
+                            "browserPresent": true,
+                            "candidateSessionName": "candidate"
+                        }
+                    }))
+                } else {
+                    Err(RuntimeTransactionCommandFailure {
+                        kind: RuntimeTransactionCommandFailureKind::CustodyProjectionMismatch,
+                        message: "handoff_custody_receipt_snapshot_mismatch".to_string(),
+                    })
+                }
+            },
+            |session| {
+                retired_sessions.push(session.to_string());
+                Ok(())
+            },
+        )
+        .expect_err("a committed receipt mismatch cannot be retired as a stale alias");
+
+        assert_eq!(failed_session, "receipt-mismatch");
+        assert_eq!(
+            error.kind,
+            RuntimeTransactionCommandFailureKind::CustodyProjectionMismatch
+        );
+        assert!(retired_sessions.is_empty());
     }
 
     #[test]
