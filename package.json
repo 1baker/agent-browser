@@ -130,6 +130,7 @@
     "test:service-cdp-tab-streaming-live": "node scripts/smoke-service-cdp-tab-streaming-live.js",
     "test:service-cdp-evaluate-diagnostics-live": "node scripts/smoke-service-cdp-evaluate-diagnostics-live.js",
     "test:service-probe-live": "node scripts/smoke-service-probe-live.js",
+    "test:workbench-live": "node scripts/smoke-workbench-live.js",
     "test:service-tab-handle-refresh-live": "node scripts/smoke-service-tab-handle-refresh-live.js",
     "test:service-ui-action-live": "node scripts/smoke-service-ui-action-live.js",
     "test:service-network-capture-live": "node scripts/smoke-service-network-capture-live.js",

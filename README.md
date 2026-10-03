@@ -466,6 +466,15 @@ selector can resolve that gate after human action; an unknown result cannot.
 This does not solve a challenge, verify account authentication, or prove the
 overall task is done.
 
+Handle-bound page input and inspection commands select their exact target
+before execution, even when a recheck changed the active tab. A missing or
+stale handle fails before fallback browser launch. Run
+`pnpm test:workbench-live` for the disposable dashboard login, human-gate
+recheck, exact-tab input, park/reopen, persistence, and cleanup journey.
+Set `AGENT_BROWSER_EXTERNAL_BROWSER_DISCOVERY=disabled` to omit foreign
+browser process/CDP discovery from session inventory. Owned socket sessions
+remain visible. The default is `enabled`; invalid explicit values disable it.
+
 ### Get Info
 
 ```bash

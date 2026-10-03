@@ -9,6 +9,7 @@ import {
   createDisposableSmokeProfile,
   findLatestInstalledSmokeBrowser,
   isWslWindowsBrowserExecutable,
+  isolateSmokeBrowserEnvironment,
   resolveDashboardSmokeBrowserCapability,
   resolveWslWindowsProfileRoot,
   selectSmokeBrowserExecutable,
@@ -20,6 +21,22 @@ const windowsRoot = mkdtempSync(join(root, 'windows-'));
 const dashboardSmoke = readFileSync('scripts/smoke-local-dashboard-runtime.js', 'utf8');
 
 try {
+  const isolatedContext = {
+    tempHome: root, agentHome: join(root, '.agent-browser'), socketDir: join(root, 's'),
+    env: { PATH: '/usr/bin', AGENT_BROWSER_CDP: 'http://127.0.0.1:1',
+      AGENT_BROWSER_AUTO_CONNECT: '1', AGENT_BROWSER_PROFILE: '/operator/profile',
+      AGENT_BROWSER_PROVIDER: 'external', AGENT_BROWSER_CONFIG: '/operator/config',
+      AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT: '/operator/authority',
+      AGENT_BROWSER_SMOKE_AGENT_BROWSER_CMD: '/fixture/agent-browser' },
+  };
+  isolateSmokeBrowserEnvironment(isolatedContext);
+  for (const key of ['CDP', 'AUTO_CONNECT', 'PROFILE', 'PROVIDER', 'PRIVATE_EXECUTOR_ROOT']) {
+    assert.equal(isolatedContext.env[`AGENT_BROWSER_${key}`], undefined, `${key} escaped isolation`);
+  }
+  assert.equal(isolatedContext.env.AGENT_BROWSER_SMOKE_AGENT_BROWSER_CMD, '/fixture/agent-browser');
+  assert.equal(isolatedContext.env.AGENT_BROWSER_HOME, isolatedContext.agentHome);
+  assert.deepEqual(JSON.parse(readFileSync(isolatedContext.env.AGENT_BROWSER_CONFIG, 'utf8')), {});
+
   const installedBrowserRoot = join(root, 'installed-home', '.agent-browser', 'browsers');
   for (const version of ['chrome-152.0.7977.9', 'chrome-152.0.7977.64']) {
     const versionRoot = join(installedBrowserRoot, version);

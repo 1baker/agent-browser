@@ -99,6 +99,17 @@ ready-page selector resolves the gate. It does not authenticate the account
 or mark the overall task complete. Agent page mutations on the waiting target
 pause while human remote-view control remains available.
 
+Page input and inspection requests with a <code>serviceTabHandle</code>
+select that exact target before execution. A recheck changing the active tab
+does not redirect a later handle-bound click. Stale or missing targets fail
+before fallback launch. The disposable <code>pnpm test:workbench-live</code>
+journey checks dashboard sign-in, gate rechecks, exact-tab input, park/reopen,
+persistence, and cleanup without real credentials or verification challenges.
+For isolated session inventory, set
+<code>AGENT_BROWSER_EXTERNAL_BROWSER_DISCOVERY=disabled</code>. Owned socket
+sessions stay visible, but foreign process/CDP discovery is omitted. The
+default is <code>enabled</code>; invalid explicit values disable discovery.
+
 Dashboard sections are URL-addressable. Use <code>/service</code> for the
 Service view, <code>/browsers</code> for Browser sessions, and
 <code>/activity</code> for the activity stream. The Service view preserves its

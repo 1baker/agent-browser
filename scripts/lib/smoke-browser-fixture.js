@@ -1,5 +1,24 @@
-import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+
+// Ambient attachment, provider, profile and state overrides must not escape
+// into fixtures. Preserve only the explicitly selected test executable.
+export function isolateSmokeBrowserEnvironment(context) {
+  const binary = context.env.AGENT_BROWSER_SMOKE_AGENT_BROWSER_CMD;
+  for (const key of Object.keys(context.env)) {
+    if (key.startsWith('AGENT_BROWSER_')) delete context.env[key];
+  }
+  Object.assign(context.env, {
+    AGENT_BROWSER_HOME: context.agentHome,
+    AGENT_BROWSER_SOCKET_DIR: context.socketDir,
+    AGENT_BROWSER_SERVICE_RECONCILE_INTERVAL_MS: '0',
+    AGENT_BROWSER_EXTERNAL_BROWSER_DISCOVERY: 'disabled',
+    AGENT_BROWSER_DASHBOARD_AUTH_FILE: join(context.agentHome, 'dashboard-auth.json'),
+    AGENT_BROWSER_CONFIG: join(context.tempHome, 'fixture-config.json'),
+    ...(binary ? { AGENT_BROWSER_SMOKE_AGENT_BROWSER_CMD: binary } : {}),
+  });
+  writeFileSync(context.env.AGENT_BROWSER_CONFIG, '{}\n', { mode: 0o600 });
+}
 
 export function findLatestInstalledSmokeBrowser({
   homeDir = process.env.HOME,

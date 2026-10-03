@@ -5204,6 +5204,15 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         }
     }
 
+    // Basic page commands share the same exact-target contract as probe and
+    // ui_action. Resolve a supplied handle before admission and auto-launch:
+    // an inactive or missing target must never act on whichever tab is active.
+    if page_action_selects_handle_target(action) && cmd.get("serviceTabHandle").is_some() {
+        if let Err(error) = select_service_tab_handle_target(cmd, state).await {
+            return error_response(&id, &error);
+        }
+    }
+
     if let Err(error) = refuse_page_action_while_human_gate_waits(cmd, state, action) {
         return error_response(&id, &error);
     }
@@ -5731,6 +5740,52 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     }
 
     resp
+}
+
+/// Page commands that otherwise operate on the manager's active target.
+/// Lifecycle and recovery commands retain their own handle semantics.
+fn page_action_selects_handle_target(action: &str) -> bool {
+    matches!(
+        action,
+        "navigate"
+            | "back"
+            | "forward"
+            | "reload"
+            | "click"
+            | "dblclick"
+            | "fill"
+            | "type"
+            | "press"
+            | "hover"
+            | "select"
+            | "focus"
+            | "clear"
+            | "check"
+            | "uncheck"
+            | "setcontent"
+            | "setvalue"
+            | "selectall"
+            | "dispatch"
+            | "tap"
+            | "wheel"
+            | "scroll"
+            | "scrollintoview"
+            | "snapshot"
+            | "screenshot"
+            | "url"
+            | "title"
+            | "viewport"
+            | "gettext"
+            | "inputvalue"
+            | "isvisible"
+            | "getattribute"
+            | "innerhtml"
+            | "styles"
+            | "count"
+            | "boundingbox"
+            | "isenabled"
+            | "ischecked"
+    )
 }
 
 /// A recorded page gate pauses agent page mutations on only its exact target.
@@ -27079,6 +27134,32 @@ fn error_response(id: &str, error: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn handle_bound_page_input_refuses_unavailable_target_without_launch() {
+        let mut state = DaemonState::new();
+        for action in ["click", "fill", "screenshot"] {
+            let response = execute_command(
+                &json!({
+                    "id": "missing-handle-target", "action": action,
+                    "serviceTabHandle": {
+                        "valid": true,
+                        "browserId": service_browser_id(&state.session_id),
+                        "sessionName": state.session_id,
+                        "tabId": "target:missing", "targetId": "missing"
+                    }
+                }),
+                &mut state,
+            )
+            .await;
+            assert_eq!(response["success"], false);
+            assert!(response["error"]
+                .as_str()
+                .unwrap()
+                .contains("target browser session is not running"));
+            assert!(state.browser.is_none());
+        }
+    }
 
     #[test]
     fn os_click_step_requires_bounded_coordinates_without_caller_window() {

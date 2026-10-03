@@ -58,11 +58,23 @@ pub(super) fn discover_sessions() -> String {
         }
     }
 
-    for detected in discover_external_chrome_sessions(&mut session_names, &mut ports) {
-        sessions.push(detected);
+    if external_browser_discovery_enabled(
+        std::env::var("AGENT_BROWSER_EXTERNAL_BROWSER_DISCOVERY")
+            .ok()
+            .as_deref(),
+    ) {
+        for detected in discover_external_chrome_sessions(&mut session_names, &mut ports) {
+            sessions.push(detected);
+        }
     }
 
     serde_json::to_string(&sessions).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Isolated fixtures can omit foreign process/CDP discovery while retaining
+/// their own socket-backed sessions. Unknown explicit values fail closed.
+fn external_browser_discovery_enabled(value: Option<&str>) -> bool {
+    matches!(value, None | Some("enabled"))
 }
 
 fn discover_external_chrome_sessions(
@@ -441,6 +453,15 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn external_discovery_is_opt_out_and_invalid_values_fail_closed() {
+        assert!(external_browser_discovery_enabled(None));
+        assert!(external_browser_discovery_enabled(Some("enabled")));
+        for value in ["disabled", "", "false", "invalid"] {
+            assert!(!external_browser_discovery_enabled(Some(value)));
+        }
+    }
 
     #[test]
     fn parses_single_string_chrome_cmdline() {

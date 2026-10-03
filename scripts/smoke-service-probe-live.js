@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { request } from 'node:http';
+import { mkdirSync, symlinkSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 
 import {
   assert,
@@ -8,12 +10,25 @@ import {
   createSmokeContext,
 } from './smoke-utils.js';
 import { ensureStreamPort } from './smoke-remote-headed-utils.js';
+import { findLatestInstalledSmokeBrowser, isolateSmokeBrowserEnvironment } from './lib/smoke-browser-fixture.js';
 
 const context = createSmokeContext({
   prefix: 'ab-service-probe-',
   sessionPrefix: 'service-probe',
 });
+isolateSmokeBrowserEnvironment(context);
 context.env.AGENT_BROWSER_ARGS = '--no-sandbox';
+const browserExecutable = findLatestInstalledSmokeBrowser();
+if (browserExecutable) {
+  context.env.AGENT_BROWSER_EXECUTABLE_PATH = browserExecutable;
+  // Preserve exact installed-build proof inside the disposable inventory.
+  const version = basename(dirname(browserExecutable));
+  if (version.startsWith('chrome-')) {
+    const fixtureVersion = join(context.agentHome, 'browsers', version);
+    mkdirSync(fixtureVersion, { recursive: true, mode: 0o700 });
+    symlinkSync(browserExecutable, join(fixtureVersion, basename(browserExecutable)));
+  }
+}
 
 const { session } = context;
 const serviceName = 'ServiceProbeSmoke';

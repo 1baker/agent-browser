@@ -1,7 +1,7 @@
 # Plan 0133: Task Centered Browser Workbench
 
 Date: 2026-10-02
-State: IN PROGRESS; recent-work view and opt-in page-gate path implemented, live acceptance pending
+State: IN PROGRESS; disposable workbench live journey passed, external human completion and runtime installation remain open
 Review: Codex and Claude Code, session `cc8cd1d7-57e0-4c30-a95f-81425fdcca93`
 
 ## Goal
@@ -134,3 +134,23 @@ the page changed before the run resumes.
   retained browser.
 - Durable general task-run identity, outcome/cleanup receipts, recovery picker,
   Park/Reopen lineage, and LitScout/ChatGPT live journeys remain open.
+
+## 2026-10-02 end-to-end test checkpoint
+
+- The disposable workbench journey passed browser acquisition, authenticated
+  dashboard rendering, exact-tab human gate pause, unknown and positive recheck,
+  resumed input, physical close, same-profile URL reopen, a verified daemon
+  restart, persisted gate readback, and verified browser/daemon cleanup.
+- The test found and fixed basic page commands ignoring their supplied handle
+  after a probe changed the active tab. It also repaired the stock Chrome
+  fixture inventory and added effective foreign-browser discovery isolation.
+- Retained ChatGPT accepted a bounded read on its existing exact target. The
+  original browser remained alive and its selected tab was restored. No prompt
+  was sent and no new ChatGPT authentication was claimed.
+- LitScout retrieved the expected public Crossref DOI metadata. The configured
+  stealth browser reached the corresponding ScienceDirect page, which displayed
+  a robot check and no citation metadata. The dedicated test tab and browser
+  were closed. Human completion on the external site remains unverified.
+- These results validate the source candidate, not an installed runtime update.
+  See `docs/dev/notes/2026-10-02-workbench-e2e-validation.md` for verification
+  scope, review findings, and remaining limitations.

@@ -22,6 +22,16 @@ detector. A waiting gate pauses agent page mutations on that target. A
 does not resolve the handoff. Neither classification proves sign-in or task
 completion. Human control through the retained remote view remains separate.
 
+Pass the retained `serviceTabHandle` on basic page input and inspection
+commands. They select that exact target before execution, so a previous probe
+changing the active tab cannot redirect input. Stale or unavailable targets
+fail before fallback launch. Lifecycle and recovery actions retain their own
+handle semantics.
+
+Disposable fixtures set `AGENT_BROWSER_EXTERNAL_BROWSER_DISCOVERY=disabled`
+to exclude foreign browser process/CDP discovery while keeping their own
+socket sessions. The default is `enabled`; unknown explicit values disable it.
+
 MCP `service_profile_upsert` supports cold, metadata-free sessions through a
 short-lived browserless queue worker. No default daemon or browser is required.
 Existing or ambiguous daemon metadata keeps normal transport behavior; never
