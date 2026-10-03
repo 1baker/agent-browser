@@ -11857,6 +11857,26 @@ async fn handle_service_diagnostics(cmd: &Value, state: &mut DaemonState) -> Res
         max_error_entries,
     );
     let requests = recent_request_summaries(&state.tracked_requests, max_request_entries);
+    #[cfg(target_os = "linux")]
+    let live_connection = if let Some(manager) = state.browser.as_mut() {
+        manager.is_connection_alive().await
+    } else {
+        false
+    };
+    #[cfg(target_os = "linux")]
+    let control_plane_attestation = if live_connection {
+        super::runtime_attestation::diagnostics(
+            service_state.as_ref(),
+            handle,
+            &session_name,
+            active_target_id.as_deref(),
+        )
+    } else {
+        json!({"complete": false, "missingProofs": ["attestation_cdp_connection_unavailable"]})
+    };
+    #[cfg(not(target_os = "linux"))]
+    let control_plane_attestation =
+        json!({"complete": false, "missingProofs": ["attestation_linux_required"]});
 
     Ok(json!({
         "ok": true,
@@ -11873,6 +11893,7 @@ async fn handle_service_diagnostics(cmd: &Value, state: &mut DaemonState) -> Res
         "url": if url.is_empty() { handle.get("url").cloned().unwrap_or(Value::Null) } else { json!(url) },
         "title": if title.is_empty() { handle.get("title").cloned().unwrap_or(Value::Null) } else { json!(title) },
         "serviceTabHandle": cmd.get("serviceTabHandle").cloned().unwrap_or(Value::Null),
+        "controlPlaneAttestation": control_plane_attestation,
         "traceFilter": handle.get("traceFilter").cloned().unwrap_or(Value::Null),
         "browser": browser_record.as_ref().map(|browser| json!({
             "id": browser.id,
@@ -12160,19 +12181,45 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
     }
 
     let host = current_service_browser_host(&state.session_id);
+    let active_target_id = manager.active_target_id().ok().map(str::to_string);
+    #[cfg(target_os = "linux")]
+    let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+    #[cfg(target_os = "linux")]
+    let attested = if let Some(target) = active_target_id.as_deref() {
+        super::runtime_attestation::prepare(
+            &snapshot,
+            &state.session_id,
+            target,
+            manager.get_cdp_url(),
+        )?
+    } else {
+        None
+    };
+    #[cfg(target_os = "linux")]
+    if attested.is_none()
+        && snapshot
+            .runtime_custody_receipts
+            .contains_key(&state.session_id)
+    {
+        return Err("attestation_existing_receipt_cannot_downgrade".into());
+    }
+    #[cfg(not(target_os = "linux"))]
+    let attested: Option<(u32, Value)> = None;
     let descriptor = RuntimeHandoffDescriptor {
-        schema_version: 1,
+        schema_version: if attested.is_some() { 4 } else { 1 },
         session_name: state.session_id.clone(),
         cdp_url: manager.get_cdp_url().to_string(),
         // attached_existing is endpoint authority, not process ownership. A
         // WSL relay or other intermediary PID may disappear while the exact
         // CDP endpoint remains healthy, so do not persist that PID as a
         // browser-liveness requirement across executable handoff.
-        browser_pid: if host == ServiceBrowserHost::AttachedExisting {
-            None
-        } else {
-            manager.browser_pid().or(state.attached_browser_pid)
-        },
+        browser_pid: attested.as_ref().map(|(pid, _)| *pid).or_else(|| {
+            if host == ServiceBrowserHost::AttachedExisting {
+                None
+            } else {
+                manager.browser_pid().or(state.attached_browser_pid)
+            }
+        }),
         runtime_profile: manager
             .runtime_profile_name()
             .map(str::to_string)
@@ -12180,8 +12227,8 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
         engine: state.engine.clone(),
         host,
         close_browser_on_close: state.close_behavior == CloseBehavior::CloseBrowser,
-        active_target_id: manager.active_target_id().ok().map(str::to_string),
-        custody: None,
+        active_target_id,
+        custody: attested.map(|(_, custody)| custody),
         prepared_at: OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .unwrap_or_else(|_| OffsetDateTime::now_utc().unix_timestamp().to_string()),
@@ -12213,7 +12260,7 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
         ));
     }
     let descriptor = read_runtime_handoff(&state.session_id)?;
-    if !matches!(descriptor.schema_version, 1..=3) || descriptor.session_name != state.session_id {
+    if !matches!(descriptor.schema_version, 1..=4) || descriptor.session_name != state.session_id {
         return Err(format!(
             "Runtime handoff identity mismatch for session '{}'",
             state.session_id
@@ -12253,6 +12300,30 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
         #[cfg(not(target_os = "linux"))]
         return Err("runtime_handoff_v3_linux_required".into());
     }
+    if descriptor.schema_version == 4 {
+        #[cfg(target_os = "linux")]
+        {
+            let snapshot = LockedServiceStateRepository::default_json()?.load_snapshot()?;
+            super::runtime_attestation::verify_resume(
+                &snapshot,
+                &state.session_id,
+                descriptor
+                    .custody
+                    .as_ref()
+                    .ok_or("attestation_custody_missing")?,
+                descriptor
+                    .browser_pid
+                    .ok_or("attestation_browser_pid_missing")?,
+                &descriptor.cdp_url,
+                descriptor
+                    .active_target_id
+                    .as_deref()
+                    .ok_or("attestation_target_missing")?,
+            )?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err("attestation_linux_required".into());
+    }
     let stale_attached_pid_dropped = descriptor
         .browser_pid
         .is_some_and(|browser_pid| !pid_is_running(browser_pid))
@@ -12273,7 +12344,7 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
         descriptor.active_target_id.as_deref(),
     )
     .await?;
-    if matches!(descriptor.schema_version, 2 | 3)
+    if matches!(descriptor.schema_version, 2..=4)
         && manager.active_target_id().ok() != descriptor.active_target_id.as_deref()
     {
         return Err("runtime_handoff_attached_target_mismatch".into());
@@ -12283,6 +12354,35 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
             snapshot.runtime_custody_receipts.remove(&state.session_id);
             Ok(())
         })?;
+    }
+    if descriptor.schema_version == 4 {
+        #[cfg(target_os = "linux")]
+        {
+            let custody = descriptor
+                .custody
+                .as_ref()
+                .ok_or("attestation_custody_missing")?;
+            let receipt = super::runtime_attestation::committed(custody)?;
+            LockedServiceStateRepository::default_json()?.mutate(|snapshot| {
+                super::runtime_attestation::verify_resume(
+                    snapshot,
+                    &state.session_id,
+                    custody,
+                    descriptor
+                        .browser_pid
+                        .ok_or("attestation_browser_pid_missing")?,
+                    &descriptor.cdp_url,
+                    descriptor
+                        .active_target_id
+                        .as_deref()
+                        .ok_or("attestation_target_missing")?,
+                )?;
+                snapshot
+                    .runtime_custody_receipts
+                    .insert(state.session_id.clone(), receipt.clone());
+                Ok(())
+            })?;
+        }
     }
     state.reset_input_state();
     state.attached_runtime_profile = descriptor.runtime_profile.clone();

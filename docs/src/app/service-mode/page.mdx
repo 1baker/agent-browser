@@ -24,6 +24,13 @@ The initial CDP-free contract should be explicit about unsupported commands;
 later slices can add OS-level screenshots, remote viewing, real mouse input,
 real keyboard input, OCR, and vision-backed control.
 
+Service tab diagnostics expose <code>controlPlaneAttestation</code>. On Linux,
+<code>complete: true</code> requires a committed daemon custody receipt, the
+current daemon and Chrome process identities, the physical profile lock, an
+exclusive persisted lease, and the requested live tab. A legacy handoff or a
+missing receipt stays incomplete. Upgrading from a legacy daemon requires a
+second guarded handoff between new daemons before this proof can complete.
+
 ## Service clients
 
 Use the CLI when a human or shell script needs a direct operational view:

@@ -31,7 +31,7 @@ fn start_ticks(pid: u32) -> Result<u64, String> {
         .ok_or_else(|| "runtime_handoff_v2_process_start_unreadable".to_string())
 }
 
-fn current_process_identity(pid: u32) -> Result<Value, String> {
+pub(super) fn current_process_identity(pid: u32) -> Result<Value, String> {
     let executable = fs::metadata(format!("/proc/{pid}/exe"))
         .map_err(|error| format!("runtime_handoff_v2_executable_unreadable:{error}"))?;
     let status = fs::read_to_string(format!("/proc/{pid}/status"))
@@ -54,7 +54,7 @@ fn current_process_identity(pid: u32) -> Result<Value, String> {
     }))
 }
 
-fn require_process_gone(identity: &Value) -> Result<(), String> {
+pub(super) fn require_process_gone(identity: &Value) -> Result<(), String> {
     let pid = value_u32(identity, "pid")?;
     let expected_boot = identity
         .get("bootId")
@@ -120,7 +120,7 @@ fn process_profile(pid: u32) -> Result<PathBuf, String> {
         .map_err(|error| format!("runtime_handoff_v2_profile_unreadable:{error}"))
 }
 
-fn verify_browser(browser: &Value, pid: u32, cdp_url: &str) -> Result<PathBuf, String> {
+pub(super) fn verify_browser(browser: &Value, pid: u32, cdp_url: &str) -> Result<PathBuf, String> {
     let process = browser
         .get("process")
         .ok_or("runtime_handoff_v2_browser_process_missing")?;

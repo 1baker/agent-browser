@@ -1,4 +1,4 @@
-// Opt-in real old -> candidate -> old handoff compatibility fixture.
+// Opt-in real legacy -> candidate -> candidate custody migration fixture.
 // Uses the existing isolated smoke environment and a synthetic page only.
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
@@ -63,11 +63,12 @@ async function cli(args) {
   assert.equal(value.success, true, JSON.stringify(value));
   return value.data;
 }
-async function prepare() {
+async function prepare(expectedSchema) {
   const receipt = await cli(['handoff', 'prepare']);
   assert.equal(receipt.prepared, true);
   const descriptor = JSON.parse(fs.readFileSync(receipt.handoffPath, 'utf8'));
-  assert.equal(descriptor.schemaVersion, 1, 'legacy-owned lane must not claim upgraded custody');
+  assert.equal(descriptor.schemaVersion, expectedSchema,
+    'handoff schema must reflect the source daemon generation and verified custody');
   const pidPath = join(context.socketDir, `${context.session}.pid`);
   for (let attempt = 0; attempt < 100 && fs.existsSync(pidPath); attempt += 1) await sleep(50);
   assert.equal(fs.existsSync(pidPath), false, 'source daemon must exit');
@@ -83,25 +84,33 @@ try {
     runtimeProfile: context.session, profile, browserBuild: 'stock_chrome', url: pageUrl,
     params: { headless: true },
   });
-  const handle = acquired.serviceTabHandle;
+  const handle = { ...acquired.serviceTabHandle, leaseState: 'shared' };
   assert.equal(handle?.valid, true, JSON.stringify(acquired));
   const diagnostics = () => tool('service_request', { action: 'diagnostics', sessionName: context.session,
     browserId: `session:${context.session}`, serviceTabHandle: handle, includeScreenshot: false });
   const before = await diagnostics();
   browserPid = before.browser?.pid;
   assert.ok(Number.isInteger(browserPid));
-  await prepare();
+  await prepare(1);
   await startMcp(candidate);
   await cli(['handoff', 'resume']);
   const middle = await diagnostics();
   assert.equal(middle.browser?.pid, browserPid);
   assert.notEqual(middle.controlPlaneAttestation?.complete, true, 'v1 must not fabricate complete custody');
-  await prepare();
-  await startMcp(oldBinary);
+  const second = await tool('service_request', {
+    action: 'tab_new', sessionName: context.session, browserId: `session:${context.session}`,
+    runtimeProfile: context.session, profile, browserBuild: 'stock_chrome',
+    url: 'data:text/html,<title>Second preserved tab</title>', params: { headless: true },
+  });
+  assert.notEqual(second.serviceTabHandle?.targetId, handle.targetId);
+  await prepare(4);
+  await startMcp(candidate);
   await cli(['handoff', 'resume']);
   const after = await diagnostics();
   assert.equal(after.browser?.pid, browserPid);
   assert.equal(after.targetId, before.targetId);
+  assert.equal(after.controlPlaneAttestation?.complete, true,
+    JSON.stringify(after.controlPlaneAttestation));
   assert.deepEqual([hash(oldBinary), hash(candidate)], originalHashes);
   passed = true;
 } catch (error) {
@@ -125,4 +134,4 @@ try {
 if (cleanupFailure) throw new AggregateError([failure, cleanupFailure].filter(Boolean), 'Fixture cleanup failed');
 if (failure) throw failure;
 assert.equal(passed, true);
-console.log('Isolated real-browser v1 old/candidate/old rollback passed');
+console.log('Isolated real-browser v1 to v4 custody migration passed');

@@ -1,5 +1,12 @@
 # agent-browser
 
+On Linux, service tab diagnostics report `controlPlaneAttestation`. A complete
+result requires a committed custody-bearing daemon handoff, the current owner
+process, exact Chrome process and profile lock, exclusive profile lease, and
+requested live tab. The first upgrade from a legacy handoff remains incomplete
+until a second guarded handoff between new daemons. Browser reachability alone
+is not ownership proof.
+
 MCP profile creation works without a running default daemon. A metadata-free
 session uses one short-lived browserless worker for `service_profile_upsert`.
 Stale or live daemon metadata retains the socket path; no failed request is
