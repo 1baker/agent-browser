@@ -5,7 +5,11 @@ result requires a committed custody-bearing daemon handoff, the current owner
 process, exact Chrome process and profile lock, exclusive profile lease, and
 requested live tab. The first upgrade from a legacy handoff remains incomplete
 until a second guarded handoff between new daemons. Browser reachability alone
-is not ownership proof.
+is not ownership proof. Diagnostics reject released, expired, foreign, or
+malformed handle leases before reading or selecting a tab. `sessionName`,
+`leaseId`, and `ownerSessionId` must all identify the current owning session.
+An older `shared` handle may match an upgraded exclusive lease only when the
+entire session, browser, profile, and tab binding still matches.
 
 MCP profile creation works without a running default daemon. A metadata-free
 session uses one short-lived browserless worker for `service_profile_upsert`.

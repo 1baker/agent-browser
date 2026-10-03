@@ -11722,6 +11722,13 @@ async fn handle_service_diagnostics(cmd: &Value, state: &mut DaemonState) -> Res
         .and_then(Value::as_object)
         .ok_or_else(|| "diagnostics requires serviceTabHandle".to_string())?;
     validate_service_tab_handle_for_current_session(handle, &state.session_id)?;
+    // Validate untrusted handle metadata against persisted ownership before
+    // switching a tab, reading page content, or capturing a screenshot.
+    let mut service_state = LockedServiceStateRepository::default_json()
+        .and_then(|repository| repository.load_snapshot())
+        .map_err(|_| "attestation_state_unavailable".to_string())?;
+    service_state.refresh_derived_views();
+    service_state.validate_diagnostics_handle(handle, &state.session_id)?;
     let target_id = handle.get("targetId").and_then(Value::as_str);
     let observed_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
@@ -11802,12 +11809,7 @@ async fn handle_service_diagnostics(cmd: &Value, state: &mut DaemonState) -> Res
         .get("profileId")
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    let mut service_state = LockedServiceStateRepository::default_json()
-        .and_then(|repository| repository.load_snapshot())
-        .ok();
-    if let Some(service_state) = service_state.as_mut() {
-        service_state.refresh_derived_views();
-    }
+    let service_state = Some(service_state);
     let browser_record = service_state
         .as_ref()
         .and_then(|service_state| service_state.browsers.get(&browser_id))
@@ -11816,12 +11818,7 @@ async fn handle_service_diagnostics(cmd: &Value, state: &mut DaemonState) -> Res
         .as_ref()
         .and_then(|service_state| service_state.tabs.get(&tab_id))
         .cloned();
-    let session_name = handle
-        .get("sessionName")
-        .and_then(Value::as_str)
-        .or(active_session_id.as_deref())
-        .unwrap_or(&state.session_id)
-        .to_string();
+    let session_name = state.session_id.clone();
     let session_record = service_state
         .as_ref()
         .and_then(|service_state| service_state.sessions.get(&session_name))

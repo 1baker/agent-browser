@@ -2186,7 +2186,7 @@ Set `AWS_PROFILE` to select a named AWS profile.
 
 ## Browser Engine Selection
 
-For retained Linux browser sessions, inspect service tab diagnostics `controlPlaneAttestation` before an ownership-sensitive action. `complete: true` requires a committed new-generation daemon handoff, the current owner process, exact Chrome process and physical profile lock, exclusive profile lease, and exact live tab. A legacy handoff leaves `complete: false`; migration requires another guarded handoff between new daemons. A shared lease label on an older handle is acceptable only when its exact tab, browser, session, and profile match the current exclusive persisted lease.
+For retained Linux browser sessions, inspect service tab diagnostics `controlPlaneAttestation` before an ownership-sensitive action. `complete: true` requires a committed new-generation daemon handoff, the current owner process, exact Chrome process and physical profile lock, exclusive profile lease, and exact live tab. A legacy handoff leaves `complete: false`; migration requires another guarded handoff between new daemons. Diagnostics reject released, expired, foreign, missing, or malformed lease metadata before any tab selection or page read. `sessionName`, `leaseId`, and `ownerSessionId` must all match the current owning session. A shared lease label on an older handle is acceptable only when its exact lease, owner, tab, browser, session, and profile match the current exclusive persisted lease. Do not strip metadata or change a released handle's label to retry; refresh the service-owned handle instead.
 
 Use `--engine` to choose a local browser engine. The default is `chrome`.
 

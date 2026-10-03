@@ -2649,6 +2649,86 @@ impl ServiceState {
         }
     }
 
+    /// Reject stale or foreign diagnostics handles before any browser access.
+    /// An older shared handle may follow an exclusive upgrade, but only for
+    /// the exact persisted session, owner, lease, browser, profile, and target.
+    pub fn validate_diagnostics_handle(
+        &self,
+        handle: &serde_json::Map<String, Value>,
+        session_id: &str,
+    ) -> Result<(), String> {
+        if handle.get("valid").and_then(Value::as_bool) != Some(true) {
+            return Err("attestation_handle_invalid".into());
+        }
+        let lease = handle.get("leaseState").and_then(Value::as_str);
+        if !matches!(lease, Some("shared" | "exclusive")) {
+            return Err("attestation_handle_lease_state_invalid".into());
+        }
+        for key in ["sessionName", "leaseId", "ownerSessionId"] {
+            if handle.get(key).and_then(Value::as_str) != Some(session_id) {
+                return Err(format!("attestation_handle_{key}_mismatch"));
+            }
+        }
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or("attestation_handle_session_missing")?;
+        if session.id != session_id
+            || !matches!(
+                (lease, session.lease),
+                (Some("shared"), LeaseState::Shared | LeaseState::Exclusive)
+                    | (Some("exclusive"), LeaseState::Exclusive)
+            )
+        {
+            return Err("attestation_handle_current_lease_mismatch".into());
+        }
+        let required = |key: &str| -> Result<&str, String> {
+            handle
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| format!("attestation_handle_{key}_missing"))
+        };
+        let browser_id = required("browserId")?;
+        let tab_id = required("tabId")?;
+        let profile_id = required("profileId")?;
+        let target_id = required("targetId")?;
+        let browser = self
+            .browsers
+            .get(browser_id)
+            .ok_or("attestation_handle_browser_missing")?;
+        let tab = self
+            .tabs
+            .get(tab_id)
+            .ok_or("attestation_handle_tab_missing")?;
+        let profile = self
+            .profiles
+            .get(profile_id)
+            .ok_or("attestation_handle_profile_missing")?;
+        if browser.id != browser_id
+            || tab.id != tab_id
+            || tab.browser_id != browser_id
+            || tab.target_id.as_deref() != Some(target_id)
+            || tab.owner_session_id.as_deref() != Some(session_id)
+            || !session.browser_ids.iter().any(|id| id == browser_id)
+            || !session.tab_ids.iter().any(|id| id == tab_id)
+            || session.profile_id.as_deref() != Some(profile_id)
+            || browser.profile_id.as_deref() != Some(profile_id)
+            || profile.id != profile_id
+        {
+            return Err("attestation_handle_binding_mismatch".into());
+        }
+        if handle.get("profileOrigin")
+            != Some(
+                &serde_json::to_value(profile.profile_origin)
+                    .map_err(|_| "attestation_profile_origin_invalid")?,
+            )
+        {
+            return Err("attestation_handle_profile_origin_mismatch".into());
+        }
+        Ok(())
+    }
+
     pub fn service_tab_handle(&self, tab_id: &str) -> Option<ServiceTabHandle> {
         let tab = self.tabs.get(tab_id)?;
         let browser = self.browsers.get(&tab.browser_id);

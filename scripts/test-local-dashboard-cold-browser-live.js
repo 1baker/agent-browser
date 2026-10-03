@@ -49,11 +49,14 @@ async function startMcp(binary) {
     clientInfo: { name: 'cold-browser-fixture', version: '1' } }));
   mcp.notify('notifications/initialized');
 }
-async function tool(name, args) {
+async function rawTool(name, args) {
   if (fatalError) throw fatalError;
   const result = await bounded(mcp.send('tools/call', { name, arguments: { ...labels, ...args } }));
+  return { result, value: JSON.parse(result.content.find((entry) => entry.type === 'text').text) };
+}
+async function tool(name, args) {
+  const { result, value } = await rawTool(name, args);
   assert.notEqual(result.isError, true, JSON.stringify(result));
-  const value = JSON.parse(result.content.find((entry) => entry.type === 'text').text);
   assert.equal(value.success, true, JSON.stringify(value));
   return value.data;
 }
@@ -111,6 +114,48 @@ try {
   assert.equal(after.targetId, before.targetId);
   assert.equal(after.controlPlaneAttestation?.complete, true,
     JSON.stringify(after.controlPlaneAttestation));
+  // Reject metadata mutations even when valid=true and genuine custody exists.
+  // Each request points at the second tab, so unchanged active URL also proves
+  // rejection happened before diagnostics selected or read the foreign handle.
+  const negativeHandles = [];
+  for (const leaseState of ['released', 'expired', 'foreign', 'human_takeover']) {
+    negativeHandles.push({ ...second.serviceTabHandle, leaseState });
+  }
+  for (const key of ['leaseState', 'leaseId', 'ownerSessionId', 'sessionName']) {
+    for (const value of ['foreign', null, 17]) {
+      negativeHandles.push({ ...second.serviceTabHandle, [key]: value });
+    }
+    const missing = { ...second.serviceTabHandle };
+    delete missing[key];
+    negativeHandles.push(missing);
+  }
+  const activeUrl = await cli(['get', 'url']);
+  for (const invalidHandle of negativeHandles) {
+    let response;
+    try {
+      response = await rawTool('service_request', {
+        action: 'diagnostics', sessionName: context.session,
+        browserId: `session:${context.session}`, serviceTabHandle: invalidHandle, includeScreenshot: false,
+      });
+    } catch (error) {
+      // A foreign session can be refused even earlier by the MCP route parser.
+      // Do not accept unrelated transport errors as a passing negative check.
+      assert.match(error.message, /tools\/call failed: .*"code":-32602.*serviceTabHandle sessionName and browserId routes conflict/);
+      assert.equal(invalidHandle.sessionName, 'foreign');
+    }
+    if (response) {
+      assert.equal(response.value.success, false, JSON.stringify(response.value));
+      assert.notEqual(response.value.data?.controlPlaneAttestation?.complete, true);
+    }
+    assert.deepEqual(await cli(['get', 'url']), activeUrl, 'invalid handle must not select another tab');
+  }
+  const rechecked = await diagnostics();
+  assert.equal(rechecked.controlPlaneAttestation?.complete, true);
+  assert.equal(rechecked.browser?.pid, browserPid);
+  const exclusive = await tool('service_request', { action: 'diagnostics', sessionName: context.session,
+    browserId: `session:${context.session}`, serviceTabHandle: { ...handle, leaseState: 'exclusive' },
+    includeScreenshot: false });
+  assert.equal(exclusive.controlPlaneAttestation?.complete, true);
   assert.deepEqual([hash(oldBinary), hash(candidate)], originalHashes);
   passed = true;
 } catch (error) {
@@ -134,4 +179,4 @@ try {
 if (cleanupFailure) throw new AggregateError([failure, cleanupFailure].filter(Boolean), 'Fixture cleanup failed');
 if (failure) throw failure;
 assert.equal(passed, true);
-console.log('Isolated real-browser v1 to v4 custody migration passed');
+console.log('Isolated real-browser v1 to v4 custody migration and 20 negative handle checks passed');

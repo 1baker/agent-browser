@@ -297,6 +297,7 @@ pub(super) fn diagnostics(
 ) -> Value {
     let result = (|| -> Result<Value, String> {
         let state = state.ok_or("attestation_state_unavailable")?;
+        state.validate_diagnostics_handle(handle, session_name)?;
         let target = handle
             .get("targetId")
             .and_then(Value::as_str)
@@ -487,15 +488,120 @@ mod tests {
     #[test]
     fn missing_receipt_never_completes_diagnostics() {
         let state = fixture();
-        let handle = serde_json::from_value::<Map<String, Value>>(json!({
-            "browserId": "session:proposal", "tabId": "target:tab2",
-            "targetId": "tab2", "profileId": "retained",
-            "leaseState": "shared", "profileOrigin": "external_byop"
-        }))
-        .unwrap();
+        let handle = valid_handle();
         let result = diagnostics(Some(&state), &handle, "proposal", Some("tab2"));
         assert_eq!(result["complete"], false);
         assert_eq!(result["missingProofs"][0], "attestation_receipt_missing");
+    }
+
+    fn valid_handle() -> Map<String, Value> {
+        serde_json::from_value(json!({
+            "browserId": "session:proposal", "tabId": "target:tab2",
+            "targetId": "tab2", "profileId": "retained",
+            "leaseState": "shared", "profileOrigin": "external_byop",
+            "valid": true, "sessionName": "proposal", "leaseId": "proposal",
+            "ownerSessionId": "proposal"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn diagnostics_rejects_invalid_handle_metadata_before_custody_proof() {
+        let state = fixture();
+        let mut cases = vec![];
+        for lease in [
+            "released",
+            "expired",
+            "foreign",
+            "human_takeover",
+            "",
+            "Exclusive",
+        ] {
+            cases.push((
+                "leaseState",
+                json!(lease),
+                "attestation_handle_lease_state_invalid".to_string(),
+            ));
+        }
+        for key in ["sessionName", "leaseId", "ownerSessionId"] {
+            cases.push((
+                key,
+                json!("foreign"),
+                format!("attestation_handle_{key}_mismatch"),
+            ));
+            cases.push((key, json!(""), format!("attestation_handle_{key}_mismatch")));
+        }
+        for key in ["leaseState", "sessionName", "leaseId", "ownerSessionId"] {
+            let reason = if key == "leaseState" {
+                "attestation_handle_lease_state_invalid".to_string()
+            } else {
+                format!("attestation_handle_{key}_mismatch")
+            };
+            for value in [Value::Null, json!(17), json!(true)] {
+                cases.push((key, value, reason.clone()));
+            }
+            let mut handle = valid_handle();
+            handle.remove(key);
+            let result = diagnostics(Some(&state), &handle, "proposal", Some("tab2"));
+            assert_eq!(result["complete"], false);
+            assert_eq!(result["missingProofs"][0], reason, "missing {key}");
+        }
+        cases.push((
+            "valid",
+            json!(false),
+            "attestation_handle_invalid".to_string(),
+        ));
+        for (key, value, reason) in cases {
+            let mut handle = valid_handle();
+            handle.insert(key.into(), value.clone());
+            let result = diagnostics(Some(&state), &handle, "proposal", Some("tab2"));
+            assert_eq!(result["complete"], false, "{key}={value}");
+            assert_eq!(result["missingProofs"][0], reason, "{key}={value}");
+        }
+    }
+
+    #[test]
+    fn shared_handle_compatibility_requires_exact_current_ownership() {
+        let state = fixture();
+        for lease in ["shared", "exclusive"] {
+            let mut handle = valid_handle();
+            handle.insert("leaseState".into(), json!(lease));
+            state
+                .validate_diagnostics_handle(&handle, "proposal")
+                .unwrap();
+        }
+        for key in [
+            "browserId",
+            "tabId",
+            "targetId",
+            "profileId",
+            "profileOrigin",
+        ] {
+            let mut handle = valid_handle();
+            handle.insert(key.into(), json!("foreign"));
+            assert!(
+                state
+                    .validate_diagnostics_handle(&handle, "proposal")
+                    .is_err(),
+                "{key}"
+            );
+        }
+        for lease in [
+            LeaseState::Released,
+            LeaseState::Expired,
+            LeaseState::HumanTakeover,
+        ] {
+            let mut state = fixture();
+            state.sessions.get_mut("proposal").unwrap().lease = lease;
+            assert!(state
+                .validate_diagnostics_handle(&valid_handle(), "proposal")
+                .is_err());
+        }
+        let mut state = fixture();
+        state.tabs.get_mut("target:tab2").unwrap().owner_session_id = Some("foreign".into());
+        assert!(state
+            .validate_diagnostics_handle(&valid_handle(), "proposal")
+            .is_err());
     }
 
     #[test]

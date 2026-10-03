@@ -30,6 +30,12 @@ current daemon and Chrome process identities, the physical profile lock, an
 exclusive persisted lease, and the requested live tab. A legacy handoff or a
 missing receipt stays incomplete. Upgrading from a legacy daemon requires a
 second guarded handoff between new daemons before this proof can complete.
+Diagnostics reject released, expired, foreign, or malformed handle leases before
+selecting or reading a tab. The handle's <code>sessionName</code>,
+<code>leaseId</code>, and <code>ownerSessionId</code> must identify the current
+owning session. An older shared handle may follow an exclusive lease upgrade
+only when its entire owner, browser, profile, and tab binding still matches.
+Refresh stale handles through the service; do not relabel them to retry.
 
 ## Service clients
 
