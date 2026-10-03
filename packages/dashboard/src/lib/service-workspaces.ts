@@ -69,6 +69,34 @@ export type WorkspaceNodeAction = {
   reason?: string | null;
 };
 
+export type WorkspaceActionPresentation = {
+  kind: "run" | "blocked" | "unwired";
+  reason: string | null;
+  nextStep: string | null;
+};
+
+/** Keep service actionability authoritative; this only describes this panel's controls. */
+export function workspaceActionPresentation(
+  action: WorkspaceNodeAction,
+  runnableHere: boolean,
+): WorkspaceActionPresentation {
+  if (!action.enabled) {
+    return {
+      kind: "blocked",
+      reason: action.reason || "Unavailable in the current workspace state.",
+      nextStep: "Refresh workspace status before trying this action again.",
+    };
+  }
+  if (!runnableHere) {
+    return {
+      kind: "unwired",
+      reason: "Available through service controls, but not in this compact panel.",
+      nextStep: "Use the Workspaces list or service tools for this action.",
+    };
+  }
+  return { kind: "run", reason: null, nextStep: null };
+}
+
 export type WorkspaceProfileActionabilityAction =
   | "openSharedProfileTab"
   | "reuseCompatibleTab"
@@ -318,7 +346,32 @@ export type WorkspaceServiceTab = {
   url?: string | null;
   title?: string | null;
   ownerSessionId?: string | null;
+  serviceTabHandle?: {
+    valid?: boolean;
+    staleReason?: string | null;
+    operatorGuidance?: {
+      code: string;
+      summary: string;
+      nextStep: string;
+    } | null;
+  } | null;
 };
+
+/** Explain only the selected invalid tab; never infer custody from another tab. */
+export function selectedServiceTabGuidance(
+  tabs: WorkspaceServiceTab[],
+  selectedTabId?: string | null,
+): { summary: string; nextStep: string } | null {
+  const handle = tabs.find((tab) => tab.id === selectedTabId)?.serviceTabHandle;
+  if (!handle || handle.valid !== false) return null;
+  if (handle.operatorGuidance?.summary && handle.operatorGuidance.nextStep) {
+    return handle.operatorGuidance;
+  }
+  return {
+    summary: "This tab handle is not current.",
+    nextStep: "Refresh service status and follow the owning session's access plan.",
+  };
+}
 
 export type WorkspaceServiceProfileAllocation = {
   profileId: string;

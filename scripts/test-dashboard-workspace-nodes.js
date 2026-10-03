@@ -8,6 +8,8 @@ import {
   deriveWorkspaceOwnershipDiagnostics,
   workspaceInventoryPlacementForNode,
   workspaceNodeLiveControlEligibility,
+  workspaceActionPresentation,
+  selectedServiceTabGuidance,
 } from '../packages/dashboard/src/lib/service-workspaces.ts';
 
 const workspaceSource = readFileSync('packages/dashboard/src/lib/service-workspaces.ts', 'utf8');
@@ -40,6 +42,43 @@ function action(node, id) {
   assert.ok(found, `Missing action ${id} on ${node.id}`);
   return found;
 }
+
+assert.deepEqual(
+  workspaceActionPresentation({ id: 'view', label: 'View', enabled: true }, true),
+  { kind: 'run', reason: null, nextStep: null },
+);
+assert.match(
+  workspaceActionPresentation({ id: 'control', label: 'Control', enabled: false, reason: 'Lease expired' }, true).reason,
+  /Lease expired/,
+);
+assert.equal(
+  workspaceActionPresentation({ id: 'repair', label: 'Repair', enabled: true }, false).kind,
+  'unwired',
+);
+assert.equal(
+  workspaceActionPresentation({ id: 'repair', label: 'Repair', enabled: false, reason: 'Lease released' }, false).kind,
+  'blocked',
+);
+assert.match(
+  workspaceActionPresentation({ id: 'view', label: 'View', enabled: false }, true).nextStep,
+  /Refresh workspace status/,
+);
+assert.equal(selectedServiceTabGuidance([{ id: 'tab-a' }], 'tab-a'), null);
+assert.equal(selectedServiceTabGuidance([{ id: 'tab-a', serviceTabHandle: { valid: true } }], 'tab-a'), null);
+assert.match(
+  selectedServiceTabGuidance([{ id: 'tab-a', serviceTabHandle: { valid: false, staleReason: 'tab_closed' } }], 'tab-a').summary,
+  /not current/,
+);
+assert.deepEqual(
+  selectedServiceTabGuidance([{ id: 'tab-a', serviceTabHandle: { valid: false, operatorGuidance: {
+    code: 'tab_closed', summary: 'Tab is closed.', nextStep: 'Use the owning session.',
+  } } }], 'tab-a'),
+  { code: 'tab_closed', summary: 'Tab is closed.', nextStep: 'Use the owning session.' },
+);
+assert.equal(
+  selectedServiceTabGuidance([{ id: 'tab-a', serviceTabHandle: { valid: false } }], 'tab-b'),
+  null,
+);
 
 const diagnosticFixture = {
   serviceBrowsers: [

@@ -105,6 +105,13 @@ does not redirect a later handle-bound click. Stale or missing targets fail
 before fallback launch. The disposable <code>pnpm test:workbench-live</code>
 journey checks dashboard sign-in, gate rechecks, exact-tab input, park/reopen,
 persistence, and cleanup without real credentials or verification challenges.
+An invalid handle now includes read-only <code>operatorGuidance</code> with a
+reason code, summary, and next step in service status. The Workspace inspector
+shows that guidance for its selected tab. It places runnable controls in the
+action row and lists blocked or panel-unwired actions with visible explanations
+under <strong>Other actions</strong>; this does not change service actionability
+or authorize a new browser or profile owner.
+
 For isolated session inventory, set
 <code>AGENT_BROWSER_EXTERNAL_BROWSER_DISCOVERY=disabled</code>. Owned socket
 sessions stay visible, but foreign process/CDP discovery is omitted. The

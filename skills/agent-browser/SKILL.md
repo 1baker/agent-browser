@@ -763,6 +763,11 @@ profile only when agent-browser has no suitable profile, readiness reports
 `needs_manual_seeding`, the operator wants a separate account lane, or the
 client is explicitly bringing its own profile.
 If a follow-on service tab handle may be stale, use
+the optional `operatorGuidance` on an invalid `serviceTabHandle` to explain
+its `staleReason` to the operator; it is read-only advice, not permission to
+change browser custody. The Workspace inspector shows the selected tab's
+guidance and visibly separates runnable controls from blocked or panel-unwired
+actions. Continue to use
 `refreshServiceTabHandle()` or service request `action: "tab_handle_refresh"`
 instead of inspecting raw CDP targets. Refresh accepts the old
 `serviceTabHandle`, optional `desiredUrl`, and a generic repair policy:

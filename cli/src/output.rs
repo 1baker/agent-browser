@@ -5277,6 +5277,10 @@ trace, event, job, incident, and log viewers. Rows show service-sourced disabled
 memory, CPU, CDP, and stream-port indicators when available, and open a dense
 right-pane Workspace inspector with action reasons, page identity, ownership,
 viewport readiness, and collapsed diagnostic evidence. Selecting a row with an
+invalid service tab handle shows read-only recovery guidance from the service
+status snapshot. Runnable controls remain in the action row; blocked or
+panel-unwired actions are listed with visible reasons and next steps. This
+guidance never changes action availability or browser ownership. A row with an
 embeddable stream opens the workspace viewport, including CDP screencast streams.
 When a browser reports several streams, the viewport lets the operator choose
 CDP or RDP and remembers that source per browser. Recoverable browsers with no
