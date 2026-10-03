@@ -11,9 +11,9 @@ use super::remote_view_proof::{
     remote_view_operator_visible_state, remote_view_target_component_state,
 };
 use super::service_model::{
-    BrowserHealth, ControlInputProvider, DisplayAllocation, LeaseState, RemoteViewAcquisitionLease,
-    RemoteViewHandoff, RemoteViewRecoveryIdentity, RemoteViewRoute, RoutePoolEntry, ServiceState,
-    TabLifecycle, ViewStreamProvider,
+    BrowserBuild, BrowserHealth, ControlInputProvider, DisplayAllocation, LeaseState,
+    RemoteViewAcquisitionLease, RemoteViewHandoff, RemoteViewRecoveryIdentity, RemoteViewRoute,
+    RoutePoolEntry, ServiceState, TabLifecycle, ViewStreamProvider,
 };
 use super::service_store::{
     JsonServiceStateStore, LockedServiceStateRepository, ServiceStateRepository,
@@ -1679,7 +1679,13 @@ fn capture_remote_view_recovery_identity(
     let cdp_endpoint = browser.cdp_endpoint.as_deref()?;
     let browser_build = browser.browser_build?;
     let executable_path = browser.executable_path.as_deref()?;
-    let executable_sha256 = proof.get("executableSha256").and_then(Value::as_str)?;
+    let executable_sha256 = proof
+        .get("executableSha256")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if browser_build != BrowserBuild::StockChrome && executable_sha256.is_none() {
+        return None;
+    }
     let process_start_ticks = proof.get("processStartTicks").and_then(Value::as_u64)?;
     let proof_build = proof
         .get("browserBuild")
@@ -1732,7 +1738,7 @@ fn capture_remote_view_recovery_identity(
         cdp_endpoint: cdp_endpoint.to_string(),
         browser_build,
         executable_path: executable_path.to_string(),
-        executable_sha256: Some(executable_sha256.to_string()),
+        executable_sha256,
         process_start_ticks,
         target_id: target_id.to_string(),
         target_url: tab.url.clone(),
@@ -2733,6 +2739,73 @@ mod tests {
             durable_handoff_owner_prepare_command(&state, "job-handoff-a", &json!({})).unwrap_err(),
             "durable_handoff_recovery_identity_ambiguous"
         );
+    }
+
+    #[test]
+    fn recovery_capture_accepts_verified_installed_stock_chrome_without_digest() {
+        let mut state = command_test_recovery_state();
+        let browser_id = "session:browser-a";
+        let session_name = "session-a";
+        let profile_id = "profile-a";
+        let target_id = "target-a";
+        let proof = json!({
+            "applied": true,
+            "reason": "verified_installed_chrome_runtime_attach",
+            "browserBuild": "stock_chrome",
+            "profileId": profile_id,
+            "browserPid": 42,
+            "processStartTicks": 100,
+            "cdpEndpoint": "ws://127.0.0.1:9222/devtools/browser/browser-a",
+            "executablePath": "/opt/chromium/chrome",
+            "userDataDir": "/tmp/profile-a",
+        });
+        state.profiles.get_mut(profile_id).unwrap().browser_build = Some(BrowserBuild::StockChrome);
+        let browser = state.browsers.get_mut(browser_id).unwrap();
+        browser.browser_build = Some(BrowserBuild::StockChrome);
+        browser.browser_build_proof = Some(proof);
+
+        let identity = capture_remote_view_recovery_identity(
+            &state,
+            browser_id,
+            session_name,
+            Some(profile_id),
+            Some(target_id),
+        )
+        .expect("installed stock Chrome process proof should be durable without a digest");
+
+        assert_eq!(identity.browser_build, BrowserBuild::StockChrome);
+        assert_eq!(identity.executable_sha256, None);
+        assert_eq!(identity.process_start_ticks, 100);
+    }
+
+    #[test]
+    fn recovery_capture_requires_digest_for_non_stock_browser() {
+        let mut state = command_test_recovery_state();
+        let proof = json!({
+            "applied": true,
+            "reason": "verified_registered_runtime_attach_process",
+            "browserBuild": "stealthcdp_chromium",
+            "profileId": "profile-a",
+            "browserPid": 42,
+            "processStartTicks": 100,
+            "cdpEndpoint": "ws://127.0.0.1:9222/devtools/browser/browser-a",
+            "executablePath": "/opt/chromium/chrome",
+            "userDataDir": "/tmp/profile-a",
+        });
+        state
+            .browsers
+            .get_mut("session:browser-a")
+            .unwrap()
+            .browser_build_proof = Some(proof);
+
+        assert!(capture_remote_view_recovery_identity(
+            &state,
+            "session:browser-a",
+            "session-a",
+            Some("profile-a"),
+            Some("target-a"),
+        )
+        .is_none());
     }
 
     #[test]

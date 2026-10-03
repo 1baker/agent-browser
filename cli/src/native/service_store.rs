@@ -173,6 +173,11 @@ impl ServiceStateStore for JsonServiceStateStore {
         let mut normalized = state.clone();
         normalized.refresh_derived_views();
         normalized.remove_builtin_entity_defaults_for_persistence();
+        let existing_handoffs = load_remote_view_handoff_registry(&self.path)?.handoffs;
+        preserve_matching_remote_view_recovery_identities(
+            &mut normalized.remote_view_handoffs,
+            &existing_handoffs,
+        );
         save_remote_view_handoff_registry(&self.path, &normalized.remote_view_handoffs)?;
         let serialized = serde_json::to_string_pretty(&normalized)
             .map_err(|err| format!("Failed to serialize service state: {}", err))?;
@@ -220,6 +225,30 @@ impl ServiceStateStore for JsonServiceStateStore {
 
     fn state_path(&self) -> Option<&Path> {
         Some(&self.path)
+    }
+}
+
+fn preserve_matching_remote_view_recovery_identities(
+    handoffs: &mut BTreeMap<String, RemoteViewHandoff>,
+    existing: &BTreeMap<String, RemoteViewHandoff>,
+) {
+    for (handoff_id, handoff) in handoffs.iter_mut() {
+        if handoff.recovery_identity.is_some() {
+            continue;
+        }
+        let Some(identity) = existing
+            .get(handoff_id)
+            .and_then(|existing_handoff| existing_handoff.recovery_identity.as_ref())
+        else {
+            continue;
+        };
+        if handoff.browser_id.as_deref() == Some(identity.browser_id.as_str())
+            && handoff.session_name.as_deref() == Some(identity.session_name.as_str())
+            && handoff.profile_id.as_deref() == Some(identity.profile_id.as_str())
+            && handoff.target_id.as_deref() == Some(identity.target_id.as_str())
+        {
+            handoff.recovery_identity = Some(identity.clone());
+        }
     }
 }
 
@@ -430,7 +459,8 @@ fn acquire_service_state_file_lock(
 mod tests {
     use super::*;
     use crate::native::service_model::{
-        BrowserHealth, BrowserHost, BrowserProcess, RemoteViewHandoff, SitePolicy,
+        BrowserBuild, BrowserHealth, BrowserHost, BrowserProcess, RemoteViewHandoff,
+        RemoteViewRecoveryIdentity, SitePolicy,
     };
     use std::collections::BTreeMap;
 
@@ -683,6 +713,100 @@ mod tests {
             .expect("state should load after legacy rewrite");
 
         assert_eq!(loaded.remote_view_handoffs["handoff-a"].id, "handoff-a");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    fn recovery_identity() -> RemoteViewRecoveryIdentity {
+        RemoteViewRecoveryIdentity {
+            browser_id: "session:stealth".to_string(),
+            session_name: "stealth".to_string(),
+            profile_id: "litscout-stealth".to_string(),
+            browser_pid: 4242,
+            cdp_endpoint: "ws://127.0.0.1:9222/devtools/browser/fixture".to_string(),
+            browser_build: BrowserBuild::StealthcdpChromium,
+            executable_path: "/opt/agent-browser/stealth/chrome".to_string(),
+            executable_sha256: Some("a".repeat(64)),
+            process_start_ticks: 99,
+            target_id: "target-stealth".to_string(),
+            target_url: Some("https://example.test/challenge".to_string()),
+            browser_build_proof: serde_json::json!({"applied": true}),
+        }
+    }
+
+    fn handoff_with_identity(identity: Option<RemoteViewRecoveryIdentity>) -> RemoteViewHandoff {
+        RemoteViewHandoff {
+            id: "handoff-stealth".to_string(),
+            state: "ready".to_string(),
+            browser_id: Some("session:stealth".to_string()),
+            session_name: Some("stealth".to_string()),
+            profile_id: Some("litscout-stealth".to_string()),
+            target_id: Some("target-stealth".to_string()),
+            recovery_identity: identity,
+            ..RemoteViewHandoff::default()
+        }
+    }
+
+    #[test]
+    fn matching_handoff_save_preserves_immutable_recovery_identity() {
+        let path = unique_state_path("preserve-handoff-recovery-identity");
+        let store = JsonServiceStateStore::new(&path);
+        let identity = recovery_identity();
+        store
+            .save(&ServiceState {
+                remote_view_handoffs: BTreeMap::from([(
+                    "handoff-stealth".to_string(),
+                    handoff_with_identity(Some(identity.clone())),
+                )]),
+                ..ServiceState::default()
+            })
+            .expect("recovery identity should save");
+
+        store
+            .save(&ServiceState {
+                remote_view_handoffs: BTreeMap::from([(
+                    "handoff-stealth".to_string(),
+                    handoff_with_identity(None),
+                )]),
+                ..ServiceState::default()
+            })
+            .expect("matching stale writer should save without erasing identity");
+
+        let loaded = store.load().expect("saved state should load");
+        assert_eq!(
+            loaded.remote_view_handoffs["handoff-stealth"].recovery_identity,
+            Some(identity)
+        );
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn changed_handoff_does_not_borrow_prior_recovery_identity() {
+        let path = unique_state_path("reject-mismatched-handoff-recovery-identity");
+        let store = JsonServiceStateStore::new(&path);
+        store
+            .save(&ServiceState {
+                remote_view_handoffs: BTreeMap::from([(
+                    "handoff-stealth".to_string(),
+                    handoff_with_identity(Some(recovery_identity())),
+                )]),
+                ..ServiceState::default()
+            })
+            .expect("recovery identity should save");
+
+        let mut changed = handoff_with_identity(None);
+        changed.target_id = Some("different-target".to_string());
+        store
+            .save(&ServiceState {
+                remote_view_handoffs: BTreeMap::from([("handoff-stealth".to_string(), changed)]),
+                ..ServiceState::default()
+            })
+            .expect("changed handoff should save");
+
+        let loaded = store.load().expect("saved state should load");
+        assert_eq!(
+            loaded.remote_view_handoffs["handoff-stealth"].recovery_identity,
+            None
+        );
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
