@@ -5873,6 +5873,8 @@ pub struct SitePolicy {
     pub auth_providers: Vec<String>,
     pub challenge_policy: ChallengePolicy,
     pub allowed_challenge_providers: Vec<String>,
+    /// Optional bounded signals for a read-only page-gate observation.
+    pub page_gate_observer: Option<PageGateObserverPolicy>,
     pub notes: Option<String>,
 }
 
@@ -5904,9 +5906,21 @@ impl Default for SitePolicy {
             auth_providers: Vec::new(),
             challenge_policy: ChallengePolicy::AvoidFirst,
             allowed_challenge_providers: Vec::new(),
+            page_gate_observer: None,
             notes: None,
         }
     }
+}
+
+/// Site-owned signals. Matching a title alone never creates a challenge when
+/// challenge selectors are configured; clearing requires positive page proof.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PageGateObserverPolicy {
+    pub challenge_title_contains: Vec<String>,
+    pub challenge_selectors: Vec<String>,
+    pub sign_in_url_prefixes: Vec<String>,
+    pub ready_selectors: Vec<String>,
 }
 
 /// Pacing and concurrency limits for a site policy.

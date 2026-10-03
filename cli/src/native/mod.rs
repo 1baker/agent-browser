@@ -110,6 +110,7 @@ pub mod service_lifecycle;
 pub mod service_model;
 #[allow(dead_code)]
 pub mod service_monitors;
+pub mod service_page_gate;
 #[allow(dead_code)]
 pub mod service_resources;
 #[allow(dead_code)]

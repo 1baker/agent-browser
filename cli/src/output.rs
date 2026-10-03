@@ -5817,6 +5817,7 @@ Notes:
   - Text service browsers focuses retained browser records and their lastHealthObservation fields.
   - Text service tabs focuses retained tab lifecycle, browser, session, target, URL, and title fields.
   - The Service dashboard Park action strictly closes one exact physical tab while retaining its URL, title, browser, and session route. Reopen creates a fresh target and handle in that same live browser/profile. Profile authentication survives, but volatile page state does not. Park is unavailable for the browser's last live tab.
+  - A site policy can opt in pageGateObserver signals for bounded challenge, sign-in, and ready-page detection. Labeled navigation checks them and action=probe with probe.observePageGate=true rechecks the exact serviceTabHandle. A waiting human gate pauses agent page mutations on that target; only positive ready-page evidence resolves it. Unknown evidence never resolves a handoff or proves authentication.
   - Text service monitors focuses monitor identity, target, interval, state, last health timestamps, and failure counts, including profile_readiness:<targetServiceId> freshness monitors.
   - Text service site-policies focuses origin, source, overrideability, host, CDP-free requirement, interaction, challenge, login, and profile-required policy fields.
   - Text service providers focuses provider identity, kind, enabled state, config reference, and capabilities.

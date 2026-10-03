@@ -91,6 +91,14 @@ projection is available through <code>GET /api/service/runs</code>, MCP
 <code>agent-browser://runs</code>, and the service-runs client helper. Service
 job history is bounded, so older actions may disappear from this view.
 
+For sites with a configured <code>pageGateObserver</code> policy, bounded
+signals after labeled navigation can create a retained human handoff. The
+operator can open the exact tab and use <strong>Done, re-check page</strong>
+after acting. The recheck evaluates the current page; only a positive
+ready-page selector resolves the gate. It does not authenticate the account
+or mark the overall task complete. Agent page mutations on the waiting target
+pause while human remote-view control remains available.
+
 Dashboard sections are URL-addressable. Use <code>/service</code> for the
 Service view, <code>/browsers</code> for Browser sessions, and
 <code>/activity</code> for the activity stream. The Service view preserves its

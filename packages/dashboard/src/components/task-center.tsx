@@ -12,6 +12,7 @@ const NEXT_ACTION_LABELS: Record<string, string> = {
   verify_task_outcome: "Verify the task result",
   inspect_failure: "Inspect the failed action",
   open_exact_tab_and_recheck: "Open this tab and resolve the prompt",
+  inspect_stale_handoff: "This tab is no longer an exact live target; inspect the handoff",
   start_manual_seeding: "Start manual sign-in",
   finish_sign_in_and_close_browser: "Finish sign-in, then close that browser",
   verify_login_readiness: "Verify sign-in readiness",
@@ -27,6 +28,8 @@ export function TaskCenter({ onOpenWorkspace }: { onOpenWorkspace: () => void })
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [recheckingId, setRecheckingId] = useState<string | null>(null);
+  const [recheckNotice, setRecheckNotice] = useState("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -58,6 +61,46 @@ export function TaskCenter({ onOpenWorkspace }: { onOpenWorkspace: () => void })
       jobId: run.jobId ?? null,
     });
     onOpenWorkspace();
+  };
+
+  const recheckGate = async (run: ServiceRunView) => {
+    if (!run.serviceTabHandle || !run.targetId || !run.sessionName) return;
+    setRecheckingId(run.id);
+    setRecheckNotice("");
+    try {
+      const response = await fetch(`${SERVICE_API_BASE}/request`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          serviceName: "AgentBrowserDashboard",
+          agentName: "dashboard-operator",
+          taskName: "recheckPageGate",
+          action: "probe",
+          browserId: run.browserId,
+          sessionName: run.sessionName,
+          serviceTabHandle: run.serviceTabHandle,
+          timeoutMs: 2000,
+          maxReturnBytes: 512,
+          probe: { observePageGate: true, detectors: [{ id: "page", type: "url_title" }] },
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload?.success !== true) {
+        throw new Error(payload?.error || `Recheck failed with HTTP ${response.status}`);
+      }
+      const classification = payload?.data?.pageGate?.classification;
+      setRecheckNotice(classification === "clear"
+        ? "A ready page was observed. This does not independently verify sign-in or task completion."
+        : classification === "challenge" || classification === "signin_required"
+          ? "The page still needs a human action."
+          : "The page state is not conclusive. Keep this handoff open and inspect the exact tab.");
+      await refresh();
+    } catch (cause) {
+      setRecheckNotice(cause instanceof Error ? cause.message : "Could not re-check the page.");
+    } finally {
+      setRecheckingId(null);
+    }
   };
 
   return (
@@ -114,6 +157,12 @@ export function TaskCenter({ onOpenWorkspace }: { onOpenWorkspace: () => void })
                 {selected.browserId && selected.tabId && selected.targetId && (
                   <Button type="button" onClick={() => openWorkspace(selected)}>Open exact workspace</Button>
                 )}
+                {selected.kind === "human_challenge" && selected.serviceTabHandle && selected.targetId && selected.sessionName && (
+                  <Button type="button" variant="outline" disabled={recheckingId === selected.id} onClick={() => void recheckGate(selected)}>
+                    {recheckingId === selected.id ? "Re-checking…" : "Done, re-check page"}
+                  </Button>
+                )}
+                {recheckNotice && <p role="status" className="text-sm">{recheckNotice}</p>}
                 <p className="text-xs text-muted-foreground">Task outcome: unverified</p>
               </div>
             ) : <p className="text-sm text-muted-foreground">Select a work item to see its evidence and next action.</p>}

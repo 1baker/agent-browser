@@ -15,6 +15,7 @@ use super::service_model::{
     ProfileTargetReadiness, ServiceActor, ServiceEntitySource, ServiceProvider, ServiceState,
     SiteMonitor, SitePolicy,
 };
+use super::service_page_gate::validate_policy as validate_page_gate_policy;
 use super::service_store::{LockedServiceStateRepository, ServiceStateRepository};
 
 fn validate_entity_id(id: &str, label: &str) -> Result<(), String> {
@@ -303,6 +304,9 @@ pub fn upsert_site_policy(
     let body = object_body_with_path_id(body, id, "site policy")?;
     let policy = serde_json::from_value::<SitePolicy>(body)
         .map_err(|err| format!("Invalid site policy: {err}"))?;
+    if let Some(observer) = policy.page_gate_observer.as_ref() {
+        validate_page_gate_policy(observer)?;
+    }
     state.site_policies.insert(id.to_string(), policy.clone());
     state
         .entity_sources

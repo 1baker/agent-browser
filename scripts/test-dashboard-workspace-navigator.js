@@ -45,6 +45,8 @@ assert.match(tasksRoute, /<DashboardPage initialSection="tasks" \/>/);
 assert.match(page, /activeSection === "tasks"[\s\S]*<TaskCenter onOpenWorkspace=/);
 assert.match(taskCenter, /getServiceRuns\(\{ baseUrl: SERVICE_API_BASE \}\)/);
 assert.match(taskCenter, /Task outcome: unverified/);
+assert.match(taskCenter, /Done, re-check page/);
+assert.match(taskCenter, /observePageGate: true, detectors: \[\{ id: "page", type: "url_title" \}\]/);
 
 assert.match(
   page,

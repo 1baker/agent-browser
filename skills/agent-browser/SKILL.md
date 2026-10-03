@@ -13,6 +13,15 @@ activity only, not as a verified task outcome. Job history is bounded and this
 view is not a durable task ledger. When a handoff names an exact tab, preserve
 its browser, profile, session, and target identity before opening a workspace.
 
+Configured `pageGateObserver` site policies use bounded title and visible
+selector signals after labeled navigation. Recheck an exact retained tab with
+`action=probe`, a valid `serviceTabHandle`, positive `timeoutMs` and
+`maxReturnBytes`, `probe.observePageGate=true`, and a read-only `url_title`
+detector. A waiting gate pauses agent page mutations on that target. A
+`clear` classification requires a configured ready-page selector; `unknown`
+does not resolve the handoff. Neither classification proves sign-in or task
+completion. Human control through the retained remote view remains separate.
+
 MCP `service_profile_upsert` supports cold, metadata-free sessions through a
 short-lived browserless queue worker. No default daemon or browser is required.
 Existing or ambiguous daemon metadata keeps normal transport behavior; never

@@ -269,6 +269,15 @@ export interface ServiceProbeIdentity {
   [key: string]: unknown;
 }
 
+export interface ServicePageGateObservation {
+  classification: "clear" | "challenge" | "signin_required" | "unknown";
+  reason?: string;
+  policyId?: string;
+  challengeId?: string | null;
+  recorded: boolean;
+  resolutionIsNotAuthenticationProof?: true;
+}
+
 export interface ServiceProbeData {
   ok: boolean;
   action: "probe";
@@ -283,6 +292,7 @@ export interface ServiceProbeData {
   identity: ServiceProbeIdentity;
   detectors: ServiceProbeDetectorResult[];
   freshness?: Record<string, unknown> | null;
+  pageGate?: ServicePageGateObservation | null;
   [key: string]: unknown;
 }
 

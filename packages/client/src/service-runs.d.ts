@@ -15,6 +15,8 @@ export interface ServiceRunView {
   browserId?: string | null;
   tabId?: string | null;
   targetId?: string | null;
+  serviceTabHandle?: Record<string, unknown> | null;
+  gatePolicyDecision?: string | null;
   sessionName?: string | null;
   profileId?: string | null;
   targetServiceId?: string | null;

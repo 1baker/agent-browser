@@ -50,3 +50,12 @@ Build a read-only view of current and recent labeled jobs first. Label it
 starts a governed task, then persist only the identity, human-gate transitions,
 verified outcome, and cleanup evidence needed to reconstruct that task after
 the bounded job and event logs rotate. Keep browser lifecycle in Service State.
+
+## Follow-up implementation
+
+The source trace above describes the baseline before plan 0133 implementation.
+The subsequent opt-in page-gate observer uses persisted site-policy signals and
+an exact retained tab handle to write a waiting challenge, while bounded
+rechecks can mark it resolved only after positive ready-page evidence. This
+closes the missing production writer gap for configured policies, but does not
+yet create a general durable task run ledger or prove live-site behavior.

@@ -60,6 +60,7 @@ pub fn service_runs_response(state: &ServiceState) -> Value {
             "profileId": handle.and_then(|handle| handle.profile_id.as_deref()).or(profile_id),
             "targetId": live_tab.and_then(|tab| tab.target_id.as_deref()),
             "sessionName": handle.and_then(|handle| handle.session_name.as_deref()),
+            "serviceTabHandle": handle,
             "url": tab.and_then(|tab| tab.url.as_deref()),
             "updatedAt": job.completed_at.as_ref().or(job.started_at.as_ref()).or(job.submitted_at.as_ref()),
         }));
@@ -89,7 +90,7 @@ pub fn service_runs_response(state: &ServiceState) -> Value {
             "id": format!("challenge:{}", challenge.id),
             "kind": "human_challenge",
             "state": "needs_human",
-            "nextAction": "open_exact_tab_and_recheck",
+            "nextAction": if live_tab.is_some() { "open_exact_tab_and_recheck" } else { "inspect_stale_handoff" },
             "taskOutcomeVerified": false,
             "evidenceScope": "retained_challenge",
             "challengeId": challenge.id,
@@ -98,6 +99,8 @@ pub fn service_runs_response(state: &ServiceState) -> Value {
             "profileId": handle.and_then(|handle| handle.profile_id.as_ref()),
             "targetId": live_tab.and_then(|tab| tab.target_id.as_ref()),
             "sessionName": handle.and_then(|handle| handle.session_name.as_ref()),
+            "serviceTabHandle": handle,
+            "gatePolicyDecision": challenge.policy_decision,
             "url": tab.and_then(|tab| tab.url.as_ref()),
             "updatedAt": challenge.detected_at,
         }));

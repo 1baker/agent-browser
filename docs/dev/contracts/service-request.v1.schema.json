@@ -233,7 +233,7 @@
     "probe": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Provider-neutral probe recipe for action=probe. The object must include a bounded detectors array. Supported detector types are evaluate, url_title, selector_text, and client_evidence. Optional recordFreshness records target/account freshness evidence against the selected service profile."
+      "description": "Provider-neutral probe recipe for action=probe. The object must include a bounded detectors array. Supported detector types are evaluate, url_title, selector_text, and client_evidence. Optional recordFreshness records target/account freshness evidence against the selected service profile. Optional observePageGate evaluates bounded signals from the matching persisted site policy and may record a human handoff for the exact live tab; an unknown result never resolves a gate."
     },
     "uiAction": {
       "type": "object",

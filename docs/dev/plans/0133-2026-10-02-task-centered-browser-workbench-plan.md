@@ -1,7 +1,7 @@
 # Plan 0133: Task Centered Browser Workbench
 
 Date: 2026-10-02
-State: IN PROGRESS; read-only recent-work projection and dashboard entry implemented
+State: IN PROGRESS; recent-work view and opt-in page-gate path implemented, live acceptance pending
 Review: Codex and Claude Code, session `cc8cd1d7-57e0-4c30-a95f-81425fdcca93`
 
 ## Goal
@@ -116,3 +116,21 @@ the page changed before the run resumes.
   silent target replacement is part of this plan.
 - The three existing dirty Rust files are preserved until their ownership and
   current change are reviewed.
+
+## 2026-10-02 implementation checkpoint
+
+- `a5f739f6` added the read-only recent-work projection, HTTP/MCP/client
+  parity, dashboard Browser work route, and initial gap matrix. Browser action
+  success remains unverified as a task outcome.
+- The next source slice adds bounded site-policy page-gate signals, a
+  persisted exact-tab human challenge, a before-admission pause for agent page
+  mutations, and a dashboard recheck path. Its unit, contract, and build gates
+  have passed; it is not yet a live-accepted or installed runtime behavior.
+- The isolated `test:service-probe-live` prerequisite failed before a probe:
+  first Chrome exited before exposing DevTools; with an explicit Chrome-for-
+  Testing executable, the fixture refused a retained browser whose build was
+  `unknown` when `stock_chrome` was required. Both disposable fixture sessions
+  cleaned up. Do not interpret this as page-gate acceptance or retry over a
+  retained browser.
+- Durable general task-run identity, outcome/cleanup receipts, recovery picker,
+  Park/Reopen lineage, and LitScout/ChatGPT live journeys remain open.

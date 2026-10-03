@@ -458,6 +458,14 @@ actions and retained human handoffs. Its read-only data is also available from
 that the overall task finished; job history is bounded, so older actions may
 not appear in this view.
 
+For a site with a configured `pageGateObserver` policy, a labeled navigation
+checks bounded title and selector signals. `probe.observePageGate: true` can
+recheck the exact retained tab. A positive challenge or sign-in signal creates
+a human handoff and pauses agent page mutations on that target. A ready-page
+selector can resolve that gate after human action; an unknown result cannot.
+This does not solve a challenge, verify account authentication, or prove the
+overall task is done.
+
 ### Get Info
 
 ```bash

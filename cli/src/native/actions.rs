@@ -107,10 +107,10 @@ use super::service_lifecycle::{
     ProfileSelectionRequest, ServiceLaunchMetadata,
 };
 use super::service_model::{
-    browser_matches_required_build, retained_display_allocation_candidates,
+    browser_matches_required_build, builtin_site_policy, retained_display_allocation_candidates,
     retained_display_allocation_summary, service_profile_allocations,
-    service_profile_seeding_handoff, service_profile_sources, BrowserBuild,
-    BrowserCapabilityRegistry, BrowserHealth as ServiceBrowserHealth,
+    service_profile_seeding_handoff, service_profile_sources, service_site_policy_id_for_url,
+    BrowserBuild, BrowserCapabilityRegistry, BrowserHealth as ServiceBrowserHealth,
     BrowserHost as ServiceBrowserHost, BrowserProcess, BrowserProfile, BrowserSession, BrowserTab,
     ControlInputProvider, DisplayAllocation, JobState as ServiceJobState, LeaseState, MonitorState,
     ProfileAllocationPolicy, ProfileClass, ProfileKeyringPolicy, ProfileLeaseDisposition,
@@ -122,6 +122,10 @@ use super::service_model::{
 use super::service_monitors::{
     parse_monitor_state, run_due_persisted_monitors, service_monitors_response,
     MonitorCollectionFilters,
+};
+use super::service_page_gate::{
+    apply_page_gate_observation, classify_page_gate, validate_policy, waiting_page_gate_tab,
+    PageGateDisposition,
 };
 use super::service_resources::{
     service_gc_apply_response, service_gc_dry_run_response,
@@ -5200,6 +5204,10 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         }
     }
 
+    if let Err(error) = refuse_page_action_while_human_gate_waits(cmd, state, action) {
+        return error_response(&id, &error);
+    }
+
     let ordered_step_admitted = match task_authority_decision(cmd, state, action, true) {
         Ok(TaskAuthorityDecision::NotPresent) => false,
         Ok(TaskAuthorityDecision::Admitted(admission)) => admission.step_id.is_some(),
@@ -5723,6 +5731,107 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     }
 
     resp
+}
+
+/// A recorded page gate pauses agent page mutations on only its exact target.
+/// Read-only inspection, recheck probes, human remote view, and cleanup remain
+/// available. This check runs before an ordered task step is consumed.
+fn refuse_page_action_while_human_gate_waits(
+    cmd: &Value,
+    state: &DaemonState,
+    action: &str,
+) -> Result<(), String> {
+    let page_mutation = matches!(
+        action,
+        "navigate"
+            | "back"
+            | "forward"
+            | "reload"
+            | "click"
+            | "dblclick"
+            | "fill"
+            | "type"
+            | "press"
+            | "hover"
+            | "scroll"
+            | "scrollintoview"
+            | "select"
+            | "focus"
+            | "clear"
+            | "check"
+            | "uncheck"
+            | "setcontent"
+            | "setvalue"
+            | "selectall"
+            | "dispatch"
+            | "tap"
+            | "wheel"
+            | "evaluate"
+            | "ui_action"
+            | "network_capture"
+            | "file_transfer"
+            | "tab_handle_refresh"
+            | "headers"
+            | "offline"
+            | "cookies_set"
+            | "cookies_clear"
+            | "storage_set"
+            | "storage_clear"
+            | "dialog"
+            | "clipboard"
+            | "upload"
+            | "download"
+            | "route"
+            | "unroute"
+    );
+    let probe_recheck = action == "probe";
+    if !page_mutation && !probe_recheck {
+        return Ok(());
+    }
+    let target_id = cmd
+        .pointer("/serviceTabHandle/targetId")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            state
+                .browser
+                .as_ref()
+                .and_then(|mgr| mgr.active_target_id().ok())
+        });
+    let Some(target_id) = target_id else {
+        return Ok(());
+    };
+    let repository = LockedServiceStateRepository::default_json()?;
+    let snapshot = repository.load_snapshot()?;
+    let waiting = waiting_page_gate_tab(&snapshot, &state.session_id, target_id);
+    let Some(tab) = waiting else {
+        return Ok(());
+    };
+    if probe_recheck {
+        let safe_recheck = cmd
+            .pointer("/probe/observePageGate")
+            .and_then(Value::as_bool)
+            == Some(true)
+            && cmd.pointer("/probe/recordFreshness").is_none()
+            && cmd
+                .pointer("/probe/detectors")
+                .and_then(Value::as_array)
+                .is_some_and(|detectors| {
+                    !detectors.is_empty()
+                        && detectors.iter().all(|detector| {
+                            matches!(
+                                detector.get("type").and_then(Value::as_str),
+                                Some("url_title" | "selector_text")
+                            )
+                        })
+                });
+        if safe_recheck {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "Page action paused for human gate {} on exact tab {}; use a bounded observePageGate recheck or human remote view",
+        tab.challenge_id.as_deref().unwrap_or("unknown"), tab.id
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -8420,7 +8529,43 @@ async fn handle_navigate(cmd: &Value, state: &mut DaemonState) -> Result<Value, 
         object.insert("sharedAcquisition".to_string(), shared_acquisition.clone());
     }
     add_manual_login_hint_warning(cmd, &mut data);
-    persist_service_owned_navigate_tab(cmd, &state.session_id, mgr, &data)?;
+    if let Some(handle) = persist_service_owned_navigate_tab(cmd, &state.session_id, mgr, &data)? {
+        if let Some(handle) = handle.as_object() {
+            let observed_at = OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+            let observed_url = data
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or(url)
+                .to_string();
+            let observed_title = data
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let page_gate = observe_service_page_gate(
+                mgr,
+                handle,
+                &observed_url,
+                &observed_title,
+                1500,
+                &observed_at,
+            )
+            .await
+            .unwrap_or_else(|_| {
+                json!({
+                    "classification": "unknown",
+                    "reason": "observer_error",
+                    "manualReviewRequired": true,
+                    "recorded": false,
+                })
+            });
+            if let Some(object) = data.as_object_mut() {
+                object.insert("pageGate".to_string(), page_gate);
+            }
+        }
+    }
     Ok(data)
 }
 
@@ -8429,15 +8574,15 @@ fn persist_service_owned_navigate_tab(
     session_id: &str,
     mgr: &BrowserManager,
     data: &Value,
-) -> Result<(), String> {
+) -> Result<Option<Value>, String> {
     if optional_command_string(cmd, "serviceName").is_none()
         && optional_command_string(cmd, "agentName").is_none()
         && optional_command_string(cmd, "taskName").is_none()
     {
-        return Ok(());
+        return Ok(None);
     }
     let Ok(target_id) = mgr.active_target_id() else {
-        return Ok(());
+        return Ok(None);
     };
     let url = data
         .get("url")
@@ -8482,7 +8627,8 @@ fn persist_service_owned_navigate_tab(
         url,
         title,
         &service_tab_handle,
-    )
+    )?;
+    Ok(Some(service_tab_handle))
 }
 
 fn add_manual_login_hint_warning(cmd: &Value, data: &mut Value) {
@@ -8992,6 +9138,11 @@ async fn handle_service_probe(cmd: &Value, state: &mut DaemonState) -> Result<Va
     }
     let identity = normalize_probe_identity(&results, probe.get("expectedIdentity"));
     let freshness = record_probe_freshness(cmd, probe, handle, &identity, &observed_at)?;
+    let page_gate = if probe.get("observePageGate").and_then(Value::as_bool) == Some(true) {
+        observe_service_page_gate(mgr, handle, &url, &title, timeout_ms, &observed_at).await?
+    } else {
+        Value::Null
+    };
 
     Ok(json!({
         "ok": true,
@@ -9014,12 +9165,96 @@ async fn handle_service_probe(cmd: &Value, state: &mut DaemonState) -> Result<Va
         "identity": identity,
         "detectors": results,
         "freshness": freshness,
+        "pageGate": page_gate,
         "caller": {
             "serviceName": cmd.get("serviceName").cloned().unwrap_or(Value::Null),
             "agentName": cmd.get("agentName").cloned().unwrap_or(Value::Null),
             "taskName": cmd.get("taskName").cloned().unwrap_or(Value::Null),
             "jobId": cmd.get("id").cloned().unwrap_or(Value::Null),
         },
+    }))
+}
+
+/// Evaluate only bounded, persisted site-policy selectors. An unknown result
+/// never clears a handoff, and no page-gate result solves a challenge.
+async fn observe_service_page_gate(
+    mgr: &BrowserManager,
+    handle: &Map<String, Value>,
+    url: &str,
+    title: &str,
+    timeout_ms: u64,
+    observed_at: &str,
+) -> Result<Value, String> {
+    let repository = LockedServiceStateRepository::default_json()?;
+    let snapshot = repository.load_snapshot()?;
+    let Some(policy_id) = service_site_policy_id_for_url(&snapshot, url) else {
+        return Ok(
+            json!({"classification": "unknown", "reason": "no_matching_site_policy", "recorded": false}),
+        );
+    };
+    let policy = snapshot
+        .site_policies
+        .get(&policy_id)
+        .cloned()
+        .or_else(|| builtin_site_policy(&policy_id));
+    let Some(observer) = policy.and_then(|policy| policy.page_gate_observer) else {
+        return Ok(
+            json!({"classification": "unknown", "reason": "no_page_gate_observer", "policyId": policy_id, "recorded": false}),
+        );
+    };
+    validate_policy(&observer)?;
+    let selectors = json!({
+        "challenge": observer.challenge_selectors,
+        "ready": observer.ready_selectors,
+    });
+    let expression = format!(
+        r#"(() => {{
+const groups = {selectors};
+const visible = (selector) => {{
+  const node = document.querySelector(selector);
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  const rect = node.getBoundingClientRect();
+  return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+}};
+return {{challengeVisible: groups.challenge.some(visible), readyVisible: groups.ready.some(visible)}};
+}})()"#
+    );
+    let evaluated = match run_probe_evaluate(mgr, &expression, timeout_ms.min(2000), 1024).await {
+        Ok(evaluated) if !evaluated.truncated => evaluated.value,
+        Ok(_) => {
+            return Ok(
+                json!({"classification": "unknown", "reason": "selector_result_truncated", "policyId": policy_id, "recorded": false}),
+            )
+        }
+        Err(_) => {
+            return Ok(
+                json!({"classification": "unknown", "reason": "selector_probe_failed", "policyId": policy_id, "recorded": false}),
+            )
+        }
+    };
+    let disposition = classify_page_gate(
+        &observer,
+        url,
+        title,
+        evaluated["challengeVisible"].as_bool().unwrap_or(false),
+        evaluated["readyVisible"].as_bool().unwrap_or(false),
+    );
+    let challenge_id = if disposition == PageGateDisposition::Unknown {
+        None
+    } else {
+        let handle: ServiceTabHandle = serde_json::from_value(Value::Object(handle.clone()))
+            .map_err(|error| format!("Invalid page gate serviceTabHandle: {error}"))?;
+        repository
+            .mutate(|state| apply_page_gate_observation(state, &handle, disposition, observed_at))?
+    };
+    Ok(json!({
+        "classification": disposition.as_str(),
+        "policyId": policy_id,
+        "observedAt": observed_at,
+        "challengeId": challenge_id,
+        "recorded": challenge_id.is_some(),
+        "resolutionIsNotAuthenticationProof": true,
     }))
 }
 
