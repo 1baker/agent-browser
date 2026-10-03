@@ -5313,6 +5313,10 @@ browser sessions. All sessions automatically stream to the dashboard.
 The standalone dashboard proxies /api/service/* on the same origin, so service
 views work through stable local or authenticated ingress instead of requiring
 the operator's browser to reach per-session localhost ports.
+Browser work at /tasks shows recent labeled jobs and retained human handoffs.
+GET /api/service/runs and MCP agent-browser://runs expose the same read-only
+projection. A succeeded browser action is not a verified task outcome, and
+older jobs may be absent because service job history is bounded.
 The dashboard self-guards its API routes with a superuser login. On first
 start it creates ~/.agent-browser/dashboard-auth.json plus the mode-0600
 bootstrap credential file ~/.agent-browser/dashboard-auth.env. The default

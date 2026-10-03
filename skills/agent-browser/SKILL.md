@@ -6,6 +6,13 @@ allowed-tools: Bash(npx agent-browser:*), Bash(agent-browser:*)
 
 # Browser Automation with agent-browser
 
+For operator review, the dashboard's Browser work view at `/tasks` and the
+read-only HTTP `GET /api/service/runs` or MCP `agent-browser://runs` show recent
+labeled jobs and retained human handoffs. Treat a successful browser action as
+activity only, not as a verified task outcome. Job history is bounded and this
+view is not a durable task ledger. When a handoff names an exact tab, preserve
+its browser, profile, session, and target identity before opening a workspace.
+
 MCP `service_profile_upsert` supports cold, metadata-free sessions through a
 short-lived browserless queue worker. No default daemon or browser is required.
 Existing or ambiguous daemon metadata keeps normal transport behavior; never

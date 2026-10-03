@@ -20,6 +20,7 @@ import { StoragePanel } from "@/components/storage-panel";
 import { ExtensionsPanel } from "@/components/extensions-panel";
 import { NetworkPanel } from "@/components/network-panel";
 import { WorkspaceNavigator } from "@/components/workspace-navigator";
+import { TaskCenter } from "@/components/task-center";
 import { AppShell, type DashboardSection } from "@/components/app-shell";
 import {
   DASHBOARD_WORKSPACE_SELECTION_EVENT,
@@ -54,11 +55,12 @@ const LEFT_PANE_COLLAPSED_KEY = "agent-browser-dashboard-left-pane-collapsed";
 const RIGHT_PANE_COLLAPSED_KEY = "agent-browser-dashboard-right-pane-collapsed";
 const SECTION_PATHS: Record<DashboardSection, string> = {
   overview: "/",
+  tasks: "/tasks",
   browsers: "/browsers",
   service: "/service",
   activity: "/activity",
 };
-type MobileDashboardPanel = "workspaces" | "viewport" | "activity" | "service";
+type MobileDashboardPanel = "workspaces" | "viewport" | "tasks" | "activity" | "service";
 type RightPaneTab = "workspace" | "chat" | "activity" | "console" | "network" | "storage" | "extensions";
 type DashboardAuthUser = {
   username: string;
@@ -129,7 +131,7 @@ const REQUIRED_RUNTIME_CONTRACT = "service-ui-runtime.v1";
 function dashboardSectionFromPath(pathname: string): DashboardSection {
   const segments = pathname.split("/").filter(Boolean);
   const segment = segments[segments.length - 1];
-  if (segment === "browsers" || segment === "service" || segment === "activity") return segment;
+  if (segment === "tasks" || segment === "browsers" || segment === "service" || segment === "activity") return segment;
   return "overview";
 }
 
@@ -554,6 +556,7 @@ function DashboardExperience({
     readStoredBoolean(RIGHT_PANE_COLLAPSED_KEY, true),
   );
   const [mobilePanel, setMobilePanel] = useState<MobileDashboardPanel>(() => {
+    if (initialSection === "tasks") return "tasks";
     if (initialSection === "service") return "service";
     if (initialSection === "activity") return "activity";
     return "viewport";
@@ -708,7 +711,9 @@ function DashboardExperience({
       {rightPaneCollapsed ? <PanelRightOpen className="size-4" /> : <PanelRightClose className="size-4" />}
     </Button>
   );
-  const primaryPanel = activeSection === "service"
+  const primaryPanel = activeSection === "tasks"
+    ? <TaskCenter onOpenWorkspace={() => changeDashboardSection("browsers")} />
+    : activeSection === "service"
     ? (
       <ServicePanel
         onInspectSelection={inspectServiceSelection}
@@ -793,7 +798,7 @@ function DashboardExperience({
   };
 
   if (isDesktop) {
-    if (!hasSessions && activeSection !== "service" && !hasWorkspaceViewportRoute) {
+    if (!hasSessions && activeSection !== "service" && activeSection !== "tasks" && !hasWorkspaceViewportRoute) {
       return (
         <AppShell {...appShellProps}>
           <ResizablePanelGroup
@@ -842,7 +847,7 @@ function DashboardExperience({
       );
     }
 
-    if (!hasSessions && activeSection === "service") {
+    if (!hasSessions && (activeSection === "service" || activeSection === "tasks")) {
       return (
         <AppShell {...appShellProps}>
           <ResizablePanelGroup
@@ -864,10 +869,7 @@ function DashboardExperience({
               <div className="dashboard-pane dashboard-pane-viewport dashboard-pane-with-rails">
                 {leftPaneCollapsed && leftPaneToggle}
                 {rightPaneCollapsed && rightPaneToggle}
-                <ServicePanel
-                  onInspectSelection={inspectServiceSelection}
-                  onInspectorActionsChange={setServiceInspectorActions}
-                />
+                {primaryPanel}
               </div>
             </ResizablePanel>
             {!rightPaneCollapsed && (
@@ -934,7 +936,7 @@ function DashboardExperience({
           if (value === "workspaces" || value === "viewport") {
             setMobilePanel(value);
             changeDashboardSection("overview");
-          } else if (value === "service" || value === "activity") {
+          } else if (value === "service" || value === "activity" || value === "tasks") {
             setMobilePanel(value);
             changeDashboardSection(value);
           }
@@ -945,6 +947,7 @@ function DashboardExperience({
           <TabsList className="w-full rounded-2xl bg-white/60 p-1 shadow-sm ring-1 ring-foreground/10 backdrop-blur-xl dark:bg-white/5">
             <TabsTrigger value="workspaces">Workspaces</TabsTrigger>
             <TabsTrigger value="viewport">Viewport</TabsTrigger>
+            <TabsTrigger value="tasks">Work</TabsTrigger>
             <TabsTrigger value="activity">Activity</TabsTrigger>
             <TabsTrigger value="service">Service</TabsTrigger>
           </TabsList>
@@ -954,6 +957,9 @@ function DashboardExperience({
         </TabsContent>
         <TabsContent value="viewport" className="dashboard-mobile-panel min-h-0 overflow-hidden p-3">
           <WorkspaceRemoteViewport fallback={<Viewport />} selectedWorkspaceContext={selectedWorkspace.context} />
+        </TabsContent>
+        <TabsContent value="tasks" className="dashboard-mobile-panel min-h-0 overflow-hidden p-3">
+          <TaskCenter onOpenWorkspace={() => { setMobilePanel("viewport"); changeDashboardSection("browsers"); }} />
         </TabsContent>
         <TabsContent value="activity" className="dashboard-mobile-panel min-h-0 overflow-hidden p-3">
           {sidePanel}

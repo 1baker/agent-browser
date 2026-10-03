@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { useAtomValue, useSetAtom } from "jotai/react";
 import {
   Activity,
+  ClipboardList,
   Bot,
   ChevronDown,
   CircleDot,
@@ -37,10 +38,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
-export type DashboardSection = "overview" | "browsers" | "service" | "activity";
+export type DashboardSection = "overview" | "tasks" | "browsers" | "service" | "activity";
 
 const NAV_ITEMS: { id: DashboardSection; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "tasks", label: "Browser work", icon: ClipboardList },
   { id: "browsers", label: "Browsers", icon: MonitorDot },
   { id: "service", label: "Service", icon: ShieldCheck },
   { id: "activity", label: "Activity", icon: Activity },
@@ -48,6 +50,7 @@ const NAV_ITEMS: { id: DashboardSection; label: string; icon: typeof LayoutDashb
 
 const NAV_PATHS: Record<DashboardSection, string> = {
   overview: "/",
+  tasks: "/tasks",
   browsers: "/browsers",
   service: "/service",
   activity: "/activity",

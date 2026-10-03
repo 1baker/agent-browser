@@ -20,6 +20,8 @@ const serviceModeDocs = readFileSync('docs/src/app/service-mode/page.mdx', 'utf8
 const commandsDocs = readFileSync('docs/src/app/commands/page.mdx', 'utf8');
 const skill = readFileSync('skills/agent-browser/SKILL.md', 'utf8');
 const cliOutput = readFileSync('cli/src/output.rs', 'utf8');
+const taskCenter = readFileSync('packages/dashboard/src/components/task-center.tsx', 'utf8');
+const tasksRoute = readFileSync('packages/dashboard/src/app/tasks/page.tsx', 'utf8');
 
 assert.match(
   page,
@@ -35,9 +37,14 @@ assert.doesNotMatch(
 
 assert.match(
   page,
-  /type MobileDashboardPanel = "workspaces" \| "viewport" \| "activity" \| "service";[\s\S]*const \[mobilePanel, setMobilePanel\] = useState<MobileDashboardPanel>[\s\S]*value=\{mobilePanel\}[\s\S]*value="workspaces"[\s\S]*<WorkspaceNavigator \/>/,
+  /type MobileDashboardPanel = "workspaces" \| "viewport" \| "tasks" \| "activity" \| "service";[\s\S]*const \[mobilePanel, setMobilePanel\] = useState<MobileDashboardPanel>[\s\S]*value=\{mobilePanel\}[\s\S]*value="workspaces"[\s\S]*<WorkspaceNavigator \/>/,
   'Mobile dashboard tabs must be able to render the workspace navigator instead of falling through to the viewport',
 );
+
+assert.match(tasksRoute, /<DashboardPage initialSection="tasks" \/>/);
+assert.match(page, /activeSection === "tasks"[\s\S]*<TaskCenter onOpenWorkspace=/);
+assert.match(taskCenter, /getServiceRuns\(\{ baseUrl: SERVICE_API_BASE \}\)/);
+assert.match(taskCenter, /Task outcome: unverified/);
 
 assert.match(
   page,

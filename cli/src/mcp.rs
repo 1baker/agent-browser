@@ -31,6 +31,7 @@ use crate::native::service_model::{
     service_profile_allocations, service_profile_seeding_handoff, service_profile_sources,
     service_site_policy_sources, ServiceState,
 };
+use crate::native::service_runs::service_runs_response;
 use crate::native::service_store::load_default_service_state_snapshot;
 use crate::native::service_trace::{service_trace_response, ServiceTraceFilters};
 use crate::native::stream::service_profile_lookup_response_for_state;
@@ -38,6 +39,7 @@ use crate::native::stream::service_profile_lookup_response_for_state;
 const BROWSERS_RESOURCE: &str = "agent-browser://browsers";
 const EVENTS_RESOURCE: &str = "agent-browser://events";
 const JOBS_RESOURCE: &str = "agent-browser://jobs";
+const RUNS_RESOURCE: &str = "agent-browser://runs";
 const PROFILES_RESOURCE: &str = "agent-browser://profiles";
 const PROVIDERS_RESOURCE: &str = "agent-browser://providers";
 const SESSIONS_RESOURCE: &str = "agent-browser://sessions";
@@ -259,6 +261,12 @@ fn service_mcp_resources() -> Vec<Value> {
             "description": "Retained service control-plane jobs sorted by submission time"
         }),
         json!({
+            "uri": RUNS_RESOURCE,
+            "name": "Task workbench recent runs",
+            "mimeType": "application/json",
+            "description": "Read-only recent jobs and retained human gates; job success is not a verified task outcome"
+        }),
+        json!({
             "uri": EVENTS_RESOURCE,
             "name": "Service events",
             "mimeType": "application/json",
@@ -460,6 +468,7 @@ fn read_service_mcp_resource_from_state(uri: &str, state: &ServiceState) -> Resu
                 "count": jobs.len(),
             })
         }
+        RUNS_RESOURCE => service_runs_response(&state),
         EVENTS_RESOURCE => json!({
             "events": state.events,
             "count": state.events.len(),
@@ -11791,6 +11800,7 @@ mod tests {
                 PROVIDERS_RESOURCE,
                 CHALLENGES_RESOURCE,
                 JOBS_RESOURCE,
+                RUNS_RESOURCE,
                 EVENTS_RESOURCE,
                 LOCAL_DASHBOARD_PUBLICATION_MCP_RESOURCE,
             ]

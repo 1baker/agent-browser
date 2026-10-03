@@ -42,6 +42,7 @@ use crate::native::service_model::{
 use crate::native::service_monitors::{
     parse_monitor_state, service_monitors_response, MonitorCollectionFilters,
 };
+use crate::native::service_runs::service_runs_response;
 
 use super::app_intelligence::{
     app_intelligence_status_json, inspect_workspace_response, operator_confirm_response,
@@ -3127,6 +3128,7 @@ fn parse_positive_query_u64(name: &str, value: &str) -> Result<u64, String> {
 fn service_collection_contents(path: &str, query: Option<&str>) -> Option<Value> {
     let service_state = load_service_state();
     match path {
+        "/api/service/runs" => Some(service_runs_response(&service_state)),
         "/api/service/profiles" => {
             let profile_allocations = service_profile_allocations(&service_state);
             let profile_sources = service_profile_sources(&service_state);
@@ -5668,6 +5670,7 @@ mod tests {
             service_collection_contents("/api/service/site-policies", None).unwrap();
         let providers = service_collection_contents("/api/service/providers", None).unwrap();
         let challenges = service_collection_contents("/api/service/challenges", None).unwrap();
+        let runs = service_collection_contents("/api/service/runs", None).unwrap();
         let registry =
             service_collection_contents("/api/service/browser-capability-registry", None).unwrap();
 
@@ -5685,6 +5688,9 @@ mod tests {
         assert!(site_policies["sitePolicies"].is_array());
         assert!(providers["providers"].is_array());
         assert!(challenges["challenges"].is_array());
+        assert!(runs["runs"].is_array());
+        assert_eq!(runs["taskOutcomeVerified"], Value::Null);
+        assert_eq!(runs["durableTaskHistory"], false);
         assert!(registry["browserHosts"].is_array());
         assert!(registry["browserExecutables"].is_array());
         assert!(registry["browserCapabilities"].is_array());

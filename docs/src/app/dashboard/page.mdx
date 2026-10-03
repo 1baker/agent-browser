@@ -84,6 +84,13 @@ agent-browser stream disable
 
 The dashboard is an operations console with routeable operator areas:
 
+The **Browser work** area at <code>/tasks</code> lists recent labeled actions
+and retained human handoffs with their next review step. It does not call a
+successful browser command a completed user task. The corresponding read-only
+projection is available through <code>GET /api/service/runs</code>, MCP
+<code>agent-browser://runs</code>, and the service-runs client helper. Service
+job history is bounded, so older actions may disappear from this view.
+
 Dashboard sections are URL-addressable. Use <code>/service</code> for the
 Service view, <code>/browsers</code> for Browser sessions, and
 <code>/activity</code> for the activity stream. The Service view preserves its
