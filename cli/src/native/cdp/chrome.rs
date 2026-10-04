@@ -2106,7 +2106,102 @@ fn env_bool(name: &str) -> bool {
     })
 }
 
-fn browser_family_for_executable(path: &Path) -> &'static str {
+fn browser_family_from_version_output(output: &str) -> Option<&'static str> {
+    let output = output.trim();
+    if output.starts_with("Brave") {
+        Some("brave")
+    } else if output.starts_with("Microsoft Edge") {
+        Some("edge")
+    } else if output.starts_with("Google Chrome") {
+        Some("chrome")
+    } else if output.starts_with("Chromium") {
+        Some("chromium")
+    } else {
+        None
+    }
+}
+
+/// Probe ambiguous Unix `chrome` executables without waiting on inherited pipes.
+/// The output and deadline are bounded; cleanup affects only the spawned group.
+#[cfg(unix)]
+fn probe_browser_version_with_timeout(path: &Path, timeout: Duration) -> Option<String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+
+    const OUTPUT_LIMIT: usize = 4096;
+    let mut child = Command::new(path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .ok()?;
+    let group_id = child.id() as i32;
+    let deadline = std::time::Instant::now() + timeout;
+    let result = (|| {
+        let mut stdout = child.stdout.take()?;
+        let fd = stdout.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+        {
+            return None;
+        }
+        let mut output = Vec::new();
+        let mut exited = None;
+        let mut eof = false;
+        loop {
+            let mut buffer = [0_u8; OUTPUT_LIMIT];
+            while output.len() < OUTPUT_LIMIT && !eof {
+                let remaining = OUTPUT_LIMIT - output.len();
+                match stdout.read(&mut buffer[..remaining]) {
+                    Ok(0) => eof = true,
+                    Ok(count) => output.extend_from_slice(&buffer[..count]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => return None,
+                }
+            }
+            if exited.is_none() {
+                exited = child.try_wait().ok()?;
+            }
+            if let Some(status) = exited {
+                if !status.success() {
+                    return None;
+                }
+                if eof || output.contains(&b'\n') || output.len() == OUTPUT_LIMIT {
+                    return String::from_utf8(output).ok();
+                }
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(25)));
+        }
+    })();
+    // A wrapper may have exited while descendants still hold stdout open.
+    // This is the dedicated group created above, never a retained browser group.
+    unsafe { libc::killpg(group_id, libc::SIGKILL) };
+    let _ = child.wait();
+    result
+}
+
+// Native Windows `chrome.exe` follows the established strong-path classifier.
+// Do not execute an ambiguous extensionless path just to identify its family.
+#[cfg(not(unix))]
+fn probe_browser_version_with_timeout(_path: &Path, _timeout: Duration) -> Option<String> {
+    None
+}
+
+fn probe_browser_version(path: &Path) -> Option<String> {
+    probe_browser_version_with_timeout(path, Duration::from_secs(3))
+}
+
+fn classify_browser_family<F>(path: &Path, probe: F) -> &'static str
+where
+    F: Fn(&Path) -> Option<String>,
+{
     let value = path.to_string_lossy().to_ascii_lowercase();
     if value.contains("chromium") {
         "chromium"
@@ -2116,13 +2211,25 @@ fn browser_family_for_executable(path: &Path) -> &'static str {
         "edge"
     } else if value.contains("google-chrome")
         || value.contains("chrome-for-testing")
-        || value.ends_with("/chrome")
         || value.ends_with("\\chrome.exe")
     {
         "chrome"
+    } else if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("chrome"))
+    {
+        probe(path)
+            .as_deref()
+            .and_then(browser_family_from_version_output)
+            .unwrap_or("chrome")
     } else {
         "unknown"
     }
+}
+
+fn browser_family_for_executable(path: &Path) -> &'static str {
+    classify_browser_family(path, probe_browser_version)
 }
 
 fn validate_profile_browser_family(
@@ -3308,6 +3415,16 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(unix)]
+    fn write_executable_script(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::write(path, body).unwrap();
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+
     #[cfg(windows)]
     fn spawn_noop_child() -> Child {
         Command::new("cmd.exe")
@@ -3347,6 +3464,159 @@ mod tests {
     fn test_read_devtools_active_port_missing() {
         let result = read_devtools_active_port(Path::new("/nonexistent"));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_browser_family_version_output_parser() {
+        assert_eq!(
+            browser_family_from_version_output("Chromium 150.0.7871.114"),
+            Some("chromium")
+        );
+        assert_eq!(
+            browser_family_from_version_output("Google Chrome 150.0.7871.114 "),
+            Some("chrome")
+        );
+        assert_eq!(
+            browser_family_from_version_output("Google Chrome for Testing 150.0.0.0"),
+            Some("chrome")
+        );
+        assert_eq!(
+            browser_family_from_version_output("Brave Browser 150.1.2.3"),
+            Some("brave")
+        );
+        assert_eq!(
+            browser_family_from_version_output("Microsoft Edge 150.0.0.0"),
+            Some("edge")
+        );
+        assert_eq!(browser_family_from_version_output(""), None);
+        assert_eq!(browser_family_from_version_output("garbage"), None);
+    }
+
+    #[test]
+    fn test_ambiguous_browser_family_path_uses_version_probe() {
+        let path = Path::new("/opt/fortress/out/chrome");
+
+        assert_eq!(
+            classify_browser_family(path, |_| Some("Chromium 150.0.7871.114".to_string())),
+            "chromium"
+        );
+        assert_eq!(
+            classify_browser_family(path, |_| Some("Google Chrome 150.0.0.0".to_string())),
+            "chrome"
+        );
+        assert_eq!(classify_browser_family(path, |_| None), "chrome");
+    }
+
+    #[test]
+    fn test_strong_browser_family_paths_do_not_run_version_probe() {
+        assert_eq!(
+            classify_browser_family(Path::new(r"C:\Program Files\Chrome\chrome.exe"), |_| {
+                panic!("chrome.exe must not be probed")
+            }),
+            "chrome"
+        );
+        assert_eq!(
+            classify_browser_family(
+                Path::new("/home/user/chromium/src/out/Default/chrome"),
+                |_| panic!("strong Chromium path must not be probed")
+            ),
+            "chromium"
+        );
+        assert_eq!(
+            classify_browser_family(Path::new("/usr/bin/google-chrome"), |_| {
+                panic!("strong Google Chrome path must not be probed")
+            }),
+            "chrome"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_runtime_profile_browser_family_uses_executable_version() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_ALLOW_PROFILE_BROWSER_MISMATCH"]);
+        guard.remove("AGENT_BROWSER_ALLOW_PROFILE_BROWSER_MISMATCH");
+        let dir = TempDir::new("browser-family-version");
+        std::fs::create_dir_all(&*dir).unwrap();
+        let executable = dir.join("chrome");
+        write_executable_script(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' 'Chromium 150.0.7871.114'\n",
+        );
+
+        let chromium_options = LaunchOptions {
+            runtime_profile: Some("grok-stealth".to_string()),
+            expected_browser_family: Some("chromium".to_string()),
+            ..LaunchOptions::default()
+        };
+        validate_profile_browser_family(&chromium_options, &executable).unwrap();
+
+        let chrome_options = LaunchOptions {
+            expected_browser_family: Some("chrome".to_string()),
+            ..chromium_options
+        };
+        let err = validate_profile_browser_family(&chrome_options, &executable).unwrap_err();
+        assert!(err.contains("marked for browser family 'chrome'"));
+        assert!(err.contains("resolved 'chromium'"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_browser_family_version_probe_times_out_to_chrome_fallback() {
+        let dir = TempDir::new("browser-family-timeout");
+        std::fs::create_dir_all(&*dir).unwrap();
+        let executable = dir.join("chrome");
+        write_executable_script(&executable, "#!/bin/sh\nexec sleep 30\n");
+        let started = std::time::Instant::now();
+
+        let family = classify_browser_family(&executable, |path| {
+            probe_browser_version_with_timeout(path, Duration::from_millis(75))
+        });
+
+        assert_eq!(family, "chrome");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_browser_family_probe_does_not_wait_for_background_stdout() {
+        let dir = TempDir::new("browser-family-background");
+        std::fs::create_dir_all(&*dir).unwrap();
+        let executable = dir.join("chrome");
+        write_executable_script(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' 'Chromium 1.2.3'\nsleep 30 &\nexit 0\n",
+        );
+        let started = std::time::Instant::now();
+        let output = probe_browser_version_with_timeout(&executable, Duration::from_secs(3));
+        assert_eq!(output.as_deref(), Some("Chromium 1.2.3\n"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_browser_family_probe_bounds_continuous_output() {
+        let dir = TempDir::new("browser-family-noisy");
+        std::fs::create_dir_all(&*dir).unwrap();
+        let executable = dir.join("chrome");
+        write_executable_script(&executable, "#!/bin/sh\nexec yes Chromium\n");
+        let started = std::time::Instant::now();
+        assert!(
+            probe_browser_version_with_timeout(&executable, Duration::from_millis(75)).is_none()
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_browser_family_probe_rejects_nonzero_exit() {
+        let dir = TempDir::new("browser-family-failure");
+        std::fs::create_dir_all(&*dir).unwrap();
+        let executable = dir.join("chrome");
+        write_executable_script(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' 'Chromium 1.2.3'\nexit 1\n",
+        );
+        assert!(probe_browser_version_with_timeout(&executable, Duration::from_secs(1)).is_none());
     }
 
     #[test]

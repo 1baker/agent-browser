@@ -963,6 +963,13 @@ mix-and-match. Start with a blank profile for a new browser family. Operators
 can force an intentional mismatch by setting
 `AGENT_BROWSER_ALLOW_PROFILE_BROWSER_MISMATCH=true`.
 
+On Unix, an otherwise ambiguous executable named `chrome` is identified using
+its `--version` output, so a custom Chromium build is not mistaken for Google
+Chrome. The probe has a three-second deadline and reads at most 4 KiB; failed
+or unrecognized probes retain the previous `chrome` fallback. It cleans up only
+its own probe process group, not a retained browser. Known family paths and
+Windows `chrome.exe` paths keep their existing classification without a probe.
+
 The `service.profiles` and `service.sessions` maps define service control-plane
 metadata for profile allocation, keyring posture, caller ownership, profile
 binding, lease state, and cleanup policy. These records are exposed through

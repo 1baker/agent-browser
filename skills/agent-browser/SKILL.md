@@ -723,6 +723,13 @@ or otherwise mix browser families unless the operator explicitly forces it with
 `AGENT_BROWSER_ALLOW_PROFILE_BROWSER_MISMATCH=true`. Start with a blank managed
 profile for a new browser family.
 
+On Unix, an ambiguous executable named `chrome` uses a bounded `--version`
+probe to distinguish custom Chromium from Google Chrome. Its deadline is three
+seconds and output is limited to 4 KiB. Failed or unknown output preserves the
+previous `chrome` fallback. The probe cleans up only its own process group;
+it never probes or stops a retained browser. Known family paths and Windows
+`chrome.exe` classification remain unchanged.
+
 To create and track a managed profile explicitly, use:
 
 ```bash

@@ -1099,6 +1099,13 @@ managed runtime-profile browser instead of shutting it down.
 Runtime profiles can declare <code>browserFamily</code>. agent-browser refuses
 to launch a marked profile with a different resolved browser family unless the
 operator sets <code>AGENT_BROWSER_ALLOW_PROFILE_BROWSER_MISMATCH=true</code>.
+On Unix, an ambiguous executable named <code>chrome</code> uses its
+<code>--version</code> output to distinguish custom Chromium from Google Chrome.
+The probe reads at most 4 KiB within three seconds and cleans up only its own
+process group. Failed or unknown output retains the previous
+<code>chrome</code> fallback. Known family paths and Windows
+<code>chrome.exe</code> classification are unchanged; retained browsers are not
+probed or stopped.
 If a runtime profile is locked by a live browser PID and the task needs
 existing login state, inspect <code>service status</code> or
 <code>runtime status</code>, then reuse the managed browser through
