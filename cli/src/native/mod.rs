@@ -131,6 +131,7 @@ pub mod state;
 pub mod storage;
 #[allow(dead_code)]
 pub mod stream;
+pub(crate) mod tab_handle_refresh;
 #[allow(dead_code)]
 pub mod task_authority;
 #[allow(dead_code)]

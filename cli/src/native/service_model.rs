@@ -5766,6 +5766,9 @@ pub struct BrowserTab {
     pub lifecycle: TabLifecycle,
     pub url: Option<String>,
     pub title: Option<String>,
+    /// Exact-refresh observation marker, not browser custody or authority proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_revision: Option<String>,
     pub owner_session_id: Option<String>,
     pub service_tab_handle: Option<ServiceTabHandle>,
     pub latest_snapshot_id: Option<String>,
@@ -5783,6 +5786,7 @@ impl Default for BrowserTab {
             lifecycle: TabLifecycle::Unknown,
             url: None,
             title: None,
+            observation_revision: None,
             owner_session_id: None,
             service_tab_handle: None,
             latest_snapshot_id: None,

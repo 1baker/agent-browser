@@ -192,6 +192,13 @@ optional `desiredUrl`, and `repairPolicy` of `reject_only`,
 `reuse_compatible`, or `open_if_missing`. The response returns a refreshed
 handle or structured rejection with candidate evidence, so clients can recover
 from closed tabs without dropping to raw CDP target inspection.
+An exact `reject_only` success commits the observed URL/title to saved tab
+inventory before returning the saved handle. Current persisted custody must
+match; missing targets, failed observations or concurrent changes return a typed
+rejection. It does not acquire a profile, change grants or replace a browser.
+The optional tab `observationRevision` advances even for unchanged URLs; it is
+an observation marker, not custody proof. Older writers drop it on save, so all
+writers must be upgraded through a separately approved guarded runtime handoff.
 
 Use service request `action: "tab_handle_release"` when a client is finished
 with a leased service tab. The request accepts the previous

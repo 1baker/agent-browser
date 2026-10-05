@@ -3278,6 +3278,16 @@ classification or repair before more work. The refresh action accepts stale
 handles, returns candidate evidence, and supports `reject_only`,
 `reuse_compatible`, `open_if_missing`, or `replace_duplicates` repair policies
 using the current service session and optional `desiredUrl` hint.
+An exact `reject_only` success commits the observed URL and title to the same
+saved tab inventory used by `service browsers` before returning its handle.
+It requires current persisted session, lease, owner, profile and target bindings;
+an observation error, missing target or concurrent custody/URL change returns a
+typed rejection instead of a success handle. It does not acquire or replace a
+browser, change grants, or repair a different target.
+Each successful exact refresh advances the tab's optional `observationRevision`
+marker, even when the URL is unchanged. It is not custody proof. All state writers
+must preserve the marker; older binaries drop it when saving, so deployment must
+upgrade writers through a separately approved guarded retained-runtime handoff.
 `replace_duplicates` selects one compatible target and best-effort closes other
 compatible live targets so repeated route-bound opens do not grow stale tab
 sets. `service_remote_view_route_preflight`, HTTP

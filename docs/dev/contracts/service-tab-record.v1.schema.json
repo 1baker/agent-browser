@@ -49,6 +49,11 @@
     "title": {
       "type": ["string", "null"]
     },
+    "observationRevision": {
+      "type": "string",
+      "readOnly": true,
+      "description": "Optional exact-refresh observation marker, including same-value observations. Not browser custody or authority proof."
+    },
     "ownerSessionId": {
       "type": ["string", "null"]
     },
