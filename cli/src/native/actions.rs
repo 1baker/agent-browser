@@ -15294,6 +15294,32 @@ async fn handle_tab_handle_refresh(cmd: &Value, state: &mut DaemonState) -> Resu
             .map(|_| true)
             .unwrap_or(false);
 
+    // Validate persisted authority before selecting a physical tab. Keep this
+    // projection contract deliberately limited to exact, reject-only refreshes.
+    let exact_projection =
+        if repair_policy == "reject_only" && old_handle_valid && target_id.is_some() {
+            let repository = LockedServiceStateRepository::default_json()?;
+            let snapshot = repository.load_snapshot()?;
+            let fence = match super::tab_handle_refresh::capture_exact_tab_refresh_fence(
+                &snapshot,
+                handle,
+                &state.session_id,
+            ) {
+                Ok(fence) => fence,
+                Err(reason) => {
+                    return Ok(exact_tab_refresh_rejection(
+                        &reason,
+                        &browser_id,
+                        &observed_at,
+                        &candidates,
+                    ))
+                }
+            };
+            Some((repository, fence))
+        } else {
+            None
+        };
+
     let mgr = state.browser.as_mut().ok_or_else(|| {
         "Cannot refresh service tab handle: routed browser session is not running".to_string()
     })?;
@@ -15316,24 +15342,72 @@ async fn handle_tab_handle_refresh(cmd: &Value, state: &mut DaemonState) -> Resu
     if let Some(target_id) = target_id {
         if old_handle_valid || repair_policy != "reject_only" {
             if let Ok(mut switched) = mgr.tab_switch_target_id(target_id).await {
-                let url = mgr.get_url().await.unwrap_or_default();
-                let title = mgr.get_title().await.unwrap_or_default();
+                let (url, title) = if exact_projection.is_some() {
+                    match (mgr.get_url().await, mgr.get_title().await) {
+                        (Ok(url), Ok(title)) if !url.trim().is_empty() => (url, title),
+                        _ => {
+                            return Ok(exact_tab_refresh_rejection(
+                                "tab_handle_refresh_observation_failed",
+                                &browser_id,
+                                &observed_at,
+                                &candidates,
+                            ))
+                        }
+                    }
+                } else {
+                    (
+                        mgr.get_url().await.unwrap_or_default(),
+                        mgr.get_title().await.unwrap_or_default(),
+                    )
+                };
                 switched["refreshDecision"] = json!("exact_handle_still_valid");
-                let refreshed_handle = refreshed_service_tab_handle(
-                    handle,
-                    &state.session_id,
-                    target_id,
-                    url.as_str(),
-                    title.as_str(),
-                );
-                persist_tab_handle_refresh_event(
-                    cmd,
-                    &browser_id,
-                    refreshed_handle.get("profileId").and_then(Value::as_str),
-                    "exact_handle_still_valid",
-                    &observed_at,
-                    &candidates,
-                )?;
+                let refreshed_handle = if let Some((repository, fence)) = &exact_projection {
+                    let event = tab_handle_refresh_event(
+                        cmd,
+                        &browser_id,
+                        handle.get("profileId").and_then(Value::as_str),
+                        "exact_handle_still_valid",
+                        &observed_at,
+                        &candidates,
+                    );
+                    match super::tab_handle_refresh::commit_exact_tab_refresh(
+                        repository,
+                        handle,
+                        &state.session_id,
+                        fence,
+                        Ok((&url, &title)),
+                        event,
+                    ) {
+                        Ok(handle) => serde_json::to_value(handle)
+                            .map_err(|_| "tab_handle_refresh_handle_encoding_failed")?,
+                        Err(reason) if reason.starts_with("tab_handle_refresh_") => {
+                            return Ok(exact_tab_refresh_rejection(
+                                &reason,
+                                &browser_id,
+                                &observed_at,
+                                &candidates,
+                            ))
+                        }
+                        Err(_) => return Err("tab_handle_refresh_inventory_commit_failed".into()),
+                    }
+                } else {
+                    let refreshed_handle = refreshed_service_tab_handle(
+                        handle,
+                        &state.session_id,
+                        target_id,
+                        url.as_str(),
+                        title.as_str(),
+                    );
+                    persist_tab_handle_refresh_event(
+                        cmd,
+                        &browser_id,
+                        refreshed_handle.get("profileId").and_then(Value::as_str),
+                        "exact_handle_still_valid",
+                        &observed_at,
+                        &candidates,
+                    )?;
+                    refreshed_handle
+                };
                 let duplicate_target_cleanup = if repair_policy == "replace_duplicates" {
                     close_compatible_duplicate_targets(
                         mgr,
@@ -16204,6 +16278,55 @@ fn rebind_broker_attachments_after_exact_refresh(
     rebound
 }
 
+fn exact_tab_refresh_rejection(
+    reason: &str,
+    browser_id: &str,
+    observed_at: &str,
+    candidates: &[Value],
+) -> Value {
+    json!({
+        "ok": false, "action": "tab_handle_refresh", "refreshed": false,
+        "decision": super::tab_handle_refresh::refresh_rejection_decision(reason),
+        "reason": reason, "browserId": browser_id, "repairPolicy": "reject_only", "observedAt": observed_at,
+        "candidates": candidates,
+    })
+}
+
+fn tab_handle_refresh_event(
+    cmd: &Value,
+    browser_id: &str,
+    profile_id: Option<&str>,
+    decision: &str,
+    observed_at: &str,
+    candidates: &[Value],
+) -> ServiceEvent {
+    let event_id = format!("tab-handle-refresh-{}-{}", browser_id, observed_at);
+    let service_name = optional_command_string(cmd, "serviceName");
+    let agent_name = optional_command_string(cmd, "agentName");
+    let task_name = optional_command_string(cmd, "taskName");
+    ServiceEvent {
+        id: event_id.clone(),
+        timestamp: observed_at.to_string(),
+        kind: ServiceEventKind::TabLifecycleChanged,
+        message: format!("Service tab handle refresh {decision}."),
+        browser_id: Some(browser_id.to_string()),
+        profile_id: profile_id.map(ToString::to_string),
+        session_id: optional_command_string(cmd, "sessionName"),
+        service_name,
+        agent_name,
+        task_name,
+        details: Some(json!({
+            "action": "tab_handle_refresh",
+            "decision": decision,
+            "repairPolicy": cmd.get("repairPolicy").cloned().unwrap_or_else(|| json!("reject_only")),
+            "targetId": cmd.get("targetId").cloned().unwrap_or(Value::Null),
+            "candidateCount": candidates.len(),
+            "candidates": candidates,
+        })),
+        ..ServiceEvent::default()
+    }
+}
+
 fn persist_tab_handle_refresh_event(
     cmd: &Value,
     browser_id: &str,
@@ -16213,32 +16336,16 @@ fn persist_tab_handle_refresh_event(
     candidates: &[Value],
 ) -> Result<(), String> {
     let repository = LockedServiceStateRepository::default_json()?;
-    let event_id = format!("tab-handle-refresh-{}-{}", browser_id, observed_at);
-    let service_name = optional_command_string(cmd, "serviceName");
-    let agent_name = optional_command_string(cmd, "agentName");
-    let task_name = optional_command_string(cmd, "taskName");
+    let event = tab_handle_refresh_event(
+        cmd,
+        browser_id,
+        profile_id,
+        decision,
+        observed_at,
+        candidates,
+    );
     repository.mutate(|state| {
-        state.events.push(ServiceEvent {
-            id: event_id.clone(),
-            timestamp: observed_at.to_string(),
-            kind: ServiceEventKind::TabLifecycleChanged,
-            message: format!("Service tab handle refresh {decision}."),
-            browser_id: Some(browser_id.to_string()),
-            profile_id: profile_id.map(ToString::to_string),
-            session_id: optional_command_string(cmd, "sessionName"),
-            service_name,
-            agent_name,
-            task_name,
-            details: Some(json!({
-                "action": "tab_handle_refresh",
-                "decision": decision,
-                "repairPolicy": cmd.get("repairPolicy").cloned().unwrap_or_else(|| json!("reject_only")),
-                "targetId": cmd.get("targetId").cloned().unwrap_or(Value::Null),
-                "candidateCount": candidates.len(),
-                "candidates": candidates,
-            })),
-            ..ServiceEvent::default()
-        });
+        state.events.push(event);
         if state.events.len() > 100 {
             let excess = state.events.len() - 100;
             state.events.drain(0..excess);
@@ -27392,6 +27499,79 @@ fn error_response(id: &str, error: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn exact_refresh_projection_service_browser_inventory_readback() {
+        use crate::native::service_store::{
+            JsonServiceStateStore, LockedServiceStateRepository, ServiceStateRepository,
+        };
+        use crate::native::tab_handle_refresh::{
+            capture_exact_tab_refresh_fence, commit_exact_tab_refresh,
+        };
+        let dir = crate::native::tab_handle_refresh::tests::TestDirectory::new();
+        let repository = LockedServiceStateRepository::new(JsonServiceStateStore::new(
+            dir.path().join("state.json"),
+        ));
+        repository
+            .mutate(|state| {
+                *state = crate::native::tab_handle_refresh::tests::fixture();
+                Ok(())
+            })
+            .unwrap();
+        let before = repository.load_snapshot().unwrap();
+        let value = serde_json::to_value(before.service_tab_handle("tab").unwrap()).unwrap();
+        let handle = value.as_object().unwrap();
+        let fence = capture_exact_tab_refresh_fence(&before, handle, "fixture").unwrap();
+        let event = super::tab_handle_refresh_event(
+            &serde_json::json!({}),
+            "session:fixture",
+            Some("profile"),
+            "exact_handle_still_valid",
+            "2026-10-05T00:00:00Z",
+            &[],
+        );
+        let refreshed = commit_exact_tab_refresh(
+            &repository,
+            handle,
+            "fixture",
+            &fence,
+            Ok(("https://example.invalid/advanced", "advanced")),
+            event,
+        )
+        .unwrap();
+        let inventory = super::handle_service_browsers(
+            &serde_json::json!({"serviceState":repository.load_snapshot().unwrap()}),
+        )
+        .await
+        .unwrap();
+        let row = inventory["browsers"][0]["tabHandles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["tabId"] == "tab")
+            .unwrap();
+        assert_eq!(row, &serde_json::to_value(refreshed).unwrap());
+        assert_eq!(row["url"], "https://example.invalid/advanced");
+    }
+
+    #[test]
+    fn exact_refresh_projection_rejection_keeps_stale_response_contract() {
+        for reason in [
+            "tab_handle_refresh_tab_closed",
+            "tab_handle_refresh_target_missing",
+            "tab_handle_refresh_handle_tab_missing",
+            "tab_handle_refresh_handle_browser_missing",
+        ] {
+            let rejection =
+                super::exact_tab_refresh_rejection(reason, "session:fixture", "now", &[]);
+            assert_eq!(rejection["decision"], "rejected_stale_or_missing_target");
+            assert_eq!(rejection["refreshed"], false);
+            assert_eq!(rejection["ok"], false);
+            assert!(rejection["candidates"].is_array());
+            assert_eq!(rejection["browserId"], "session:fixture");
+            assert!(rejection.get("serviceTabHandle").is_none());
+        }
+    }
+
     use super::*;
 
     #[tokio::test]

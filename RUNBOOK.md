@@ -10759,3 +10759,30 @@ renewal stays disabled and no live credential was used.
 - Canvas-backed credential extraction remains blocked on a reviewed private
   content boundary. No secret value, Canvas body, browser tab, or account state
   was read or changed. Focused LitScout rollover regression: 24 passed.
+
+## Exact retained refresh inventory projection candidate | 2026-10-05
+
+Scope: an isolated, offline candidate for exact `tab_handle_refresh` with
+`repairPolicy=reject_only`; not an installation or live provider acceptance.
+Source inspection found that refresh persisted an event but not the observed
+tab URL. Optional later reconciliation was not awaited before success, and an
+older reconciliation could overwrite a newer tab projection.
+
+The candidate checks persisted session/owner/lease/profile/target custody before
+selection, fences the saved tab and browser identity, and saves only the exact
+tab URL/title plus its refresh event in one locked mutation. Success returns a
+saved-derived handle before broker attachment rebind. Failed observations and
+concurrent changes reject without a save. Delayed reconciliation cannot replace
+a tab whose authoritative fields changed since its baseline. Derived handle
+rebuilds alone do not block legitimate reconciliation.
+Every successful exact refresh also advances an optional tab observation marker,
+including unchanged-URL observations. This closes the no-op/ABA late-reconcile
+race found by independent source review. The marker is not custody proof; legacy
+writers discard it when saving. All writers must preserve it after deployment.
+
+The existing exact-success and stale/missing-target decisions are preserved;
+other rejections add a fixed reason and withhold a success handle. Offline
+validation and installation prerequisites are recorded in the scoped handoff.
+No provider request, browser launch/close, runtime restart, live-state edit or
+installation is part of this candidate. Deployment requires separate owner
+approval, producer/artifact parity and guarded retained-runtime handoff.

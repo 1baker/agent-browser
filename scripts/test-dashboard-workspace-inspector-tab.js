@@ -34,8 +34,14 @@ assert.match(
 
 assert.match(
   component,
-  /FRONTEND_RUNNABLE_ACTIONS[\s\S]*"copy-link"[\s\S]*"external-open"[\s\S]*"view"[\s\S]*"control"[\s\S]*unsupportedReason[\s\S]*data-action-reason=\{reason\}/,
-  'Workspace inspector must distinguish runnable actions from advertised-but-unwired actions and expose reasons.',
+  /FRONTEND_RUNNABLE_ACTIONS[\s\S]*"copy-link"[\s\S]*"external-open"[\s\S]*"view"[\s\S]*"control"[\s\S]*otherActions\.map[\s\S]*workspaceActionPresentation[\s\S]*data-action-state=\{presentation\.kind\}[\s\S]*presentation\.reason[\s\S]*presentation\.nextStep/,
+  'Workspace inspector must show runnable actions separately from explained blocked or unwired actions.',
+);
+
+assert.match(
+  component,
+  /selectedServiceTabGuidance[\s\S]*workspace-selection-guidance[\s\S]*tabGuidance\.summary[\s\S]*tabGuidance\.nextStep/,
+  'Workspace inspector must expose backend tab recovery guidance as visible text.',
 );
 
 assert.match(

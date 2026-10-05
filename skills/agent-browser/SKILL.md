@@ -767,14 +767,29 @@ profile only when agent-browser has no suitable profile, readiness reports
 `needs_manual_seeding`, the operator wants a separate account lane, or the
 client is explicitly bringing its own profile.
 If a follow-on service tab handle may be stale, use
+the optional `operatorGuidance` on an invalid `serviceTabHandle` to explain
+its `staleReason` to the operator; it is read-only advice, not permission to
+change browser custody. The Workspace inspector shows the selected tab's
+guidance and visibly separates runnable controls from blocked or panel-unwired
+actions. Continue to use
 `refreshServiceTabHandle()` or service request `action: "tab_handle_refresh"`
 instead of inspecting raw CDP targets. Refresh accepts the old
 `serviceTabHandle`, optional `desiredUrl`, and a generic repair policy:
-`reject_only` for evidence-only rejection, `reuse_compatible` to bind a
+`reject_only` for exact-target observation or evidence-only rejection, `reuse_compatible` to bind a
 compatible same-origin or blank tab, or `open_if_missing` to create a
 replacement in the routed service session. Use `replace_duplicates` when the
 client wants one compatible target and best-effort cleanup of other compatible
 live targets before follow-on work.
+An exact `reject_only` success saves the observed URL/title into authoritative
+tab inventory before returning the saved handle. The incoming handle must match
+the current persisted session, owner, lease, profile and exact target. Missing
+targets, failed observations and concurrent changes produce typed rejection
+without rebinding attachments or overwriting newer inventory. This action does
+not acquire a profile or replace the browser; refresh is not an authority grant.
+The optional tab `observationRevision` advances even for an unchanged URL, fencing
+older reconciliation results. It is not custody proof. Older state writers drop
+it on save; deployment requires upgrading all writers through a separately
+approved guarded retained-runtime handoff.
 Dashboard workspace viewport URLs that carry a stale `tab=target:*` selection
 are replaced with the current live service tab before control mode queues
 `view_focus`; do not treat that recovery as browser failure.

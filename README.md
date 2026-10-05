@@ -1916,6 +1916,12 @@ no-launch access-plan preflight. Every live service-owned browser provides
 non-owned browsers retain screenshot, watch, and borrowed-input controls but do
 not gain lifecycle ownership.
 
+The selected Workspace inspector now shows a service-owned tab handle's
+read-only recovery guidance when that handle is invalid. Its action row contains
+only controls runnable in that panel; blocked or panel-unwired actions appear
+under **Other actions** with visible reasons and next steps. This presentation
+does not change the service's action availability or browser custody.
+
 The dashboard displays:
 - **Workspace navigator** — a compact left pane derived from service-owned browser, detected non-owned browser, session, tab, profile allocation, job, incident, and view-stream state. Each row carries a `WorkspaceInventoryClass` such as `service-owned-controllable-browser`, `service-owned-diagnostic-browser`, `detected-non-owned-browser`, `viewer-client`, `retained-history`, `service-owned-session`, or `service-profile-action`, so inspector, chat, console, and automation surfaces do not need to infer ownership from URL shape. The live rail shows only actionable Agent-browser owned and Detected non-owned browser groups; attention, stale, and retained records stay in Service, trace, event, job, incident, and log viewers instead of occupying the live control surface. It keeps raw IDs secondary to service, agent, task, profile, tab, and URL labels; shows disabled Launch, Seed, View, Control, Resume, Repair, and Close actions with service-sourced reasons; and includes a guided browser/profile launcher that starts the selected combo as its own daemon session. Selecting a row opens a dense right-pane Workspace inspector with a compact status strip, PID/RSS/CPU/CDP/stream indicators, the canonical inventory Class, action availability with reasons, page identity, ownership, viewport readiness, shared-profile actionability, and a collapsed diagnostic Evidence disclosure. Live service-owned browser rows distinguish "open the next operation as a tab through this retained profile owner" from "wait for or inspect the profile holder" so a profile in use by agent-browser is not shown as inherently unavailable; their enabled Add tab action posts `service_request` `tab_new` through that owner route. The same selection opens the workspace viewport when the row exposes an embeddable stream. Live daemon sessions publish a `cdp_screencast` stream from their runtime stream port, so rows such as `127.0.0.1:<port>/app` can render directly even when no service-owned browser record exists. Detected browsers that are not owned by agent-browser are explicitly labeled as non-owned rather than mixed into the owned group. RDP gateway rows require current operator-visible browser-window proof before View, Control, or external open become available; terminal-only, idle-display, missing-proof, wrong-tab, unavailable-route, missing-CDP-target, and stale-route routes move to needs-attention as disabled diagnostic rows instead of opening a generic desktop as if it were the browser. The launcher defaults to the shared remote desktop display, RDP gateway view stream, and manual desktop input; selecting RDP gateway starts a `remote_headed` session so the resulting browser has a Guac-ready embedded viewport when `AGENT_BROWSER_REMOTE_VIEW_URL` and `AGENT_BROWSER_REMOTE_HEADED_DISPLAY` are configured. When stream metadata is embeddable and operator-visible, the dashboard closes the launcher, replaces stale `tab=target:*` URL selections with the current live service tab, queues `view_focus` with the selected live target ID and a stable tab-index fallback when both are known, and opens the workspace viewport; otherwise it falls back to the Service Jobs view or keeps the row disabled with the route-proof reason.
   Guided launches preserve the access-plan selected `runtimeProfile`, configured
@@ -3280,6 +3286,16 @@ classification or repair before more work. The refresh action accepts stale
 handles, returns candidate evidence, and supports `reject_only`,
 `reuse_compatible`, `open_if_missing`, or `replace_duplicates` repair policies
 using the current service session and optional `desiredUrl` hint.
+An exact `reject_only` success commits the observed URL and title to the same
+saved tab inventory used by `service browsers` before returning its handle.
+It requires current persisted session, lease, owner, profile and target bindings;
+an observation error, missing target or concurrent custody/URL change returns a
+typed rejection instead of a success handle. It does not acquire or replace a
+browser, change grants, or repair a different target.
+Each successful exact refresh advances the tab's optional `observationRevision`
+marker, even when the URL is unchanged. It is not custody proof. All state writers
+must preserve the marker; older binaries drop it when saving, so deployment must
+upgrade writers through a separately approved guarded retained-runtime handoff.
 `replace_duplicates` selects one compatible target and best-effort closes other
 compatible live targets so repeated route-bound opens do not grow stale tab
 sets. `service_remote_view_route_preflight`, HTTP

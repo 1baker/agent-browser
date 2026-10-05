@@ -2330,7 +2330,7 @@ impl WorkstationLock {
     fn acquire(root: &Path) -> Result<Self, String> {
         let path = root.join(".agent-browser/convergence/workstation.lock");
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
+            create_payload_directory(parent, 0o700)
                 .map_err(display_io("create convergence lock directory", parent))?;
         }
         if path.exists() {
@@ -2484,6 +2484,9 @@ fn materialize_payload(paths: &InstallPaths, args: &WorkstationInstallArgs) -> R
     }
 
     let result = (|| {
+        create_payload_directory(&staging, 0o700)
+            .map_err(display_io("create private payload staging", &staging))?;
+        set_private_directory(&staging)?;
         let staged_binary = staging.join("bin/agent-browser");
         let staged_support = staging.join("support");
         let staged_units = staging.join("units");
@@ -2525,14 +2528,24 @@ fn materialize_payload(paths: &InstallPaths, args: &WorkstationInstallArgs) -> R
                 .map_err(display_io("stage systemd user unit", &staged_units))?;
         }
 
+        // A permissive caller umask must not make integrity-bound payloads
+        // replaceable by another user. The staging parent stays private until
+        // the complete support and unit trees have their final safe modes.
+        #[cfg(unix)]
+        {
+            harden_staged_payload_permissions(&staged_support)?;
+            harden_staged_payload_permissions(&staged_units)?;
+        }
+
         inject_failure("units-staged")?;
 
         commit_directory(&staged_support, &paths.support_dir)?;
         if let Some(parent) = paths.binary.parent() {
-            fs::create_dir_all(parent).map_err(display_io("create binary directory", parent))?;
+            create_payload_directory(parent, 0o755)
+                .map_err(display_io("create binary directory", parent))?;
         }
         replace_file(&staged_binary, &paths.binary)?;
-        fs::create_dir_all(&paths.unit_dir)
+        create_payload_directory(&paths.unit_dir, 0o700)
             .map_err(display_io("create systemd user directory", &paths.unit_dir))?;
         for entry in
             fs::read_dir(&staged_units).map_err(display_io("read staged units", &staged_units))?
@@ -2869,7 +2882,7 @@ fn commit_directory(staged: &Path, destination: &Path) -> Result<(), String> {
         ))?;
     }
     if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
+        create_payload_directory(parent, 0o755)
             .map_err(display_io("create installed support parent", parent))?;
     }
     fs::rename(staged, destination).map_err(display_io(
@@ -3008,6 +3021,48 @@ fn set_executable(path: &Path) -> Result<(), String> {
             .map_err(display_io("set executable permissions on", path))?;
     }
     Ok(())
+}
+
+/// Bound permissions at creation, including newly created ancestors. Existing
+/// operator directories retain their current modes rather than being widened.
+fn create_payload_directory(path: &Path, mode: u32) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(mode);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    builder.create(path)
+}
+
+#[cfg(unix)]
+fn harden_staged_payload_permissions(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::symlink_metadata(path)
+        .map_err(display_io("inspect staged payload permissions", path))?;
+    let mode = if metadata.is_dir() {
+        for entry in
+            fs::read_dir(path).map_err(display_io("read staged payload directory", path))?
+        {
+            let entry = entry.map_err(|error| format!("Unable to read staged payload: {error}"))?;
+            harden_staged_payload_permissions(&entry.path())?;
+        }
+        0o755
+    } else if metadata.is_file() {
+        if metadata.permissions().mode() & 0o111 != 0 {
+            0o755
+        } else {
+            0o644
+        }
+    } else {
+        return Err(format!("Unsafe staged payload entry: {}", path.display()));
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(display_io("secure staged payload permissions", path))
 }
 
 fn set_private_directory(path: &Path) -> Result<(), String> {

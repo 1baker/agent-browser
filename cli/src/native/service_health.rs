@@ -1813,7 +1813,12 @@ pub fn merge_reconciled_service_state(
         {
             continue;
         }
-        target.tabs.insert(id.clone(), reconciled_tab.clone());
+        // A late CDP observation must not undo a newer exact refresh, release,
+        // or removal. Derived handle rebuilding is not an authority change.
+        let source = super::tab_handle_refresh::tab_projection_source;
+        if target.tabs.get(id).map(source) == before.tabs.get(id).map(source) {
+            target.tabs.insert(id.clone(), reconciled_tab.clone());
+        }
     }
     for id in before.tabs.keys() {
         if before

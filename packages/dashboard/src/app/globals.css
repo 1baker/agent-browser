@@ -5504,6 +5504,48 @@ button {
   align-items: center;
 }
 
+.workspace-selection-guidance,
+.workspace-selection-other-actions {
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, var(--muted) 24%, transparent);
+  padding: 0.45rem 0.6rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.workspace-selection-guidance strong {
+  display: block;
+}
+
+.workspace-selection-other-actions > h3 {
+  margin: 0 0 0.25rem;
+  font-weight: 700;
+}
+
+.workspace-selection-other-actions ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.25rem 0.7rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workspace-selection-other-actions li {
+  display: flex;
+  gap: 0.35rem;
+  align-items: baseline;
+}
+
+.workspace-selection-other-actions li strong {
+  flex: 0 0 auto;
+}
+
+.workspace-selection-other-actions li span {
+  color: var(--muted-foreground);
+}
+
 .workspace-selection-details {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

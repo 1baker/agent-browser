@@ -26,7 +26,7 @@ import {
   type SelectedWorkspaceContext,
 } from "@/lib/selected-workspace-context";
 import { updateDashboardWorkspaceUrlSelection } from "@/lib/workspace-url-selection";
-import type { WorkspaceNodeAction, WorkspaceNodeActionId } from "@/lib/service-workspaces";
+import { selectedServiceTabGuidance, workspaceActionPresentation, type WorkspaceNodeAction, type WorkspaceNodeActionId } from "@/lib/service-workspaces";
 
 type WorkspaceSelectionPanelProps = {
   context: SelectedWorkspaceContext;
@@ -85,6 +85,9 @@ export function WorkspaceSelectionPanel({
     [context],
   );
   const sortedActions = useMemo(() => sortActions(context.actions), [context.actions]);
+  const runnableActions = sortedActions.filter((action) => workspaceActionPresentation(action, FRONTEND_RUNNABLE_ACTIONS.has(action.id)).kind === "run");
+  const otherActions = sortedActions.filter((action) => workspaceActionPresentation(action, FRONTEND_RUNNABLE_ACTIONS.has(action.id)).kind !== "run");
+  const tabGuidance = selectedServiceTabGuidance(context.tabs, context.primaryTab?.id);
   const statusFacts = useMemo(() => buildStatusFacts(context), [context]);
   const priorityNotice = priorityWorkspaceNotice(context);
   const pageLabel = compactPageLabel(context);
@@ -171,26 +174,25 @@ export function WorkspaceSelectionPanel({
         </div>
       )}
 
+      {tabGuidance && (
+        <p className="workspace-selection-guidance" role="status">
+          <strong>{tabGuidance.summary}</strong> {tabGuidance.nextStep}
+        </p>
+      )}
+
       <div className="workspace-selection-actions" aria-label="Selected workspace actions">
-        {sortedActions.map((action) => {
+        {runnableActions.map((action) => {
           const Icon = ACTION_ICONS[action.id as keyof typeof ACTION_ICONS];
-          const unsupportedReason = action.enabled && !FRONTEND_RUNNABLE_ACTIONS.has(action.id)
-            ? "Backend support is advertised, but this compact Workspace action is not wired here yet."
-            : null;
-          const reason = action.reason ?? unsupportedReason ?? action.label;
-          const canRun = action.enabled && FRONTEND_RUNNABLE_ACTIONS.has(action.id);
           return (
             <Button
               key={action.id}
               type="button"
-              variant={canRun ? "secondary" : "outline"}
+              variant="secondary"
               size="xs"
               className="workspace-selection-action"
-              disabled={!canRun}
-              title={reason}
+              title={action.label}
               data-action-id={action.id}
-              data-action-enabled={canRun ? "true" : "false"}
-              data-action-reason={reason}
+              data-action-enabled="true"
               onClick={() => void runAction(action.id)}
             >
               {Icon ? <Icon className="size-3.5" /> : null}
@@ -203,6 +205,23 @@ export function WorkspaceSelectionPanel({
           {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy diagnostics"}
         </Button>
       </div>
+
+      {otherActions.length > 0 && (
+        <section className="workspace-selection-other-actions" aria-label="Other workspace actions">
+          <h3>Other actions</h3>
+          <ul>
+            {otherActions.map((action) => {
+              const presentation = workspaceActionPresentation(action, FRONTEND_RUNNABLE_ACTIONS.has(action.id));
+              return (
+                <li key={action.id} data-action-id={action.id} data-action-state={presentation.kind}>
+                  <strong>{action.label}</strong>
+                  <span>{presentation.reason} {presentation.nextStep}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
 
       <FactGrid rows={workspaceFactRows(context)} />
 

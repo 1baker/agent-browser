@@ -2781,6 +2781,9 @@ impl ServiceState {
                 agent_name: session.and_then(|session| session.agent_name.clone()),
                 task_name: session.and_then(|session| session.task_name.clone()),
             },
+            operator_guidance: stale_reason
+                .as_deref()
+                .map(service_tab_handle_operator_guidance),
             valid: stale_reason.is_none(),
             stale_reason,
         })
@@ -2873,6 +2876,53 @@ fn service_tab_handle_stale_reason(
         BrowserHealth::CdpDisconnected => Some("browser_cdp_disconnected".to_string()),
         BrowserHealth::Closing => Some("browser_closing".to_string()),
         BrowserHealth::Faulted => Some("browser_faulted".to_string()),
+    }
+}
+
+/// Recovery copy for an invalid handle. This is advice only: it never changes
+/// browser custody, leases, or tab state.
+fn service_tab_handle_operator_guidance(reason: &str) -> ServiceTabOperatorGuidance {
+    let (summary, next_step) = match reason {
+        "lease_released" => (
+            "The session lease for this tab was released.",
+            "Run a no-launch access plan and follow its recommended reuse route.",
+        ),
+        "lease_expired" => (
+            "The session lease for this tab expired.",
+            "Refresh service status, then request a current handle through the access plan.",
+        ),
+        "tab_closed" => (
+            "This tab is no longer open.",
+            "Check the owning session and use its service-owned tab reopen route if available.",
+        ),
+        "tab_crashed" => (
+            "This tab crashed.",
+            "Inspect owning-session diagnostics before using its service-owned recovery route.",
+        ),
+        "browser_missing" | "browser_not_started" | "browser_process_exited" => (
+            "The browser for this tab is not available.",
+            "Run a no-launch access plan and follow its recommended route.",
+        ),
+        "browser_degraded"
+        | "browser_unreachable"
+        | "browser_cdp_disconnected"
+        | "browser_faulted" => (
+            "The browser connection for this tab needs attention.",
+            "Inspect owning-session diagnostics and refresh service status before retrying.",
+        ),
+        "browser_closing" => (
+            "The browser is finishing its current transition.",
+            "Wait for the owning session status to settle, then refresh this handle.",
+        ),
+        _ => (
+            "This tab handle is not current.",
+            "Refresh service status and follow the owning session's access plan.",
+        ),
+    };
+    ServiceTabOperatorGuidance {
+        code: reason.to_string(),
+        summary: summary.to_string(),
+        next_step: next_step.to_string(),
     }
 }
 
@@ -5716,6 +5766,9 @@ pub struct BrowserTab {
     pub lifecycle: TabLifecycle,
     pub url: Option<String>,
     pub title: Option<String>,
+    /// Exact-refresh observation marker, not browser custody or authority proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_revision: Option<String>,
     pub owner_session_id: Option<String>,
     pub service_tab_handle: Option<ServiceTabHandle>,
     pub latest_snapshot_id: Option<String>,
@@ -5733,6 +5786,7 @@ impl Default for BrowserTab {
             lifecycle: TabLifecycle::Unknown,
             url: None,
             title: None,
+            observation_revision: None,
             owner_session_id: None,
             service_tab_handle: None,
             latest_snapshot_id: None,
@@ -5763,6 +5817,17 @@ pub struct ServiceTabHandle {
     pub trace_filter: ServiceTabHandleTraceFilter,
     pub valid: bool,
     pub stale_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator_guidance: Option<ServiceTabOperatorGuidance>,
+}
+
+/// Read-only next step for an invalid service-owned tab handle.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ServiceTabOperatorGuidance {
+    pub code: String,
+    pub summary: String,
+    pub next_step: String,
 }
 
 /// Minimal trace query fields that identify a tab handle's evidence context.
@@ -9707,6 +9772,11 @@ mod tests {
         assert_eq!(handle.trace_filter.task_name.as_deref(), Some("task-a"));
         assert!(handle.valid);
         assert_eq!(handle.stale_reason, None);
+        assert_eq!(handle.operator_guidance, None);
+        assert!(serde_json::to_value(handle)
+            .unwrap()
+            .get("operatorGuidance")
+            .is_none());
         assert_eq!(
             state.browsers["browser-1"].tab_handles[0],
             state.tabs["tab-1"].service_tab_handle.clone().unwrap()
@@ -9718,6 +9788,53 @@ mod tests {
             .unwrap();
         assert!(!stale.valid);
         assert_eq!(stale.stale_reason.as_deref(), Some("tab_closed"));
+        assert_eq!(stale.operator_guidance.as_ref().unwrap().code, "tab_closed");
+        assert_eq!(
+            serde_json::to_value(stale).unwrap()["operatorGuidance"]["code"],
+            "tab_closed"
+        );
+        assert_eq!(
+            serde_json::to_value(&state).unwrap()["tabs"]["tab-closed"]["serviceTabHandle"]
+                ["operatorGuidance"]["code"],
+            "tab_closed"
+        );
+        assert!(stale
+            .operator_guidance
+            .as_ref()
+            .unwrap()
+            .next_step
+            .contains("owning session"));
+    }
+
+    #[test]
+    fn invalid_tab_handle_guidance_is_complete_and_read_only() {
+        for reason in [
+            "lease_released",
+            "lease_expired",
+            "tab_closed",
+            "tab_crashed",
+            "browser_missing",
+            "browser_not_started",
+            "browser_degraded",
+            "browser_unreachable",
+            "browser_process_exited",
+            "browser_cdp_disconnected",
+            "browser_closing",
+            "browser_faulted",
+            "future_reason",
+        ] {
+            let guidance = service_tab_handle_operator_guidance(reason);
+            assert_eq!(guidance.code, reason);
+            assert!(!guidance.summary.is_empty());
+            assert!(!guidance.next_step.is_empty());
+            assert!(!guidance
+                .next_step
+                .to_lowercase()
+                .contains("launch a new browser"));
+            assert!(!guidance.next_step.to_lowercase().contains("take over"));
+        }
+        let serialized = serde_json::to_value(ServiceTabHandle::default()).unwrap();
+        assert!(serialized.get("operatorGuidance").is_none());
     }
 
     #[test]
@@ -9988,6 +10105,17 @@ mod tests {
                 .as_deref(),
             Some("lease_expired")
         );
+        assert_eq!(
+            state.tabs["tab-expired"]
+                .service_tab_handle
+                .as_ref()
+                .unwrap()
+                .operator_guidance
+                .as_ref()
+                .unwrap()
+                .code,
+            "lease_expired"
+        );
         assert!(
             state.tabs["tab-fresh"]
                 .service_tab_handle
@@ -10010,6 +10138,17 @@ mod tests {
                 .stale_reason
                 .as_deref(),
             Some("lease_released")
+        );
+        assert_eq!(
+            state.tabs["tab-released"]
+                .service_tab_handle
+                .as_ref()
+                .unwrap()
+                .operator_guidance
+                .as_ref()
+                .unwrap()
+                .code,
+            "lease_released"
         );
     }
 

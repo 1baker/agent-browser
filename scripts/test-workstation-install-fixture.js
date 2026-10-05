@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { prepareWorkstationProvenance } from './lib/local-dashboard-workstation-provenance.js';
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const fixtureRoot = mkdtempSync(join(tmpdir(), 'agent-browser-workstation-install-'));
@@ -189,6 +190,21 @@ try {
   assert.ok(existsSync(installRoot), 'apply must create the isolated workstation root');
 
   const firstManifest = treeManifest(installRoot);
+  for (const [path, mode] of [
+    ['.local', 0o755],
+    ['.local/lib', 0o755],
+    ['.local/lib/agent-browser', 0o755],
+    ['.local/bin', 0o755],
+    ['.agent-browser', 0o700],
+    ['.agent-browser/convergence', 0o700],
+    ['.agent-browser/install-staging', 0o700],
+    ['.config', 0o700],
+    ['.config/systemd', 0o700],
+    ['.config/systemd/user', 0o700],
+  ]) {
+    assert.equal(lstatSync(join(installRoot, path)).mode & 0o777, mode,
+      `new installer-owned parent must not inherit an unsafe umask: ${path}`);
+  }
   assert.equal(
     firstManifest.some((entry) => entry.type === 'symlink'),
     false,
@@ -222,6 +238,18 @@ try {
     (path) => basename(path) === 'manifest.json' && !path.includes(`${join('guacamole')}/`),
   );
   const payloadRoot = dirname(payloadManifestPath);
+  for (const entry of firstManifest.filter(row => row.path.startsWith('.local/lib/agent-browser/'))) {
+    if (entry.type === 'directory') {
+      assert.equal(entry.mode, 0o755, `payload directory must not inherit an unsafe umask: ${entry.path}`);
+    } else if (entry.type === 'file') {
+      assert.equal(entry.mode & 0o022, 0, `payload file must not be group/other writable: ${entry.path}`);
+    }
+  }
+  assert.equal(lstatSync(payloadManifestPath).mode & 0o777, 0o644, 'manifest mode must be publisher-compatible');
+  for (const unit of expectedUnits) {
+    const path = installedFiles.find(path => basename(path) === unit);
+    assert.equal(lstatSync(path).mode & 0o777, 0o644, `unit permissions must be safe: ${unit}`);
+  }
   const payloadManifest = JSON.parse(readFileSync(payloadManifestPath, 'utf8'));
   assert.equal(
     sha256(installedBinary),
@@ -585,6 +613,18 @@ try {
     'retained-lane refusal must not quiesce or activate user units',
   );
 
+  const publicationDir = join(installRoot, '.agent-browser', 'publications');
+  mkdirSync(publicationDir, { recursive: true, mode: 0o700 });
+  const provenance = prepareWorkstationProvenance({
+    root: installRoot,
+    version: payloadManifest.version,
+    installBin: installedBinary,
+    builtBin: agentBrowser,
+    journalPath: join(publicationDir, 'fixture-journal.json'),
+  });
+  assert.ok(provenance, 'a payload installed under umask 000 must pass the publisher provenance gate');
+  assert.equal(provenance.sourceBinarySha256, sha256(installedBinary));
+
   console.log('Workstation install source-free fixture passed');
 } finally {
   rmSync(fixtureRoot, { recursive: true, force: true });
@@ -611,23 +651,30 @@ function sha256(path) {
 }
 
 function runInstaller(root, flags, extraEnv = {}) {
-  return spawnSync(agentBrowser, ['install', 'workstation', ...flags], {
-    cwd: fixtureRoot,
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      HOME: home,
-      XDG_CONFIG_HOME: join(xdgRoot, 'config'),
-      XDG_DATA_HOME: join(xdgRoot, 'data'),
-      XDG_STATE_HOME: join(xdgRoot, 'state'),
-      XDG_CACHE_HOME: join(xdgRoot, 'cache'),
-      XDG_RUNTIME_DIR: join(xdgRoot, 'runtime'),
-      PATH: `${fakeBin}:/usr/bin:/bin`,
-      AGENT_BROWSER_WORKSTATION_ROOT: root,
-      AGENT_BROWSER_WORKSTATION_COMMAND_LOG: commandLog,
-      ...extraEnv,
-    },
-  });
+  // This is an isolated synchronous child, not a process-global Rust test
+  // umask change that could race another test or the user's live runtime.
+  const priorUmask = process.umask(0o000);
+  try {
+    return spawnSync(agentBrowser, ['install', 'workstation', ...flags], {
+      cwd: fixtureRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: home,
+        XDG_CONFIG_HOME: join(xdgRoot, 'config'),
+        XDG_DATA_HOME: join(xdgRoot, 'data'),
+        XDG_STATE_HOME: join(xdgRoot, 'state'),
+        XDG_CACHE_HOME: join(xdgRoot, 'cache'),
+        XDG_RUNTIME_DIR: join(xdgRoot, 'runtime'),
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        AGENT_BROWSER_WORKSTATION_ROOT: root,
+        AGENT_BROWSER_WORKSTATION_COMMAND_LOG: commandLog,
+        ...extraEnv,
+      },
+    });
+  } finally {
+    process.umask(priorUmask);
+  }
 }
 
 function assertWorkstationInterface() {

@@ -441,6 +441,7 @@ export interface ServiceTabRecord {
   browserId: string | null;
   sessionId: string | null;
   lifecycle: string;
+  observationRevision?: string;
   serviceTabHandle?: ServiceTabHandle | null;
   [key: string]: unknown;
 }
