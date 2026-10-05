@@ -197,7 +197,7 @@ assert.match(
 
 assert.match(
   publisher,
-  /const daemonClientBin = runtimeDaemonClientBinary\(daemonPid, rollbackBin\)[\s\S]*runAgentJson\(clientBin, sessionName, \['handoff', 'prepare'\]\)[\s\S]*serviceBrowserForSession\(daemonClientBin[\s\S]*runAgentJson\(daemonClientBin, sessionName, \['close'\]\)/,
+  /const daemonClientBin = runtimeDaemonClientBinary\(daemonPid, rollbackBin\)[\s\S]*runAgentJson\(clientBin, sessionName, \['handoff', 'prepare'\], undefined,\s*PUBLISHER_HANDOFF_ENVIRONMENT\)[\s\S]*serviceBrowserForSession\(daemonClientBin[\s\S]*runAgentJson\(daemonClientBin, sessionName, \['close'\]\)/,
   'publisher must try authenticated handoff before service-record-based compatibility close',
 );
 

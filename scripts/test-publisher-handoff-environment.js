@@ -39,4 +39,11 @@ for (const args of calls.filter((args) => !args.includes('PUBLISHER_HANDOFF_ENVI
 assert.match(publisher, /env: agentCommandEnvironment\(baseEnvironment, extraEnvironment\)/);
 assert.doesNotMatch(publisher, /process\.env\.AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE\s*=/);
 
+// Convergence authorizes only its confirmed stale-daemon prepare subprocess.
+const converge = readFileSync(join(root, 'scripts/converge-local-runtime.js'), 'utf8');
+assert.match(converge, /prepare_stale_daemon_handoff_[\s\S]*?\['--json', '--session', remedy\.session, 'handoff', 'prepare'\],[\s\S]*?extraEnvironment: PUBLISHER_HANDOFF_ENVIRONMENT/);
+assert.match(converge, /env: agentCommandEnvironment\(process\.env, extraEnvironment\)/);
+assert.equal((converge.match(/extraEnvironment: PUBLISHER_HANDOFF_ENVIRONMENT/g) ?? []).length, 1);
+assert.doesNotMatch(converge, /process\.env\.AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE\s*=/);
+
 console.log('publisher handoff environment: ok');

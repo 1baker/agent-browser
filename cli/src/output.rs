@@ -4290,7 +4290,9 @@ Subcommands:
 
 This command is used by the local development publisher and runtime interlock.
 The browser process, DevTools port, profile, and open tabs remain live during
-the changeover. A later normal `close` still shuts down an owned browser.
+the changeover. A guarded daemon requires AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1
+for prepare; use the publisher or convergence command for normal upgrades.
+A later normal `close` still shuts down an owned browser.
 
 Global Options:
   --json               Output as JSON

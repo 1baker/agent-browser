@@ -2,6 +2,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { PUBLISHER_HANDOFF_ENVIRONMENT, agentCommandEnvironment } from './lib/agent-command-environment.js';
+import { installedDaemonVerified } from './lib/installed-daemon-executable.js';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -844,6 +845,10 @@ function resumeRuntimeHandoffs(installBin) {
     // command can start an otherwise idle daemon for this session, and that
     // newly spawned process is not evidence that handoff resume completed.
     const existingDaemonPid = readRuntimePid(prepared.sessionName);
+    if (existsSync(join(runtimeSocketDir(), `${prepared.sessionName}.sock`))
+      || (Number.isInteger(existingDaemonPid) && browserProcessIsLive(existingDaemonPid))) {
+      assertInstalledRuntimeDaemon(prepared.sessionName, installBin);
+    }
     const existing = serviceBrowserForSession(
       installBin,
       prepared.sessionName,
@@ -902,6 +907,7 @@ function resumeRuntimeHandoffs(installBin) {
           isProcessLive: browserProcessIsLive,
         })
       ) {
+        assertInstalledRuntimeDaemon(prepared.sessionName, installBin);
         const retryRecordRemoved = removeVerifiedRuntimeHandoffRecord(prepared);
         report.handoffs.resumed.push({
           sessionName: prepared.sessionName,
@@ -951,6 +957,7 @@ function resumeRuntimeHandoffs(installBin) {
         `${prepared.cdpUrl} -> ${data.cdpUrl}`,
       );
     }
+    assertInstalledRuntimeDaemon(prepared.sessionName, installBin);
     report.handoffs.resumed.push({
       sessionName: prepared.sessionName,
       browserPid: staleAttachedPidDropped
@@ -965,6 +972,17 @@ function resumeRuntimeHandoffs(installBin) {
       daemonPid: readRuntimePid(prepared.sessionName),
     });
   }
+}
+
+function assertInstalledRuntimeDaemon(sessionName, installBin) {
+  const pid = readRuntimePid(sessionName);
+  if (!installedDaemonVerified(pid, installBin, browserProcessIsLive)) {
+    throw new Error(
+      `Runtime handoff recovery cannot verify the installed daemon for session ` +
+      `'${sessionName}'. The browser and publication journal remain available.`,
+    );
+  }
+  return pid;
 }
 
 function discoverPreparedRuntimeHandoffs(candidateSessions) {

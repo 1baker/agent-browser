@@ -5,22 +5,15 @@
 //! executable. After a guarded install, a long-lived client still running an older
 //! build could therefore replace the freshly installed daemon with the old build.
 //!
-//! The guard refuses `runtime_handoff_prepare` while this daemon is still the file
-//! installed at its own path (the request can then only come from a different
-//! executable: a downgrade or an unplanned sidegrade). A legitimate upgrade is
-//! allowed because the publisher replaces the executable by rename (a new inode),
-//! so the running daemon is *superseded*. The publisher also prepares before it
-//! installs; that prepare and an intentional developer sidegrade carry the explicit
+//! The guard requires explicit authorization for every `runtime_handoff_prepare`,
+//! including when a rename has superseded the running daemon. The publisher
+//! prepares before it installs and carries the explicit
 //! JSON boolean `allowExecutableSidegrade: true`, which clients send only when
 //! `AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE` is exactly `1`. Older clients never
 //! send it.
 //!
-//! Limitation: once the installed file is superseded, any client may prepare. A
-//! legacy client could still race the publisher's own handoff window; quiescence
-//! during that window remains a publication gate.
-//! This is not a cold-start guard: if no guarded daemon is answering, a legacy
-//! client can still start its own daemon. Keep legacy clients on the installed
-//! build before relying on crash or idle-exit recovery.
+//! Limitation: while no daemon is running, a legacy client can cold-start its
+//! own old daemon. Quiescence during publication remains a required gate.
 
 use serde_json::Value;
 
@@ -29,6 +22,8 @@ pub(crate) const REFUSED_CURRENT_INSTALLED: &str =
     "runtime_handoff_refused_current_installed_executable";
 pub(crate) const REFUSED_IDENTITY_UNAVAILABLE: &str =
     "runtime_handoff_refused_executable_identity_unavailable";
+pub(crate) const REFUSED_SIDEGRADE_NOT_AUTHORIZED: &str =
+    "runtime_handoff_refused_sidegrade_not_authorized";
 /// Command field carrying an explicit sidegrade authorization (JSON `true` only).
 pub(crate) const SIDEGRADE_FIELD: &str = "allowExecutableSidegrade";
 /// Client-side opt-in; only the exact value `1` enables the field.
@@ -95,19 +90,22 @@ pub(crate) fn authorize_prepare(
 ) -> Result<(), String> {
     match identity {
         Err(error) => Err(format!("{REFUSED_IDENTITY_UNAVAILABLE}: {error}")),
-        Ok(ExecutableIdentity::Superseded) => Ok(()),
-        Ok(ExecutableIdentity::CurrentInstalled) => {
-            if cmd.get(SIDEGRADE_FIELD) == Some(&Value::Bool(true)) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "{REFUSED_CURRENT_INSTALLED}: this daemon is still the installed executable, so a \
-                     handoff would replace it with the requesting client's different executable \
-                     (possible downgrade). Restart the client on the installed build, or set \
-                     {SIDEGRADE_ENV}=1 for an intentional sidegrade."
-                ))
-            }
+        Ok(ExecutableIdentity::Superseded | ExecutableIdentity::CurrentInstalled)
+            if cmd.get(SIDEGRADE_FIELD) == Some(&Value::Bool(true)) =>
+        {
+            Ok(())
         }
+        Ok(ExecutableIdentity::CurrentInstalled) => Err(format!(
+            "{REFUSED_CURRENT_INSTALLED}: this daemon is still the installed executable, so a \
+             handoff would replace it with the requesting client's different executable \
+             (possible downgrade). Use the publisher or converge, or set \
+             {SIDEGRADE_ENV}=1 for one intentional sidegrade."
+        )),
+        Ok(ExecutableIdentity::Superseded) => Err(format!(
+            "{REFUSED_SIDEGRADE_NOT_AUTHORIZED}: the running daemon was superseded, but \
+             this client did not authorize a handoff. Use the publisher or converge, \
+             or set {SIDEGRADE_ENV}=1 for one intentional sidegrade."
+        )),
     }
 }
 
@@ -209,7 +207,12 @@ mod tests {
         }
         let authorized = json!({ "action": "runtime_handoff_prepare", SIDEGRADE_FIELD: true });
         assert!(authorize_prepare(current(), &authorized).is_ok());
-        assert!(authorize_prepare(Ok(ExecutableIdentity::Superseded), &json!({})).is_ok());
+        assert!(authorize_prepare(Ok(ExecutableIdentity::Superseded), &authorized).is_ok());
+        assert!(
+            authorize_prepare(Ok(ExecutableIdentity::Superseded), &json!({}))
+                .unwrap_err()
+                .starts_with(REFUSED_SIDEGRADE_NOT_AUTHORIZED)
+        );
         // Inspection failure refuses even when authorization is present.
         let failed = authorize_prepare(Err("boom".into()), &authorized);
         assert!(failed

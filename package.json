@@ -30,7 +30,7 @@
     "smoke:local-dashboard-retained-browser-preparation-live": "node scripts/smoke-local-dashboard-retained-browser-preparation-live.js",
     "test:local-dashboard-smoke-policy": "node scripts/test-local-dashboard-smoke-policy.js",
     "test:local-dashboard-publisher-lifecycle": "node scripts/test-local-dashboard-publisher-lifecycle.js",
-    "test:local-dashboard-publisher-orchestration": "node scripts/test-local-dashboard-publisher-orchestration.js",
+    "test:local-dashboard-publisher-orchestration": "node scripts/test-publisher-handoff-environment.js && node scripts/test-installed-daemon-executable.js && node scripts/test-local-dashboard-publisher-orchestration.js",
     "test:local-dashboard-prebuilt-candidate": "node scripts/test-local-dashboard-prebuilt-candidate.js",
     "test:local-dashboard-workstation-provenance": "node scripts/test-local-dashboard-workstation-provenance.js",
     "test:local-dashboard-controller-candidate": "node scripts/test-local-dashboard-controller-candidate.js",

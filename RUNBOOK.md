@@ -2,15 +2,15 @@
 
 ## 2026-10-05 | Executable handoff downgrade guard (source candidate, not installed)
 
-A daemon that is still the installed executable refuses `runtime_handoff_prepare`
-(`runtime_handoff_refused_current_installed_executable`). Otherwise an older,
-long-running client (for example a stale MCP server) could replace a freshly
-installed daemon with its own older build. Normal upgrades are unaffected:
-the publisher swaps the executable by rename, which supersedes running
-daemons, and its own pre-install prepare sets
+A guarded daemon refuses `runtime_handoff_prepare` unless the request carries
+the exact boolean sidegrade authorization, even after the installed file has
+been replaced. An older, long-running client cannot supply that field and
+therefore cannot downgrade a guarded daemon. The publisher's pre-install
+prepare sets
 `AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1` for that one subprocess only.
 
-- A client that hits the refusal should be restarted on the installed build.
+- A client that hits the refusal should use the publisher or convergence
+  command to repair executable drift, or be restarted on the installed build.
 - For an intentional developer sidegrade, or the live handoff smoke scripts
   run from a non-installed build, set `AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1`
   for that command. Only the exact value `1` sends the
@@ -18,10 +18,11 @@ daemons, and its own pre-install prepare sets
 - If executable identity cannot be inspected, prepare is refused
   (`runtime_handoff_refused_executable_identity_unavailable`), even with the
   override.
-- **Limitation:** once a new build is installed, a superseded daemon accepts
-  any prepare, so a legacy client can still race the publisher's own handoff
-  window. Keep that window quiescent.
-- Non-Linux behavior is unchanged.
+- A superseded daemon without authorization refuses with
+  `runtime_handoff_refused_sidegrade_not_authorized`.
+- **Limitation:** while the daemon is absent during handoff, an older client
+  can cold-start its own old daemon. Keep the publication window quiescent and
+  verify any daemon already present before resume.
 - This is a running-daemon handoff guard, not a cold-start guard. A legacy client
   can still start its own old daemon if no guarded daemon is answering. Restart
   legacy clients on the installed build before relying on cold-start recovery.

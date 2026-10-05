@@ -716,7 +716,12 @@ its browser PID and CDP endpoint and relinquishing process ownership. Resume
 reconnects the replacement daemon to the same browser and targets. Do not use
 `close` to repair executable drift because it terminates an owned browser.
 The local publisher performs the handoff automatically and fails before
-replacement if an active older daemon does not support the protocol.
+replacement if an active older daemon does not support the protocol. A guarded
+daemon requires `AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1` on the client
+preparing a handoff, including after the daemon executable is superseded. The
+publisher and convergence command set this only for their own prepare
+subprocess. Keep legacy clients quiet while no daemon is running during
+publication; the publisher checks any daemon already present before resume.
 Set `runtimeProfiles.<name>.browserFamily` to `chrome`, `chromium`, `brave`,
 `edge`, or `unknown`. Do not attach patched Chromium to a Chrome-owned profile
 or otherwise mix browser families unless the operator explicitly forces it with
@@ -1743,16 +1748,17 @@ first, then explicit `XDG_RUNTIME_DIR`, then the current user's secure
 owned by another user, or group/other accessible, it fails back to the home
 namespace. Keep explicit overrides for isolated tests and reviewed migrations.
 
-On Linux, a running guarded daemon that is still the installed executable
-refuses executable `handoff prepare` from a different build. Only the exact
+On Linux, a running guarded daemon requires explicit authorization for every
+executable `handoff prepare`, including after its installed executable is replaced. Only the exact
 environment value `AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1` authorizes a
 reviewed intentional handoff; scope it to one command, never export it globally.
 The publisher sets it only for its own pre-install prepare. Inspection errors
 refuse even with authorization. This does not protect legacy-client cold starts
-after daemon exit or crash. A superseded daemon permits prepare, so keep every
+after daemon exit or crash. Keep every
 affected client quiescent from publisher prepare through resume. Restart legacy
 clients on the installed build before relying on cold-start recovery.
-Non-Linux behavior is unchanged.
+On non-Linux, prepare also needs explicit authorization because executable
+identity cannot be classified.
 
 ```bash
 # Auto-save/restore cookies and localStorage across browser restarts

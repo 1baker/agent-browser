@@ -39,18 +39,18 @@ pnpm build:native
 
 ## Executable handoff safety
 
-On Linux, a running guarded daemon that is still the installed executable
-refuses executable handoff from another build before changing browser custody.
+On Linux, a running guarded daemon requires explicit authorization for every
+executable handoff, including after its installed executable is replaced.
 Only <code>AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1</code> authorizes an
 intentional handoff. Scope the override to one reviewed command, never export
 it globally. The publisher sets it only for its own pre-install prepare
 subprocess. Executable inspection errors refuse even with authorization.
 
 The guard does not protect legacy-client cold starts after daemon exit or
-crash. A superseded daemon permits prepare, so every affected client must remain
+crash. Every affected client must remain
 quiescent from publisher prepare through resume. Restart legacy clients on the
-installed build before relying on cold-start recovery. Non-Linux behavior is
-unchanged.
+installed build before relying on cold-start recovery. On non-Linux, prepare
+also needs explicit authorization because executable identity cannot be classified.
 
 ## Linux dependencies
 
@@ -214,7 +214,13 @@ During development, run <code>pnpm publish:local-dashboard</code> to rebuild
 and replace the user-scoped executable. The publisher transfers active sessions
 to replacement daemons while preserving browser PIDs, CDP endpoints, profiles,
 and open tabs. It fails before replacement if an active older daemon cannot
-support the handoff protocol. When the user systemd bus is unavailable, it
+support the handoff protocol. Guarded daemons accept a handoff prepare only
+when the client supplies the exact authorization enabled by
+<code>AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1</code>. The publisher and
+convergence command set this for their prepare subprocess only. Older clients
+can still start an old daemon while no daemon is running, so keep the
+publication window quiet and verify any daemon present before resume. When
+the user systemd bus is unavailable, it
 retires a standalone dashboard only after exact PID, user, command, and
 dashboard-mode verification. HTTP, bundle-marker, and runtime-manifest
 readiness are required. Disposable-browser rendering is a separate diagnostic:

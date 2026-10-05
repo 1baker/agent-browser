@@ -454,7 +454,12 @@ publisher runs this protocol automatically around executable replacement, so
 active browsers, DevTools ports, profiles, and tabs remain live. If an older
 installed daemon owns an active browser but does not support handoff, publishing
 fails before replacing the executable. A normal `close` after resume retains
-the original browser shutdown behavior.
+the original browser shutdown behavior. A guarded daemon accepts `handoff
+prepare` only with the explicit `AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1`
+authorization; the publisher and convergence command scope it to their own
+prepare subprocess. Older clients cannot use that authorization. A legacy
+client can still start an old daemon while no daemon is running, so publication
+requires a quiet handoff window and checks any daemon present before resume.
 
 Access-plan readiness follows the selected runtime profile. An explicit
 `--readiness-profile-id` remains a diagnostic override; readiness from another
@@ -882,18 +887,18 @@ daemons in `~/.agent-browser`.
 
 ### Executable handoff safety
 
-On Linux, a running guarded daemon that is still the installed executable
-refuses `handoff prepare` from a different build before changing browser custody.
+On Linux, a running guarded daemon requires explicit authorization for every
+`handoff prepare`, including after its installed executable is replaced.
 Only `AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1` authorizes an intentional
 handoff; other values do not. Scope this override to one reviewed command, never
 export it globally. The guarded publisher authorizes only its own pre-install
 prepare subprocess. Executable inspection errors refuse even with the override.
 
 This protects handoff to a running guarded daemon, not legacy-client cold starts
-after a daemon exits or crashes. A superseded daemon also permits handoff, so
-every affected client must remain quiescent throughout the publisher's
+after a daemon exits or crashes. Every affected client must remain quiescent throughout the publisher's
 prepare-to-resume window. Restart legacy clients on the installed build before
-relying on cold-start recovery. Non-Linux behavior is unchanged.
+relying on cold-start recovery. On non-Linux, prepare now also needs explicit
+authorization because executable identity cannot be classified there.
 
 ## Configured Runtime Profiles
 

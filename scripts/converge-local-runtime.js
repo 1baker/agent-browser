@@ -15,6 +15,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { resolveRuntimeSocketDir } from './lib/runtime-socket-dir.js';
+import { PUBLISHER_HANDOFF_ENVIRONMENT, agentCommandEnvironment } from './lib/agent-command-environment.js';
 
 const args = process.argv.slice(2);
 const options = {
@@ -317,7 +318,7 @@ function repairConfirmedStaleDaemons(install, label) {
         `${label}_prepare_stale_daemon_handoff_${remedy.session}`,
         agentBrowserCommand,
         ['--json', '--session', remedy.session, 'handoff', 'prepare'],
-        { required: false },
+        { required: false, extraEnvironment: PUBLISHER_HANDOFF_ENVIRONMENT },
       );
       if (prepared.success !== true) {
         report.skippedRemedies.push({
@@ -451,8 +452,8 @@ function staleSessionMetadataNames({ minimumAgeMs = 60_000 } = {}) {
     .sort();
 }
 
-function runJsonStep(name, command, commandArgs, { required = true } = {}) {
-  const result = runStep(name, command, commandArgs, { capture: true, required });
+function runJsonStep(name, command, commandArgs, { required = true, extraEnvironment } = {}) {
+  const result = runStep(name, command, commandArgs, { capture: true, required, extraEnvironment });
   try {
     return JSON.parse((result.stdout ?? '').trim());
   } catch (error) {
@@ -464,8 +465,9 @@ function runOptionalStep(name, command, commandArgs) {
   return runStep(name, command, commandArgs, { required: false });
 }
 
-function runStep(name, command, commandArgs, { capture = false, required = true } = {}) {
+function runStep(name, command, commandArgs, { capture = false, required = true, extraEnvironment } = {}) {
   const result = spawnSync(command, commandArgs, {
+    env: agentCommandEnvironment(process.env, extraEnvironment),
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
     stdio: capture ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
