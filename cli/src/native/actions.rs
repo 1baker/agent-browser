@@ -14,7 +14,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
+use tokio::sync::{broadcast, oneshot, watch, Mutex, RwLock};
 
 use crate::connection::get_socket_dir;
 use crate::runtime_profile::{
@@ -3095,6 +3095,7 @@ struct BrokerAttachment {
     /// daemon's own event receiver or observe another attached target.
     event_rx: Arc<Mutex<broadcast::Receiver<CdpEvent>>>,
     event_state: Arc<Mutex<BrokerEventState>>,
+    collector_stop: Option<watch::Sender<bool>>,
 }
 
 #[derive(Default)]
@@ -3103,6 +3104,24 @@ struct BrokerEventState {
     events: VecDeque<Value>,
     buffered_bytes: usize,
     overflowed: bool,
+    overflow_reason: Option<&'static str>,
+    oversized_method: Option<String>,
+    oversized_bytes: Option<usize>,
+    oversized_sequence: Option<u64>,
+    lagged_count: u64,
+    source_closed: bool,
+}
+
+#[derive(Debug)]
+struct BrokerOverflowMetadata {
+    reason: &'static str,
+    lagged_count: u64,
+    oldest_sequence: u64,
+    next_sequence: u64,
+    cursor_gap: bool,
+    oversized_method: Option<String>,
+    oversized_bytes: Option<usize>,
+    oversized_sequence: Option<u64>,
 }
 
 impl DaemonState {
@@ -7892,6 +7911,13 @@ async fn handle_cdp_attach(cmd: &Value, state: &mut DaemonState) -> Result<Value
             "targetId": target_id,
             "generation": generation,
         });
+        let event_rx = Arc::new(Mutex::new(mgr.client.subscribe()));
+        let event_state = Arc::new(Mutex::new(BrokerEventState::default()));
+        let collector_stop = spawn_broker_event_collector(
+            event_rx.clone(),
+            event_state.clone(),
+            page_session_id.clone(),
+        );
         state.broker_attachments.insert(
             attachment_id.clone(),
             BrokerAttachment {
@@ -7904,8 +7930,9 @@ async fn handle_cdp_attach(cmd: &Value, state: &mut DaemonState) -> Result<Value
                 page_session_id,
                 expected_url: expected_url.to_owned(),
                 service_tab_handle: cmd.get("serviceTabHandle").cloned().unwrap_or(Value::Null),
-                event_rx: Arc::new(Mutex::new(mgr.client.subscribe())),
-                event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+                event_rx,
+                event_state,
+                collector_stop: Some(collector_stop),
             },
         );
         return Ok(json!({
@@ -8080,6 +8107,9 @@ async fn handle_broker_transport(cmd: &Value, state: &mut DaemonState) -> Result
     match request.get("operation").and_then(Value::as_str) {
         Some("detach") => {
             if let Some(active) = state.broker_attachments.remove(attachment_id) {
+                if let Some(stop) = &active.collector_stop {
+                    let _ = stop.send(true);
+                }
                 state
                     .broker_detachments
                     .insert(attachment_id.to_owned(), active);
@@ -8094,11 +8124,27 @@ async fn handle_broker_transport(cmd: &Value, state: &mut DaemonState) -> Result
                 return Err("broker attachment is detached".to_string());
             }
             let cursor = request.get("cursor").and_then(Value::as_u64).unwrap_or(0);
-            let (cursor, overflow, events) = broker_attachment_events(&attachment, cursor).await?;
-            Ok(
-                json!({ "binding": broker_binding_value(&attachment), "requestId": request_id,
-                "cursor": cursor, "overflow": overflow, "events": events }),
-            )
+            let (cursor, overflow, events, metadata) =
+                broker_attachment_events(&attachment, cursor).await?;
+            let mut reply = json!({ "binding": broker_binding_value(&attachment), "requestId": request_id,
+                "cursor": cursor, "overflow": overflow, "events": events });
+            if let Some(metadata) = metadata {
+                reply["overflowReason"] = json!(metadata.reason);
+                reply["laggedCount"] = json!(metadata.lagged_count);
+                reply["oldestSequence"] = json!(metadata.oldest_sequence);
+                reply["nextSequence"] = json!(metadata.next_sequence);
+                reply["cursorGap"] = json!(metadata.cursor_gap);
+                if let Some(method) = metadata.oversized_method {
+                    reply["oversizedMethod"] = json!(method);
+                }
+                if let Some(bytes) = metadata.oversized_bytes {
+                    reply["oversizedBytes"] = json!(bytes);
+                }
+                if let Some(sequence) = metadata.oversized_sequence {
+                    reply["oversizedSequence"] = json!(sequence);
+                }
+            }
+            Ok(reply)
         }
         Some("command") => {
             if state.broker_detachments.contains_key(attachment_id) {
@@ -8225,6 +8271,118 @@ fn broker_event_is_allowed(method: &str) -> bool {
     )
 }
 
+fn broker_buffer_event(state: &mut BrokerEventState, page_session_id: &str, event: CdpEvent) {
+    if event.session_id.as_deref() != Some(page_session_id)
+        || !broker_event_is_allowed(&event.method)
+    {
+        return;
+    }
+    state.next_sequence = state.next_sequence.saturating_add(1);
+    let method = event.method.clone();
+    let mut buffered = json!({
+        "sequence": state.next_sequence,
+        "method": event.method,
+        "params": event.params,
+    });
+    let mut event_bytes = serde_json::to_vec(&buffered)
+        .map(|bytes| bytes.len())
+        .unwrap_or(BROKER_EVENT_BUFFER_BYTES.saturating_add(1));
+    // Provider consumers do not subscribe to requestWillBeSent payloads. Keep
+    // its sequence and method while dropping oversized request body metadata.
+    if event_bytes > BROKER_EVENT_BATCH_BYTES && method == "Network.requestWillBeSent" {
+        buffered = json!({
+            "sequence": state.next_sequence,
+            "method": method.clone(),
+            "params": {},
+            "truncated": true,
+            "byteSize": event_bytes,
+        });
+        event_bytes = serde_json::to_vec(&buffered)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+    }
+    if event_bytes > BROKER_EVENT_BATCH_BYTES {
+        state.events.clear();
+        state.buffered_bytes = 0;
+        state.overflowed = true;
+        state.overflow_reason.get_or_insert("event_too_large");
+        if state.oversized_method.is_none() {
+            state.oversized_method = Some(method.chars().take(128).collect());
+            state.oversized_bytes = Some(event_bytes);
+            state.oversized_sequence = Some(state.next_sequence);
+        }
+        return;
+    }
+    state.events.push_back(buffered);
+    state.buffered_bytes = state.buffered_bytes.saturating_add(event_bytes);
+    while state.events.len() > BROKER_EVENT_BUFFER_CAPACITY
+        || state.buffered_bytes > BROKER_EVENT_BUFFER_BYTES
+    {
+        let reason = if state.events.len() > BROKER_EVENT_BUFFER_CAPACITY {
+            "buffer_count"
+        } else {
+            "buffer_bytes"
+        };
+        if let Some(front) = state.events.pop_front() {
+            state.buffered_bytes = state.buffered_bytes.saturating_sub(
+                serde_json::to_vec(&front)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(0),
+            );
+        }
+        state.overflowed = true;
+        state.overflow_reason.get_or_insert(reason);
+    }
+}
+
+fn spawn_broker_event_collector(
+    event_rx: Arc<Mutex<broadcast::Receiver<CdpEvent>>>,
+    event_state: Arc<Mutex<BrokerEventState>>,
+    page_session_id: String,
+) -> watch::Sender<bool> {
+    let (stop_tx, mut stop_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        loop {
+            // Do not hold the control-plane worker or manager while waiting
+            // for browser-wide events. The serial worker may be busy with a
+            // long CDP command while other tabs keep emitting events.
+            let received = tokio::select! {
+                result = async { event_rx.lock().await.recv().await } => result,
+                changed = stop_rx.changed() => {
+                    if changed.is_err() || *stop_rx.borrow() { break; }
+                    continue;
+                }
+            };
+            match received {
+                Ok(event) => {
+                    if event.method == "Target.detachedFromTarget"
+                        && event.params.get("sessionId").and_then(Value::as_str)
+                            == Some(page_session_id.as_str())
+                    {
+                        event_state.lock().await.source_closed = true;
+                        break;
+                    }
+                    let mut state = event_state.lock().await;
+                    broker_buffer_event(&mut state, &page_session_id, event);
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    let mut state = event_state.lock().await;
+                    state.overflowed = true;
+                    state.overflow_reason.get_or_insert("lagged");
+                    state.lagged_count = state.lagged_count.saturating_add(skipped);
+                    state.events.clear();
+                    state.buffered_bytes = 0;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    event_state.lock().await.source_closed = true;
+                    break;
+                }
+            }
+        }
+    });
+    stop_tx
+}
+
 /// Drain only events issued for this attachment's page session. The broker
 /// retains a small sequence-addressed history so a short client poll race does
 /// not silently lose readiness evidence. Any subscriber lag is surfaced as an
@@ -8232,9 +8390,11 @@ fn broker_event_is_allowed(method: &str) -> bool {
 async fn broker_attachment_events(
     attachment: &BrokerAttachment,
     requested_cursor: u64,
-) -> Result<(u64, bool, Vec<Value>), String> {
-    let mut receiver = attachment.event_rx.lock().await;
+) -> Result<(u64, bool, Vec<Value>, Option<BrokerOverflowMetadata>), String> {
     let mut state = attachment.event_state.lock().await;
+    if state.source_closed {
+        return Err("broker event source closed".to_string());
+    }
     while state.events.front().is_some_and(|event| {
         event.get("sequence").and_then(Value::as_u64).unwrap_or(0) <= requested_cursor
     }) {
@@ -8246,53 +8406,24 @@ async fn broker_attachment_events(
             );
         }
     }
-    loop {
-        match receiver.try_recv() {
-            Ok(event) => {
-                if event.session_id.as_deref() != Some(attachment.page_session_id.as_str())
-                    || !broker_event_is_allowed(&event.method)
-                {
-                    continue;
-                }
-                state.next_sequence = state.next_sequence.saturating_add(1);
-                let sequence = state.next_sequence;
-                let buffered = json!({
-                    "sequence": sequence,
-                    "method": event.method,
-                    "params": event.params,
-                });
-                let buffered_bytes = serde_json::to_vec(&buffered)
-                    .map(|bytes| bytes.len())
-                    .unwrap_or(BROKER_EVENT_BUFFER_BYTES.saturating_add(1));
-                if buffered_bytes > BROKER_EVENT_BATCH_BYTES {
+    // Existing test fixtures without a background collector drain on demand.
+    // Production attachments drain continuously outside the serial worker.
+    if attachment.collector_stop.is_none() {
+        let mut receiver = attachment.event_rx.lock().await;
+        loop {
+            match receiver.try_recv() {
+                Ok(event) => broker_buffer_event(&mut state, &attachment.page_session_id, event),
+                Err(broadcast::error::TryRecvError::Empty) => break,
+                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
                     state.events.clear();
                     state.buffered_bytes = 0;
                     state.overflowed = true;
-                    continue;
+                    state.overflow_reason.get_or_insert("lagged");
+                    state.lagged_count = state.lagged_count.saturating_add(skipped);
                 }
-                state.events.push_back(buffered);
-                state.buffered_bytes = state.buffered_bytes.saturating_add(buffered_bytes);
-                while state.events.len() > BROKER_EVENT_BUFFER_CAPACITY
-                    || state.buffered_bytes > BROKER_EVENT_BUFFER_BYTES
-                {
-                    if let Some(event) = state.events.pop_front() {
-                        state.buffered_bytes = state.buffered_bytes.saturating_sub(
-                            serde_json::to_vec(&event)
-                                .map(|bytes| bytes.len())
-                                .unwrap_or(0),
-                        );
-                    }
-                    state.overflowed = true;
+                Err(broadcast::error::TryRecvError::Closed) => {
+                    return Err("broker event source closed".to_string());
                 }
-            }
-            Err(broadcast::error::TryRecvError::Empty) => break,
-            Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                state.events.clear();
-                state.buffered_bytes = 0;
-                state.overflowed = true;
-            }
-            Err(broadcast::error::TryRecvError::Closed) => {
-                return Err("broker event source closed".to_string());
             }
         }
     }
@@ -8303,7 +8434,25 @@ async fn broker_attachment_events(
         .and_then(Value::as_u64)
         .unwrap_or_else(|| state.next_sequence.saturating_add(1));
     if state.overflowed || requested_cursor.saturating_add(1) < oldest {
-        return Ok((state.next_sequence, true, Vec::new()));
+        let reason =
+            state
+                .overflow_reason
+                .unwrap_or(if requested_cursor.saturating_add(1) < oldest {
+                    "cursor_gap"
+                } else {
+                    "unknown"
+                });
+        let metadata = BrokerOverflowMetadata {
+            reason,
+            lagged_count: state.lagged_count,
+            oldest_sequence: oldest,
+            next_sequence: state.next_sequence,
+            cursor_gap: requested_cursor.saturating_add(1) < oldest,
+            oversized_method: state.oversized_method.clone(),
+            oversized_bytes: state.oversized_bytes,
+            oversized_sequence: state.oversized_sequence,
+        };
+        return Ok((state.next_sequence, true, Vec::new(), Some(metadata)));
     }
     let mut events = Vec::new();
     let mut batch_bytes = 0usize;
@@ -8327,7 +8476,7 @@ async fn broker_attachment_events(
         .and_then(|event| event.get("sequence"))
         .and_then(Value::as_u64)
         .unwrap_or(requested_cursor);
-    Ok((cursor, false, events))
+    Ok((cursor, false, events, None))
 }
 
 fn validate_cdp_attach_request(cmd: &Value, session_id: &str) -> Result<(), String> {
@@ -12231,6 +12380,11 @@ async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value
             .unwrap_or_else(|_| OffsetDateTime::now_utc().unix_timestamp().to_string()),
     };
     let path = write_runtime_handoff(&descriptor)?;
+    for attachment in state.broker_attachments.values() {
+        if let Some(stop) = &attachment.collector_stop {
+            let _ = stop.send(true);
+        }
+    }
     manager.relinquish_browser_for_handoff();
     state.browser = None;
     state.screencasting = false;
@@ -15088,7 +15242,15 @@ async fn handle_tab_close(cmd: &Value, state: &mut DaemonState) -> Result<Value,
     state.ref_map.clear();
     state.iframe_sessions.clear();
     state.active_frame_id = None;
-    mgr.tab_close(index).await
+    let result = mgr.tab_close(index).await?;
+    for attachment in state.broker_attachments.values() {
+        if !mgr.has_target(&attachment.target_id) {
+            if let Some(stop) = &attachment.collector_stop {
+                let _ = stop.send(true);
+            }
+        }
+    }
+    Ok(result)
 }
 
 async fn handle_tab_handle_refresh(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
@@ -42961,6 +43123,7 @@ mod tests {
             service_tab_handle: json!({"valid": true}),
             event_rx: Arc::new(Mutex::new(broadcast::channel(1).1)),
             event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+            collector_stop: None,
         };
         assert_eq!(
             broker_method_action("Runtime.evaluate", &json!({"expression": "location.href"}))
@@ -43001,6 +43164,7 @@ mod tests {
             service_tab_handle: json!({"valid": true}),
             event_rx: Arc::new(Mutex::new(broadcast::channel(1).1)),
             event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+            collector_stop: None,
         };
 
         assert!(broker_attachment_is_current(
@@ -43030,6 +43194,7 @@ mod tests {
             service_tab_handle: json!({"valid": true, "targetId": target, "url": url}),
             event_rx: Arc::new(Mutex::new(broadcast::channel(1).1)),
             event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+            collector_stop: None,
         };
         let mut state = DaemonState::new();
         state.session_id = "broker".to_string();
@@ -43096,6 +43261,7 @@ mod tests {
             service_tab_handle: json!({"valid": true}),
             event_rx: Arc::new(Mutex::new(broadcast::channel(1).1)),
             event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+            collector_stop: None,
         };
         let binding = broker_binding_value(&attachment);
         let mut state = DaemonState::new();
@@ -43128,6 +43294,7 @@ mod tests {
             service_tab_handle: json!({"valid": true}),
             event_rx: Arc::new(Mutex::new(event_rx)),
             event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+            collector_stop: None,
         };
         event_tx
             .send(CdpEvent {
@@ -43143,12 +43310,13 @@ mod tests {
                 session_id: Some("other-page-session".to_string()),
             })
             .unwrap();
-        let (cursor, overflow, events) = broker_attachment_events(&attachment, 0).await.unwrap();
+        let (cursor, overflow, events, _metadata) =
+            broker_attachment_events(&attachment, 0).await.unwrap();
         assert_eq!(cursor, 1);
         assert!(!overflow);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["sequence"], 1);
-        let (cursor, overflow, events) =
+        let (cursor, overflow, events, _metadata) =
             broker_attachment_events(&attachment, cursor).await.unwrap();
         assert_eq!(cursor, 1);
         assert!(!overflow);
@@ -43170,6 +43338,7 @@ mod tests {
             service_tab_handle: json!({"valid": true}),
             event_rx: Arc::new(Mutex::new(event_rx)),
             event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+            collector_stop: None,
         };
         let mut cursor = 0;
         for index in 0..(BROKER_EVENT_BUFFER_CAPACITY + 20) {
@@ -43180,13 +43349,44 @@ mod tests {
                     session_id: Some("page-session-1".to_string()),
                 })
                 .unwrap();
-            let (next_cursor, overflow, events) =
+            let (next_cursor, overflow, events, _metadata) =
                 broker_attachment_events(&attachment, cursor).await.unwrap();
             assert!(!overflow);
             assert_eq!(events.len(), 1);
             cursor = next_cursor;
         }
         assert_eq!(cursor, (BROKER_EVENT_BUFFER_CAPACITY + 20) as u64);
+    }
+
+    #[tokio::test]
+    async fn broker_events_report_cursor_gap_without_oversize() {
+        let (_event_tx, event_rx) = broadcast::channel(4);
+        let mut event_state = BrokerEventState::default();
+        event_state.next_sequence = 3;
+        event_state
+            .events
+            .push_back(json!({"sequence": 3, "method": "Page.loadEventFired", "params": {}}));
+        let attachment = BrokerAttachment {
+            attachment_id: "attachment-gap".to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: "AABBCCDDEEFF00112233445566778899".to_string(),
+            generation: "generation-1".to_string(),
+            page_session_id: "page-session-1".to_string(),
+            expected_url: "https://chatgpt.com/c/example".to_string(),
+            service_tab_handle: json!({"valid": true}),
+            event_rx: Arc::new(Mutex::new(event_rx)),
+            event_state: Arc::new(Mutex::new(event_state)),
+            collector_stop: Some(watch::channel(false).0),
+        };
+        let (_cursor, overflow, _events, metadata) =
+            broker_attachment_events(&attachment, 0).await.unwrap();
+        assert!(overflow);
+        let metadata = metadata.unwrap();
+        assert_eq!(metadata.reason, "cursor_gap");
+        assert!(metadata.cursor_gap);
+        assert_eq!(metadata.oversized_method, None);
     }
 
     #[tokio::test]
@@ -43204,6 +43404,7 @@ mod tests {
             service_tab_handle: json!({"valid": true}),
             event_rx: Arc::new(Mutex::new(event_rx)),
             event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+            collector_stop: None,
         };
         let event_count = BROKER_EVENT_BATCH_CAPACITY + 20;
         for index in 0..event_count {
@@ -43215,11 +43416,12 @@ mod tests {
                 })
                 .unwrap();
         }
-        let (cursor, overflow, events) = broker_attachment_events(&attachment, 0).await.unwrap();
+        let (cursor, overflow, events, _metadata) =
+            broker_attachment_events(&attachment, 0).await.unwrap();
         assert!(!overflow);
         assert_eq!(cursor, BROKER_EVENT_BATCH_CAPACITY as u64);
         assert_eq!(events.len(), BROKER_EVENT_BATCH_CAPACITY);
-        let (cursor, overflow, events) =
+        let (cursor, overflow, events, _metadata) =
             broker_attachment_events(&attachment, cursor).await.unwrap();
         assert!(!overflow);
         assert_eq!(cursor, event_count as u64);
@@ -43241,6 +43443,7 @@ mod tests {
             service_tab_handle: json!({"valid": true}),
             event_rx: Arc::new(Mutex::new(event_rx)),
             event_state: Arc::new(Mutex::new(BrokerEventState::default())),
+            collector_stop: None,
         };
         for index in 0..3 {
             event_tx
@@ -43251,15 +43454,274 @@ mod tests {
                 })
                 .unwrap();
         }
-        let (cursor, overflow, events) = broker_attachment_events(&attachment, 0).await.unwrap();
+        let (cursor, overflow, events, _metadata) =
+            broker_attachment_events(&attachment, 0).await.unwrap();
         assert!(!overflow);
         assert_eq!(cursor, 2);
         assert_eq!(events.len(), 2);
         assert!(serde_json::to_vec(&events).unwrap().len() < 1_048_576);
-        let (cursor, overflow, events) =
+        let (cursor, overflow, events, _metadata) =
             broker_attachment_events(&attachment, cursor).await.unwrap();
         assert!(!overflow);
         assert_eq!(cursor, 3);
         assert_eq!(events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn broker_collector_drains_browser_wide_events_while_polling_is_blocked() {
+        let (event_tx, event_rx) = broadcast::channel(BROKER_EVENT_BUFFER_CAPACITY);
+        let state = Arc::new(Mutex::new(BrokerEventState::default()));
+        let stop = spawn_broker_event_collector(
+            Arc::new(Mutex::new(event_rx)),
+            state.clone(),
+            "owned-page".to_string(),
+        );
+        for index in 0..(BROKER_EVENT_BUFFER_CAPACITY + 100) {
+            event_tx
+                .send(CdpEvent {
+                    method: "Network.requestWillBeSent".to_string(),
+                    params: json!({"index": index}),
+                    session_id: Some("other-page".to_string()),
+                })
+                .unwrap();
+            if index % 32 == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
+        event_tx
+            .send(CdpEvent {
+                method: "Page.loadEventFired".to_string(),
+                params: json!({"timestamp": 1}),
+                session_id: Some("owned-page".to_string()),
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if state.lock().await.next_sequence == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let state = state.lock().await;
+        assert!(!state.overflowed);
+        assert_eq!(state.events.len(), 1);
+        assert_eq!(state.events[0]["sequence"], 1);
+        let _ = stop.send(true);
+    }
+
+    #[tokio::test]
+    async fn broker_collector_reports_own_session_oversize_and_forced_lag() {
+        let (event_tx, event_rx) = broadcast::channel(4);
+        let state = Arc::new(Mutex::new(BrokerEventState::default()));
+        let event_rx = Arc::new(Mutex::new(event_rx));
+        let stop =
+            spawn_broker_event_collector(event_rx.clone(), state.clone(), "owned-page".to_string());
+        event_tx
+            .send(CdpEvent {
+                method: "Runtime.consoleAPICalled".to_string(),
+                params: json!({"payload": "x".repeat(BROKER_EVENT_BATCH_BYTES)}),
+                session_id: Some("owned-page".to_string()),
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if state.lock().await.overflowed {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(state.lock().await.overflow_reason, Some("event_too_large"));
+        assert_eq!(
+            state.lock().await.oversized_method.as_deref(),
+            Some("Runtime.consoleAPICalled")
+        );
+        assert!(state.lock().await.oversized_bytes.unwrap() > BROKER_EVENT_BATCH_BYTES);
+        assert_eq!(state.lock().await.oversized_sequence, Some(1));
+        let attachment = BrokerAttachment {
+            attachment_id: "oversized-events".to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: "AABBCCDDEEFF00112233445566778899".to_string(),
+            generation: "generation-1".to_string(),
+            page_session_id: "owned-page".to_string(),
+            expected_url: "https://chatgpt.com/c/example".to_string(),
+            service_tab_handle: json!({"valid": true}),
+            event_rx,
+            event_state: state.clone(),
+            collector_stop: Some(stop.clone()),
+        };
+        let (_cursor, overflow, _events, metadata) =
+            broker_attachment_events(&attachment, 0).await.unwrap();
+        assert!(overflow);
+        let metadata = metadata.unwrap();
+        assert!(metadata.cursor_gap);
+        assert_eq!(metadata.oversized_sequence, Some(1));
+        let _ = stop.send(true);
+
+        let (lag_tx, lag_rx) = broadcast::channel(4);
+        for index in 0..20 {
+            // Keep a receiver alive while the sender outruns it.
+            lag_tx
+                .send(CdpEvent {
+                    method: "Page.loadEventFired".to_string(),
+                    params: json!({"timestamp": index}),
+                    session_id: Some("owned-page".to_string()),
+                })
+                .unwrap();
+        }
+        let lag_state = Arc::new(Mutex::new(BrokerEventState::default()));
+        let lag_stop = spawn_broker_event_collector(
+            Arc::new(Mutex::new(lag_rx)),
+            lag_state.clone(),
+            "owned-page".to_string(),
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if lag_state.lock().await.overflowed {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let lag = lag_state.lock().await;
+        assert_eq!(lag.overflow_reason, Some("lagged"));
+        assert!(lag.lagged_count > 0);
+        let _ = lag_stop.send(true);
+    }
+
+    #[test]
+    fn broker_oversized_request_event_keeps_cursor_without_payload() {
+        let mut state = BrokerEventState::default();
+        broker_buffer_event(
+            &mut state,
+            "owned-page",
+            CdpEvent {
+                method: "Network.requestWillBeSent".to_string(),
+                params: json!({"postData": "x".repeat(BROKER_EVENT_BATCH_BYTES)}),
+                session_id: Some("owned-page".to_string()),
+            },
+        );
+        assert!(!state.overflowed);
+        assert_eq!(state.next_sequence, 1);
+        assert_eq!(state.events.len(), 1);
+        let event = &state.events[0];
+        assert_eq!(event["sequence"], 1);
+        assert_eq!(event["method"], "Network.requestWillBeSent");
+        assert_eq!(event["params"], json!({}));
+        assert_eq!(event["truncated"], true);
+        assert!(event["byteSize"].as_u64().unwrap() > BROKER_EVENT_BATCH_BYTES as u64);
+    }
+
+    #[tokio::test]
+    async fn broker_collector_stops_when_detached() {
+        let (event_tx, event_rx) = broadcast::channel(4);
+        let event_state = Arc::new(Mutex::new(BrokerEventState::default()));
+        let stop = spawn_broker_event_collector(
+            Arc::new(Mutex::new(event_rx)),
+            event_state.clone(),
+            "owned-page".to_string(),
+        );
+        assert_eq!(event_tx.receiver_count(), 1);
+        stop.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while event_tx.receiver_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!event_state.lock().await.source_closed);
+    }
+
+    #[tokio::test]
+    async fn broker_collector_stops_when_target_session_detaches() {
+        let (event_tx, event_rx) = broadcast::channel(4);
+        let event_rx = Arc::new(Mutex::new(event_rx));
+        let event_state = Arc::new(Mutex::new(BrokerEventState::default()));
+        let stop = spawn_broker_event_collector(
+            event_rx.clone(),
+            event_state.clone(),
+            "owned-page".to_string(),
+        );
+        let attachment = BrokerAttachment {
+            attachment_id: "attachment-detached-target".to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: "AABBCCDDEEFF00112233445566778899".to_string(),
+            generation: "generation-1".to_string(),
+            page_session_id: "owned-page".to_string(),
+            expected_url: "https://chatgpt.com/c/example".to_string(),
+            service_tab_handle: json!({"valid": true}),
+            event_rx,
+            event_state: event_state.clone(),
+            collector_stop: Some(stop),
+        };
+        event_tx
+            .send(CdpEvent {
+                method: "Target.detachedFromTarget".to_string(),
+                params: json!({"sessionId": "owned-page"}),
+                session_id: None,
+            })
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !event_state.lock().await.source_closed {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(event_state.lock().await.source_closed);
+        assert_eq!(
+            broker_attachment_events(&attachment, 0).await.unwrap_err(),
+            "broker event source closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn broker_collector_closed_source_fails_poll_instead_of_going_silent() {
+        let (event_tx, event_rx) = broadcast::channel(4);
+        let event_rx = Arc::new(Mutex::new(event_rx));
+        let event_state = Arc::new(Mutex::new(BrokerEventState::default()));
+        let stop = spawn_broker_event_collector(
+            event_rx.clone(),
+            event_state.clone(),
+            "owned-page".to_string(),
+        );
+        let attachment = BrokerAttachment {
+            attachment_id: "attachment-closed".to_string(),
+            browser_id: "session:broker".to_string(),
+            profile_id: "chatgpt-pro".to_string(),
+            session_name: "broker".to_string(),
+            target_id: "AABBCCDDEEFF00112233445566778899".to_string(),
+            generation: "generation-1".to_string(),
+            page_session_id: "owned-page".to_string(),
+            expected_url: "https://chatgpt.com/c/example".to_string(),
+            service_tab_handle: json!({"valid": true}),
+            event_rx,
+            event_state: event_state.clone(),
+            collector_stop: Some(stop),
+        };
+        drop(event_tx);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !event_state.lock().await.source_closed {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            broker_attachment_events(&attachment, 0).await.unwrap_err(),
+            "broker event source closed"
+        );
     }
 }
