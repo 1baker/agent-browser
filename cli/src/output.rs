@@ -6255,6 +6255,8 @@ Locked profiles:
   chromium. agent-browser refuses a mismatched resolved browser family by
   default. Set AGENT_BROWSER_ALLOW_PROFILE_BROWSER_MISMATCH=true only when an
   operator intentionally accepts the unsafe profile mix.
+  On Unix, ambiguous custom executables named chrome use a bounded three-second
+  version probe. Known paths are not probed; failure keeps the Chrome fallback.
 
 Global Options:
   --json                        Output as JSON
