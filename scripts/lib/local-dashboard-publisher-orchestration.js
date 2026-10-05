@@ -2,12 +2,23 @@ import { isTerminalPublicationPhase } from './local-dashboard-publication-journa
 import { pinRetainedBrowserExpectation } from './local-dashboard-retained-browser-guard.js';
 import { validatePrebuiltPublicationOptions, requireExpectedPublicationSessions } from './local-dashboard-prebuilt-candidate.js';
 import { runColdRestartPublication } from './local-dashboard-cold-publication.js';
+import { validateRetainedReplacementAcceptance } from './local-dashboard-retained-replacement-acceptance.js';
 
 export async function runLocalDashboardPublisherOrchestration({
   options,
   report,
   adapters,
 }) {
+  if (options.acceptRetainedReplacement) {
+    const installBin = adapters.resolveInstallBin();
+    adapters.guardInstallPath(installBin);
+    const doctor = await adapters.inspectPreLockAcceptanceDoctor(installBin);
+    if (doctor.status !== 1
+        || JSON.stringify(doctor.issueCodes) !== JSON.stringify(['dashboard_publication_recovery_required'])) {
+      throw new Error(`Retained replacement pre-lock doctor refused: ${JSON.stringify(doctor.issueCodes)}`);
+    }
+    report.preLockDoctor = doctor;
+  }
   adapters.publicationJournal.acquire();
   let maintenance = null;
   const acquireMaintenance = () => {
@@ -44,8 +55,56 @@ async function runLockedLocalDashboardPublisherOrchestration({ options, report, 
   const installBin = adapters.resolveInstallBin();
   report.installBin = installBin;
   adapters.guardInstallPath(installBin);
+  if (options.acceptRetainedReplacement && report.preLockDoctor.binary !== installBin) {
+    throw new Error('Retained replacement installed binary changed between doctor and lock');
+  }
 
   const existingJournal = adapters.publicationJournal.read();
+  if (options.acceptRetainedReplacement) {
+    if (!existingJournal) throw new Error('Retained replacement acceptance requires an existing publication journal');
+    const check = async (journal) => validateRetainedReplacementAcceptance({
+      journal,
+      ...await adapters.inspectRetainedReplacementAcceptance(journal, installBin, options),
+      reason: options.acceptReason,
+      expectedStartTicks: options.expectRetainedStartTicks,
+    });
+    await check(existingJournal);
+    acquireMaintenance();
+    const currentJournal = adapters.publicationJournal.read();
+    if (currentJournal.transactionId !== existingJournal.transactionId
+        || currentJournal.revision !== existingJournal.revision) {
+      throw new Error('Retained replacement acceptance journal changed during preflight');
+    }
+    const acceptance = await check(currentJournal);
+    if (currentJournal.workstationProvenance) {
+      await adapters.verifyWorkstationProvenance(currentJournal.workstationProvenance, {
+        selection: 'candidate', installBin,
+      });
+    }
+    let record = currentJournal.phase === 'accept_admitted' ? currentJournal
+      : adapters.publicationJournal.commit(currentJournal, 'accept_admitted', {
+        retainedReplacementAcceptance: acceptance,
+      });
+    record = adapters.publicationJournal.commit(record, 'recovered_ready', {
+      retainedReplacementAcceptance: acceptance,
+      retainedBrowserExpectation: {
+        ...record.retainedBrowserExpectation, final: acceptance.retainedReadback,
+      },
+      readiness: { smokeWaived: true, originalFailure: record.failure },
+    });
+    const doctorIssues = await adapters.inspectPostTerminalDoctor(installBin);
+    if (JSON.stringify(doctorIssues) !== JSON.stringify(['dashboard_publication_active'])) {
+      throw new Error(`Retained replacement post-terminal doctor under lock: ${JSON.stringify(doctorIssues)}`);
+    }
+    record = adapters.publicationJournal.commit(record, 'recovered_ready', {
+      postTerminalDoctor: { issueCodes: doctorIssues, verifiedPendingUnlock: true },
+    });
+    report.installDoctor = { degraded: false };
+    report.publicationJournal = journalSummary(record, adapters.publicationJournal.path);
+    report.recovery = { transactionId: record.transactionId, result: 'recovered_replacement_accepted',
+      installedSha256: acceptance.replacementSha256, smokeWaived: true };
+    return;
+  }
   if (options.coldRestart || (existingJournal?.coldRestart && !isTerminalPublicationPhase(existingJournal.phase))) {
     await runColdRestartPublication({ options, report, adapters, acquireMaintenance, existingJournal });
     return;
@@ -470,6 +529,11 @@ async function runLockedLocalDashboardPublisherOrchestration({ options, report, 
 
 function validateOptions(options) {
   validatePrebuiltPublicationOptions(options);
+  if (options.acceptRetainedReplacement && (!options.recoverOnly || !options.acceptReason
+      || !Array.isArray(options.expectedSessions) || options.expectedSessions.length === 0
+      || !options.retainedBrowserExpectation || !Number.isSafeInteger(options.expectRetainedStartTicks))) {
+    throw new Error('Retained replacement acceptance requires recover-only, reason, expected sessions, exact retained browser, and start ticks');
+  }
   if (options.recoverInterlockReceipt && !options.recoverOnly) {
     throw new Error('--recover-interlock-receipt requires --recover-only');
   }

@@ -98,6 +98,9 @@ const options = {
   expectedSha256: '',
   expectedSessions: null,
   recoverOnly: false,
+  acceptRetainedReplacement: false,
+  acceptReason: '',
+  expectRetainedStartTicks: null,
   recoverInterlockReceipt: null,
   recoverReplacedRetainedBrowser: null,
   retainedBrowserStatus: false,
@@ -161,6 +164,12 @@ for (let index = 0; index < args.length; index += 1) {
     options.expectedSessions = value === 'none' ? [] : value.split(',');
   } else if (arg === '--recover-only') {
     options.recoverOnly = true;
+  } else if (arg === '--accept-retained-replacement') {
+    options.acceptRetainedReplacement = true;
+  } else if (arg === '--reason') {
+    options.acceptReason = requiredValue(args, ++index, arg);
+  } else if (arg === '--expect-retained-start-ticks') {
+    options.expectRetainedStartTicks = Number(requiredValue(args, ++index, arg));
   } else if (arg === '--recover-interlock-receipt') {
     options.recoverInterlockReceipt = requiredValue(args, ++index, arg);
   } else if (arg === '--recover-replaced-retained-browser') {
@@ -521,6 +530,26 @@ async function run() {
         };
       },
       serviceStatus,
+      inspectPreLockAcceptanceDoctor: (installBin) => {
+        const result = spawnSync(installBin, ['install', 'doctor', '--json'], {
+          encoding: 'utf8', timeout: 90000, maxBuffer: 8 * 1024 * 1024, cwd: homedir(),
+        });
+        if (result.error || ![0, 1].includes(result.status)) {
+          throw new Error('Retained replacement pre-lock doctor did not complete');
+        }
+        return { binary: installBin, status: result.status,
+          issueCodes: (JSON.parse(result.stdout).data?.issues ?? []).map((issue) => issue.code).sort() };
+      },
+      inspectRetainedReplacementAcceptance,
+      inspectPostTerminalDoctor: (installBin) => {
+        const result = spawnSync(installBin, ['install', 'doctor', '--json'], {
+          encoding: 'utf8', timeout: 90000, maxBuffer: 8 * 1024 * 1024, cwd: homedir(),
+        });
+        if (result.error || ![0, 1].includes(result.status)) {
+          throw new Error('Retained replacement post-terminal doctor did not complete');
+        }
+        return (JSON.parse(result.stdout).data?.issues ?? []).map((issue) => issue.code).sort();
+      },
       backupInstalledBinary,
       quiesceDashboardForRuntimeHandoff,
       prepareQuiesceSessions,
@@ -566,6 +595,49 @@ async function run() {
       publicationJournal,
     },
   });
+}
+
+async function inspectRetainedReplacementAcceptance(journal, installBin, recoveryOptions) {
+  const pin = journal.retainedBrowserExpectation?.pinned;
+  const explicit = recoveryOptions.explicitRetainedBrowserExpectation;
+  if (!pin || !explicit || ['sessionName', 'profileId', 'targetId', 'url', 'cdpUrl']
+    .some((key) => explicit[key] !== pin[key])) {
+    throw new Error('Retained replacement acceptance requires the exact journaled browser pin');
+  }
+  if (JSON.stringify([...recoveryOptions.expectedSessions].sort())
+      !== JSON.stringify([...(journal.candidateSessions ?? [])].sort())) {
+    throw new Error('Retained replacement acceptance requires the exact journaled session inventory');
+  }
+  const currentSessions = runtimeSessionNames();
+  const daemonEvidence = currentSessions.map((sessionName) => {
+    const pid = readRuntimePid(sessionName);
+    return {
+      sessionName, pid,
+      exeSha256: pid && existsSync(`/proc/${pid}/exe`) ? sha256File(`/proc/${pid}/exe`) : null,
+    };
+  });
+  const retainedEvidence = await verifyRetainedBrowserExpectation(installBin, {
+    expectation: pin, stage: 'accept_retained_replacement_preflight',
+  });
+  const browserPid = retainedEvidence.observed?.browserPid;
+  const stat = Number.isInteger(browserPid) && browserPid > 0
+    ? readFileSync(`/proc/${browserPid}/stat`, 'utf8') : '';
+  const processStartTicks = stat.includes(') ')
+    ? Number(stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/)[19]) : null;
+  const doctor = spawnSync(installBin, ['install', 'doctor', '--json'], {
+    encoding: 'utf8', timeout: 90000, maxBuffer: 8 * 1024 * 1024, cwd: homedir(),
+  });
+  if (doctor.error || ![0, 1].includes(doctor.status)) {
+    throw new Error('Retained replacement acceptance doctor did not complete');
+  }
+  const doctorResult = JSON.parse(doctor.stdout);
+  const doctorIssues = (doctorResult.data?.issues ?? []).map((issue) => issue.code).sort();
+  return {
+    installedSha256: sha256File(installBin),
+    backupSha256: existsSync(journal.backupPath ?? '') ? sha256File(journal.backupPath) : null,
+    currentSessions, daemonEvidence, retainedEvidence, processStartTicks, doctorIssues,
+    doctorStatus: doctor.status, doctorLock: publicationJournal.lockStatus(),
+  };
 }
 
 function backupInstalledBinary(installBin) {
@@ -1668,6 +1740,13 @@ Options:
                               With --recover-only, explicitly acknowledge an exited retained
                               process after verifying one replacement target at the same session,
                               profile, and conversation URL. The identity loss remains journaled.
+  --accept-retained-replacement
+                              With --recover-only, close one dashboard-HTML-smoke-only failed
+                              retained replacement after exact binary, session, browser, and
+                              backup checks. This does not waive a new publication's smoke.
+  --reason <text>             Required bounded reason for retained replacement acceptance.
+  --expect-retained-start-ticks <ticks>
+                              Require the retained browser's exact Linux process start token.
   --prebuilt-bin <absolute-path>
                               Publish reviewed embedded-dashboard bytes without rebuilding.
   --expected-sha256 <sha256>  Required lowercase digest for --prebuilt-bin.

@@ -22,12 +22,14 @@ function fixture(test) {
   const bundleBytes = JSON.stringify(bundle);
   const manifest = { schemaVersion: 'agent-browser.workstation-payload.v1', version: '1.2.3', binary: { sha256: hash('source') }, controllerAssets: { files: [{ path: 'scripts/controller.js', sha256: hash('controller') }] }, units: [{ name: 'test.service', sha256: hash('unit') }], guacamoleBundle: bundle, guacamoleBundleManifestSha256: hash(bundleBytes), futureField: { preserve: ['exact', 42] } };
   put(installBin, 'source'); put(builtBin, 'candidate'); put(asset, 'controller');
+  chmodSync(asset, 0o644);
   put(join(root, '.config/systemd/user/test.service'), 'unit');
   put(join(support, 'guacamole/manifest.json'), bundleBytes);
   put(join(support, 'guacamole/compose.yml'), 'compose');
   put(join(support, 'guacamole/init.sql'), 'sql');
   const original = JSON.stringify(manifest, null, 4);
   put(manifestPath, original);
+  chmodSync(manifestPath, 0o644);
   const prepare = (controllerUpdates) => prepareWorkstationProvenance({ root, version: '1.2.3', installBin, builtBin, journalPath, controllerUpdates });
   try { test({ root, support, installBin, builtBin, manifestPath, manifest, original, asset, prepare, put }); count++; }
   finally { rmSync(root, { recursive: true, force: true }); }
@@ -93,6 +95,7 @@ function controllerFixture(test) {
   fixture((context) => {
     const sourcePath = join(context.root, 'new-controller.js');
     context.put(sourcePath, 'new-controller');
+    chmodSync(sourcePath, 0o644);
     const updates = [{ path: 'scripts/controller.js', sourcePath, expectedSha256: hash('new-controller') }];
     test({ ...context, sourcePath, updates });
   });
@@ -152,10 +155,12 @@ controllerFixture(({ prepare, updates, installBin, asset, manifestPath, put }) =
 controllerFixture(({ prepare, updates, installBin, asset, manifest, manifestPath, root, put }) => {
   const second = 'scripts/second.js';
   put(join(dirname(asset), 'second.js'), 'old-second');
+  chmodSync(join(dirname(asset), 'second.js'), 0o644);
   manifest.controllerAssets.files.push({ path: second, sha256: hash('old-second') });
   put(manifestPath, JSON.stringify(manifest));
   const sourcePath = join(root, 'second.js');
   put(sourcePath, 'new-second');
+  chmodSync(sourcePath, 0o644);
   updates.push({ path: second, sourcePath, expectedSha256: hash('new-second') });
   const record = prepare(updates);
   put(asset, 'new-controller');

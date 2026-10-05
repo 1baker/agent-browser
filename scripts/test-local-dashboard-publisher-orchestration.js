@@ -24,6 +24,7 @@ import {
 import {
   createLocalDashboardPublicationJournal,
 } from './lib/local-dashboard-publication-journal.js';
+import { validateRetainedReplacementAcceptance } from './lib/local-dashboard-retained-replacement-acceptance.js';
 
 const roots = new Set();
 
@@ -73,11 +74,132 @@ try {
   await runRetainedGuardReplacementRecoveryScenario();
   await runUnverifiedRecoveryScenario();
   await runRecoverOnlyNoopScenario();
+  await runRetainedReplacementAcceptanceScenario();
 } finally {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 }
 
 console.log('Local dashboard publisher orchestration fixture passed');
+
+async function runRetainedReplacementAcceptanceScenario() {
+  const f = createFixture();
+  const normalOptions = f.input.options;
+  const handoff = fixtureHandoff();
+  const pin = {
+    sessionName: 'retained-fixture', browserPid: 5678,
+    cdpUrl: 'ws://127.0.0.1:9222/devtools/browser/fixture',
+    profileId: 'fixture-profile', targetId: 'target-fixture',
+    url: 'https://example.test/conversation',
+  };
+  seedIncompleteJournal(f, {
+    phase: 'publication_failed_replacement_retained', installed: 'replacement',
+    candidateSessions: ['retained-fixture'], handoffs: [handoff],
+    resumedHandoffs: [{ ...handoff, daemonPid: 4321 }],
+    retainedBrowserExpectation: { pinned: pin },
+  });
+  f.publicationJournal.acquire();
+  try {
+    f.publicationJournal.commit(f.publicationJournal.read(), 'publication_failed_replacement_retained', {
+      failedAtPhase: 'readiness_admitted',
+      failure: 'Local dashboard HTTP readiness smoke failed: Dashboard HTML at http://localhost/ did not look like the Agent Browser dashboard.',
+    });
+  } finally { f.publicationJournal.release(); }
+  const evidence = {
+    installedSha256: f.replacementSha256, backupSha256: f.originalSha256,
+    currentSessions: ['retained-fixture'],
+    daemonEvidence: [{ sessionName: 'retained-fixture', pid: 4321, exeSha256: f.replacementSha256 }],
+    retainedEvidence: { verified: true, observed: { ...pin } },
+    processStartTicks: 777, expectedStartTicks: 777,
+    doctorIssues: ['dashboard_publication_active'], doctorStatus: 1,
+    doctorLock: { live: true, ownerPid: process.pid }, reason: 'rebuild embedded dashboard',
+  };
+  const record = f.publicationJournal.read();
+  const refuses = [
+    [{ journal: { ...record, phase: 'ready', terminal: true } }, 'wrong journal phase'],
+    [{ installedSha256: f.originalSha256 }, 'installed replacement digest mismatch'],
+    [{ backupSha256: f.replacementSha256 }, 'journaled backup digest mismatch'],
+    [{ journal: { ...record, failure: 'browser handoff failed' } }, 'failure is not the dashboard HTML smoke'],
+    [{ currentSessions: [] }, 'runtime session census mismatch'],
+    [{ journal: { ...record, resumedHandoffs: [] } }, 'retained handoff not fully resumed'],
+    [{ daemonEvidence: [{ sessionName: 'retained-fixture', pid: 4321, exeSha256: f.originalSha256 }] }, 'runtime daemon digest mismatch'],
+    [{ retainedEvidence: { verified: false, observed: { ...pin } } }, 'retained browser pin mismatch'],
+    [{ processStartTicks: 778 }, 'retained browser process start mismatch'],
+    [{ doctorIssues: ['unexpected'] }, 'codes=["unexpected"]'],
+    [{ doctorLock: { live: true, ownerPid: process.pid + 1 } }, 'unexpected installation doctor issue'],
+    [{ reason: '' }, 'bounded operator reason required'],
+  ];
+  for (const [mutation, message] of refuses) {
+    assert.throws(() => validateRetainedReplacementAcceptance({ journal: record, ...evidence, ...mutation }),
+      (error) => error.message.includes(message));
+  }
+  f.input.options = {
+    ...f.input.options, recoverOnly: true, acceptRetainedReplacement: true,
+    acceptReason: evidence.reason, expectedSessions: ['retained-fixture'],
+    retainedBrowserExpectation: pin, expectRetainedStartTicks: 777,
+  };
+  f.input.adapters.inspectRetainedReplacementAcceptance = () => evidence;
+  f.input.adapters.inspectPreLockAcceptanceDoctor = () => ({ binary: f.installBin, status: 1,
+    issueCodes: ['dashboard_publication_recovery_required'] });
+  f.input.adapters.inspectPostTerminalDoctor = () => ['dashboard_publication_active'];
+  f.input.adapters.verifyInstalledDoctor = (_binary, context) => {
+    assert.equal(context.strict, true);
+    throw new Error('fixture strict doctor issue after unlock');
+  };
+  const maintenanceActions = [];
+  let retainedReceipt = false;
+  f.input.adapters.acquireMaintenance = () => {
+    if (retainedReceipt && f.input.options.recoverInterlockReceipt !== 'fixture-receipt') {
+      throw new Error('exact interlock receipt required');
+    }
+    maintenanceActions.push('acquire');
+    return {
+      receipt: { id: 'fixture-receipt' },
+      release: () => { retainedReceipt = false; maintenanceActions.push('release'); },
+      retainForRecovery: () => { retainedReceipt = true; maintenanceActions.push('retain'); },
+    };
+  };
+  const commit = f.publicationJournal.commit.bind(f.publicationJournal);
+  let failTerminalOnce = true;
+  f.publicationJournal.commit = (record, phase, patch) => {
+    if (phase === 'recovered_ready' && failTerminalOnce) {
+      failTerminalOnce = false;
+      throw new Error('fixture terminal commit failed');
+    }
+    return commit(record, phase, patch);
+  };
+  const bytesBefore = readFileSync(f.installBin);
+  await assert.rejects(runLocalDashboardPublisherOrchestration(f.input), /fixture terminal commit failed/);
+  assert.equal(f.publicationJournal.read().phase, 'accept_admitted');
+  assert.deepEqual(maintenanceActions, ['acquire', 'retain']);
+  await assert.rejects(runLocalDashboardPublisherOrchestration(f.input), /exact interlock receipt required/);
+  f.input.options.recoverInterlockReceipt = 'fixture-receipt';
+  await assert.rejects(runLocalDashboardPublisherOrchestration(f.input), /fixture strict doctor issue after unlock/);
+  assert.equal(f.publicationJournal.read().phase, 'recovered_ready');
+  assert.equal(f.publicationJournal.read().postTerminalDoctor.verifiedPendingUnlock, true);
+  assert.deepEqual(maintenanceActions, ['acquire', 'retain', 'acquire', 'release']);
+  assert.equal(f.actions.includes('install-replacement'), false);
+  assert.equal(f.report.recovery.result, 'recovered_replacement_accepted');
+  assert.deepEqual(readFileSync(f.installBin), bytesBefore);
+  assert.equal(f.actions.some((action) => action.startsWith('restart:')), false);
+  assert.equal(f.actions.includes('prepare-handoffs'), false);
+  assert.equal(f.actions.includes('install-replacement'), false);
+  const originalBackup = readFileSync(f.backupPath);
+  f.input.adapters.verifyInstalledDoctor = () => ({ verified: true });
+  const nextBackupPath = `${f.backupPath}.fresh`;
+  writeFileSync(f.builtBin, 'dashboard-complete-runtime\n');
+  f.input.options = normalOptions;
+  f.input.report = createReport();
+  f.input.adapters.backupInstalledBinary = () => {
+    copyFileSync(f.installBin, nextBackupPath);
+    return { path: nextBackupPath, mode: statSync(f.installBin).mode & 0o777 };
+  };
+  await runLocalDashboardPublisherOrchestration(f.input);
+  assert.equal(f.publicationJournal.read().phase, 'ready');
+  assert.notEqual(f.publicationJournal.read().transactionId, record.transactionId);
+  assert.equal(f.publicationJournal.read().backupPath, nextBackupPath);
+  assert.equal(hashFile(nextBackupPath), f.replacementSha256);
+  assert.deepEqual(readFileSync(f.backupPath), originalBackup);
+}
 
 async function runQuiesceAndKnownRollbackScenarios() {
   {
