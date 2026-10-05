@@ -1378,6 +1378,8 @@ Use `agent-browser service retry <browser-id> --by <operator> --note <text>` to 
 
 Use `agent-browser service acknowledge <incident-id>` to mark a retained incident seen by an operator. Add `--by <text>` to record who acknowledged it and `--note <text>` to persist a short operator note.
 
+An owned browser can exit while a CDP health probe is pending. The worker checks child-exit evidence again after that probe, records `process_exited`, and removes terminated operational browser, session, and tab records while preserving the crash event. State inspection does not relaunch it; a later browser command may recover within the recovery policy. Never replace an externally attached browser to recover a failed probe.
+
 Use `agent-browser service resolve <incident-id>` to mark a retained incident handled while preserving the derived incident record. Add `--by <text>` to record who resolved it and `--note <text>` to persist a resolution note.
 
 Acknowledgement and resolution also append retained service events with `incident_acknowledged` and `incident_resolved` kinds. Incident detail includes those handling events alongside the health and job events that define the grouped incident. Use `agent-browser service activity <incident-id>` to fetch a normalized chronological timeline for one retained incident without reconstructing it client-side.

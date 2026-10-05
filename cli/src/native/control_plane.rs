@@ -1883,6 +1883,47 @@ fn browser_health_requires_cleanup_after_interruption(health: BrowserHealth) -> 
     health == BrowserHealth::ProcessExited
 }
 
+/// Process evidence takes precedence over a transport result. The child must be
+/// polled after the awaited CDP probe as well as before it: Chrome can exit while
+/// the probe is pending, and immediate CDP recovery would otherwise erase that
+/// exit evidence and relaunch before operational state is cleaned up.
+fn browser_health_after_liveness_probe(
+    process_exited: bool,
+    connection_alive: bool,
+) -> BrowserHealth {
+    if process_exited {
+        BrowserHealth::ProcessExited
+    } else if connection_alive {
+        BrowserHealth::Ready
+    } else {
+        BrowserHealth::CdpDisconnected
+    }
+}
+
+/// A failed transport can wake before the OS reports its killed child as
+/// waitable. Give only an owned child a bounded exit-observation grace period;
+/// attached browsers never acquire lifecycle authority from a failed probe.
+async fn observe_browser_health_after_liveness_probe(
+    manager: &mut super::browser::BrowserManager,
+    connection_alive: bool,
+) -> BrowserHealth {
+    let mut process_exited = manager.has_process_exited();
+    if !process_exited && !connection_alive && !manager.is_cdp_connection() {
+        process_exited = tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                if manager.has_process_exited() {
+                    return true;
+                }
+            }
+        })
+        .await
+        .unwrap_or(false)
+            || manager.has_process_exited();
+    }
+    browser_health_after_liveness_probe(process_exited, connection_alive)
+}
+
 async fn refresh_browser_health(state: &mut DaemonState, status: &ControlPlaneStatus) {
     let Ok(_privacy_lease) = state.public_browser_lease() else {
         return;
@@ -1901,19 +1942,20 @@ async fn refresh_browser_health(state: &mut DaemonState, status: &ControlPlaneSt
         return;
     }
 
-    if mgr.is_connection_alive().await {
-        status.set_browser_health(BrowserHealth::Ready);
-    } else {
-        status.set_browser_health(BrowserHealth::CdpDisconnected);
-        if tokio::time::timeout(
+    let connection_alive = mgr.is_connection_alive().await;
+    let health = observe_browser_health_after_liveness_probe(mgr, connection_alive).await;
+    status.set_browser_health(health);
+    if browser_health_requires_cleanup_after_interruption(health) {
+        cleanup_exited_browser(state).await;
+    } else if health == BrowserHealth::CdpDisconnected
+        && tokio::time::timeout(
             Duration::from_millis(POST_TIMEOUT_BROWSER_RECOVERY_MS),
             recover_owned_browser_after_timeout(state),
         )
         .await
         .is_ok_and(|result| result == Ok(true))
-        {
-            status.set_browser_health(BrowserHealth::Ready);
-        }
+    {
+        status.set_browser_health(BrowserHealth::Ready);
     }
 }
 
@@ -1956,8 +1998,14 @@ async fn run_post_timeout_health_circuit(
         return;
     }
 
-    if !manager.is_connection_alive().await {
-        status.set_browser_health(BrowserHealth::CdpDisconnected);
+    let connection_alive = manager.is_connection_alive().await;
+    let health = observe_browser_health_after_liveness_probe(manager, connection_alive).await;
+    status.set_browser_health(health);
+    if browser_health_requires_cleanup_after_interruption(health) {
+        cleanup_exited_browser(state).await;
+        return;
+    }
+    if health == BrowserHealth::CdpDisconnected {
         if tokio::time::timeout(
             Duration::from_millis(POST_TIMEOUT_BROWSER_RECOVERY_MS),
             recover_owned_browser_after_timeout(state),
@@ -3443,6 +3491,236 @@ mod tests {
         .expect("worker response should not wait for the follow-up probe");
 
         assert_eq!(response.pointer("/data/timedOut"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn observed_process_exit_wins_over_failed_liveness_probe() {
+        assert_eq!(
+            browser_health_after_liveness_probe(true, false),
+            BrowserHealth::ProcessExited
+        );
+    }
+
+    #[test]
+    fn observed_process_exit_wins_over_successful_liveness_probe() {
+        assert_eq!(
+            browser_health_after_liveness_probe(true, true),
+            BrowserHealth::ProcessExited
+        );
+    }
+
+    #[test]
+    fn liveness_probe_without_child_exit_preserves_transport_health() {
+        assert_eq!(
+            browser_health_after_liveness_probe(false, false),
+            BrowserHealth::CdpDisconnected
+        );
+        assert_eq!(
+            browser_health_after_liveness_probe(false, true),
+            BrowserHealth::Ready
+        );
+    }
+
+    /// Exercise the actual await boundary, not just the health truth table.
+    /// The loopback peer kills only this fixture's owned Chrome, after receiving
+    /// the version probe. It waits for non-reaping waitid exit evidence before
+    /// completing the probe, so the post-probe child poll must observe the exit.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore]
+    async fn e2e_owned_exit_during_liveness_probe_records_crash_without_relaunch() {
+        use super::super::browser::BrowserManager;
+        use super::super::cdp::chrome::LaunchOptions;
+        use super::super::cdp::client::TestCdpEndpoint;
+        use super::super::service_model::BrowserTab;
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let installed = crate::install::find_installed_chrome()
+            .expect("installed Chrome required")
+            .canonicalize()
+            .unwrap();
+        for timeout_circuit in [false, true] {
+            for (successful_probe, delayed_exit) in [(false, false), (true, false), (false, true)] {
+                let home = temp_home("owned-exit-during-probe");
+                let guard = EnvGuard::new(&["HOME", "AGENT_BROWSER_SESSION"]);
+                guard.set("HOME", home.to_str().unwrap());
+                guard.set("AGENT_BROWSER_SESSION", "owned-exit-during-probe");
+                let mut state = DaemonState::new();
+                let mut manager = BrowserManager::launch(
+                    LaunchOptions {
+                        executable_path: Some(installed.to_string_lossy().into_owned()),
+                        profile: Some(home.join("profile").to_string_lossy().into_owned()),
+                        ..LaunchOptions::default()
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+                let pid = manager.browser_pid().expect("fixture must own its child");
+                let browser_id = service_browser_id(&state.session_id);
+                let tab_id = format!("target:{}", manager.active_target_id().unwrap());
+                let store =
+                    JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
+                store
+                    .save(&ServiceState {
+                        browsers: std::collections::BTreeMap::from([(
+                            browser_id.clone(),
+                            BrowserProcess {
+                                id: browser_id.clone(),
+                                health: ServiceBrowserHealth::Ready,
+                                host: ServiceBrowserHost::LocalHeadless,
+                                pid: Some(pid),
+                                cdp_endpoint: Some(manager.get_cdp_url().to_string()),
+                                active_session_ids: vec![state.session_id.clone()],
+                                ..BrowserProcess::default()
+                            },
+                        )]),
+                        sessions: std::collections::BTreeMap::from([(
+                            state.session_id.clone(),
+                            BrowserSession {
+                                id: state.session_id.clone(),
+                                browser_ids: vec![browser_id.clone()],
+                                tab_ids: vec![tab_id.clone()],
+                                ..BrowserSession::default()
+                            },
+                        )]),
+                        tabs: std::collections::BTreeMap::from([(
+                            tab_id.clone(),
+                            BrowserTab {
+                                id: tab_id.clone(),
+                                browser_id: browser_id.clone(),
+                                session_id: Some(state.session_id.clone()),
+                                ..BrowserTab::default()
+                            },
+                        )]),
+                        ..ServiceState::default()
+                    })
+                    .unwrap();
+
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let endpoint =
+                    TestCdpEndpoint::new(&format!("ws://{}", listener.local_addr().unwrap()))
+                        .unwrap();
+                let peer = tokio::spawn(async move {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+                    let message = ws.next().await.unwrap().unwrap();
+                    let command: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                    assert_eq!(command["method"], "Browser.getVersion");
+                    if delayed_exit {
+                        // Wake the failed probe while its owned child is still
+                        // alive, then terminate only that child during grace.
+                        ws.close(None).await.unwrap();
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGKILL) }, 0);
+                    tokio::time::timeout(Duration::from_secs(3), async {
+                        loop {
+                            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                            let result = unsafe {
+                                libc::waitid(
+                                    libc::P_PID,
+                                    pid as libc::id_t,
+                                    &mut info,
+                                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                                )
+                            };
+                            // In the delayed case the health task may already
+                            // have reaped its own child; event assertions below
+                            // still require that exact child's exit evidence.
+                            if result == -1
+                                && delayed_exit
+                                && std::io::Error::last_os_error().raw_os_error()
+                                    == Some(libc::ECHILD)
+                            {
+                                break;
+                            }
+                            assert_eq!(result, 0, "fixture must observe only its owned child");
+                            if unsafe { info.si_pid() } == pid as libc::pid_t {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        }
+                    })
+                    .await
+                    .expect("owned child must exit before completing the pending probe");
+                    if successful_probe {
+                        ws.send(Message::Text(
+                            json!({"id": command["id"], "result": {"product":"fixture"}})
+                                .to_string(),
+                        ))
+                        .await
+                        .unwrap();
+                        // Cleanup may send Browser.close on this fixture transport.
+                        while let Some(Ok(message)) = ws.next().await {
+                            if let Ok(text) = message.to_text() {
+                                let command: Value = serde_json::from_str(text).unwrap();
+                                assert_eq!(command["method"], "Browser.close");
+                                let _ = ws
+                                    .send(Message::Text(
+                                        json!({"id":command["id"],"result":{}}).to_string(),
+                                    ))
+                                    .await;
+                                break;
+                            }
+                        }
+                    }
+                });
+                manager.client = Arc::new(endpoint.connect().await.unwrap());
+                state.browser = Some(manager);
+                let status = ControlPlaneStatus::new();
+                if timeout_circuit {
+                    run_post_timeout_health_circuit(
+                        &mut state,
+                        &status,
+                        &json!({"action":"navigate"}),
+                    )
+                    .await;
+                } else {
+                    refresh_browser_health(&mut state, &status).await;
+                }
+                assert_eq!(status.browser_health(), BrowserHealth::ProcessExited);
+                assert!(
+                    state.browser.is_none(),
+                    "probe cleanup must not relaunch Chrome"
+                );
+                let persisted = store.load().unwrap();
+                assert!(!persisted.browsers.contains_key(&browser_id));
+                assert!(!persisted.sessions.contains_key(&state.session_id));
+                assert!(!persisted.tabs.contains_key(&tab_id));
+                let event = persisted
+                    .events
+                    .iter()
+                    .find(|event| {
+                        event.kind == ServiceEventKind::BrowserHealthChanged
+                            && event.browser_id.as_deref() == Some(browser_id.as_str())
+                    })
+                    .expect("the observed crash must be recorded before operational cleanup");
+                assert_eq!(event.previous_health, Some(ServiceBrowserHealth::Ready));
+                assert_eq!(
+                    event.current_health,
+                    Some(ServiceBrowserHealth::ProcessExited)
+                );
+                let details = event.details.as_ref().unwrap();
+                assert_eq!(details["processExitPid"], pid);
+                assert_eq!(details["processExitSignal"], libc::SIGKILL);
+                assert!(
+                    !persisted
+                        .events
+                        .iter()
+                        .any(|event| { event.kind == ServiceEventKind::BrowserLaunchRecorded }),
+                    "health cleanup must not launch a replacement"
+                );
+                tokio::time::timeout(Duration::from_secs(3), peer)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                drop(endpoint);
+                drop(guard);
+                std::fs::remove_dir_all(&home).unwrap();
+            }
+        }
     }
 
     #[test]

@@ -2970,6 +2970,8 @@ Use `service cancel <job-id>` to mark a queued or lease-waiting service job canc
 
 Use `service acknowledge <incident-id>` to mark a retained incident seen by an operator. Add `--by <text>` to record who acknowledged it and `--note <text>` to persist a short operator note.
 
+If a locally owned browser exits during a CDP health probe, the worker records `process_exited` and removes its terminated operational browser, session, and tab records. The crash event remains available for inspection. A later browser command may relaunch within the recovery policy; state inspection does not launch a replacement. Externally attached browsers retain their original lifecycle owner.
+
 Use `service resolve <incident-id>` to mark a retained incident handled. This preserves the derived incident record while adding durable resolution metadata. Add `--by <text>` to record who resolved it and `--note <text>` to persist a resolution note.
 
 Acknowledgement and resolution also append retained service events with `incident_acknowledged` and `incident_resolved` kinds. Incident detail includes those handling events alongside the health and job events that define the grouped incident. Use `service activity <incident-id>` to fetch a normalized chronological timeline for one retained incident without reconstructing it client-side.

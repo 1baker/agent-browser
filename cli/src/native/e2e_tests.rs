@@ -337,7 +337,12 @@ async fn start_hanging_navigation_server() -> (String, tokio::task::JoinHandle<(
 fn kill_browser_process(pid: u32) {
     #[cfg(unix)]
     unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
+        assert_eq!(
+            libc::kill(pid as i32, libc::SIGKILL),
+            0,
+            "fixture must terminate its exact owned browser PID {pid}: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     #[cfg(windows)]
@@ -602,10 +607,6 @@ async fn e2e_service_detects_browser_crash_and_recovers_on_next_command() {
     }
 
     let detected = store.load().unwrap();
-    assert!(
-        !detected.browsers.contains_key(browser_id),
-        "terminated browser operational state should be removed after crash evidence is recorded"
-    );
     let crash_event = detected
         .events
         .iter()
@@ -625,6 +626,10 @@ async fn e2e_service_detects_browser_crash_and_recovers_on_next_command() {
             .is_some_and(|error| error.contains("exited")),
         "crash detection should record an operator-readable error: {:?}",
         crash_event.details
+    );
+    assert!(
+        !detected.browsers.contains_key(browser_id),
+        "terminated browser operational state should be removed after crash evidence is recorded"
     );
 
     let recovered = handle
