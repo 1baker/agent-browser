@@ -1743,6 +1743,17 @@ first, then explicit `XDG_RUNTIME_DIR`, then the current user's secure
 owned by another user, or group/other accessible, it fails back to the home
 namespace. Keep explicit overrides for isolated tests and reviewed migrations.
 
+On Linux, a running guarded daemon that is still the installed executable
+refuses executable `handoff prepare` from a different build. Only the exact
+environment value `AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1` authorizes a
+reviewed intentional handoff; scope it to one command, never export it globally.
+The publisher sets it only for its own pre-install prepare. Inspection errors
+refuse even with authorization. This does not protect legacy-client cold starts
+after daemon exit or crash. A superseded daemon permits prepare, so keep every
+affected client quiescent from publisher prepare through resume. Restart legacy
+clients on the installed build before relying on cold-start recovery.
+Non-Linux behavior is unchanged.
+
 ```bash
 # Auto-save/restore cookies and localStorage across browser restarts
 agent-browser --session-name myapp open https://app.example.com/login

@@ -2052,7 +2052,10 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                 }
             })?;
             match subcommand {
-                "prepare" => Ok(json!({ "id": id, "action": "runtime_handoff_prepare" })),
+                "prepare" => Ok(crate::native::handoff_guard::prepare_command(
+                    json!(id),
+                    crate::native::handoff_guard::sidegrade_requested(),
+                )),
                 "resume" => Ok(json!({ "id": id, "action": "runtime_handoff_resume" })),
                 _ => Err(ParseError::UnknownSubcommand {
                     subcommand: subcommand.to_string(),
@@ -9126,6 +9129,9 @@ mod tests {
     fn test_runtime_handoff_commands() {
         let prepare = parse_command(&args("handoff prepare"), &default_flags()).unwrap();
         assert_eq!(prepare["action"], "runtime_handoff_prepare");
+        if std::env::var("AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE").is_err() {
+            assert!(prepare.get("allowExecutableSidegrade").is_none());
+        }
 
         let resume = parse_command(&args("handoff resume"), &default_flags()).unwrap();
         assert_eq!(resume["action"], "runtime_handoff_resume");

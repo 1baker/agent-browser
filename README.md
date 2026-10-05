@@ -880,6 +880,21 @@ agent-browser securely infers the current user's private
 lets commands reacquire service-owned sessions instead of starting duplicate
 daemons in `~/.agent-browser`.
 
+### Executable handoff safety
+
+On Linux, a running guarded daemon that is still the installed executable
+refuses `handoff prepare` from a different build before changing browser custody.
+Only `AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1` authorizes an intentional
+handoff; other values do not. Scope this override to one reviewed command, never
+export it globally. The guarded publisher authorizes only its own pre-install
+prepare subprocess. Executable inspection errors refuse even with the override.
+
+This protects handoff to a running guarded daemon, not legacy-client cold starts
+after a daemon exits or crashes. A superseded daemon also permits handoff, so
+every affected client must remain quiescent throughout the publisher's
+prepare-to-resume window. Restart legacy clients on the installed build before
+relying on cold-start recovery. Non-Linux behavior is unchanged.
+
 ## Configured Runtime Profiles
 
 The config file can now define managed runtime profiles directly. This is the

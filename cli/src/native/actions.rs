@@ -5405,7 +5405,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "content" => handle_content(state).await,
         "read_page" => handle_read_page(cmd, state).await,
         "evaluate" => handle_evaluate(cmd, state).await,
-        "runtime_handoff_prepare" => handle_runtime_handoff_prepare(state).await,
+        "runtime_handoff_prepare" => handle_runtime_handoff_prepare(cmd, state).await,
         "runtime_handoff_resume" => handle_runtime_handoff_resume(state).await,
         "retained_owner_prepare" => handle_retained_owner_prepare(cmd, state).await,
         "close" => handle_close_request(cmd, state).await,
@@ -12314,7 +12314,15 @@ fn managed_runtime_handoff_pid(runtime_profile: &str, endpoint: &str) -> Option<
     Some(runtime.browser_pid)
 }
 
-async fn handle_runtime_handoff_prepare(state: &mut DaemonState) -> Result<Value, String> {
+async fn handle_runtime_handoff_prepare(
+    cmd: &Value,
+    state: &mut DaemonState,
+) -> Result<Value, String> {
+    // Downgrade guard: decided before any preparation side effect (see handoff_guard).
+    super::handoff_guard::authorize_prepare(
+        super::handoff_guard::inspect_running_executable(),
+        cmd,
+    )?;
     let Some(manager) = state.browser.as_mut() else {
         let path = runtime_handoff_path(&state.session_id);
         return browserless_runtime_handoff_prepare(&path, &state.session_id);
@@ -27573,6 +27581,49 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn runtime_handoff_prepare_downgrade_guard_refuses_before_side_effects() {
+        // The test binary is still the file at its own path, i.e. "current installed".
+        let mut state = DaemonState::new();
+        let handoff = runtime_handoff_path(&state.session_id);
+        let existed = handoff.exists();
+        let refused = execute_command(
+            &json!({"id": "legacy-client", "action": "runtime_handoff_prepare"}),
+            &mut state,
+        )
+        .await;
+        assert_eq!(refused["success"], false, "{refused}");
+        assert!(refused["error"]
+            .as_str()
+            .unwrap()
+            .starts_with(super::super::handoff_guard::REFUSED_CURRENT_INSTALLED));
+        assert_eq!(
+            handoff.exists(),
+            existed,
+            "refusal must not touch the handoff record"
+        );
+        assert!(state.browser.is_none());
+        // Non-boolean authorization is still refused.
+        let stringy = execute_command(
+            &json!({"id": "x", "action": "runtime_handoff_prepare", "allowExecutableSidegrade": "true"}),
+            &mut state,
+        )
+        .await;
+        assert_eq!(stringy["success"], false);
+        // Explicit authorization proceeds to the normal (browserless) preparation.
+        if !existed {
+            let allowed = execute_command(
+                &json!({"id": "publisher", "action": "runtime_handoff_prepare", "allowExecutableSidegrade": true}),
+                &mut state,
+            )
+            .await;
+            assert_eq!(allowed["success"], true, "{allowed}");
+            assert_eq!(allowed["data"]["prepared"], false);
+            assert_eq!(handoff.exists(), false);
+        }
+    }
 
     #[tokio::test]
     async fn handle_bound_page_input_refuses_unavailable_target_without_launch() {

@@ -1,5 +1,31 @@
 # Runbook
 
+## 2026-10-05 | Executable handoff downgrade guard (source candidate, not installed)
+
+A daemon that is still the installed executable refuses `runtime_handoff_prepare`
+(`runtime_handoff_refused_current_installed_executable`). Otherwise an older,
+long-running client (for example a stale MCP server) could replace a freshly
+installed daemon with its own older build. Normal upgrades are unaffected:
+the publisher swaps the executable by rename, which supersedes running
+daemons, and its own pre-install prepare sets
+`AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1` for that one subprocess only.
+
+- A client that hits the refusal should be restarted on the installed build.
+- For an intentional developer sidegrade, or the live handoff smoke scripts
+  run from a non-installed build, set `AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1`
+  for that command. Only the exact value `1` sends the
+  `allowExecutableSidegrade: true` request field.
+- If executable identity cannot be inspected, prepare is refused
+  (`runtime_handoff_refused_executable_identity_unavailable`), even with the
+  override.
+- **Limitation:** once a new build is installed, a superseded daemon accepts
+  any prepare, so a legacy client can still race the publisher's own handoff
+  window. Keep that window quiescent.
+- Non-Linux behavior is unchanged.
+- This is a running-daemon handoff guard, not a cold-start guard. A legacy client
+  can still start its own old daemon if no guarded daemon is answering. Restart
+  legacy clients on the installed build before relying on cold-start recovery.
+
 ## 2026-09-13 | Healthy maintenance installed and live-verified
 
 Full partitioned Rust suite (`bash scripts/ci/rust-tests.sh`) passed after

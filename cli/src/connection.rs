@@ -731,10 +731,10 @@ fn ensure_daemon_with_mode(
                     crate::color::warning_indicator()
                 );
                 let handoff = send_command(
-                        json!({
-                            "id": format!("automatic-executable-handoff-{}", std::process::id()),
-                            "action": "runtime_handoff_prepare",
-                        }),
+                        crate::native::handoff_guard::prepare_command(
+                            json!(format!("automatic-executable-handoff-{}", std::process::id())),
+                            crate::native::handoff_guard::sidegrade_requested(),
+                        ),
                         session,
                     )
                     .map_err(|error| {

@@ -375,7 +375,13 @@ async function runMaintenanceScenarios() {
     if (failure) await assert.rejects(runLocalDashboardPublisherOrchestration(fixture.input));
     else await runLocalDashboardPublisherOrchestration(fixture.input);
     assert.deepEqual(maintenance, ['acquire', failure ? 'retain' : 'release']);
+    if (failure === null) {
+      // The guarded daemon is still installed at prepare time, so prepare (which carries the
+      // publisher's explicit handoff authorization) must precede the rename-based install.
+      assert.ok(fixture.actions.indexOf('prepare-handoffs') < fixture.actions.indexOf('install-replacement'));
+    }
     if (failure === 'prepare-handoffs') {
+      assert.ok(!fixture.actions.includes('install-replacement'), 'failed prepare must not install');
       assert.equal(fixture.publicationJournal.read().handoffOutcomeUncertain, true);
       assert.ok(!fixture.actions.includes('restore-backup'));
       const priorPrepares = fixture.actions.filter(action => action === 'prepare-handoffs').length;

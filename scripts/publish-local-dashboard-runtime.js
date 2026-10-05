@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawnSync } from 'node:child_process';
+import { PUBLISHER_HANDOFF_ENVIRONMENT, agentCommandEnvironment } from './lib/agent-command-environment.js';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -724,7 +725,10 @@ function prepareRuntimeHandoffs(clientBin, rollbackBin, expectedSessions = null)
       const daemonPid = readRuntimePid(sessionName);
       const displayEnvironment = readSessionDisplayEnvironment(daemonPid);
       const daemonClientBin = runtimeDaemonClientBinary(daemonPid, rollbackBin);
-      const prepared = runAgentJson(clientBin, sessionName, ['handoff', 'prepare']);
+      // The publisher prepares before it installs, while the guarded daemon is still the
+      // installed file, so its own prepare carries the explicit sidegrade authorization.
+      const prepared = runAgentJson(clientBin, sessionName, ['handoff', 'prepare'], undefined,
+        PUBLISHER_HANDOFF_ENVIRONMENT);
       if (prepared.status === 0 && prepared.json?.success === true) {
         const data = prepared.json.data || {};
         if (data.prepared === true) {
@@ -998,12 +1002,14 @@ function discoverPreparedRuntimeHandoffs(candidateSessions) {
   return handoffs;
 }
 
-function runAgentJson(binary, sessionName, commandArgs, displayEnvironment = undefined) {
+function runAgentJson(binary, sessionName, commandArgs, displayEnvironment = undefined, extraEnvironment = undefined) {
+  const baseEnvironment = displayEnvironment === undefined
+    ? process.env
+    : withSessionDisplayEnvironment(process.env, displayEnvironment);
   const result = spawnSync(binary, ['--json', '--session', sessionName, ...commandArgs], {
     cwd: rootDir,
-    env: displayEnvironment === undefined
-      ? process.env
-      : withSessionDisplayEnvironment(process.env, displayEnvironment),
+    // extraEnvironment is scoped to this one subprocess; process.env is never mutated.
+    env: agentCommandEnvironment(baseEnvironment, extraEnvironment),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 16 * 1024 * 1024,

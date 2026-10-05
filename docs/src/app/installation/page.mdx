@@ -37,6 +37,21 @@ pnpm build:native
 ./bin/agent-browser install
 ```
 
+## Executable handoff safety
+
+On Linux, a running guarded daemon that is still the installed executable
+refuses executable handoff from another build before changing browser custody.
+Only <code>AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1</code> authorizes an
+intentional handoff. Scope the override to one reviewed command, never export
+it globally. The publisher sets it only for its own pre-install prepare
+subprocess. Executable inspection errors refuse even with authorization.
+
+The guard does not protect legacy-client cold starts after daemon exit or
+crash. A superseded daemon permits prepare, so every affected client must remain
+quiescent from publisher prepare through resume. Restart legacy clients on the
+installed build before relying on cold-start recovery. Non-Linux behavior is
+unchanged.
+
 ## Linux dependencies
 
 On Linux, install system dependencies:

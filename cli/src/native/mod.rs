@@ -24,6 +24,7 @@ pub mod dependent_batch;
 pub mod diff;
 #[allow(dead_code)]
 pub mod element;
+pub(crate) mod handoff_guard;
 #[allow(dead_code)]
 pub mod inspect_server;
 #[allow(dead_code)]
