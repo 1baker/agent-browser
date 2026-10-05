@@ -1,5 +1,26 @@
 # Runbook
 
+## 2026-10-05 | Closed historical custody anchor source repair
+
+The source-only v4 repair separates a correctly owned closed historical tab
+record from the current requested live tab. It retains exact daemon and Chrome
+process identities, physical profile checks, exclusive lease, prior-source
+exit and fail-closed current-handle validation. New descriptors audit the prior
+anchor and use checked generation arithmetic. No command or service action was
+added. See `docs/dev/notes/2026-10-05-v4-closed-historical-anchor.md`.
+
+This does not repair the older running daemon: it must prepare the transfer
+using its own old code. A supported release/migration protocol and exact owner
+target grant remain required. No live installation or ownership repair is
+claimed by this checkpoint. The 29 distinct focused Rust tests, formatting,
+production Clippy, lint and docs build passed, with independent source review.
+Five workstation fixtures passed with the pre-existing fixture binary. Host
+provisioning remains limited by the missing AppArmor apt candidate. No fresh
+full-suite or live E2E acceptance is claimed. Claude final review accepted this
+bounded source outcome. The staged seven-file credential scan found only three
+reviewed unchanged documentation placeholders. Applied closed-tab pruning deletes the historical anchor
+tombstone and custody fails closed; preserve it during pending handoffs.
+
 ## 2026-10-05 | Executable handoff downgrade guard (source candidate, not installed)
 
 A guarded daemon refuses `runtime_handoff_prepare` unless the request carries

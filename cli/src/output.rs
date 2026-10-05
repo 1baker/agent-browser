@@ -4293,6 +4293,12 @@ The browser process, DevTools port, profile, and open tabs remain live during
 the changeover. A guarded daemon requires AGENT_BROWSER_ALLOW_EXECUTABLE_SIDEGRADE=1
 for prepare; use the publisher or convergence command for normal upgrades.
 A later normal `close` still shuts down an owned browser.
+On Linux, a correctly owned closed historical handoff-tab record may preserve
+custody only while the current live tab, exact owner, profile and lease verify.
+Missing or foreign records and stale owners fail closed. No new command or flag
+is added; this does not repair an older running daemon without valid migration.
+Applied service prune-retained closed-tab pruning removes the anchor record and
+custody fails closed. Preserve that record during a pending handoff.
 
 Global Options:
   --json               Output as JSON

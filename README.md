@@ -10,6 +10,12 @@ malformed handle leases before reading or selecting a tab. `sessionName`,
 `leaseId`, and `ownerSessionId` must all identify the current owning session.
 An older `shared` handle may match an upgraded exclusive lease only when the
 entire session, browser, profile, and tab binding still matches.
+Closing the historical handoff tab does not revoke proven browser custody when
+its exact owned closed record remains unlisted and a current live tab verifies.
+Missing or foreign records and stale owners still fail closed. This introduces
+no new command or flag and does not repair an older running daemon by itself.
+Applying `service prune-retained` with closed-tab pruning removes that anchor
+record and custody then fails closed; do not prune it during a pending handoff.
 
 MCP profile creation works without a running default daemon. A metadata-free
 session uses one short-lived browserless worker for `service_profile_upsert`.

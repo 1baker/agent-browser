@@ -6,6 +6,15 @@ allowed-tools: Bash(npx agent-browser:*), Bash(agent-browser:*)
 
 # Browser Automation with agent-browser
 
+Linux custody diagnostics can retain proof after the historical handoff tab
+closes only when its exact owned closed record is unlisted in every session and
+the requested current live tab, owner process, physical profile, and exclusive
+lease still verify. Missing or foreign records and stale owners fail closed.
+No new command or flag is added; older running daemons require a separately
+validated migration. Never edit custody receipts or relabel handles to retry.
+Applying `service prune-retained` with closed-tab pruning removes the historical
+anchor record and custody fails closed. Preserve it during a pending handoff.
+
 For operator review, the dashboard's Browser work view at `/tasks` and the
 read-only HTTP `GET /api/service/runs` or MCP `agent-browser://runs` show recent
 labeled jobs and retained human handoffs. Treat a successful browser action as

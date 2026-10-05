@@ -46,6 +46,16 @@ selecting or reading a tab. The handle's <code>sessionName</code>,
 owning session. An older shared handle may follow an exclusive lease upgrade
 only when its entire owner, browser, profile, and tab binding still matches.
 Refresh stale handles through the service; do not relabel them to retry.
+The historical handoff tab may be closed only when its exact owned closed
+record is retained and absent from every session's tab list. The requested
+current live tab and all process, physical profile, and exclusive lease checks
+remain required. Diagnostics report this distinction under
+<code>ownerCustody.historicalAnchor</code>. Missing or foreign records and stale
+owners fail closed. No command, flag, or service action is added, and this source
+repair does not migrate an older running daemon by itself.
+Applying <code>service prune-retained</code> with closed-tab pruning removes the
+anchor record, causing custody to fail closed. Preserve that record during a
+pending handoff.
 
 ## Service clients
 
