@@ -723,6 +723,10 @@ or otherwise mix browser families unless the operator explicitly forces it with
 `AGENT_BROWSER_ALLOW_PROFILE_BROWSER_MISMATCH=true`. Start with a blank managed
 profile for a new browser family.
 
+On Unix, custom executables named `chrome` with an ambiguous path use a bounded
+three-second version probe to distinguish Chromium from Chrome. Known paths do
+not run that probe; failure or unknown output keeps the Chrome fallback.
+
 To create and track a managed profile explicitly, use:
 
 ```bash

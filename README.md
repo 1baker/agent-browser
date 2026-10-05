@@ -963,6 +963,10 @@ mix-and-match. Start with a blank profile for a new browser family. Operators
 can force an intentional mismatch by setting
 `AGENT_BROWSER_ALLOW_PROFILE_BROWSER_MISMATCH=true`.
 
+On Unix, an ambiguous custom executable named `chrome` is classified by its
+version output using a three-second, bounded-output probe. Recognized executable
+paths are not probed; failed or unrecognized probes retain the Chrome fallback.
+
 The `service.profiles` and `service.sessions` maps define service control-plane
 metadata for profile allocation, keyring posture, caller ownership, profile
 binding, lease state, and cleanup policy. These records are exposed through
