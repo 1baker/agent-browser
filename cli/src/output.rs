@@ -5956,6 +5956,8 @@ Notes:
   - The guarded service read surface has MCP resource parity; agents should usually start with agent-browser://access-plan{?...} and use narrower profile lookup, readiness, allocation, seeding-handoff, display-allocation, remote-view-route, route-pool, or viewer-lease resources only when the full recommendation is not needed.
   - browser_navigate, browser_back, browser_forward, browser_reload, browser_tab_*, browser_set_content, browser_requests, browser_request_detail, browser_headers, browser_offline, browser_cookies_*, browser_storage_*, browser_user_agent, browser_viewport, browser_geolocation, browser_permissions, browser_timezone, browser_locale, browser_media, browser_dialog, browser_upload, browser_download, browser_wait_for_download, browser_har_*, browser_route, browser_unroute, browser_console, browser_errors, browser_pdf, browser_response_body, and browser_clipboard provide typed schemas for common navigation, tab, page-content, request-inspection, session-shaping, observability, artifact, file-transfer, HAR, routing, cookie, and storage workflows.
   - browser_command queues remaining HTTP-parity actions with params copied into the queued daemon command when a typed browser_* tool is not yet available.
+  - Service-owned CDP broker attachments collect allowed events continuously between polls and stop on attachment removal or handoff.
+  - Broker event sequence and overflow metadata identify gaps; reconcile gaps before trusting a retained batch as complete.
   - Example browser_command arguments: {"action":"navigate","params":{"url":"https://example.com","waitUntil":"load","targetServiceId":"acs"},"serviceName":"JournalDownloader","taskName":"probeACSwebsite"}.
   - Typed browser_* tools also accept targetServiceId, targetService, targetServiceIds, targetServices, siteId, siteIds, loginId, loginIds, accountId, accountIds, and url for first-command profile selection.
   - browser_snapshot queues the existing snapshot command and returns the active session accessibility snapshot.
@@ -6227,6 +6229,9 @@ Attachment build evidence:
   Dashboard stop may retire only its proven idle, browser-free backend session.
   uncertain handoffs retain custody. Recovery uses --recover-only with the exact
   --recover-interlock-receipt <id>. These are publisher-script flags, not install flags.
+  Publisher --recover-only --accept-retained-replacement accepts only a prior
+  dashboard-HTML smoke failure after exact artifact, session, retained browser
+  start identity, backup, and doctor checks; fresh publication gates still apply.
   Metadata-preserving Linux handoff rechecks exact retained build proof atomically
   with health. Failed process verification clears stale build/path evidence only.
   Linux managed attach verifies installed stock Chrome against the live PID,

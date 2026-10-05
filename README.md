@@ -1388,6 +1388,11 @@ agent-browser tab list --verbose
 
 `tab list --verbose` includes each tab's `targetId` and `sessionId`, which are useful when debugging daemon, CDP, or tab-tracking issues.
 
+Service-owned CDP broker attachments collect allowed events continuously, even
+between polls. Event polls report sequence and overflow metadata so consumers
+can detect missed events instead of treating a truncated buffer as complete.
+Collectors stop when their attachment is removed or handed off.
+
 ### State Encryption
 
 Encrypt saved session data at rest with AES-256-GCM:
@@ -1726,6 +1731,12 @@ endpoint is also known independently.
 Run the same flags with `pnpm check:local-dashboard-retained-browser --` for a
 read-only preflight. It does not acquire the publication lock, build, launch a
 daemon or browser, or change journal state.
+
+For one already-failed retained replacement, the publisher's guarded
+`--recover-only --accept-retained-replacement` mode can accept only a
+dashboard-HTML-smoke failure after exact artifact, session, browser-start,
+backup, and doctor checks. It does not waive checks for a fresh publication.
+See [retained replacement recovery](docs/dev/retained-replacement-recovery.md).
 
 After that exact preflight passes, pin the critical lane once so later
 publication cannot depend on an operator remembering every flag:

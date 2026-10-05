@@ -15,6 +15,16 @@ The normal request model is identity-first. A caller asks for a tab or browser a
 - Operator remedies for job cancellation, incident acknowledgement or resolution, browser retry overrides, service reconciliation, polite browser close, and forced kill fallback.
 - API and MCP parity for service records and typed browser-control actions.
 
+Service-owned CDP broker attachments collect allowed events continuously between
+polls. Poll results include sequence and overflow metadata; consumers must
+reconcile a reported gap rather than assume the retained batch is complete.
+Collectors stop when attachments are removed or handed off.
+
+The local publisher's <code>--recover-only --accept-retained-replacement</code>
+mode accepts only an already-failed dashboard-HTML smoke after exact artifact,
+session, retained-browser start identity, backup, and doctor checks. It never
+waives readiness checks for a fresh publication or a different failure.
+
 Current automation control is CDP-first, but some services are sensitive to the
 existence of a remote debugging port. Canva-class workflows need a future
 CDP-free operating mode where agent-browser still owns the headed browser

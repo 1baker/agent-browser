@@ -1263,6 +1263,17 @@ Streaming is opt-in. Use `agent-browser stream enable` to start a runtime WebSoc
 
 ## Service Status
 
+Service-owned CDP broker attachments collect allowed events continuously.
+Check poll sequence and overflow metadata before treating an event batch as
+complete; an overflow requires consumer reconciliation, not silent replay.
+Collectors stop with attachment removal or runtime handoff.
+
+Publisher recovery with `--recover-only --accept-retained-replacement` is only
+for an already-failed dashboard-HTML smoke with exact artifact, session,
+retained-browser start identity, backup, and doctor proof. Do not use it to
+waive a fresh publication or another readiness failure. See
+`docs/dev/retained-replacement-recovery.md` for the required operator evidence.
+
 Use profile lookup before creating a browser when the user names a site, login, account, hostname, profile, alias, auth state, freshness state, or tag. The response is ranked and includes the matched field and identity plus a launch, add-tab, view, seed, wait, or holder-inspection recommendation. Do not replace a failed identity search with a generic browser-build profile.
 
 `service status` includes `manualBrowsers` for live detached headed runtime launches. These rows remain discoverable without CDP and report PID, profile path, target URL, display, browser family and build, remote-view route, supported control posture, and next safe action. A daemon executable mismatch uses authenticated runtime handoff automatically; the browser PID and DevTools endpoint must survive. Reconciliation expires an active session lease when all recorded browser ownership is gone.
