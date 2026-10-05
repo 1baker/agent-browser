@@ -231,6 +231,80 @@ fn e2e_temp_profile(label: &str) -> (std::path::PathBuf, String) {
     (path, profile)
 }
 
+/// Keep installer provenance discoverable after a recovery fixture changes HOME.
+/// Only the installed version directory is linked; profiles and service state
+/// remain in the disposable test home. Cleanup removes the link, not its target.
+fn expose_installed_chrome_to_test_home(home: &std::path::Path, installed: &std::path::Path) {
+    assert!(home.is_dir());
+    #[cfg(unix)]
+    {
+        let version_dir = installed
+            .ancestors()
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("chrome-"))
+            })
+            .expect("installed Chrome must have a version directory");
+        let cache = home.join(".agent-browser/browsers");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::os::unix::fs::symlink(version_dir, cache.join(version_dir.file_name().unwrap()))
+            .unwrap();
+    }
+    assert_eq!(
+        crate::install::find_installed_chrome()
+            .expect("isolated fixture must discover installed Chrome")
+            .canonicalize()
+            .unwrap(),
+        installed
+    );
+}
+
+fn assert_fresh_installed_chrome_proof(
+    store: &JsonServiceStateStore,
+    session: &str,
+    installed: &std::path::Path,
+) {
+    let persisted = store.load().unwrap();
+    let proof = persisted.browsers[&format!("session:{session}")]
+        .browser_build_proof
+        .as_ref()
+        .expect("owned Chrome launch must record build proof");
+    assert_eq!(proof["applied"], true, "{proof}");
+    assert_eq!(proof["reason"], "fresh_installed_chrome_launch", "{proof}");
+    assert_eq!(proof["executablePath"].as_str(), installed.to_str());
+}
+
+/// Own the exact DOM and link destination instead of relying on example.com's
+/// changing layout. Other E2Es still exercise public HTTPS navigation.
+async fn start_ref_click_server() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let handle = tokio::spawn(async move {
+        for _ in 0..20 {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let clicked = String::from_utf8_lossy(&buf[..n]).starts_with("GET /clicked ");
+                let body = if clicked {
+                    "<!doctype html><title>Reference clicked</title><h1>Reference clicked</h1>"
+                } else {
+                    "<!doctype html><title>Example Domain</title><h1>Example Domain</h1><a href='/clicked'>More information</a>"
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.flush().await;
+            });
+        }
+    });
+    (base_url, handle)
+}
+
 async fn start_hanging_navigation_server() -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -339,10 +413,16 @@ async fn e2e_launch_navigate_evaluate_close() {
 #[tokio::test]
 #[ignore]
 async fn e2e_service_cancel_during_navigation_recovers_for_followup_command() {
+    let installed = crate::install::find_installed_chrome()
+        .expect("installed Chrome required")
+        .canonicalize()
+        .unwrap();
     let home = e2e_temp_home("service-cancel-navigation-recovery");
     let guard = EnvGuard::new(&["HOME", "AGENT_BROWSER_SESSION"]);
     guard.set("HOME", home.to_str().unwrap());
     guard.set("AGENT_BROWSER_SESSION", "e2e-service-cancel-navigation");
+    expose_installed_chrome_to_test_home(&home, &installed);
+    let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
     let (base_url, server_handle) = start_hanging_navigation_server().await;
     let handle = ControlPlaneWorker::start(DaemonState::new());
 
@@ -351,9 +431,11 @@ async fn e2e_service_cancel_during_navigation_recovers_for_followup_command() {
             "id": "e2e-launch-before-cancel",
             "action": "launch",
             "headless": true,
+            "executablePath": installed,
         }))
         .await;
     assert_success(&launch);
+    assert_fresh_installed_chrome_proof(&store, "e2e-service-cancel-navigation", &installed);
 
     let nav_job_id = "e2e-running-nav-cancel";
     let navigation = {
@@ -370,7 +452,6 @@ async fn e2e_service_cancel_during_navigation_recovers_for_followup_command() {
         })
     };
 
-    let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
     for _ in 0..200 {
         if store
             .load()
@@ -391,7 +472,8 @@ async fn e2e_service_cancel_during_navigation_recovers_for_followup_command() {
             .jobs
             .get(nav_job_id)
             .is_some_and(|job| job.state == JobState::Running),
-        "navigation job should enter running state before cancellation"
+        "navigation job should enter running state before cancellation; persisted job: {:?}",
+        store.load().unwrap().jobs.get(nav_job_id)
     );
 
     let cancel = handle.cancel_job_response("e2e-cancel-nav", nav_job_id, None);
@@ -457,10 +539,15 @@ async fn e2e_service_cancel_during_navigation_recovers_for_followup_command() {
 #[tokio::test]
 #[ignore]
 async fn e2e_service_detects_browser_crash_and_recovers_on_next_command() {
+    let installed = crate::install::find_installed_chrome()
+        .expect("installed Chrome required")
+        .canonicalize()
+        .unwrap();
     let home = e2e_temp_home("service-crash-recovery");
     let guard = EnvGuard::new(&["HOME", "AGENT_BROWSER_SESSION"]);
     guard.set("HOME", home.to_str().unwrap());
     guard.set("AGENT_BROWSER_SESSION", "e2e-service-crash-recovery");
+    expose_installed_chrome_to_test_home(&home, &installed);
     let handle = ControlPlaneWorker::start(DaemonState::new());
     let store = JsonServiceStateStore::new(JsonServiceStateStore::default_path().unwrap());
     let browser_id = "session:e2e-service-crash-recovery";
@@ -470,9 +557,11 @@ async fn e2e_service_detects_browser_crash_and_recovers_on_next_command() {
             "id": "e2e-crash-launch",
             "action": "launch",
             "headless": true,
+            "executablePath": installed,
         }))
         .await;
     assert_success(&launch);
+    assert_fresh_installed_chrome_proof(&store, "e2e-service-crash-recovery", &installed);
 
     let pid_response = handle
         .submit(json!({
@@ -480,6 +569,12 @@ async fn e2e_service_detects_browser_crash_and_recovers_on_next_command() {
             "action": "browser_pid",
         }))
         .await;
+    if pid_response.get("success").and_then(Value::as_bool) != Some(true) {
+        eprintln!(
+            "crash fixture browser proof: {}",
+            serde_json::to_string_pretty(&store.load().unwrap().browsers).unwrap()
+        );
+    }
     assert_success(&pid_response);
     let pid = get_data(&pid_response)["pid"]
         .as_u64()
@@ -940,6 +1035,7 @@ async fn e2e_runtime_stream_enable_before_launch_attaches_and_disables() {
 #[tokio::test]
 #[ignore]
 async fn e2e_snapshot_and_click_ref() {
+    let (base_url, server_handle) = start_ref_click_server().await;
     let mut state = DaemonState::new();
 
     let resp = execute_command(
@@ -950,7 +1046,7 @@ async fn e2e_snapshot_and_click_ref() {
     assert_success(&resp);
 
     let resp = execute_command(
-        &json!({ "id": "2", "action": "navigate", "url": "https://example.com" }),
+        &json!({ "id": "2", "action": "navigate", "url": base_url }),
         &mut state,
     )
     .await;
@@ -960,9 +1056,19 @@ async fn e2e_snapshot_and_click_ref() {
     let resp = execute_command(&json!({ "id": "3", "action": "snapshot" }), &mut state).await;
     assert_success(&resp);
     let snapshot = get_data(&resp)["snapshot"].as_str().unwrap();
+    if !snapshot.contains("Example Domain") {
+        let page = execute_command(
+            &json!({"id":"snapshot-failure-page", "action":"evaluate",
+                "script":"({url:location.href,title:document.title,text:document.body?.innerText})"}),
+            &mut state,
+        )
+        .await;
+        eprintln!("snapshot fixture page: {}", page);
+    }
     assert!(
         snapshot.contains("Example Domain"),
-        "Snapshot should contain heading"
+        "Snapshot should contain heading; actual snapshot: {}",
+        snapshot
     );
     assert!(snapshot.contains("ref=e1"), "Snapshot should have ref e1");
     assert!(snapshot.contains("ref=e2"), "Snapshot should have ref e2");
@@ -971,7 +1077,9 @@ async fn e2e_snapshot_and_click_ref() {
         "Snapshot should have a link element"
     );
 
-    // Click the link by ref (e2 is the "More information..." link)
+    // Click the fixture's link by ref (e1 is the heading, e2 is the link).
+    assert_eq!(get_data(&resp)["refs"]["e1"]["role"], "heading");
+    assert_eq!(get_data(&resp)["refs"]["e2"]["role"], "link");
     let resp = execute_command(
         &json!({ "id": "4", "action": "click", "selector": "e2" }),
         &mut state,
@@ -986,14 +1094,11 @@ async fn e2e_snapshot_and_click_ref() {
     let resp = execute_command(&json!({ "id": "5", "action": "url" }), &mut state).await;
     assert_success(&resp);
     let url = get_data(&resp)["url"].as_str().unwrap();
-    assert!(
-        url.contains("iana.org"),
-        "Should have navigated to iana.org, got: {}",
-        url
-    );
+    assert_eq!(url, format!("{base_url}/clicked"));
 
     let resp = execute_command(&json!({ "id": "99", "action": "close" }), &mut state).await;
     assert_success(&resp);
+    server_handle.abort();
 }
 
 // ---------------------------------------------------------------------------
