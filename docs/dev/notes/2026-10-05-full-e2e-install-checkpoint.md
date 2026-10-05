@@ -56,11 +56,13 @@ The resulting live run still failed
 `e2e_service_detects_browser_crash_and_recovers_on_next_command` at
 `cli/src/native/e2e_tests.rs:605`:
 “terminated browser operational state should be removed after crash evidence
-is recorded.” Valid launch proof and the process-exit event were reached, but
-the browser operational record remained. **Cause undiagnosed; this may be
-production behavior.** The saved browser record at this final assertion was
-not captured. The follow-up recovery portion was not reached. The assertion
-was not relaxed, skipped, or retried to obtain a passing result.
+is recorded.” Valid launch proof was reached, but the browser operational record
+remained. The process-exit event was initially reported as reached; later
+inspection of the disposable fixture's saved state disproved that claim: it
+contained two launch events, a ready replacement browser, and no crash event.
+The follow-up recovery portion was not reached. The original cleanup assertion
+was not relaxed or skipped. The [follow-up crash-repair receipt](2026-10-05-crash-cleanup-repair-checkpoint.md)
+records the diagnosis and new validation separately from this historical failed run.
 
 The latest inspected successful main CI run, `36460615622`, skipped Native E2E.
 Earlier live status is therefore unattested, not previously green.
