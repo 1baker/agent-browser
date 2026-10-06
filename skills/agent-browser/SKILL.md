@@ -2275,8 +2275,14 @@ persisted lease, and exact handle, preserving the old receipt verbatim and
 digest-bound. Former-owner absence is not an authenticated detach ACK or old-chain
 continuity. Diagnostics distinguish `fresh_chain_exact_attach`; handoff resume
 refuses this kind. The staged attachment holds a shared public privacy guard,
-not an ownership lease, enables no domains, and must not be given to ready-runtime
-consumers. Do not infer installation or live receipt-change permission.
+not an ownership lease. The original `bootstrap` enables no domains and must not
+be given to ready-runtime consumers. The separate internal `bootstrap_ready`
+initializes only Page, Runtime and Network on the exact session before commit,
+then verifies receipt readback and current binding. Only its committed token can
+expose an unowned manager and held privacy guard. Pause or unavailable event
+observation vetoes publication; missing pause flags do not prove UI execution.
+Neither variant has an operation entrypoint or grants installation or live
+receipt-change permission.
 
 ## Observability Dashboard
 

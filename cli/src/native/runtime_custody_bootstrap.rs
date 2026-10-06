@@ -8,8 +8,11 @@
 //! absent. The predecessor v4 receipt is embedded verbatim and digest-bound.
 //!
 //! No command, action, entrypoint or install gate reaches this module yet.
-//! The staged attachment is attachment-only: CDP domains are NOT enabled and
-//! it is never handed to ready-runtime consumers.
+//! `bootstrap` is attachment-only: CDP domains are NOT enabled and it is never
+//! handed to ready-runtime consumers. `bootstrap_ready` additionally performs
+//! protocol-only initialization (Page/Runtime/Network.enable plus an exact
+//! session echo) BEFORE the single commit; that is not proof of a running or
+//! rendered page. Its manager is extractable only from the committed token.
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -17,7 +20,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
-use super::browser::{BrowserManager, StagedExactAttachment};
+use super::browser::{BrowserManager, ProtocolReadyAttachment, StagedExactAttachment};
 use super::runtime_attestation::{fresh_chain_binding, fresh_chain_physical_browser};
 use super::runtime_handoff_v2::{current_process_identity, require_process_gone};
 use super::service_model::ServiceState;
@@ -360,25 +363,131 @@ pub(super) async fn bootstrap<R: ServiceStateRepository>(
     if attachment.target_id() != admitted.target_id || attachment.endpoint() != admitted.endpoint {
         return Err("fresh_chain_attachment_mismatch".into());
     }
+    let (receipt, _) = commit_receipt(repository, &request, &admitted)?;
+    Ok(CommittedBootstrap {
+        attachment,
+        receipt,
+    })
+}
+
+/// Bound for each protocol-ready CDP exchange.
+pub(super) const READY_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Protocol-ready variant: identical admission and locked commit, but the
+/// exact attachment is protocol-initialized on the same connection and
+/// session BEFORE the commit. Initialization failure requests zero saves.
+/// After a successful save the receipt is read back; a mismatch or read
+/// failure is reported as uncertain and publishes nothing (no rollback or
+/// retry). Strict reuse of the existing Exclusive lease only.
+pub(super) async fn bootstrap_ready<R: ServiceStateRepository>(
+    repository: &R,
+    request: BootstrapRequest,
+) -> Result<CommittedReadyBootstrap, String> {
+    bootstrap_ready_with_timeout(repository, request, READY_COMMAND_TIMEOUT).await
+}
+
+async fn bootstrap_ready_with_timeout<R: ServiceStateRepository>(
+    repository: &R,
+    request: BootstrapRequest,
+    ready_timeout: std::time::Duration,
+) -> Result<CommittedReadyBootstrap, String> {
+    let admitted = admit(&repository.load_snapshot()?, &request)?;
+    let staged =
+        BrowserManager::attach_exact_unowned(&admitted.endpoint, &admitted.target_id).await?;
+    if staged.target_id() != admitted.target_id || staged.endpoint() != admitted.endpoint {
+        return Err("fresh_chain_attachment_mismatch".into());
+    }
+    let session_id = staged.session_id().to_string();
+    let mut ready = staged.initialize_protocol_ready(ready_timeout).await?;
+    if ready.target_id() != admitted.target_id
+        || ready.endpoint() != admitted.endpoint
+        || ready.session_id() != session_id
+    {
+        return Err("fresh_chain_attachment_mismatch".into());
+    }
+    ready.ensure_not_paused()?;
+    let (receipt, committed_fence) = commit_receipt(repository, &request, &admitted)?;
+    let persisted = repository
+        .load_snapshot()
+        .map_err(|error| format!("fresh_chain_commit_readback_uncertain:{error}"))?;
+    if persisted
+        .runtime_custody_receipts
+        .get(&request.session_name)
+        != Some(&receipt)
+    {
+        return Err("fresh_chain_commit_readback_uncertain".into());
+    }
+    // Receipt equality alone cannot establish current custody: a lease, tab,
+    // process or physical binding may have changed after persistence. Any
+    // disagreement is post-commit uncertainty, never rollback or retry.
+    let readback_fence =
+        capture_exact_tab_refresh_fence(&persisted, &request.handle, &request.session_name)
+            .map_err(|error| format!("fresh_chain_commit_readback_uncertain:{error}"))?;
+    if readback_fence != committed_fence {
+        return Err("fresh_chain_commit_readback_uncertain".into());
+    }
+    diagnostics(
+        &persisted,
+        &request.session_name,
+        &receipt,
+        &admitted.profile_id,
+        &admitted.browser_id,
+        &admitted.target_id,
+    )
+    .map_err(|error| format!("fresh_chain_commit_readback_uncertain:{error}"))?;
+    ready
+        .ensure_not_paused()
+        .map_err(|error| format!("fresh_chain_commit_publication_uncertain:{error}"))?;
+    Ok(CommittedReadyBootstrap { ready, receipt })
+}
+
+/// Committed receipt plus the protocol-ready attachment and held public lease.
+/// Not Clone. Constructed only after a verified commit; consumed only by
+/// `BrowserManager::adopt_committed_ready`.
+pub(super) struct CommittedReadyBootstrap {
+    ready: ProtocolReadyAttachment,
+    receipt: Value,
+}
+
+impl CommittedReadyBootstrap {
+    pub(super) fn receipt(&self) -> &Value {
+        &self.receipt
+    }
+
+    pub(super) fn attachment(&self) -> &ProtocolReadyAttachment {
+        &self.ready
+    }
+
+    /// Unpacks a COMMITTED token; the manager stays sealed inside
+    /// `ProtocolReadyAttachment`, which only the adoption can open.
+    pub(super) fn into_committed_parts(self) -> (ProtocolReadyAttachment, Value) {
+        (self.ready, self.receipt)
+    }
+}
+
+/// Builds the fresh receipt, revalidates every admission fact and the
+/// destination under the repository lock, and inserts the receipt once.
+fn commit_receipt<R: ServiceStateRepository>(
+    repository: &R,
+    request: &BootstrapRequest,
+    admitted: &Admitted,
+) -> Result<(Value, ExactTabRefreshFence), String> {
     let destination = current_process_identity(std::process::id())?;
-    let receipt = fresh_receipt(&admitted, destination.clone());
+    let receipt = fresh_receipt(admitted, destination.clone());
     verify_receipt_shape(&receipt, &destination)?;
-    repository.mutate(|state| {
+    let committed_fence = repository.mutate(|state| {
         if current_process_identity(std::process::id())? != destination {
             return Err("fresh_chain_destination_changed".into());
         }
-        if admit(state, &request)? != admitted {
+        if &admit(state, request)? != admitted {
             return Err("fresh_chain_admission_changed".into());
         }
         state
             .runtime_custody_receipts
             .insert(request.session_name.clone(), receipt.clone());
-        Ok(())
+        capture_exact_tab_refresh_fence(state, &request.handle, &request.session_name)
     })?;
-    Ok(CommittedBootstrap {
-        attachment,
-        receipt,
-    })
+    Ok((receipt, committed_fence))
 }
 
 /// Diagnostics for a v5 receipt. Positivity is the independent current
@@ -610,8 +719,98 @@ mod tests {
             }
         }
     }
+    /// Replies for one command: messages with `method` are sent verbatim as
+    /// events; others get the command id/sessionId. Empty means no reply.
+    type Responder = Box<dyn FnMut(&Value) -> Vec<Value> + Send>;
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Ready {
+        Ok,
+        AttachPause,
+        AttachEventPause,
+        DomainError,
+        DomainPause,
+        LateEventPause,
+        WrongEcho,
+        Silent,
+    }
+
+    const READY_METHODS: [&str; 7] = [
+        "Target.getTargets",
+        "Target.attachToTarget",
+        "Target.getTargetInfo",
+        "Page.enable",
+        "Runtime.enable",
+        "Network.enable",
+        "Target.getTargetInfo",
+    ];
+
     impl FakeBrowser {
         async fn new(echo_target: &'static str) -> Self {
+            Self::serve(Box::new(move |command: &Value| {
+                let result = match command["method"].as_str().unwrap() {
+                    "Target.getTargets" => json!({"targetInfos": [
+                        {"targetId":"peer", "type":"page"}, {"targetId":"t1", "type":"page"}]}),
+                    "Target.attachToTarget" => json!({"sessionId":"exact-session"}),
+                    "Target.getTargetInfo" => {
+                        json!({"targetInfo":{"targetId":echo_target, "type":"page"}})
+                    }
+                    other => panic!("unexpected command: {other}"),
+                };
+                vec![json!({ "result": result })]
+            }))
+            .await
+        }
+
+        /// Ready-mode fixture: the exact 7-command allowlist; anything else panics.
+        async fn ready(mode: Ready) -> Self {
+            let mut echoes = 0;
+            Self::serve(Box::new(move |command: &Value| {
+                let mut replies = Vec::new();
+                let result = match command["method"].as_str().unwrap() {
+                    "Target.getTargets" => json!({"targetInfos": [
+                        {"targetId":"peer", "type":"page"}, {"targetId":"t1", "type":"page"}]}),
+                    "Target.attachToTarget" => {
+                        if mode == Ready::AttachEventPause {
+                            replies.push(json!({"method": "Target.attachedToTarget", "params": {
+                                "sessionId": "exact-session", "waitingForDebugger": true,
+                                "targetInfo": {"targetId": "t1", "type": "page"}}}));
+                        }
+                        let paused = mode == Ready::AttachPause;
+                        json!({"sessionId": "exact-session", "waitingForDebugger": paused})
+                    }
+                    "Target.getTargetInfo" => {
+                        echoes += 1;
+                        let target = if mode == Ready::WrongEcho && echoes == 2 {
+                            "peer"
+                        } else {
+                            "t1"
+                        };
+                        json!({"targetInfo": {"targetId": target, "type": "page"}})
+                    }
+                    "Page.enable" if mode == Ready::DomainError => {
+                        return vec![json!({"error": {"code": -32000, "message": "synthetic"}})];
+                    }
+                    "Runtime.enable" if mode == Ready::DomainPause => {
+                        json!({"waitingForDebugger": true})
+                    }
+                    "Runtime.enable" if mode == Ready::LateEventPause => {
+                        replies.push(json!({"method": "Target.attachedToTarget", "params": {
+                            "sessionId": "exact-session", "waitingForDebugger": true,
+                            "targetInfo": {"targetId": "t1", "type": "page"}}}));
+                        json!({})
+                    }
+                    "Network.enable" if mode == Ready::Silent => return replies,
+                    "Page.enable" | "Runtime.enable" | "Network.enable" => json!({}),
+                    other => panic!("unexpected command: {other}"),
+                };
+                replies.push(json!({ "result": result }));
+                replies
+            }))
+            .await
+        }
+
+        async fn serve(mut responder: Responder) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let endpoint = format!("ws://{}/devtools/browser/x", listener.local_addr().unwrap());
             let commands = Arc::new(Mutex::new(Vec::new()));
@@ -619,31 +818,26 @@ mod tests {
             let server = tokio::spawn(async move {
                 let (stream, _) = listener.accept().await.unwrap();
                 let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
-                while let Some(Ok(message)) = websocket.next().await {
+                'messages: while let Some(Ok(message)) = websocket.next().await {
                     let Message::Text(text) = message else {
                         continue;
                     };
                     let command: Value = serde_json::from_str(&text).unwrap();
                     observed.lock().unwrap().push(command.clone());
-                    let result = match command["method"].as_str().unwrap() {
-                        "Target.getTargets" => json!({"targetInfos": [
-                            {"targetId":"peer", "type":"page"}, {"targetId":"t1", "type":"page"}]}),
-                        "Target.attachToTarget" => json!({"sessionId":"exact-session"}),
-                        "Target.getTargetInfo" => {
-                            json!({"targetInfo":{"targetId":echo_target, "type":"page"}})
+                    for mut response in responder(&command) {
+                        if response.get("method").is_none() {
+                            response["id"] = command["id"].clone();
+                            if let Some(session) = command.get("sessionId") {
+                                response["sessionId"] = session.clone();
+                            }
                         }
-                        other => panic!("unexpected command: {other}"),
-                    };
-                    let mut response = json!({"id": command["id"], "result":result});
-                    if let Some(session) = command.get("sessionId") {
-                        response["sessionId"] = session.clone();
-                    }
-                    if websocket
-                        .send(Message::Text(response.to_string()))
-                        .await
-                        .is_err()
-                    {
-                        break;
+                        if websocket
+                            .send(Message::Text(response.to_string()))
+                            .await
+                            .is_err()
+                        {
+                            break 'messages;
+                        }
                     }
                 }
             });
@@ -672,6 +866,8 @@ mod tests {
         change_before_commit: Option<fn(&mut ServiceState)>,
         fail_save: bool,
         fail_after_save: bool,
+        change_after_save: Option<fn(&mut ServiceState)>,
+        fail_readback: bool,
         saves: Cell<usize>,
     }
     impl TestRepository {
@@ -681,12 +877,17 @@ mod tests {
                 change_before_commit: None,
                 fail_save: false,
                 fail_after_save: false,
+                change_after_save: None,
+                fail_readback: false,
                 saves: Cell::new(0),
             }
         }
     }
     impl ServiceStateRepository for TestRepository {
         fn load_snapshot(&self) -> Result<ServiceState, String> {
+            if self.fail_readback && self.saves.get() > 0 {
+                return Err("synthetic_readback_unavailable".into());
+            }
             Ok(self.persisted.borrow().clone())
         }
         fn mutate<R>(
@@ -710,6 +911,9 @@ mod tests {
                 return Err("synthetic_save_failed_or_uncertain".into());
             }
             *self.persisted.borrow_mut() = candidate;
+            if let Some(change) = self.change_after_save {
+                change(&mut self.persisted.borrow_mut());
+            }
             if self.fail_after_save {
                 return Err("synthetic_commit_uncertain_after_write".into());
             }
@@ -888,6 +1092,147 @@ mod tests {
             serde_json::to_value(fixture.state).unwrap()
         );
         server.finish().await;
+    }
+
+    #[tokio::test]
+    async fn ready_bootstrap_initializes_before_one_commit_and_adopts_unowned() {
+        let server = FakeBrowser::ready(Ready::Ok).await;
+        let fixture = physical_fixture(&server.endpoint);
+        let before = serde_json::to_value(&fixture.state).unwrap();
+        let repository = TestRepository::new(fixture.state.clone());
+        let committed = bootstrap_ready(&repository, fixture.request.clone())
+            .await
+            .unwrap();
+        assert_eq!(repository.saves.get(), 1);
+        assert_eq!(committed.attachment().target_id(), "t1");
+        assert_eq!(committed.attachment().session_id(), "exact-session");
+        let after = repository.load_snapshot().unwrap();
+        assert_eq!(committed.receipt(), &after.runtime_custody_receipts["s"]);
+        assert_eq!(
+            committed.receipt()["predecessor"]["body"],
+            before["runtimeCustodyReceipts"]["s"]
+        );
+        let mut expected = before;
+        expected["runtimeCustodyReceipts"]["s"] = committed.receipt().clone();
+        assert_eq!(serde_json::to_value(&after).unwrap(), expected);
+        let (manager, lease, receipt) = BrowserManager::adopt_committed_ready(committed).unwrap();
+        assert!(manager.is_cdp_connection()); // Unowned: no Chrome lifecycle.
+        assert_eq!(receipt, after.runtime_custody_receipts["s"]);
+        let gate =
+            crate::native::privacy_gate::PrivacyGate::for_endpoint(&server.endpoint).unwrap();
+        assert!(gate.begin_private().is_err()); // Guard survives adoption.
+        drop(manager);
+        drop(lease);
+        let commands = server.finish().await;
+        assert_eq!(methods(&commands), READY_METHODS);
+        for command in &commands[2..] {
+            assert_eq!(command["sessionId"], "exact-session");
+            assert!(command.get("params").is_none());
+        }
+        assert!(current_process_identity(fixture.browser.0.id()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn ready_initialization_failures_never_save_or_replace_receipt() {
+        for (mode, sent) in [
+            (Ready::AttachPause, 3),
+            (Ready::AttachEventPause, 3),
+            (Ready::DomainError, 4),
+            (Ready::DomainPause, 5),
+            (Ready::LateEventPause, 5),
+            (Ready::Silent, 6),
+            (Ready::WrongEcho, 7),
+        ] {
+            let server = FakeBrowser::ready(mode).await;
+            let fixture = physical_fixture(&server.endpoint);
+            let repository = TestRepository::new(fixture.state.clone());
+            let started = std::time::Instant::now();
+            let result = bootstrap_ready_with_timeout(
+                &repository,
+                fixture.request.clone(),
+                std::time::Duration::from_millis(300),
+            )
+            .await;
+            assert!(result.is_err(), "{mode:?}");
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            assert_eq!(repository.saves.get(), 0, "{mode:?}");
+            assert_eq!(
+                canonical_digest(
+                    &repository.load_snapshot().unwrap().runtime_custody_receipts["s"]
+                ),
+                fixture.request.expected_predecessor_sha256
+            );
+            drop(result);
+            let commands = server.finish().await;
+            assert_eq!(methods(&commands), READY_METHODS[..sent], "{mode:?}");
+            assert!(current_process_identity(fixture.browser.0.id()).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn ready_commit_rejection_or_uncertainty_publishes_nothing() {
+        use super::super::service_model::LeaseState;
+        let release: fn(&mut ServiceState) =
+            |state| state.sessions.get_mut("s").unwrap().lease = LeaseState::Released;
+        for case in 0..3 {
+            let server = FakeBrowser::ready(Ready::Ok).await;
+            let fixture = physical_fixture(&server.endpoint);
+            let mut repository = TestRepository::new(fixture.state.clone());
+            match case {
+                0 => repository.change_before_commit = Some(release),
+                1 => repository.fail_save = true,
+                _ => repository.fail_after_save = true,
+            }
+            assert!(bootstrap_ready(&repository, fixture.request).await.is_err());
+            assert_eq!(repository.saves.get(), usize::from(case > 0));
+            let schema =
+                &repository.load_snapshot().unwrap().runtime_custody_receipts["s"]["schemaVersion"];
+            assert_eq!(schema, &json!(if case == 2 { 5 } else { 4 }));
+            assert_eq!(methods(&server.finish().await), READY_METHODS);
+        }
+    }
+
+    #[tokio::test]
+    async fn ready_readback_disagreement_or_unavailability_publishes_nothing() {
+        use super::super::service_model::LeaseState;
+        let changes: [Option<fn(&mut ServiceState)>; 4] = [
+            Some(|state| {
+                state.runtime_custody_receipts.get_mut("s").unwrap()["chainId"] =
+                    json!(uuid::Uuid::new_v4().to_string());
+            }),
+            Some(|state| state.sessions.get_mut("s").unwrap().lease = LeaseState::Released),
+            Some(|state| {
+                state
+                    .tabs
+                    .get_mut("target:t1")
+                    .unwrap()
+                    .observation_revision = Some("synthetic-concurrent-observation".into());
+            }),
+            None,
+        ];
+        for change in changes {
+            let server = FakeBrowser::ready(Ready::Ok).await;
+            let fixture = physical_fixture(&server.endpoint);
+            let mut repository = TestRepository::new(fixture.state.clone());
+            repository.change_after_save = change;
+            repository.fail_readback = change.is_none();
+            let result = bootstrap_ready(&repository, fixture.request.clone()).await;
+            let Err(error) = result else {
+                panic!("uncertain readback published a manager");
+            };
+            assert!(error.starts_with("fresh_chain_commit_readback_uncertain"));
+            assert_eq!(repository.saves.get(), 1);
+            // The save happened: no rollback or unchanged-receipt claim.
+            let persisted = repository.persisted.borrow();
+            assert_eq!(persisted.runtime_custody_receipts["s"]["schemaVersion"], 5);
+            assert_eq!(
+                canonical_digest(&persisted.runtime_custody_receipts["s"]["predecessor"]["body"]),
+                fixture.request.expected_predecessor_sha256
+            );
+            drop(persisted);
+            assert_eq!(methods(&server.finish().await), READY_METHODS);
+            assert!(current_process_identity(fixture.browser.0.id()).is_ok());
+        }
     }
 
     #[test]

@@ -6,9 +6,13 @@ attachment with generation 1 and preserves the previous receipt verbatim under a
 canonical SHA-256 digest. The former owner is only observed absent, not an
 authenticated detach acknowledgment. Diagnostics report the separate
 `fresh_chain_exact_attach` basis; handoff resume refuses this receipt kind.
-The staged attachment enables no CDP domains and is not a ready runtime. No
-installation, detachment, live receipt change, or browser lifecycle permission
-follows from this source checkpoint.
+The original `bootstrap` enables no CDP domains. A separate internal
+`bootstrap_ready` initializes Page, Runtime and Network on that same exact session
+before commit, checks the post-save receipt and binding, and permits manager
+extraction only through its committed token. This is protocol initialization, not
+proof of a running or rendered page. Neither variant is wired into a ready
+runtime. No installation, detachment, live receipt change or browser lifecycle
+permission follows from this source checkpoint.
 
 `service_profile_upsert` can create profile configuration before a daemon exists.
 Only a session without daemon metadata uses a short-lived worker, with background

@@ -446,6 +446,11 @@ fn page_resource_content_type(resource: &Value) -> Option<String> {
 pub(super) struct StagedExactAttachment {
     manager: BrowserManager,
     _public_lease: crate::native::privacy_gate::PublicLease,
+    /// Explicit `waitingForDebugger: true` (or a lagged event stream) observed
+    /// while attaching. Ignored by the attachment-only checkpoint; the
+    /// protocol-ready stage refuses to send anything when it is set.
+    pause_indicated: bool,
+    events: broadcast::Receiver<CdpEvent>,
 }
 
 #[cfg(target_os = "linux")]
@@ -461,6 +466,103 @@ impl StagedExactAttachment {
 
     pub(super) fn endpoint(&self) -> &str {
         &self.manager.ws_url
+    }
+
+    /// Protocol-only initialization on the SAME connection and exact session:
+    /// Page.enable, Runtime.enable, Network.enable, then one session-scoped
+    /// Target.getTargetInfo echo without a targetId. Never resumes a paused
+    /// target, evaluates, discovers, activates, auto-attaches or navigates.
+    /// Any explicit pause indication, CDP error, timeout or substituted echo
+    /// drops the connection. Absence of a pause flag is NOT proof that page
+    /// script is running or that the UI is rendered.
+    pub(super) async fn initialize_protocol_ready(
+        mut self,
+        timeout: Duration,
+    ) -> Result<ProtocolReadyAttachment, String> {
+        let session_id = self.session_id().to_string();
+        if self.pause_indicated || attach_event_pause(&mut self.events, &session_id) {
+            return Err("fresh_chain_target_paused".into());
+        }
+        let target_id = self.target_id().to_string();
+        let client = &self.manager.client;
+        for method in ["Page.enable", "Runtime.enable", "Network.enable"] {
+            let response = client
+                .send_command_with_timeout(method, None, Some(&session_id), timeout)
+                .await
+                .map_err(|error| format!("fresh_chain_ready_failed:{method}:{error}"))?;
+            if explicit_pause(&response) {
+                return Err("fresh_chain_target_paused".into());
+            }
+            if attach_event_pause(&mut self.events, &session_id) {
+                return Err("fresh_chain_target_paused".into());
+            }
+        }
+        let echoed = client
+            .send_command_with_timeout("Target.getTargetInfo", None, Some(&session_id), timeout)
+            .await
+            .map_err(|error| format!("fresh_chain_ready_failed:Target.getTargetInfo:{error}"))?;
+        let info = echoed
+            .get("targetInfo")
+            .ok_or("fresh_chain_session_substituted")?;
+        if info.get("targetId").and_then(Value::as_str) != Some(target_id.as_str())
+            || info.get("type").and_then(Value::as_str) != Some("page")
+        {
+            return Err("fresh_chain_session_substituted".into());
+        }
+        if explicit_pause(&echoed)
+            || explicit_pause(info)
+            || attach_event_pause(&mut self.events, &session_id)
+        {
+            return Err("fresh_chain_target_paused".into());
+        }
+        Ok(ProtocolReadyAttachment {
+            manager: self.manager,
+            _public_lease: self._public_lease,
+            events: self.events,
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+fn explicit_pause(value: &Value) -> bool {
+    value.get("waitingForDebugger").and_then(Value::as_bool) == Some(true)
+}
+
+/// Protocol-initialized exact attachment, still PRE-commit. Not Clone and has
+/// no manager extraction: only `BrowserManager::adopt_committed_ready`, which
+/// consumes a committed ready bootstrap, can take the manager out. The shared
+/// public lease stays held until that adoption hands it to the caller.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(super) struct ProtocolReadyAttachment {
+    manager: BrowserManager,
+    _public_lease: crate::native::privacy_gate::PublicLease,
+    events: broadcast::Receiver<CdpEvent>,
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+impl ProtocolReadyAttachment {
+    pub(super) fn target_id(&self) -> &str {
+        &self.manager.pages[0].target_id
+    }
+
+    pub(super) fn session_id(&self) -> &str {
+        &self.manager.pages[0].session_id
+    }
+
+    pub(super) fn endpoint(&self) -> &str {
+        &self.manager.ws_url
+    }
+
+    /// Passively fence pause indications before commit and publication. No CDP
+    /// commands are sent; absent indications still do not prove UI execution.
+    pub(super) fn ensure_not_paused(&mut self) -> Result<(), String> {
+        if attach_event_pause(&mut self.events, &self.manager.pages[0].session_id) {
+            return Err("fresh_chain_target_paused".into());
+        }
+        Ok(())
     }
 }
 
@@ -502,6 +604,19 @@ pub(super) async fn exact_attach_wire(
     client: &CdpClient,
     target_id: &str,
 ) -> Result<PageInfo, String> {
+    exact_attach_wire_observed(client, target_id)
+        .await
+        .map(|(page, _)| page)
+}
+
+/// Same wire as `exact_attach_wire`; additionally reports an explicit
+/// `waitingForDebugger: true` in the attach result or echoed target info.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+async fn exact_attach_wire_observed(
+    client: &CdpClient,
+    target_id: &str,
+) -> Result<(PageInfo, bool), String> {
     if target_id.is_empty() {
         return Err("fresh_chain_target_missing".into());
     }
@@ -544,7 +659,8 @@ pub(super) async fn exact_attach_wire(
     {
         return Err("fresh_chain_session_substituted".into());
     }
-    Ok(PageInfo {
+    let pause_indicated = explicit_pause(&attached) || explicit_pause(info);
+    let page = PageInfo {
         target_id: target_id.to_string(),
         session_id,
         url: info
@@ -558,7 +674,36 @@ pub(super) async fn exact_attach_wire(
             .unwrap_or_default()
             .to_string(),
         target_type: "page".to_string(),
-    })
+    };
+    Ok((page, pause_indicated))
+}
+
+/// Passively drain events already received during the attach. A lagged
+/// receiver may have missed a pause and is treated as paused (fail closed).
+/// A closed stream also refuses publication; this conservative veto is not
+/// proof that a pause occurred or that the browser process exited.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+fn attach_event_pause(events: &mut broadcast::Receiver<CdpEvent>, session_id: &str) -> bool {
+    use broadcast::error::TryRecvError;
+    // A continuously replenished queue must not turn passive validation into
+    // an unbounded wait. Overflow or exhaustion of this bound fails closed.
+    for _ in 0..1024 {
+        match events.try_recv() {
+            Ok(event) => {
+                if event.method == "Target.attachedToTarget"
+                    && event.params.get("sessionId").and_then(Value::as_str) == Some(session_id)
+                    && explicit_pause(&event.params)
+                {
+                    return true;
+                }
+            }
+            Err(TryRecvError::Lagged(_)) => return true,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Closed) => return true,
+        }
+    }
+    true
 }
 
 #[cfg(target_os = "linux")]
@@ -578,12 +723,15 @@ impl BrowserManager {
             .public_lease()
             .map_err(str::to_string)?
             .ok_or("fresh_chain_public_lease_required")?;
-        let page = tokio::time::timeout(
+        // Subscribing is passive: it sends nothing on the wire.
+        let mut events = client.subscribe();
+        let (page, response_pause) = tokio::time::timeout(
             Duration::from_secs(10),
-            exact_attach_wire(&client, target_id),
+            exact_attach_wire_observed(&client, target_id),
         )
         .await
         .map_err(|_| "fresh_chain_attach_timeout")??;
+        let pause_indicated = response_pause || attach_event_pause(&mut events, &page.session_id);
         Ok(StagedExactAttachment {
             manager: Self {
                 client: Arc::new(client),
@@ -597,7 +745,29 @@ impl BrowserManager {
                 visited_origins: HashSet::new(),
             },
             _public_lease: public_lease,
+            pause_indicated,
+            events,
         })
+    }
+
+    /// The ONLY manager extraction for the fresh-chain path. Accepts solely a
+    /// committed protocol-ready bootstrap (never the attachment-only result or
+    /// a pre-commit ready stage) and returns the unowned manager, its still
+    /// held shared public lease, and the committed receipt for future action
+    /// adoption. No Chrome lifecycle is acquired; `browser_process` stays None.
+    pub(super) fn adopt_committed_ready(
+        committed: super::runtime_custody_bootstrap::CommittedReadyBootstrap,
+    ) -> Result<(Self, crate::native::privacy_gate::PublicLease, Value), String> {
+        let (mut ready, receipt) = committed.into_committed_parts();
+        ready
+            .ensure_not_paused()
+            .map_err(|error| format!("fresh_chain_commit_publication_uncertain:{error}"))?;
+        let ProtocolReadyAttachment {
+            manager,
+            _public_lease: lease,
+            events: _,
+        } = ready;
+        Ok((manager, lease, receipt))
     }
 }
 

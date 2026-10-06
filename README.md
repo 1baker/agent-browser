@@ -22,8 +22,12 @@ Schema 5 records an independent exact attachment, not continuation of a handoff:
 the previous receipt is preserved verbatim and digest-bound, and the old owner is
 only observed absent, never acknowledged. Diagnostics recognize this separate
 proof basis, while handoff resume refuses it. No command or operation entrypoint
-can create it; the attachment has no enabled CDP domains and is not a ready
-runtime. This source checkpoint grants no install or live receipt-change authority.
+can create it. The original `bootstrap` remains attachment-only. A separate
+internal `bootstrap_ready` initializes Page, Runtime and Network on the same
+exact session before committing and exposes the unowned manager only through a
+committed token. Protocol initialization is not proof of a running or rendered
+page, and neither variant is wired into a ready runtime. This source checkpoint
+grants no install or live receipt-change authority.
 See [the source checkpoint](docs/dev/notes/fresh-chain-custody-source-checkpoint-20261006.md).
 
 MCP profile creation works without a running default daemon. A metadata-free
