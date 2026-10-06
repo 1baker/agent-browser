@@ -127,6 +127,7 @@ pub fn action_consequence(action: &str) -> ActionConsequence {
         | "external_byop_adopt"
         | "runtime_handoff_prepare"
         | "runtime_handoff_resume"
+        | "runtime_custody_bootstrap"
         | "remote_view_open"
         | "view_takeover" => ActionConsequence::BrowserLifecycle,
         _ => ActionConsequence::ControlPlane,

@@ -17,17 +17,25 @@ no new command or flag and does not repair an older running daemon by itself.
 Applying `service prune-retained` with closed-tab pruning removes that anchor
 record and custody then fails closed; do not prune it during a pending handoff.
 
-The Linux source also contains an INTERNAL UNEXPOSED fresh-chain bootstrap API.
+The Linux source provides the operator-only `handoff bootstrap --request-file <path>`
+entrypoint. It is source-tested, not installed or live-accepted at this checkpoint.
 Schema 5 records an independent exact attachment, not continuation of a handoff:
 the previous receipt is preserved verbatim and digest-bound, and the old owner is
 only observed absent, never acknowledged. Diagnostics recognize this separate
-proof basis, while handoff resume refuses it. No command or operation entrypoint
-can create it. The original `bootstrap` remains attachment-only. A separate
-internal `bootstrap_ready` initializes Page, Runtime and Network on the same
+proof basis, while handoff resume refuses it. A bounded, strict JSON file binds
+the CLI session, exact handle, predecessor digest and canonical profile/device/inode.
+Only a metadata-free cold daemon is admitted; existing owners or handoff records
+are refused without cleanup or automatic handoff. The original internal `bootstrap`
+remains attachment-only. The operator uses `bootstrap_ready` to initialize Page, Runtime and Network on the same
 exact session before committing and exposes the unowned manager only through a
 committed token. Protocol initialization is not proof of a running or rendered
-page, and neither variant is wired into a ready runtime. This source checkpoint
-grants no install or live receipt-change authority.
+page. Its one-shot daemon has no streaming server, saved-login capture, private
+executor, background reconciliation/monitoring or idle timer, even with ambient
+settings. It reuses the existing exclusive lease, retains the public privacy
+guard and owns no Chrome process. Precommit failure retires only the new
+browserless daemon; possible commit or delivery uncertainty stays closed to
+requests without retry or rollback. Separate installation, custody, quiescence
+and operator go/no-go gates remain mandatory; source tests grant no live authority.
 See [the source checkpoint](docs/dev/notes/fresh-chain-custody-source-checkpoint-20261006.md).
 
 MCP profile creation works without a running default daemon. A metadata-free

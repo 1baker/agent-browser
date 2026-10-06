@@ -301,6 +301,7 @@ pub struct DaemonResult {
 /// UX concern (prompting the user on stdin) and not a daemon configuration.
 /// The daemon only needs `confirm_actions` to gate action categories.
 pub struct DaemonOptions<'a> {
+    pub custody_bootstrap_only: bool,
     pub headed: bool,
     pub debug: bool,
     pub leave_open: bool,
@@ -348,9 +349,84 @@ pub struct DaemonOptions<'a> {
     pub allow_stale_daemon_handoff: bool,
 }
 
+impl DaemonOptions<'_> {
+    /// No launch, saved-login, profile, provider, or background-worker options.
+    pub(crate) fn custody_bootstrap() -> Self {
+        Self {
+            custody_bootstrap_only: true,
+            headed: false,
+            debug: false,
+            leave_open: true,
+            executable_path: None,
+            executable_path_source: None,
+            extensions: &[],
+            args: None,
+            user_agent: None,
+            runtime_profile: None,
+            proxy: None,
+            proxy_bypass: None,
+            proxy_username: None,
+            proxy_password: None,
+            ignore_https_errors: false,
+            allow_file_access: false,
+            profile: None,
+            state: None,
+            provider: None,
+            device: None,
+            session_name: None,
+            download_path: None,
+            allowed_domains: None,
+            action_policy: None,
+            confirm_actions: None,
+            engine: None,
+            use_real_keychain: false,
+            keychain_password: None,
+            auto_connect: false,
+            idle_timeout: None,
+            service_reconcile_interval_ms: None,
+            service_job_timeout_ms: None,
+            service_monitor_interval_ms: None,
+            service_recovery_retry_budget: 0,
+            service_recovery_base_backoff_ms: 0,
+            service_recovery_max_backoff_ms: 0,
+            service_recovery_retry_budget_source: "custody_bootstrap",
+            service_recovery_base_backoff_ms_source: "custody_bootstrap",
+            service_recovery_max_backoff_ms_source: "custody_bootstrap",
+            default_timeout: None,
+            cdp: None,
+            runtime_attach_managed: false,
+            no_auto_dialog: true,
+            allow_stale_daemon_handoff: false,
+        }
+    }
+}
+
 fn apply_daemon_env(cmd: &mut Command, session: &str, opts: &DaemonOptions) {
     cmd.env("AGENT_BROWSER_DAEMON", "1")
         .env("AGENT_BROWSER_SESSION", session);
+
+    if opts.custody_bootstrap_only {
+        // Inspect names only; do not read, log or forward credential values.
+        for (key, _) in env::vars_os() {
+            let name = key.to_string_lossy();
+            if name.starts_with("AGENT_BROWSER_") && !bootstrap_env_allowed(&name) {
+                cmd.env_remove(key);
+            }
+        }
+        for key in [
+            "AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT",
+            "AGENT_BROWSER_STREAM_PORT",
+            "AGENT_BROWSER_STATE_EXPIRE_DAYS",
+            "AGENT_BROWSER_SESSION_NAME",
+            "AGENT_BROWSER_CDP",
+            "AGENT_BROWSER_AUTO_CONNECT",
+        ] {
+            cmd.env_remove(key);
+        }
+        cmd.env(crate::native::custody_bootstrap_request::STARTUP_ENV, "1");
+        return;
+    }
+    cmd.env_remove(crate::native::custody_bootstrap_request::STARTUP_ENV);
 
     if opts.headed {
         cmd.env("AGENT_BROWSER_HEADED", "1");
@@ -507,6 +583,23 @@ fn apply_daemon_env(cmd: &mut Command, session: &str, opts: &DaemonOptions) {
     }
 }
 
+fn bootstrap_env_allowed(name: &str) -> bool {
+    matches!(
+        name,
+        "AGENT_BROWSER_DAEMON"
+            | "AGENT_BROWSER_COLD_DAEMON"
+            | "AGENT_BROWSER_SESSION"
+            | "AGENT_BROWSER_SOCKET_DIR"
+            | "AGENT_BROWSER_HOME"
+            | "AGENT_BROWSER_POLICY"
+            | "AGENT_BROWSER_ACTION_POLICY"
+            | "AGENT_BROWSER_REQUIRE_TASK_AUTHORITY"
+            | "AGENT_BROWSER_TASK_AUTHORITY_DIR"
+            | "AGENT_BROWSER_CONFIRM_ACTIONS"
+            | "AGENT_BROWSER_ALLOWED_DOMAINS"
+    )
+}
+
 /// Check if the running daemon's version matches this CLI binary.
 /// Returns false when the version file is missing — an unversioned daemon
 /// is most likely a stale leftover from before version tracking was added
@@ -631,9 +724,84 @@ pub(crate) fn daemon_session_metadata_absent(session: &str) -> bool {
 }
 
 fn session_metadata_absent_at(directory: &Path, session: &str) -> bool {
+    session_metadata_absent_except_at(directory, session, &[])
+}
+
+fn session_metadata_absent_except_at(directory: &Path, session: &str, except: &[&str]) -> bool {
     ["sock", "pid", "version", "sha256", "token", "port", "stream", "engine", "provider", "extensions"]
         .iter()
+        .filter(|suffix| !except.contains(suffix))
         .all(|suffix| matches!(fs::symlink_metadata(directory.join(format!("{session}.{suffix}"))), Err(err) if err.kind() == std::io::ErrorKind::NotFound))
+}
+
+/// Child admission recognizes only its parent's private, create_new token reservation.
+/// All other metadata stays forbidden. No reads are echoed and nothing is rewritten.
+#[cfg(target_os = "linux")]
+pub(crate) fn custody_bootstrap_child_admitted(session: &str) -> bool {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let directory = get_socket_dir();
+    if !session_metadata_absent_except_at(&directory, session, &["token"])
+        || !matches!(fs::symlink_metadata(directory.join(format!("{session}.handoff.json"))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        return false;
+    }
+    let Ok(expected) = env::var(DAEMON_AUTH_TOKEN_ENV) else {
+        return false;
+    };
+    if expected.is_empty() || expected.len() > 256 {
+        return false;
+    }
+    let Ok(file) = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(get_auth_token_path(session))
+    else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+        || metadata.nlink() != 1
+        || !(1..=256).contains(&metadata.len())
+    {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    if file.take(257).read_to_end(&mut bytes).is_err() || bytes.len() > 256 {
+        return false;
+    }
+    // Fixed-bound comparison; no data-dependent early exit or token formatting.
+    let bytes = std::hint::black_box(bytes.as_slice());
+    let expected = std::hint::black_box(expected.as_bytes());
+    let mut difference = bytes.len() ^ expected.len();
+    for index in 0..256 {
+        difference |= usize::from(
+            bytes.get(index).copied().unwrap_or(0) ^ expected.get(index).copied().unwrap_or(0),
+        );
+    }
+    std::hint::black_box(difference) == 0
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn custody_bootstrap_child_admitted(_session: &str) -> bool {
+    false
+}
+
+pub(crate) fn reserve_cold_daemon_auth_token(session: &str, token: &str) -> Result<(), String> {
+    let mut token_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(get_auth_token_path(session))
+        .map_err(|error| error.to_string())?;
+    set_private_file_permissions(&get_auth_token_path(session))
+        .map_err(|error| error.to_string())?;
+    token_file
+        .write_all(token.as_bytes())
+        .map_err(|error| error.to_string())
 }
 
 struct DaemonStartupLock(fs::File);
@@ -681,6 +849,15 @@ fn ensure_daemon_with_mode(
 ) -> Result<DaemonResult, String> {
     let socket_dir = ensure_socket_dir_exists()?;
     let _startup_lock = DaemonStartupLock::acquire(&socket_dir, session)?;
+    if opts.custody_bootstrap_only
+        && (!cold
+            || !matches!(
+                fs::symlink_metadata(socket_dir.join(format!("{session}.handoff.json"))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            ))
+    {
+        return Err("fresh_chain_cold_admission_denied".into());
+    }
     if cold && (!daemon_session_metadata_absent(session) || daemon_ready(session)) {
         return Err(format!("Cold daemon admission denied for '{session}': existing session metadata or endpoint requires retained-session recovery"));
     }
@@ -816,16 +993,7 @@ fn ensure_daemon_with_mode(
     let daemon_auth_token = generate_daemon_auth_token()?;
     if cold {
         // Reserve the credential path without replacing another startup's token.
-        let mut token_file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(get_auth_token_path(session))
-            .map_err(|err| err.to_string())?;
-        set_private_file_permissions(&get_auth_token_path(session))
-            .map_err(|err| err.to_string())?;
-        token_file
-            .write_all(daemon_auth_token.as_bytes())
-            .map_err(|err| err.to_string())?;
+        reserve_cold_daemon_auth_token(session, &daemon_auth_token)?;
     } else {
         write_daemon_auth_token(session, &daemon_auth_token)?;
     }
@@ -1574,6 +1742,53 @@ mod tests {
         let _ = fs::remove_dir(&dir);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn custody_bootstrap_child_admission_requires_only_the_exact_private_reservation() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            env::temp_dir().join(format!("ab-bootstrap-reservation-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", DAEMON_AUTH_TOKEN_ENV]);
+        guard.set("AGENT_BROWSER_SOCKET_DIR", root.to_str().unwrap());
+        let token = generate_daemon_auth_token().unwrap(); // synthetic, never echoed
+        guard.set(DAEMON_AUTH_TOKEN_ENV, &token);
+        assert!(!custody_bootstrap_child_admitted("s"));
+        reserve_cold_daemon_auth_token("s", &token).unwrap();
+        assert!(custody_bootstrap_child_admitted("s"));
+        assert!(!daemon_session_metadata_absent("s"));
+        let path = get_auth_token_path("s");
+        for content in [
+            Vec::new(),
+            vec![b'x'; 257],
+            b"foreign synthetic value".to_vec(),
+        ] {
+            fs::write(&path, content).unwrap();
+            assert!(!custody_bootstrap_child_admitted("s"));
+        }
+        fs::write(&path, &token).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!custody_bootstrap_child_admitted("s"));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let hardlink = root.join("hardlink");
+        fs::hard_link(&path, &hardlink).unwrap();
+        assert!(!custody_bootstrap_child_admitted("s"));
+        fs::remove_file(&hardlink).unwrap();
+        fs::rename(&path, &hardlink).unwrap();
+        std::os::unix::fs::symlink(&hardlink, &path).unwrap();
+        assert!(!custody_bootstrap_child_admitted("s"));
+        fs::remove_file(&path).unwrap();
+        fs::rename(&hardlink, &path).unwrap();
+        guard.set(DAEMON_AUTH_TOKEN_ENV, "");
+        assert!(!custody_bootstrap_child_admitted("s"));
+        guard.remove(DAEMON_AUTH_TOKEN_ENV);
+        assert!(!custody_bootstrap_child_admitted("s"));
+        guard.set(DAEMON_AUTH_TOKEN_ENV, &token);
+        assert!(custody_bootstrap_child_admitted("s"));
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
     #[test]
     fn test_apply_daemon_env_forwards_keychain_settings() {
         let remote_env_guard = EnvGuard::new(&[
@@ -1607,6 +1822,7 @@ mod tests {
         remote_env_guard.set("AGENT_BROWSER_REMOTE_HEADED_DISPLAY", ":10");
         let mut cmd = Command::new("env");
         let opts = DaemonOptions {
+            custody_bootstrap_only: false,
             headed: false,
             debug: false,
             leave_open: false,
@@ -1735,6 +1951,53 @@ mod tests {
         assert!(envs.iter().any(|(k, v)| {
             k == "AGENT_BROWSER_REMOTE_HEADED_DISPLAY" && v.as_deref() == Some(":10")
         }));
+    }
+
+    #[test]
+    fn custody_bootstrap_env_removes_ambient_launch_and_capture_settings() {
+        let guard = EnvGuard::new(&[
+            "AGENT_BROWSER_SESSION_NAME",
+            "AGENT_BROWSER_CDP",
+            "AGENT_BROWSER_AUTO_CONNECT",
+            "AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT",
+            "AGENT_BROWSER_STREAM_PORT",
+            "AGENT_BROWSER_STATE_EXPIRE_DAYS",
+            "AGENT_BROWSER_CUSTOM_LAUNCH",
+            "AGENT_BROWSER_REQUIRE_TASK_AUTHORITY",
+        ]);
+        for key in [
+            "AGENT_BROWSER_SESSION_NAME",
+            "AGENT_BROWSER_CDP",
+            "AGENT_BROWSER_AUTO_CONNECT",
+            "AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT",
+            "AGENT_BROWSER_STREAM_PORT",
+            "AGENT_BROWSER_STATE_EXPIRE_DAYS",
+            "AGENT_BROWSER_CUSTOM_LAUNCH",
+        ] {
+            guard.set(key, "synthetic");
+        }
+        guard.set("AGENT_BROWSER_REQUIRE_TASK_AUTHORITY", "1");
+        let mut command = Command::new("unused");
+        apply_daemon_env(&mut command, "fixture", &DaemonOptions::custody_bootstrap());
+        let envs: std::collections::HashMap<_, _> = command.get_envs().collect();
+        for key in [
+            "AGENT_BROWSER_SESSION_NAME",
+            "AGENT_BROWSER_CDP",
+            "AGENT_BROWSER_AUTO_CONNECT",
+            "AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT",
+            "AGENT_BROWSER_STREAM_PORT",
+            "AGENT_BROWSER_STATE_EXPIRE_DAYS",
+            "AGENT_BROWSER_CUSTOM_LAUNCH",
+        ] {
+            assert_eq!(envs.get(std::ffi::OsStr::new(key)), Some(&None));
+        }
+        assert!(!envs.contains_key(std::ffi::OsStr::new("AGENT_BROWSER_REQUIRE_TASK_AUTHORITY")));
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new(
+                crate::native::custody_bootstrap_request::STARTUP_ENV
+            )),
+            Some(&Some(std::ffi::OsStr::new("1")))
+        );
     }
 
     #[test]

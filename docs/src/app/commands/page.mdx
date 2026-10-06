@@ -1,7 +1,7 @@
 # Commands
 
-The Linux source contains an **INTERNAL UNEXPOSED** fresh-chain custody bootstrap
-API, not a command or operation entrypoint. Schema 5 starts an independent exact
+Linux source provides the operator-only `handoff bootstrap --request-file <path>`
+entrypoint; this checkpoint is **not installed or live-accepted**. Schema 5 starts an independent exact
 attachment with generation 1 and preserves the previous receipt verbatim under a
 canonical SHA-256 digest. The former owner is only observed absent, not an
 authenticated detach acknowledgment. Diagnostics report the separate
@@ -10,9 +10,18 @@ The original `bootstrap` enables no CDP domains. A separate internal
 `bootstrap_ready` initializes Page, Runtime and Network on that same exact session
 before commit, checks the post-save receipt and binding, and permits manager
 extraction only through its committed token. This is protocol initialization, not
-proof of a running or rendered page. Neither variant is wired into a ready
-runtime. No installation, detachment, live receipt change or browser lifecycle
-permission follows from this source checkpoint.
+proof of a running or rendered page. The strict, regular-file input is at most
+64KiB and binds `sessionName`, `serviceTabHandle`, `expectedPredecessorSha256`,
+and `physicalProfile` (`canonicalProfile`, `profileDevice`, `profileInode`).
+It must match the CLI session; unknown fields and extra arguments fail.
+Only a metadata-free cold daemon with no handoff descriptor is accepted. No
+existing daemon is replaced, no lease is acquired or upgraded, and no normal
+job or health write surrounds the single receipt commit. The daemon retains
+the public guard, owns no browser process, and disables streaming, saved-login
+capture, private execution, background reconciliation/monitoring and idle timers.
+Precommit failure retires only that new browserless daemon; commit/publication
+uncertainty rejects requests and never retries or rolls back. Installation,
+approved supersession, quiescence and live go/no-go remain separate gates.
 
 `service_profile_upsert` can create profile configuration before a daemon exists.
 Only a session without daemon metadata uses a short-lived worker, with background

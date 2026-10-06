@@ -16,6 +16,7 @@ pub mod clipboard;
 pub mod control_plane;
 #[allow(dead_code)]
 pub mod cookies;
+pub(crate) mod custody_bootstrap_request;
 #[allow(dead_code)]
 pub mod daemon;
 #[allow(dead_code)]
@@ -89,7 +90,7 @@ pub mod retained_browser_requirement;
 mod runtime_attach_proof;
 #[cfg(target_os = "linux")]
 mod runtime_attestation;
-// Internal unexposed source checkpoint: no entrypoint calls bootstrap yet.
+// Operator-only cold entrypoint; not exposed through service_request or MCP.
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
 mod runtime_custody_bootstrap;

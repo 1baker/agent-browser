@@ -323,6 +323,7 @@ pub(crate) fn action_skips_browser_launch(action: &str) -> bool {
         "" | "launch"
             | "runtime_handoff_prepare"
             | "runtime_handoff_resume"
+            | "runtime_custody_bootstrap"
             | "cdp_free_launch"
             | "external_byop_adopt"
             | "cdp_attach"
@@ -2523,6 +2524,7 @@ fn service_profile_lease_metadata_for_command(command: &Value) -> Option<Service
                     action,
                     "runtime_handoff_prepare"
                         | "runtime_handoff_resume"
+                        | "runtime_custody_bootstrap"
                         | "retained_owner_prepare"
                         | "task_authority_issue"
                         | "task_authority_reconcile"
@@ -2994,6 +2996,8 @@ fn persist_closed_browser_health(state: &DaemonState, outcome: Option<&BrowserSh
 }
 
 pub struct DaemonState {
+    pub(crate) custody_bootstrap_status: CustodyBootstrapStatus,
+    custody_public_lease: Option<super::privacy_gate::PublicLease>,
     pub browser: Option<BrowserManager>,
     pub appium: Option<AppiumManager>,
     pub safari_driver: Option<safari::SafariDriverProcess>,
@@ -3080,6 +3084,22 @@ pub struct DaemonState {
     broker_detachments: HashMap<String, BrokerAttachment>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CustodyBootstrapStatus {
+    Normal = 0,
+    Pending = 1,
+    Running = 2,
+    Ready = 3,
+    PrecommitFailed = 4,
+    Uncertain = 5,
+}
+
+impl CustodyBootstrapStatus {
+    pub(crate) fn rejects_ordinary(self) -> bool {
+        !matches!(self, Self::Normal | Self::Ready)
+    }
+}
+
 #[derive(Clone)]
 struct BrokerAttachment {
     attachment_id: String,
@@ -3125,6 +3145,14 @@ struct BrokerOverflowMetadata {
 }
 
 impl DaemonState {
+    pub(crate) fn abandon_custody_bootstrap_connection(&mut self) {
+        if self.custody_bootstrap_status == CustodyBootstrapStatus::Ready {
+            // Unowned manager: dropping closes transport only, never Chrome.
+            self.browser = None;
+            self.custody_public_lease = None;
+            self.custody_bootstrap_status = CustodyBootstrapStatus::Uncertain;
+        }
+    }
     #[cfg(test)]
     pub(crate) fn set_private_journey_test_profile(&mut self, profile: &str) {
         self.attached_runtime_profile = Some(profile.to_owned());
@@ -3140,7 +3168,14 @@ impl DaemonState {
     }
 
     pub fn new() -> Self {
+        let bootstrap_only = super::custody_bootstrap_request::startup_mode();
         Self {
+            custody_bootstrap_status: if bootstrap_only {
+                CustodyBootstrapStatus::Pending
+            } else {
+                CustodyBootstrapStatus::Normal
+            },
+            custody_public_lease: None,
             browser: None,
             appium: None,
             safari_driver: None,
@@ -3154,7 +3189,11 @@ impl DaemonState {
                     .map(|s| DomainFilter::new(&s)),
             )),
             event_tracker: EventTracker::new(),
-            session_name: env::var("AGENT_BROWSER_SESSION_NAME").ok(),
+            session_name: if bootstrap_only {
+                None
+            } else {
+                env::var("AGENT_BROWSER_SESSION_NAME").ok()
+            },
             session_id: env::var("AGENT_BROWSER_SESSION").unwrap_or_else(|_| "default".to_string()),
             tracing_state: TracingState::new(),
             recording_state: RecordingState::new(),
@@ -3181,10 +3220,11 @@ impl DaemonState {
             dialog_handler_task: None,
             mouse_state: MouseState::default(),
             pending_dialog: None,
-            auto_dialog: !matches!(
-                env::var("AGENT_BROWSER_NO_AUTO_DIALOG").as_deref(),
-                Ok("1" | "true" | "yes")
-            ),
+            auto_dialog: !bootstrap_only
+                && !matches!(
+                    env::var("AGENT_BROWSER_NO_AUTO_DIALOG").as_deref(),
+                    Ok("1" | "true" | "yes")
+                ),
             stream_client: None,
             stream_server: None,
             launch_hash: None,
@@ -3414,6 +3454,9 @@ impl DaemonState {
 
     /// Update the stream server's CDP client slot when browser is set or cleared.
     pub async fn update_stream_client(&self) {
+        if self.custody_bootstrap_status != CustodyBootstrapStatus::Normal {
+            return;
+        }
         if let Some(ref slot) = self.stream_client {
             let mut guard = slot.write().await;
             *guard = self.browser.as_ref().map(|m| Arc::clone(&m.client));
@@ -5144,6 +5187,16 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         .to_string();
 
     let cmd_start = std::time::Instant::now();
+
+    if action == super::custody_bootstrap_request::ACTION {
+        return match handle_runtime_custody_bootstrap(cmd, state).await {
+            Ok(data) => success_response(&id, data),
+            Err(error) => error_response(&id, &error),
+        };
+    }
+    if state.custody_bootstrap_status.rejects_ordinary() {
+        return error_response(&id, "fresh_chain_daemon_not_ready");
+    }
 
     // This is intentionally not a public CDP endpoint. The daemon socket has
     // already authenticated the caller; this handler additionally requires an
@@ -12178,6 +12231,134 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     value[..end].to_string()
+}
+
+pub(crate) async fn handle_runtime_custody_bootstrap(
+    cmd: &Value,
+    state: &mut DaemonState,
+) -> Result<Value, String> {
+    #[cfg(target_os = "linux")]
+    {
+        handle_runtime_custody_bootstrap_using(
+            cmd,
+            state,
+            LockedServiceStateRepository::default_json,
+        )
+        .await
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (cmd, state);
+        Err("fresh_chain_linux_required".into())
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) async fn handle_runtime_custody_bootstrap_using<R: ServiceStateRepository>(
+    cmd: &Value,
+    state: &mut DaemonState,
+    repository_factory: impl FnOnce() -> Result<R, String>,
+) -> Result<Value, String> {
+    if state.custody_bootstrap_status != CustodyBootstrapStatus::Pending {
+        return Err("fresh_chain_bootstrap_attempt_denied".into());
+    }
+    // Entry latch is consumed even by a validation failure; never a retry permit.
+    state.custody_bootstrap_status = CustodyBootstrapStatus::Running;
+    // An occupied manager is never a disposable cold daemon, even on refusal.
+    if state.browser.is_some()
+        || state.appium.is_some()
+        || state.safari_driver.is_some()
+        || state.webdriver_backend.is_some()
+    {
+        state.custody_bootstrap_status = CustodyBootstrapStatus::Uncertain;
+        return Err("fresh_chain_daemon_occupied".into());
+    }
+    let mut commit_started = false;
+    let result = async {
+        if state.browser.is_some()
+            || state.appium.is_some()
+            || state.safari_driver.is_some()
+            || state.webdriver_backend.is_some()
+            || state.stream_client.is_some()
+            || state.stream_server.is_some()
+            || state.session_name.is_some()
+            || !matches!(state.backend_type, BackendType::Cdp)
+        {
+            return Err("fresh_chain_daemon_occupied".to_string());
+        }
+        if state.require_task_authority
+            || state.confirm_actions.as_ref().is_some_and(|ca| {
+                ca.requires_confirmation(super::custody_bootstrap_request::ACTION)
+            })
+        {
+            return Err("fresh_chain_policy_confirmation_required".into());
+        }
+        if let Some(policy) = state.policy.as_mut() {
+            if policy.reload().is_err()
+                || !matches!(
+                    policy.check(super::custody_bootstrap_request::ACTION),
+                    PolicyResult::Allow
+                )
+            {
+                return Err("fresh_chain_policy_denied".into());
+            }
+        }
+        let object = cmd.as_object().ok_or("fresh_chain_request_invalid")?;
+        if object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "id" | "action" | "request"))
+        {
+            return Err("fresh_chain_request_invalid".into());
+        }
+        let request = super::custody_bootstrap_request::parse(
+            cmd.get("request")
+                .cloned()
+                .ok_or("fresh_chain_request_invalid")?,
+            &state.session_id,
+        )?;
+        let repository = repository_factory().map_err(|_| "fresh_chain_state_unavailable")?;
+        let token = super::runtime_custody_bootstrap::bootstrap_ready_observed(
+            &repository,
+            request.into_bootstrap(),
+            Duration::from_secs(5),
+            &mut commit_started,
+        )
+        .await
+        .map_err(|_| {
+            if commit_started {
+                "fresh_chain_commit_uncertain"
+            } else {
+                "fresh_chain_precommit_failed"
+            }
+        })?;
+        let (manager, public_lease, receipt) = BrowserManager::adopt_committed_ready(token)
+            .map_err(|_| "fresh_chain_commit_uncertain")?;
+        let result = json!({"attached":true,"attachmentKind":"attached_existing",
+            "sessionName":state.session_id,"targetId":receipt["targetId"],
+            "browserPid":receipt["browser"]["process"]["pid"],"chainId":receipt["chainId"],
+            "ownerGeneration":receipt["ownerGeneration"],"schemaVersion":5,
+            "protocolReady":true,"renderedPageReadiness":"not_proven"});
+        state.attached_runtime_profile = receipt["profileId"].as_str().map(str::to_string);
+        state.attached_browser_pid = receipt["browser"]["process"]["pid"]
+            .as_u64()
+            .and_then(|p| u32::try_from(p).ok());
+        state.close_behavior = CloseBehavior::Detach;
+        state.auto_dialog = false;
+        state.engine = "chrome".into();
+        state.custody_public_lease = Some(public_lease);
+        state.browser = Some(manager);
+        // No generic init, stream, event/Fetch/dialog handlers, health write or lease upsert.
+        Ok(result)
+    }
+    .await;
+    state.custody_bootstrap_status = if result.is_ok() {
+        CustodyBootstrapStatus::Ready
+    } else if commit_started {
+        CustodyBootstrapStatus::Uncertain
+    } else {
+        CustodyBootstrapStatus::PrecommitFailed
+    };
+    result
 }
 
 fn runtime_handoff_path(session_name: &str) -> PathBuf {

@@ -45,6 +45,7 @@ mod private_tests;
 
 #[derive(Clone)]
 pub struct ControlPlaneHandle {
+    custody_bootstrap_status: Arc<AtomicUsize>,
     tx: mpsc::Sender<WorkerMessage>,
     status: Arc<ControlPlaneStatus>,
     service_job_timeout_ms: Option<u64>,
@@ -59,6 +60,7 @@ pub struct ControlPlaneStatus {
 }
 
 struct WorkerRuntimeOptions {
+    custody_bootstrap_status: Arc<AtomicUsize>,
     service_reconcile_interval_ms: Option<u64>,
     service_job_timeout_ms: Option<u64>,
     service_monitor_interval_ms: Option<u64>,
@@ -117,6 +119,12 @@ pub struct ControlRequest {
 }
 
 enum WorkerMessage {
+    CustodyBootstrapDeliverySucceeded(oneshot::Sender<()>),
+    CustodyBootstrapDeliveryFailed(oneshot::Sender<()>),
+    RuntimeCustodyBootstrap {
+        command: Value,
+        response_tx: oneshot::Sender<Value>,
+    },
     Request(Box<ControlRequest>),
     #[cfg(unix)]
     Private(PrivateWorkerRequest),
@@ -181,10 +189,30 @@ impl ControlPlaneWorker {
         service_job_timeout_ms: Option<u64>,
         service_monitor_interval_ms: Option<u64>,
     ) -> ControlPlaneHandle {
+        let bootstrap_only =
+            state.custody_bootstrap_status != super::actions::CustodyBootstrapStatus::Normal;
+        let custody_bootstrap_status =
+            Arc::new(AtomicUsize::new(state.custody_bootstrap_status as usize));
+        let service_reconcile_interval_ms = if bootstrap_only {
+            None
+        } else {
+            service_reconcile_interval_ms.filter(|ms| *ms > 0)
+        };
+        let service_monitor_interval_ms = if bootstrap_only {
+            None
+        } else {
+            service_monitor_interval_ms.filter(|ms| *ms > 0)
+        };
+        let service_job_timeout_ms = if bootstrap_only {
+            None
+        } else {
+            service_job_timeout_ms
+        };
         let (tx, rx) = mpsc::channel(capacity);
         let status = Arc::new(ControlPlaneStatus::new());
         let running_cancellations = Arc::new(Mutex::new(HashMap::new()));
         let runtime_options = WorkerRuntimeOptions {
+            custody_bootstrap_status: Arc::clone(&custody_bootstrap_status),
             service_reconcile_interval_ms,
             service_job_timeout_ms,
             service_monitor_interval_ms,
@@ -198,6 +226,7 @@ impl ControlPlaneWorker {
             runtime_options,
         ));
         ControlPlaneHandle {
+            custody_bootstrap_status,
             tx,
             status,
             service_job_timeout_ms,
@@ -208,6 +237,64 @@ impl ControlPlaneWorker {
 }
 
 impl ControlPlaneHandle {
+    pub(crate) async fn custody_bootstrap_delivery_succeeded(&self) {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorkerMessage::CustodyBootstrapDeliverySucceeded(tx))
+            .await
+            .is_ok()
+        {
+            let _ = rx.await;
+        }
+    }
+    pub(crate) async fn custody_bootstrap_delivery_failed(&self) {
+        // Fence public admission immediately, before any queued cleanup.
+        let _ = self.custody_bootstrap_status.compare_exchange(
+            super::actions::CustodyBootstrapStatus::Running as usize,
+            super::actions::CustodyBootstrapStatus::Uncertain as usize,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorkerMessage::CustodyBootstrapDeliveryFailed(tx))
+            .await
+            .is_ok()
+        {
+            let _ = rx.await;
+        }
+    }
+    pub(crate) fn custody_bootstrap_rejects_ordinary(&self) -> bool {
+        !matches!(self.custody_bootstrap_status.load(Ordering::Acquire), 0 | 3)
+    }
+
+    pub(crate) fn custody_bootstrap_precommit_failed(&self) -> bool {
+        self.custody_bootstrap_status.load(Ordering::Acquire) == 4
+    }
+
+    pub(crate) async fn custody_bootstrap(&self, command: Value) -> Value {
+        if command.get("action").and_then(Value::as_str)
+            != Some(super::custody_bootstrap_request::ACTION)
+        {
+            return json!({"success":false,"error":"fresh_chain_request_invalid"});
+        }
+        let (response_tx, response_rx) = oneshot::channel();
+        if self
+            .tx
+            .try_send(WorkerMessage::RuntimeCustodyBootstrap {
+                command,
+                response_tx,
+            })
+            .is_err()
+        {
+            return json!({"success":false,"error":"fresh_chain_dispatch_uncertain"});
+        }
+        response_rx
+            .await
+            .unwrap_or_else(|_| json!({"success":false,"error":"fresh_chain_dispatch_uncertain"}))
+    }
     /// Read actual broker and retained-page identity without launching, locking
     /// privacy, or admitting a credential. Only the private coordinator uses it.
     #[cfg(target_os = "linux")]
@@ -386,6 +473,14 @@ impl ControlPlaneHandle {
     }
 
     pub async fn submit(&self, command: Value) -> Value {
+        if command.get("action").and_then(Value::as_str)
+            == Some(super::custody_bootstrap_request::ACTION)
+        {
+            return self.custody_bootstrap(command).await;
+        }
+        if self.custody_bootstrap_rejects_ordinary() {
+            return json!({"success":false,"error":"fresh_chain_daemon_not_ready"});
+        }
         let id = command
             .get("id")
             .and_then(|v| v.as_str())
@@ -1534,6 +1629,7 @@ async fn run_worker(
     });
     let service_job_timeout_ms = runtime_options.service_job_timeout_ms;
     let running_cancellations = runtime_options.running_cancellations;
+    let custody_bootstrap_status = runtime_options.custody_bootstrap_status;
     status.set_state(WorkerState::Ready);
 
     loop {
@@ -1544,6 +1640,34 @@ async fn run_worker(
                 };
 
                 match message {
+                    WorkerMessage::CustodyBootstrapDeliverySucceeded(done) => {
+                        if state.custody_bootstrap_status == super::actions::CustodyBootstrapStatus::Ready {
+                            let _ = custody_bootstrap_status.compare_exchange(2, 3, Ordering::AcqRel, Ordering::Acquire);
+                        }
+                        let _ = done.send(());
+                    }
+                    WorkerMessage::CustodyBootstrapDeliveryFailed(done) => {
+                        state.abandon_custody_bootstrap_connection();
+                        custody_bootstrap_status.store(state.custody_bootstrap_status as usize, Ordering::Release);
+                        let _ = done.send(());
+                    }
+                    WorkerMessage::RuntimeCustodyBootstrap { command, response_tx } => {
+                        if response_tx.is_closed() { continue; }
+                        let first_attempt = state.custody_bootstrap_status == super::actions::CustodyBootstrapStatus::Pending;
+                        if first_attempt { custody_bootstrap_status.store(2, Ordering::Release); }
+                        let response = execute_command(&command, &mut state).await;
+                        let admitted = response.get("success").and_then(Value::as_bool) == Some(true);
+                        // Ready is internal only until the FIRST success is published.
+                        // A rejected second attempt owns no publication/cleanup baton.
+                        if first_attempt && !admitted {
+                            custody_bootstrap_status.store(state.custody_bootstrap_status as usize, Ordering::Release);
+                        }
+                        if response_tx.send(response).is_err() && first_attempt && admitted {
+                            state.abandon_custody_bootstrap_connection();
+                            custody_bootstrap_status.store(state.custody_bootstrap_status as usize, Ordering::Release);
+                        }
+                        // No job, scheduler, timeout, cancellation, health or queue mutation.
+                    }
                     #[cfg(target_os = "linux")]
                     WorkerMessage::PrivatePreflight { handle, origin, url, endpoint, response_tx } => {
                         if response_tx.is_closed() { continue; }
@@ -1614,6 +1738,10 @@ async fn run_worker(
                         )
                         .unwrap_or(u64::MAX);
                         status.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                        if !matches!(custody_bootstrap_status.load(Ordering::Acquire), 0 | 3) {
+                            let _ = request.response_tx.send(json!({"success":false,"error":"fresh_chain_daemon_not_ready"}));
+                            continue;
+                        }
                         if service_job_cancelled(&request.job_id) {
                             if request.profile_lease_wait_started_at.is_some() {
                                 record_profile_lease_wait_ended_event(
@@ -1792,6 +1920,7 @@ async fn run_worker(
                             persist_service_job_finished(&request, &response);
                         }
                         let follow_up = async {
+                            if state.custody_bootstrap_status != super::actions::CustodyBootstrapStatus::Normal { return; }
                             if timed_out {
                                 run_post_timeout_health_circuit(
                                     &mut state,
@@ -1815,7 +1944,7 @@ async fn run_worker(
                     }
                 }
             }
-            _ = drain_interval.tick() => {
+            _ = drain_interval.tick(), if state.custody_bootstrap_status == super::actions::CustodyBootstrapStatus::Normal => {
                 let Ok(_privacy_lease) = state.public_browser_lease() else { continue; };
                 if state.browser.is_some() {
                     status.set_state(WorkerState::Draining);
@@ -2072,6 +2201,40 @@ mod tests {
         ));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[tokio::test]
+    async fn custody_bootstrap_worker_rejects_without_jobs_or_ambient_timers() {
+        // No HOME mutation: only use the disposable home provided by the reviewed wrapper.
+        if std::env::var("AGENT_BROWSER_TEST_ISOLATED").as_deref() != Ok("1") {
+            return;
+        }
+        let state_path = super::super::service_store::default_service_state_path().unwrap();
+        let before = std::fs::read(&state_path).ok();
+        let mut state = DaemonState::new();
+        state.custody_bootstrap_status = super::super::actions::CustodyBootstrapStatus::Pending;
+        let handle = ControlPlaneWorker::start_with_options(state, Some(0), Some(1), Some(1));
+        assert_eq!(handle.service_job_timeout_ms, None);
+        assert_eq!(handle.service_monitor_interval_ms, None);
+        let rejected = handle
+            .submit(json!({"id":"must-not-persist","action":"launch"}))
+            .await;
+        assert_eq!(rejected["success"], false);
+        let result = handle
+            .custody_bootstrap(
+                json!({"id":"invalid","action":super::super::custody_bootstrap_request::ACTION}),
+            )
+            .await;
+        assert_eq!(result["success"], false);
+        assert!(handle.custody_bootstrap_precommit_failed());
+        let retried = handle
+            .custody_bootstrap(json!({"action":super::super::custody_bootstrap_request::ACTION}))
+            .await;
+        assert_eq!(retried["error"], "fresh_chain_bootstrap_attempt_denied");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(handle.status.queue_depth(), 0);
+        assert_eq!(std::fs::read(&state_path).ok(), before);
+        handle.shutdown().await;
     }
 
     #[tokio::test]

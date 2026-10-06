@@ -2048,7 +2048,7 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             let subcommand = rest.first().copied().ok_or_else(|| {
                 ParseError::MissingArguments {
                     context: "handoff".to_string(),
-                    usage: "handoff <prepare|resume>",
+                    usage: "handoff <prepare|resume|bootstrap --request-file <path>>",
                 }
             })?;
             match subcommand {
@@ -2057,9 +2057,27 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                     crate::native::handoff_guard::sidegrade_requested(),
                 )),
                 "resume" => Ok(json!({ "id": id, "action": "runtime_handoff_resume" })),
+                "bootstrap" => {
+                    if rest.len() != 3 || rest[1] != "--request-file" || rest[2].is_empty()
+                        || rest[2].starts_with("--")
+                    {
+                        return Err(ParseError::InvalidValue {
+                            message: "Invalid custody bootstrap arguments".into(),
+                            usage: "handoff bootstrap --request-file <path>",
+                        });
+                    }
+                    if !cfg!(target_os = "linux") {
+                        return Err(ParseError::InvalidValue {
+                            message: "Custody bootstrap requires Linux".into(),
+                            usage: "handoff bootstrap --request-file <path>",
+                        });
+                    }
+                    Ok(json!({"id":id,"action":crate::native::custody_bootstrap_request::ACTION,
+                        "requestFile":rest[2]}))
+                }
                 _ => Err(ParseError::UnknownSubcommand {
                     subcommand: subcommand.to_string(),
-                    valid_options: &["prepare", "resume"],
+                    valid_options: &["prepare", "resume", "bootstrap"],
                 }),
             }
         }
@@ -9141,6 +9159,34 @@ mod tests {
     }
 
     // === Batch Tests ===
+
+    #[test]
+    fn custody_bootstrap_cli_rejects_extra_or_missing_arguments() {
+        for command in [
+            "handoff bootstrap",
+            "handoff bootstrap --request-file",
+            "handoff bootstrap --request-file --bogus",
+            "handoff bootstrap --unknown file",
+            "handoff bootstrap --request-file file extra",
+            "handoff bootstrap --request-file file --request-file other",
+        ] {
+            assert!(parse_command(&args(command), &default_flags()).is_err());
+        }
+        let result = parse_command(
+            &args("handoff bootstrap --request-file fixture.json"),
+            &default_flags(),
+        );
+        if cfg!(target_os = "linux") {
+            let command = result.unwrap();
+            assert_eq!(
+                command["action"],
+                crate::native::custody_bootstrap_request::ACTION
+            );
+            assert_eq!(command["requestFile"], "fixture.json");
+        } else {
+            assert!(result.is_err());
+        }
+    }
 
     #[test]
     fn test_batch_default() {

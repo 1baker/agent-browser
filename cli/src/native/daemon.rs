@@ -81,6 +81,11 @@ fn file_sha256(path: &Path) -> Result<String, std::io::Error> {
 }
 
 pub async fn run_daemon(session: &str) {
+    let custody_bootstrap_only = super::custody_bootstrap_request::startup_mode();
+    if custody_bootstrap_only && !custody_bootstrap_startup_admitted(session) {
+        let _ = writeln!(std::io::stderr(), "fresh_chain_cold_admission_required");
+        return;
+    }
     let startup_started = Instant::now();
     let socket_dir = get_socket_dir();
     if !socket_dir.exists() {
@@ -209,10 +214,12 @@ pub async fn run_daemon(session: &str) {
     let _ = fs::remove_file(socket_dir.join(format!("{}.provider", session)));
     let _ = fs::remove_file(socket_dir.join(format!("{}.extensions", session)));
 
-    if let Ok(days_str) = env::var("AGENT_BROWSER_STATE_EXPIRE_DAYS") {
-        if let Ok(days) = days_str.parse::<u64>() {
-            if days > 0 {
-                let _ = state::state_clean(days);
+    if !custody_bootstrap_only {
+        if let Ok(days_str) = env::var("AGENT_BROWSER_STATE_EXPIRE_DAYS") {
+            if let Ok(days) = days_str.parse::<u64>() {
+                if days > 0 {
+                    let _ = state::state_clean(days);
+                }
             }
         }
     }
@@ -223,23 +230,24 @@ pub async fn run_daemon(session: &str) {
         .ok()
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(0);
-    match StreamServer::start_without_client(preferred_port, session.to_string(), true).await {
-        Ok((stream_server, client_slot)) => {
-            stream_client = Some(client_slot.clone());
-            if let Err(e) = fs::write(&stream_path, stream_server.port().to_string()) {
-                let _ = writeln!(std::io::stderr(), "Failed to write .stream file: {}", e);
-            } else {
-                secure_daemon_file(&stream_path);
+    if !custody_bootstrap_only {
+        match StreamServer::start_without_client(preferred_port, session.to_string(), true).await {
+            Ok((stream_server, client_slot)) => {
+                stream_client = Some(client_slot.clone());
+                if let Err(e) = fs::write(&stream_path, stream_server.port().to_string()) {
+                    let _ = writeln!(std::io::stderr(), "Failed to write .stream file: {}", e);
+                } else {
+                    secure_daemon_file(&stream_path);
+                }
+                stream_server_instance = Some(Arc::new(stream_server));
+                log_startup_milestone(startup_started, "stream-server-ready");
             }
-            stream_server_instance = Some(Arc::new(stream_server));
-            log_startup_milestone(startup_started, "stream-server-ready");
-        }
-        Err(e) => {
-            let _ = writeln!(std::io::stderr(), "Stream server failed to start: {}", e);
-            log_startup_milestone(startup_started, "stream-server-failed");
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "Stream server failed to start: {}", e);
+                log_startup_milestone(startup_started, "stream-server-failed");
+            }
         }
     }
-
     // Auto-shutdown the daemon after this many ms of inactivity (no commands received).
     // Disabled when unset or 0.
     let idle_timeout_ms = env::var("AGENT_BROWSER_IDLE_TIMEOUT_MS")
@@ -267,10 +275,26 @@ pub async fn run_daemon(session: &str) {
         daemon_auth_token,
         stream_client,
         stream_server_instance,
-        idle_timeout_ms,
-        service_reconcile_interval_ms,
-        service_job_timeout_ms,
-        service_monitor_interval_ms,
+        if custody_bootstrap_only {
+            None
+        } else {
+            idle_timeout_ms
+        },
+        if custody_bootstrap_only {
+            None
+        } else {
+            service_reconcile_interval_ms
+        },
+        if custody_bootstrap_only {
+            None
+        } else {
+            service_job_timeout_ms
+        },
+        if custody_bootstrap_only {
+            None
+        } else {
+            service_monitor_interval_ms
+        },
     )
     .await;
 
@@ -304,6 +328,11 @@ pub async fn run_daemon(session: &str) {
         let _ = writeln!(std::io::stderr(), "Daemon error: {}", e);
         process::exit(1);
     }
+}
+
+fn custody_bootstrap_startup_admitted(session: &str) -> bool {
+    env::var("AGENT_BROWSER_COLD_DAEMON").as_deref() == Ok("1")
+        && crate::connection::custody_bootstrap_child_admitted(session)
 }
 
 fn log_startup_milestone(startup_started: Instant, label: &str) {
@@ -358,8 +387,12 @@ async fn run_socket_server(
     );
 
     #[cfg(target_os = "linux")]
-    let _private_executor = super::private_coordinator::start_configured(&control_plane, session)
-        .map_err(str::to_owned)?;
+    let _private_executor = if super::custody_bootstrap_request::startup_mode() {
+        None
+    } else {
+        super::private_coordinator::start_configured(&control_plane, session)
+            .map_err(str::to_owned)?
+    };
 
     let (reset_tx, mut reset_rx) = mpsc::channel::<()>(64);
     let reset_tx = idle_timeout_ms.map(|_| Arc::new(reset_tx));
@@ -530,6 +563,10 @@ fn successful_exit_response(exits_daemon: bool, response: &Value) -> bool {
     exits_daemon && response.get("success").and_then(Value::as_bool) == Some(true)
 }
 
+fn custody_bootstrap_publication_owned(bootstrap_command: bool, response: &Value) -> bool {
+    bootstrap_command && response.get("success").and_then(Value::as_bool) == Some(true)
+}
+
 async fn handle_connection<S>(
     stream: S,
     control_plane: ControlPlaneHandle,
@@ -597,7 +634,12 @@ async fn handle_connection<S>(
                 let action = cmd.get("action").and_then(|v| v.as_str());
                 let exits_daemon = matches!(action, Some("close" | "runtime_handoff_prepare"));
 
-                let response = if action == Some("worker_status") {
+                let bootstrap_command = action == Some(super::custody_bootstrap_request::ACTION);
+                let response = if bootstrap_command {
+                    control_plane.custody_bootstrap(cmd).await
+                } else if control_plane.custody_bootstrap_rejects_ordinary() {
+                    serde_json::json!({"success":false,"error":"fresh_chain_daemon_not_ready"})
+                } else if action == Some("worker_status") {
                     let id = cmd.get("id").and_then(|v| v.as_str()).unwrap_or("");
                     control_plane.status_response(id)
                 } else if action == Some("service_job_cancel") {
@@ -628,10 +670,29 @@ async fn handle_connection<S>(
 
                 let mut resp = serde_json::to_string(&response).unwrap_or_default();
                 resp.push('\n');
+                let precommit_failed =
+                    bootstrap_command && control_plane.custody_bootstrap_precommit_failed();
                 if writer.write_all(resp.as_bytes()).await.is_err() {
+                    if bootstrap_command {
+                        if custody_bootstrap_publication_owned(bootstrap_command, &response) {
+                            control_plane.custody_bootstrap_delivery_failed().await;
+                        }
+                        if precommit_failed {
+                            close_notify.notify_one();
+                        }
+                    }
                     break;
                 }
 
+                if custody_bootstrap_publication_owned(bootstrap_command, &response) {
+                    control_plane.custody_bootstrap_delivery_succeeded().await;
+                }
+
+                if precommit_failed {
+                    // This cold, browserless daemon alone retires. Uncertainty never does.
+                    close_notify.notify_one();
+                    return;
+                }
                 if successful_exit_response(exits_daemon, &response) {
                     if let Some(ref path) = stream_file_cleanup {
                         let _ = fs::remove_file(path);
@@ -714,6 +775,66 @@ fn get_port_for_session(session: &str) -> u16 {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+
+    #[test]
+    fn custody_bootstrap_duplicate_error_has_no_publication_cleanup_authority() {
+        assert!(!custody_bootstrap_publication_owned(
+            true,
+            &serde_json::json!({"success":false,"error":"fresh_chain_bootstrap_attempt_denied"})
+        ));
+        assert!(!custody_bootstrap_publication_owned(
+            false,
+            &serde_json::json!({"success":true})
+        ));
+        assert!(custody_bootstrap_publication_owned(
+            true,
+            &serde_json::json!({"success":true})
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn custody_bootstrap_direct_startup_refuses_all_existing_metadata_and_handoff() {
+        let root = env::temp_dir().join(format!("ab-bootstrap-startup-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let guard = crate::test_utils::EnvGuard::new(&[
+            "AGENT_BROWSER_SOCKET_DIR",
+            "AGENT_BROWSER_COLD_DAEMON",
+            DAEMON_AUTH_TOKEN_ENV,
+        ]);
+        guard.set("AGENT_BROWSER_SOCKET_DIR", root.to_str().unwrap());
+        guard.set("AGENT_BROWSER_COLD_DAEMON", "1");
+        assert!(!custody_bootstrap_startup_admitted("s"));
+        guard.set(DAEMON_AUTH_TOKEN_ENV, "synthetic-startup-reservation");
+        crate::connection::reserve_cold_daemon_auth_token("s", "synthetic-startup-reservation")
+            .unwrap();
+        assert!(custody_bootstrap_startup_admitted("s"));
+        for suffix in [
+            "sock",
+            "pid",
+            "version",
+            "sha256",
+            "port",
+            "stream",
+            "engine",
+            "provider",
+            "extensions",
+            "handoff.json",
+        ] {
+            let path = root.join(format!("s.{suffix}"));
+            fs::write(&path, "synthetic retained metadata").unwrap();
+            assert!(!custody_bootstrap_startup_admitted("s"));
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                "synthetic retained metadata"
+            );
+            fs::remove_file(path).unwrap();
+        }
+        guard.remove("AGENT_BROWSER_COLD_DAEMON");
+        assert!(!custody_bootstrap_startup_admitted("s"));
+        fs::remove_file(root.join("s.token")).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn denied_close_or_handoff_does_not_exit_daemon() {

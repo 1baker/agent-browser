@@ -1,7 +1,8 @@
 # Fresh-chain custody source checkpoint
 
-Status: INTERNAL UNEXPOSED. This is an internal Linux API, not an operation
-entrypoint, ready runtime, install gate, or permission for a live receipt change.
+Status: OPERATOR ENTRYPOINT SOURCE CHECKPOINT / NOT INSTALLED. The original
+attachment-only API stays internal. The later cold operator entrypoint is
+described below; source validation is not an install or live go/no-go gate.
 
 ## Proof and storage
 
@@ -51,7 +52,7 @@ refuse schema 5 before connecting and again before receipt removal/replacement;
 supported schema-2 and schema-4 behavior is retained. Exact-tab URL projection
 fences and preserves the receipt as opaque data and never promotes its proof.
 
-No existing action calls either internal API. The original attachment-only
+At the original source checkpoint no action called either API. The original attachment-only
 result cannot be handed to existing ready-runtime consumers. Any future operation
 entrypoint, live supersession, detach/re-attach or installation still requires
 its explicit scope and all applicable custody, quiescence and publisher gates.
@@ -86,11 +87,74 @@ attachment-only result and pre-commit protocol-ready stage expose no manager.
 Future action adoption must retain that guard and revalidate its current
 authority; this internal token is not a reusable lifecycle permission.
 
-This subunit has no CLI, action, daemon-startup or install wiring. Those checks,
+At that checkpoint the subunit had no CLI, action, daemon-startup or install wiring. Those checks,
 the detached publisher packet, final peer review and operational go/no-go are
 unfinished. Neither source success nor synthetic tests establish live custody.
 
-## Validation scope
+## Cold operator entrypoint, 2026-10-06
+
+`handoff bootstrap --request-file <path>` is Linux-only and not exposed through
+service_request/MCP schema additions. The regular-file, no-symlink input is
+bounded to 64KiB, denies unknown fields and binds the CLI session to an exact
+handle, predecessor digest and canonical profile/device/inode. It is parsed
+before startup. Cold admission refuses existing daemon metadata and handoff
+descriptors under the startup lock; no cleanup, prepare, resume or retry path.
+
+The child environment suppresses launch/capture hints while preserving privacy
+and policy routing. Direct bootstrap-mode startup also requires cold admission
+and ignores streaming, private execution, expiration and all background/idle
+timers. Its dedicated worker message bypasses scheduler/job persistence,
+cancellation/timeout wrappers and health follow-up. Ordinary pre-success
+requests are rejected before normal submit. One entry latch is consumed even
+on rejection; existing managers are never replaced or retired on refusal.
+
+The action uses the existing protocol-ready core, retains the public privacy
+guard and adopts an unowned manager with detach behavior. It neither upserts
+leases nor writes generic browser health nor starts handlers/streaming. A
+precommit failure retires only the new browserless daemon, even if delivery
+fails. The possibility of a durable write is conservatively latched before
+commit; errors thereafter stay rejecting requests with no manager. Failed
+publication drops the unowned connection only, never the browser or receipt.
+No retry, rollback or fabricated continuity follows from any error.
+
+The agreed plan incorporates peer C1 (stream-server suppression) and R1-R6
+(dedicated worker, one-shot failure disposition, early request gate, timers,
+inherited environment, symbol-based wiring). The owner implements this unit;
+default peer limits remain unchanged. Existing internal proofs, schema-4
+compatibility and W1 downgrade guards are not weakened. A mechanical false
+initializer in mcp.rs does not add an MCP interface. The lifecycle consequence
+category covers bootstrap so confirmation policy cannot misclassify it.
+
+No install or retained-browser action belongs to this source unit. The detached
+publisher packet, final install peer check and separate operational go/no-go
+remain mandatory. Source tests do not establish live custody or rendered UI.
+
+### Independent findings and bounded correction
+
+Independent review raised ECR-01 (direct startup admission), ECR-02 (publication
+admission race), and ECR-03 (rejected duplicate inheriting cleanup authority).
+The owner accepted all three as blocking. ECR-02/03 now bind shared admission and
+cleanup to the admitted first success and successful socket publication; failed
+publication fences admission before dropping the unowned connection, and a
+duplicate error owns no cleanup baton.
+
+The first ECR-01 remediation failed the full isolated CLI fixture (35/36 focused
+tests passed) because it refused the launcher's own pre-spawn token reservation.
+That failed attempt is retained, not reported as a passing checkpoint. Peer
+drift review accepted one bounded parent-reservation compatibility correction
+inside the existing cold-only plan, with no new task, limit extension or live
+permission. The parent still refuses all metadata. The child reuses the same
+suffix list, excepts only its exact inherited reservation, opens it without
+following links, checks the opened file's ownership/private mode/link count and
+size, and performs a fixed-bound comparison without echoing contents. Other
+metadata, a handoff, missing or foreign reservation still fail before writes.
+Only the cold launcher's shared create_new reservation helper is used in tests.
+The bounded correction passed the full fixture and closed-world ECR-01 source
+review. The independent reviewer identified no critical regression in the
+correction and confirmed ECR-02/03 remained intact; executed owner QA is
+recorded below. No additional discovery or remediation loop was opened.
+
+### Validation boundary
 
 Only synthetic process/profile fixtures and a fake WebSocket browser are used.
 Focused tests cover exact attach/session echo, unchanged predecessor and peers,
@@ -133,3 +197,55 @@ surface. Its skill-sync recommendation points to an obsolete other-user home;
 this source-only scope does not install or synchronize workstation skills.
 Full Rust, live E2E, installer and consumer acceptance remain unrun. This note
 is a source checkpoint, not release readiness or an operational go/no-go.
+
+## Cold entrypoint validation, 2026-10-06
+
+The later operator-entrypoint unit was verified against base 9a27bd93 with the
+same reviewed ext4 isolation wrapper. All four final QA result receipts report
+exit code 0. The host-listener negative control passed in every execution;
+production browser/process/profile/runtime lanes were unavailable. The CLI
+fixture invoked the built candidate against a fake WebSocket browser, not Chrome.
+
+Across the focused Rust filters, 555 distinct tests passed with zero failures.
+The `custody_bootstrap` filter passed 37 cases, including the cold CLI-to-daemon
+path, private parent reservation, seven-command exact attachment, single receipt
+write, no stream/job/health mutation, precommit retirement, publication fencing,
+and rejected-duplicate cleanup ownership. Compatibility filters passed for
+attestation, runtime handoff, downgrade guard, handle refresh, parser, connection,
+daemon, policy, output and screencast view. The ordinary worker filter passed
+33 cases; its pre-existing live-browser fixture stayed ignored. All four ignored
+private-worker fixtures were explicitly run in isolation and passed. Counts
+above deduplicate overlapping filters rather than adding their totals.
+
+Rust format check and normal Clippy with warnings denied passed. Root ESLint,
+the production docs build, API/MCP parity, generated service-client contract
+check, and all eight route-confusion fixtures passed. The docs build's existing
+multiple-lockfile warning remains; no lockfile or configuration changed. Owner
+final inspection constrained the direct-startup fixture to Linux, matching its
+Linux-only admission API; non-Linux execution is not claimed.
+
+The final log SHA-256 values are:
+
+- bootstrap-reservation-final:
+  636bce3b385084112c4885b86a56246ecf4c6a5079ed4f492bd3a17fe4019709.
+- bootstrap-worker-regression:
+  710939db59be78452ecac6de09b80018f21d40611c3c43c725250d3a8898c814.
+- bootstrap-reservation-docs:
+  c9e1ab8362a791b07a82bd20ca70162f1d5daff0f04fb5bf324d84ca4015d218.
+- bootstrap-entrypoint-contracts:
+  652fe2bd4f8a7e6dc1b4ec4ee29874c3afe7bd08e89bdaf5c69648c75b8f4734.
+- bootstrap-portability-check:
+  c3285c86294a9bf3838b9b1e9c94a3653108bdf8ceb5f6e686c45193d31fc527.
+
+The fifth result receipt also reports exit code 0: after the final Linux fixture
+annotation, the candidate was rebuilt and all 37 bootstrap cases, format check
+and strict Clippy passed again. Only documentation evidence was added afterward.
+
+No installer/provisioning/runtime publisher code, public schema, dependencies,
+version or credential material changed. Broad selector installer recommendations
+come from shared output/help paths, not an installer mutation; live streaming
+and broad browser suites are outside this source-only boundary. Installed skills
+were not synchronized. Final install review, detached executor/artifact packet,
+fresh operational go/no-go and live consumer acceptance remain separate and
+unfinished. This checkpoint neither authorizes nor claims installation or live
+custody continuity.

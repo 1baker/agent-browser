@@ -1,4 +1,4 @@
-//! INTERNAL, UNEXPOSED source checkpoint: fresh-chain custody bootstrap.
+//! Fresh-chain custody bootstrap; reachable only by the cold operator entrypoint.
 //!
 //! A schema v5 `fresh_chain_bootstrap` receipt starts an independent custody
 //! chain (new chainId, generation 1, no `source`). It is proven by a new exact
@@ -7,7 +7,7 @@
 //! is NOT an authenticated detach ACK: the former owner is only observed
 //! absent. The predecessor v4 receipt is embedded verbatim and digest-bound.
 //!
-//! No command, action, entrypoint or install gate reaches this module yet.
+//! No service_request/MCP action or install gate invokes this module.
 //! `bootstrap` is attachment-only: CDP domains are NOT enabled and it is never
 //! handed to ready-runtime consumers. `bootstrap_ready` additionally performs
 //! protocol-only initialization (Page/Runtime/Network.enable plus an exact
@@ -391,6 +391,17 @@ async fn bootstrap_ready_with_timeout<R: ServiceStateRepository>(
     request: BootstrapRequest,
     ready_timeout: std::time::Duration,
 ) -> Result<CommittedReadyBootstrap, String> {
+    bootstrap_ready_observed(repository, request, ready_timeout, &mut false).await
+}
+
+/// The operator latches uncertainty before the first possible durable write.
+/// Conservative true means never retry or retire the daemon on an error.
+pub(super) async fn bootstrap_ready_observed<R: ServiceStateRepository>(
+    repository: &R,
+    request: BootstrapRequest,
+    ready_timeout: std::time::Duration,
+    commit_started: &mut bool,
+) -> Result<CommittedReadyBootstrap, String> {
     let admitted = admit(&repository.load_snapshot()?, &request)?;
     let staged =
         BrowserManager::attach_exact_unowned(&admitted.endpoint, &admitted.target_id).await?;
@@ -406,6 +417,7 @@ async fn bootstrap_ready_with_timeout<R: ServiceStateRepository>(
         return Err("fresh_chain_attachment_mismatch".into());
     }
     ready.ensure_not_paused()?;
+    *commit_started = true;
     let (receipt, committed_fence) = commit_receipt(repository, &request, &admitted)?;
     let persisted = repository
         .load_snapshot()
@@ -918,6 +930,356 @@ mod tests {
                 return Err("synthetic_commit_uncertain_after_write".into());
             }
             Ok(result)
+        }
+    }
+
+    impl ServiceStateRepository for &TestRepository {
+        fn load_snapshot(&self) -> Result<ServiceState, String> {
+            TestRepository::load_snapshot(self)
+        }
+        fn mutate<R>(
+            &self,
+            mutator: impl FnOnce(&mut ServiceState) -> Result<R, String>,
+        ) -> Result<R, String> {
+            TestRepository::mutate(self, mutator)
+        }
+    }
+
+    fn operator_command(request: &BootstrapRequest) -> Value {
+        json!({"id":"bootstrap-fixture","action":super::super::custody_bootstrap_request::ACTION,
+            "request":{"sessionName":request.session_name,"serviceTabHandle":request.handle,
+                "expectedPredecessorSha256":request.expected_predecessor_sha256,
+                "physicalProfile":{"canonicalProfile":request.profile.canonical_profile,
+                    "profileDevice":request.profile.profile_device,"profileInode":request.profile.profile_inode}}})
+    }
+
+    fn operator_state() -> super::super::actions::DaemonState {
+        let mut state = super::super::actions::DaemonState::new();
+        state.session_id = "s".into();
+        state.session_name = None;
+        state.custody_bootstrap_status = super::super::actions::CustodyBootstrapStatus::Pending;
+        state
+    }
+
+    #[tokio::test]
+    async fn custody_bootstrap_operator_adopts_once_without_stream_or_state_rewrite() {
+        use super::super::actions::{
+            handle_runtime_custody_bootstrap_using, CustodyBootstrapStatus,
+        };
+        let server = FakeBrowser::ready(Ready::Ok).await;
+        let fixture = physical_fixture(&server.endpoint);
+        let before = serde_json::to_value(&fixture.state).unwrap();
+        let repository = TestRepository::new(fixture.state.clone());
+        let command = operator_command(&fixture.request);
+        let mut state = operator_state();
+        let response =
+            handle_runtime_custody_bootstrap_using(&command, &mut state, || Ok(&repository))
+                .await
+                .unwrap();
+        assert_eq!(response["attached"], true);
+        assert_eq!(response["targetId"], "t1");
+        assert_eq!(
+            state.custody_bootstrap_status,
+            CustodyBootstrapStatus::Ready
+        );
+        assert!(state.stream_client.is_none() && state.stream_server.is_none());
+        assert!(state.session_name.is_none() && !state.auto_dialog);
+        state.update_stream_client().await; // Must remain inert.
+        let gate = super::super::privacy_gate::PrivacyGate::for_endpoint(&server.endpoint).unwrap();
+        assert!(gate.begin_private().is_err());
+        assert!(
+            handle_runtime_custody_bootstrap_using(&command, &mut state, || Ok(&repository))
+                .await
+                .is_err()
+        );
+        assert_eq!(repository.saves.get(), 1);
+        let after = repository.load_snapshot().unwrap();
+        let mut expected = before;
+        expected["runtimeCustodyReceipts"]["s"] = after.runtime_custody_receipts["s"].clone();
+        assert_eq!(serde_json::to_value(after).unwrap(), expected);
+        drop(state);
+        assert_eq!(methods(&server.finish().await), READY_METHODS);
+        assert!(current_process_identity(fixture.browser.0.id()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn custody_bootstrap_operator_uncertainty_retains_latch_without_adoption_or_retry() {
+        use super::super::actions::{
+            handle_runtime_custody_bootstrap_using, CustodyBootstrapStatus,
+        };
+        for fail_after_save in [false, true] {
+            let server = FakeBrowser::ready(Ready::Ok).await;
+            let fixture = physical_fixture(&server.endpoint);
+            let mut repository = TestRepository::new(fixture.state.clone());
+            repository.fail_save = !fail_after_save;
+            repository.fail_after_save = fail_after_save;
+            let command = operator_command(&fixture.request);
+            let mut state = operator_state();
+            assert_eq!(
+                handle_runtime_custody_bootstrap_using(&command, &mut state, || Ok(&repository))
+                    .await,
+                Err("fresh_chain_commit_uncertain".into())
+            );
+            assert_eq!(
+                state.custody_bootstrap_status,
+                CustodyBootstrapStatus::Uncertain
+            );
+            assert!(state.browser.is_none());
+            assert!(
+                handle_runtime_custody_bootstrap_using(&command, &mut state, || Ok(&repository))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(repository.saves.get(), 1);
+            assert_eq!(methods(&server.finish().await), READY_METHODS);
+            assert!(current_process_identity(fixture.browser.0.id()).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn custody_bootstrap_operator_precommit_rejection_never_touches_repository() {
+        use super::super::actions::{
+            handle_runtime_custody_bootstrap_using, CustodyBootstrapStatus,
+        };
+        let fixture = physical_fixture(ENDPOINT);
+        for mode in ["foreign", "released", "extra", "policy", "backend"] {
+            let repository = TestRepository::new(fixture.state.clone());
+            let mut command = operator_command(&fixture.request);
+            let mut state = operator_state();
+            match mode {
+                "foreign" => command["request"]["sessionName"] = json!("other"),
+                "released" => {
+                    command["request"]["serviceTabHandle"]["leaseState"] = json!("released")
+                }
+                "extra" => command["autoConnect"] = json!(true),
+                "policy" => state.require_task_authority = true,
+                "backend" => state.backend_type = super::super::actions::BackendType::WebDriver,
+                _ => unreachable!(),
+            }
+            assert!(
+                handle_runtime_custody_bootstrap_using(&command, &mut state, || Ok(&repository))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                state.custody_bootstrap_status,
+                CustodyBootstrapStatus::PrecommitFailed
+            );
+            assert!(state.browser.is_none());
+            assert_eq!(repository.saves.get(), 0);
+            assert!(
+                handle_runtime_custody_bootstrap_using(&command, &mut state, || Ok(&repository))
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn custody_bootstrap_occupied_manager_is_preserved_on_refusal() {
+        use super::super::actions::{
+            handle_runtime_custody_bootstrap_using, CustodyBootstrapStatus,
+        };
+        let server = FakeBrowser::ready(Ready::Ok).await;
+        let fixture = physical_fixture(&server.endpoint);
+        let repository = TestRepository::new(fixture.state.clone());
+        let command = operator_command(&fixture.request);
+        let mut state = operator_state();
+        handle_runtime_custody_bootstrap_using(&command, &mut state, || Ok(&repository))
+            .await
+            .unwrap();
+        state.custody_bootstrap_status = CustodyBootstrapStatus::Pending;
+        assert_eq!(
+            handle_runtime_custody_bootstrap_using(&command, &mut state, || Ok(&repository)).await,
+            Err("fresh_chain_daemon_occupied".into())
+        );
+        assert!(state.browser.is_some());
+        assert_eq!(
+            state.custody_bootstrap_status,
+            CustodyBootstrapStatus::Uncertain
+        );
+        assert_eq!(repository.saves.get(), 1);
+        drop(state);
+        assert_eq!(methods(&server.finish().await), READY_METHODS);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn custody_bootstrap_cold_cli_daemon_preserves_exact_browser_and_no_stream() {
+        use super::super::service_store::{JsonServiceStateStore, ServiceStateStore};
+        // This process-level fixture is deliberately unavailable outside isolated QA.
+        if std::env::var("AGENT_BROWSER_TEST_ISOLATED").as_deref() != Ok("1") {
+            return;
+        }
+        let binary = std::env::var("AGENT_BROWSER_FIXTURE_BIN").unwrap();
+        assert!(
+            std::path::Path::new(&binary).is_file(),
+            "build candidate before this test"
+        );
+        let path = super::super::service_store::default_service_state_path().unwrap();
+        let previous = fs::read(&path).ok();
+        for ready_mode in [Ready::Ok, Ready::WrongEcho] {
+            let server = FakeBrowser::ready(ready_mode).await;
+            let fixture = physical_fixture(&server.endpoint);
+            let identity = current_process_identity(fixture.browser.0.id()).unwrap();
+            let store = JsonServiceStateStore::new(&path);
+            store.save(&fixture.state).unwrap();
+            let before = store.load().unwrap();
+            let root = ProfileGuard(
+                std::env::temp_dir().join(format!("ab-bootstrap-cli-{}", uuid::Uuid::new_v4())),
+            );
+            fs::create_dir(&root.0).unwrap();
+            let socket_dir = root.0.join("sockets");
+            fs::create_dir(&socket_dir).unwrap();
+            let request_path = root.0.join("request.json");
+            fs::write(
+                &request_path,
+                operator_command(&fixture.request)["request"].to_string(),
+            )
+            .unwrap();
+            let output = tokio::process::Command::new(&binary)
+                .args([
+                    "--json",
+                    "--session",
+                    "s",
+                    "handoff",
+                    "bootstrap",
+                    "--request-file",
+                ])
+                .arg(&request_path)
+                .env("AGENT_BROWSER_SOCKET_DIR", &socket_dir)
+                .env("AGENT_BROWSER_CDP", "not-an-endpoint")
+                .env("AGENT_BROWSER_SESSION_NAME", "must-not-autosave")
+                .env("AGENT_BROWSER_AUTO_CONNECT", "1")
+                .env("AGENT_BROWSER_STREAM_PORT", "1")
+                .env(
+                    "AGENT_BROWSER_PRIVATE_EXECUTOR_ROOT",
+                    root.0.join("must-not-exist"),
+                )
+                .env("AGENT_BROWSER_STATE_EXPIRE_DAYS", "1")
+                .env("AGENT_BROWSER_SERVICE_RECONCILE_INTERVAL_MS", "1")
+                .env("AGENT_BROWSER_SERVICE_MONITOR_INTERVAL_MS", "1")
+                .output()
+                .await
+                .unwrap();
+            let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(result["success"], ready_mode == Ready::Ok, "{result}");
+            assert!(!socket_dir.join("s.stream").exists());
+            let after = store.load().unwrap();
+            if ready_mode == Ready::Ok {
+                assert_eq!(result["data"]["browserPid"], fixture.browser.0.id());
+                let mut expected = serde_json::to_value(&before).unwrap();
+                expected["runtimeCustodyReceipts"]["s"] =
+                    after.runtime_custody_receipts["s"].clone();
+                assert_eq!(serde_json::to_value(&after).unwrap(), expected);
+                assert_eq!(
+                    after.runtime_custody_receipts["s"]["predecessor"]["body"],
+                    before.runtime_custody_receipts["s"]
+                );
+                // A second CLI attempt must refuse occupied metadata, not migrate/retry.
+                let denied = tokio::process::Command::new(&binary)
+                    .args([
+                        "--json",
+                        "--session",
+                        "s",
+                        "handoff",
+                        "bootstrap",
+                        "--request-file",
+                    ])
+                    .arg(&request_path)
+                    .env("AGENT_BROWSER_SOCKET_DIR", &socket_dir)
+                    .output()
+                    .await
+                    .unwrap();
+                let denied: Value = serde_json::from_slice(&denied.stdout).unwrap();
+                assert_eq!(denied["success"], false);
+                assert_eq!(denied["error"], "fresh_chain_cold_admission_denied");
+                // Retire only our fake-browser daemon using its existing authenticated socket.
+                let guard = crate::test_utils::EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR"]);
+                guard.set("AGENT_BROWSER_SOCKET_DIR", socket_dir.to_str().unwrap());
+                let closed = crate::connection::send_command_once(
+                    &json!({"id":"fixture-close","action":"close"}),
+                    "s",
+                )
+                .unwrap();
+                assert!(closed.success);
+            } else {
+                assert_eq!(
+                    serde_json::to_value(&after).unwrap(),
+                    serde_json::to_value(&before).unwrap()
+                );
+            }
+            for _ in 0..100 {
+                if !socket_dir.join("s.sock").exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert!(
+                !socket_dir.join("s.sock").exists(),
+                "owned fixture daemon must retire"
+            );
+            assert_eq!(methods(&server.finish().await), READY_METHODS);
+            assert_eq!(
+                current_process_identity(fixture.browser.0.id()).unwrap(),
+                identity
+            );
+        }
+        match previous {
+            Some(bytes) => fs::write(path, bytes).unwrap(),
+            None => fs::remove_file(path).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn custody_bootstrap_worker_fences_pending_publication_and_duplicate_refusal() {
+        use super::super::control_plane::ControlPlaneWorker;
+        use super::super::service_store::{JsonServiceStateStore, ServiceStateStore};
+        if std::env::var("AGENT_BROWSER_TEST_ISOLATED").as_deref() != Ok("1") {
+            return;
+        }
+        let path = super::super::service_store::default_service_state_path().unwrap();
+        let previous = fs::read(&path).ok();
+        for delivered in [false, true] {
+            let server = FakeBrowser::ready(Ready::Ok).await;
+            let fixture = physical_fixture(&server.endpoint);
+            let store = JsonServiceStateStore::new(&path);
+            store.save(&fixture.state).unwrap();
+            let worker =
+                ControlPlaneWorker::start_with_options(operator_state(), Some(1), Some(1), Some(1));
+            let command = operator_command(&fixture.request);
+            let response = worker.custody_bootstrap(command.clone()).await;
+            assert_eq!(response["success"], true);
+            let committed = fs::read(&path).unwrap();
+            assert!(worker.custody_bootstrap_rejects_ordinary());
+            assert_eq!(
+                worker
+                    .submit(json!({"id":"blocked","action":"launch"}))
+                    .await["success"],
+                false
+            );
+            let rejected = worker.custody_bootstrap(command.clone()).await;
+            assert_eq!(rejected["error"], "fresh_chain_bootstrap_attempt_denied");
+            assert!(worker.custody_bootstrap_rejects_ordinary());
+            assert_eq!(fs::read(&path).unwrap(), committed);
+            if delivered {
+                worker.custody_bootstrap_delivery_succeeded().await;
+                assert!(!worker.custody_bootstrap_rejects_ordinary());
+                assert_eq!(worker.custody_bootstrap(command).await["success"], false);
+                assert!(!worker.custody_bootstrap_rejects_ordinary());
+            } else {
+                worker.custody_bootstrap_delivery_failed().await;
+                assert!(worker.custody_bootstrap_rejects_ordinary());
+                worker.custody_bootstrap_delivery_succeeded().await;
+                assert!(worker.custody_bootstrap_rejects_ordinary());
+            }
+            assert_eq!(fs::read(&path).unwrap(), committed);
+            worker.shutdown().await;
+            assert_eq!(methods(&server.finish().await), READY_METHODS);
+            assert!(current_process_identity(fixture.browser.0.id()).is_ok());
+        }
+        match previous {
+            Some(bytes) => fs::write(path, bytes).unwrap(),
+            None => fs::remove_file(path).unwrap(),
         }
     }
 

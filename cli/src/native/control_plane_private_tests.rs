@@ -99,6 +99,7 @@ fn channel(capacity: usize) -> (ControlPlaneHandle, mpsc::Receiver<WorkerMessage
     let (tx, rx) = mpsc::channel(capacity);
     (
         ControlPlaneHandle {
+            custody_bootstrap_status: Arc::new(AtomicUsize::new(0)),
             tx,
             status: Arc::new(ControlPlaneStatus::new()),
             service_job_timeout_ms: None,
@@ -183,6 +184,7 @@ fn start_existing(
         rx,
         Arc::clone(&handle.status),
         WorkerRuntimeOptions {
+            custody_bootstrap_status: Arc::new(AtomicUsize::new(0)),
             service_reconcile_interval_ms: None,
             service_job_timeout_ms: None,
             service_monitor_interval_ms: None,

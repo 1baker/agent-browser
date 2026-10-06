@@ -801,6 +801,7 @@ fn start_cold_mcp_daemon(
         .is_ok_and(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | ""))
         || keychain_password.is_some();
     let opts = DaemonOptions {
+        custody_bootstrap_only: false,
         headed: flags.headed,
         debug: flags.debug,
         leave_open: flags.leave_open,
@@ -1165,6 +1166,7 @@ fn run_runtime_command(clean: &[String], flags: &Flags) {
                 !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "")
             }) || keychain_password.is_some();
             let daemon_opts = DaemonOptions {
+                custody_bootstrap_only: false,
                 headed: flags.headed,
                 debug: flags.debug,
                 leave_open: flags.leave_open,
@@ -2157,6 +2159,21 @@ fn main() {
         return;
     }
 
+    if cmd.get("action").and_then(serde_json::Value::as_str)
+        == Some(native::custody_bootstrap_request::ACTION)
+    {
+        let response = run_custody_bootstrap_command(&cmd, &flags.session);
+        output::print_response_with_opts(
+            &response,
+            Some(native::custody_bootstrap_request::ACTION),
+            &OutputOptions::from_flags(&flags),
+        );
+        if !response.success {
+            exit(1);
+        }
+        return;
+    }
+
     if !command_skips_browser_launch_for_prestart(&cmd) {
         cmd["serviceState"] = json!(flags.service_state.clone());
     }
@@ -2331,6 +2348,7 @@ fn main() {
             .or(selected_runtime_profile.as_deref())
     };
     let daemon_opts = DaemonOptions {
+        custody_bootstrap_only: false,
         headed: flags.headed,
         debug: flags.debug,
         leave_open: flags.leave_open,
@@ -3292,6 +3310,31 @@ fn read_uses_daemon_acquisition(
         )
 }
 
+fn run_custody_bootstrap_command(cmd: &serde_json::Value, session: &str) -> connection::Response {
+    let attempt = || -> Result<connection::Response, String> {
+        if !cfg!(target_os = "linux") {
+            return Err("fresh_chain_linux_required".into());
+        }
+        let path = cmd
+            .get("requestFile")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("fresh_chain_request_invalid")?;
+        let request = native::custody_bootstrap_request::read_file(Path::new(path), session)?;
+        let command = json!({"id":cmd.get("id"),
+            "action":native::custody_bootstrap_request::ACTION,"request":request});
+        connection::ensure_cold_daemon(session, &DaemonOptions::custody_bootstrap())
+            .map_err(|_| "fresh_chain_cold_admission_denied")?;
+        // No automatic retry, handoff, recovery, prestart launch or fallback.
+        connection::send_command_once(&command, session)
+            .map_err(|_| "fresh_chain_dispatch_uncertain".into())
+    };
+    attempt().unwrap_or_else(|error| connection::Response {
+        success: false,
+        error: Some(error),
+        ..Default::default()
+    })
+}
+
 fn command_skips_browser_launch_for_prestart(cmd: &serde_json::Value) -> bool {
     crate::native::actions::action_skips_browser_launch(
         cmd.get("action").and_then(|v| v.as_str()).unwrap_or(""),
@@ -3485,6 +3528,26 @@ mod tests {
         assert!(command_skips_browser_launch_for_prestart(&json!({
             "action": "close"
         })));
+    }
+
+    #[test]
+    fn custody_bootstrap_skips_generic_prestart_and_is_not_local_or_force_close() {
+        let command = json!({"action":native::custody_bootstrap_request::ACTION});
+        assert!(command_skips_browser_launch_for_prestart(&command));
+        assert!(!command_executes_locally_before_daemon(&command));
+        assert!(!command_targets_existing_daemon_before_prestart(&command));
+    }
+
+    #[test]
+    fn custody_bootstrap_invalid_file_never_starts_daemon() {
+        let command = json!({"id":"fixture", "action":native::custody_bootstrap_request::ACTION,
+            "requestFile":"/nonexistent-bootstrap-fixture/request.json"});
+        let result = run_custody_bootstrap_command(&command, "fixture");
+        assert!(!result.success);
+        assert_eq!(
+            result.error.as_deref(),
+            Some("fresh_chain_request_unreadable")
+        );
     }
 
     #[test]

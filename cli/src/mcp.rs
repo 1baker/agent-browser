@@ -6630,6 +6630,7 @@ fn call_service_managed_runtime_reconnect(
         .devtools_port
         .ok_or_else(|| refusal("Retained browser DevTools port is unavailable".to_string()))?;
     let opts = DaemonOptions {
+        custody_bootstrap_only: false,
         headed: true,
         debug: flags.debug,
         leave_open: true,

@@ -4280,13 +4280,26 @@ agent-browser handoff - Transfer a live browser to a replacement daemon
 
 Prepared handoff is distinct from unplanned daemon-crash reconnection.
 
-Usage: agent-browser handoff <prepare|resume>
+Usage: agent-browser handoff <prepare|resume|bootstrap --request-file <path>>
 
 Subcommands:
   prepare    Persist the browser PID and CDP endpoint, relinquish process
              ownership, and stop the current daemon without closing the browser
   resume     Start a replacement daemon, reconnect to the same browser and
              targets, then remove the durable retry record
+  bootstrap  Linux operator-only, one-shot fresh custody chain. Strict regular
+             JSON file, max 64KiB: sessionName, serviceTabHandle,
+             expectedPredecessorSha256, physicalProfile (canonicalProfile,
+             profileDevice, profileInode). The CLI session must match.
+
+Bootstrap admits only a metadata-free cold daemon without a handoff record,
+retains the existing exclusive lease, and owns no browser process. No streaming,
+saved-login capture, private executor or background/idle timers. No job/health
+write surrounds the one receipt commit. Precommit failure retires the new
+browserless daemon; possible commit/publication uncertainty stays closed to
+requests, drops the connection only, and never retries or rolls back. Protocol
+readiness is not rendered UI readiness. This source checkpoint is not installed
+or live-accepted; separate custody, quiescence and operator gates are required.
 
 This command is used by the local development publisher and runtime interlock.
 The browser process, DevTools port, profile, and open tabs remain live during
@@ -5831,7 +5844,7 @@ Notes:
   - Text service tabs focuses retained tab lifecycle, browser, session, target, URL, and title fields.
   - Service tab diagnostics include controlPlaneAttestation. It is complete only after committed Linux custody proof verifies the current owner process, exact Chrome process and profile lock, exclusive lease, and requested live tab. A legacy handoff or missing receipt stays incomplete.
   - Diagnostics reject invalid handle leaseState, leaseId, ownerSessionId, or sessionName before browser access. Only shared/exclusive handles with exact current ownership match; an older shared label can follow an exclusive upgrade, never a release or ownership change.
-  - Linux source includes INTERNAL UNEXPOSED schema-5 fresh-chain bootstrap APIs. The original variant remains attachment-only; bootstrap_ready initializes the exact session before commit and exposes an unowned manager only through a committed token. Neither is an operation entrypoint or proof of rendered UI readiness. Diagnostics distinguish fresh_chain_exact_attach from handoff continuity; handoff resume refuses schema 5. No command creates this receipt or grants install authority.
+  - Linux operator-only handoff bootstrap --request-file <path> uses strict bounded JSON and a metadata-free cold daemon. It reuses an exclusive lease, performs protocol-only exact attachment before the single receipt commit, retains the public guard and owns no browser process. No stream, saved-login capture, private executor, background timers or job/health writes. It attempts once and fails closed on uncertainty without retry or rollback. Diagnostics distinguish fresh_chain_exact_attach from handoff continuity; handoff resume refuses schema 5. Source-tested is not installed or live-accepted; operational gates remain separate.
   - The Service dashboard Park action strictly closes one exact physical tab while retaining its URL, title, browser, and session route. Reopen creates a fresh target and handle in that same live browser/profile. Profile authentication survives, but volatile page state does not. Park is unavailable for the browser's last live tab.
   - A site policy can opt in pageGateObserver signals for bounded challenge, sign-in, and ready-page detection. Labeled navigation checks them and action=probe with probe.observePageGate=true rechecks the exact serviceTabHandle. A waiting human gate pauses agent page mutations on that target; only positive ready-page evidence resolves it. Unknown evidence never resolves a handoff or proves authentication.
   - Text service monitors focuses monitor identity, target, interval, state, last health timestamps, and failure counts, including profile_readiness:<targetServiceId> freshness monitors.
@@ -6409,7 +6422,7 @@ Core Commands:
   snapshot                   Accessibility tree with refs (for AI)
   eval <js>                  Run JavaScript
   connect <port|url>         Connect to browser via CDP
-  handoff <prepare|resume>   Transfer a live browser to a replacement daemon
+  handoff <prepare|resume|bootstrap> Transfer custody; bootstrap requires --request-file
   close [--all]              Close browser (--all closes every session)
 
 Navigation:

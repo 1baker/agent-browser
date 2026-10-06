@@ -2266,10 +2266,10 @@ Supported engines:
 
 Lightpanda does not support `--extension`, `--profile`, `--state`, or `--allow-file-access`. Install Lightpanda from https://lightpanda.io/docs/open-source/installation.
 
-## Fresh-chain source checkpoint (internal, unexposed)
+## Fresh-chain cold operator source checkpoint
 
-Linux source contains an INTERNAL UNEXPOSED schema-5 fresh-chain bootstrap API.
-It has no command or operation entrypoint. It starts an independent chain from
+Linux source provides operator-only `handoff bootstrap --request-file <path>`;
+this checkpoint is not installed or live-accepted. It starts an independent chain from
 an exact pinned browser attachment, current process/profile proof, exclusive
 persisted lease, and exact handle, preserving the old receipt verbatim and
 digest-bound. Former-owner absence is not an authenticated detach ACK or old-chain
@@ -2281,8 +2281,18 @@ initializes only Page, Runtime and Network on the exact session before commit,
 then verifies receipt readback and current binding. Only its committed token can
 expose an unowned manager and held privacy guard. Pause or unavailable event
 observation vetoes publication; missing pause flags do not prove UI execution.
-Neither variant has an operation entrypoint or grants installation or live
-receipt-change permission.
+The strict file (regular, no symlink, at most 64KiB) binds `sessionName`,
+`serviceTabHandle`, `expectedPredecessorSha256` and `physicalProfile`
+(`canonicalProfile`, `profileDevice`, `profileInode`). It must match `--session`.
+Unknown fields and extra arguments fail. Only a metadata-free cold daemon with
+no handoff descriptor is admitted; never use this to replace or repair an owner.
+It attempts once, retains the guard, and has no streaming server, saved-login
+capture, private executor or background/idle timers. The command bypasses job
+persistence and health writes; it never acquires or upgrades a profile lease.
+Precommit failure retires the new browserless daemon. Possible commit or
+publication uncertainty stays rejecting requests and drops the connection only;
+no retry or rollback. Installation, approved supersession and live go/no-go
+remain separate. Do not invoke against retained browsers without those gates.
 
 ## Observability Dashboard
 
