@@ -12411,6 +12411,25 @@ async fn handle_runtime_handoff_prepare(
     }))
 }
 
+/// Fresh-chain (schema v5) and unknown-kind custody receipts are outside every
+/// handoff resume path: refuse before connecting, removing or replacing them.
+fn refuse_fresh_chain_receipt(
+    snapshot: &super::service_model::ServiceState,
+    session_name: &str,
+) -> Result<(), String> {
+    match snapshot.runtime_custody_receipts.get(session_name) {
+        Some(receipt)
+            if !matches!(
+                receipt.get("schemaVersion").and_then(Value::as_u64),
+                Some(2 | 4)
+            ) || receipt.get("kind").is_some() =>
+        {
+            Err("runtime_handoff_fresh_chain_receipt_unsupported".into())
+        }
+        _ => Ok(()),
+    }
+}
+
 async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value, String> {
     if state.browser.is_some() {
         return Err(format!(
@@ -12419,6 +12438,10 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
         ));
     }
     let descriptor = read_runtime_handoff(&state.session_id)?;
+    refuse_fresh_chain_receipt(
+        &LockedServiceStateRepository::default_json()?.load_snapshot()?,
+        &state.session_id,
+    )?;
     if !matches!(descriptor.schema_version, 1..=4) || descriptor.session_name != state.session_id {
         return Err(format!(
             "Runtime handoff identity mismatch for session '{}'",
@@ -12510,6 +12533,7 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
     }
     if matches!(descriptor.schema_version, 2 | 3) {
         LockedServiceStateRepository::default_json()?.mutate(|snapshot| {
+            refuse_fresh_chain_receipt(snapshot, &state.session_id)?;
             snapshot.runtime_custody_receipts.remove(&state.session_id);
             Ok(())
         })?;
@@ -12523,6 +12547,7 @@ async fn handle_runtime_handoff_resume(state: &mut DaemonState) -> Result<Value,
                 .ok_or("attestation_custody_missing")?;
             let receipt = super::runtime_attestation::committed(custody)?;
             LockedServiceStateRepository::default_json()?.mutate(|snapshot| {
+                refuse_fresh_chain_receipt(snapshot, &state.session_id)?;
                 super::runtime_attestation::verify_resume(
                     snapshot,
                     &state.session_id,
@@ -27507,6 +27532,57 @@ fn error_response(id: &str, error: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn runtime_handoff_receipt_guard_allows_no_receipt_with_absent_or_present_state_file() {
+        use crate::native::service_store::{
+            JsonServiceStateStore, LockedServiceStateRepository, ServiceStateRepository,
+        };
+        let dir = crate::native::tab_handle_refresh::tests::TestDirectory::new();
+        let repository = LockedServiceStateRepository::new(JsonServiceStateStore::new(
+            dir.path().join("state.json"),
+        ));
+        assert!(!dir.path().join("state.json").exists());
+        super::refuse_fresh_chain_receipt(&repository.load_snapshot().unwrap(), "fixture").unwrap();
+        repository
+            .mutate(|state| {
+                *state = crate::native::service_model::ServiceState::default();
+                Ok(())
+            })
+            .unwrap();
+        assert!(dir.path().join("state.json").exists());
+        super::refuse_fresh_chain_receipt(&repository.load_snapshot().unwrap(), "fixture").unwrap();
+    }
+
+    #[test]
+    fn runtime_handoff_receipt_guard_preserves_legacy_and_refuses_fresh_or_unknown() {
+        let mut state = crate::native::service_model::ServiceState::default();
+        super::refuse_fresh_chain_receipt(&state, "fixture").unwrap();
+        for version in [2, 4] {
+            state.runtime_custody_receipts.insert(
+                "fixture".into(),
+                serde_json::json!({"schemaVersion": version}),
+            );
+            super::refuse_fresh_chain_receipt(&state, "fixture").unwrap();
+        }
+        for receipt in [
+            serde_json::json!({"schemaVersion":5, "kind":"fresh_chain_bootstrap"}),
+            serde_json::json!({"schemaVersion":4, "kind":"unknown"}),
+            serde_json::json!({"schemaVersion":2, "kind":null}),
+            serde_json::json!({"schemaVersion":99}),
+            serde_json::json!({"schemaVersion":"4"}),
+            serde_json::json!({}),
+        ] {
+            state
+                .runtime_custody_receipts
+                .insert("fixture".into(), receipt.clone());
+            assert_eq!(
+                super::refuse_fresh_chain_receipt(&state, "fixture").unwrap_err(),
+                "runtime_handoff_fresh_chain_receipt_unsupported"
+            );
+            assert_eq!(state.runtime_custody_receipts["fixture"], receipt);
+        }
+    }
+
     #[tokio::test]
     async fn exact_refresh_projection_service_browser_inventory_readback() {
         use crate::native::service_store::{

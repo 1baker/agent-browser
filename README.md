@@ -1,7 +1,7 @@
 # agent-browser
 
 On Linux, service tab diagnostics report `controlPlaneAttestation`. A complete
-result requires a committed custody-bearing daemon handoff, the current owner
+result requires committed owner custody, the current owner
 process, exact Chrome process and profile lock, exclusive profile lease, and
 requested live tab. The first upgrade from a legacy handoff remains incomplete
 until a second guarded handoff between new daemons. Browser reachability alone
@@ -16,6 +16,15 @@ Missing or foreign records and stale owners still fail closed. This introduces
 no new command or flag and does not repair an older running daemon by itself.
 Applying `service prune-retained` with closed-tab pruning removes that anchor
 record and custody then fails closed; do not prune it during a pending handoff.
+
+The Linux source also contains an INTERNAL UNEXPOSED fresh-chain bootstrap API.
+Schema 5 records an independent exact attachment, not continuation of a handoff:
+the previous receipt is preserved verbatim and digest-bound, and the old owner is
+only observed absent, never acknowledged. Diagnostics recognize this separate
+proof basis, while handoff resume refuses it. No command or operation entrypoint
+can create it; the attachment has no enabled CDP domains and is not a ready
+runtime. This source checkpoint grants no install or live receipt-change authority.
+See [the source checkpoint](docs/dev/notes/fresh-chain-custody-source-checkpoint-20261006.md).
 
 MCP profile creation works without a running default daemon. A metadata-free
 session uses one short-lived browserless worker for `service_profile_upsert`.

@@ -1,7 +1,7 @@
 //! Linux-only proof for an exact retained-browser daemon handoff.
 //!
-//! A legacy handoff is deliberately not proof. The first install may consume
-//! schema v1; only a subsequent verified v4 handoff can mint a receipt.
+//! A legacy handoff is deliberately not proof. This module verifies schema-v4
+//! continuity; the separate internal fresh-chain module proves independent custody.
 
 use serde_json::{json, Map, Value};
 use std::fs;
@@ -347,11 +347,15 @@ pub(super) fn verify_resume(
     endpoint: &str,
     target_id: &str,
 ) -> Result<(), String> {
+    if custody.get("kind").is_some() {
+        return Err("attestation_legacy_receipt_kind_unsupported".into());
+    }
     let source = custody.get("source").ok_or("attestation_source_missing")?;
     wait_for_source_exit(source)?;
     verify_custody(state, session_name, custody, pid, endpoint, target_id)?;
     if let Some(previous) = state.runtime_custody_receipts.get(session_name) {
-        if previous["schemaVersion"] != 4
+        if previous.get("kind").is_some()
+            || previous["schemaVersion"] != 4
             || previous["phase"] != "committed"
             || previous["destination"] != *source
             || previous["browser"] != custody["browser"]
@@ -384,6 +388,9 @@ pub(super) fn verify_resume(
 }
 
 pub(super) fn committed(custody: &Value) -> Result<Value, String> {
+    if custody.get("kind").is_some() {
+        return Err("attestation_legacy_receipt_kind_unsupported".into());
+    }
     let mut receipt = custody.clone();
     let object = receipt
         .as_object_mut()
@@ -406,6 +413,9 @@ fn verify_committed(
     target_id: &str,
     current_target: &str,
 ) -> Result<&'static str, String> {
+    if receipt.get("kind").is_some() {
+        return Err("attestation_legacy_receipt_kind_unsupported".into());
+    }
     if receipt["schemaVersion"] != 4
         || receipt["phase"] != "committed"
         || receipt["ownerGeneration"]
@@ -426,6 +436,36 @@ fn verify_committed(
         current_target,
     )?;
     anchor_disposition(state, session_name, receipt, pid, endpoint, current_target)
+}
+
+/// Crate-private reuse of the unchanged binding proof for the fresh chain.
+pub(super) fn fresh_chain_binding(
+    state: &ServiceState,
+    session_name: &str,
+    profile_id: &str,
+    browser_id: &str,
+    target_id: &str,
+    pid: u32,
+    endpoint: &str,
+) -> Result<(), String> {
+    binding(
+        state,
+        session_name,
+        profile_id,
+        browser_id,
+        target_id,
+        pid,
+        endpoint,
+    )
+}
+
+/// Crate-private reuse of the unchanged physical browser/profile-lock proof.
+pub(super) fn fresh_chain_physical_browser(
+    browser: &Value,
+    pid: u32,
+    endpoint: &str,
+) -> Result<(), String> {
+    physical_browser(browser, pid, endpoint)
 }
 
 /// Diagnostics never infer owner custody from a browser being reachable.
@@ -479,6 +519,16 @@ pub(super) fn diagnostics(
             .ok_or("attestation_receipt_missing")?;
         if receipt["profileId"] != profile_id || receipt["browserId"] != browser_id {
             return Err("attestation_handle_binding_mismatch".into());
+        }
+        if receipt.get("schemaVersion").and_then(Value::as_u64) == Some(5) {
+            return super::runtime_custody_bootstrap::diagnostics(
+                state,
+                session_name,
+                receipt,
+                profile_id,
+                browser_id,
+                target,
+            );
         }
         let browser = state
             .browsers
@@ -538,6 +588,63 @@ mod tests {
     use std::process::{Child, Command, Stdio};
 
     const ENDPOINT: &str = "ws://127.0.0.1:9222/devtools/browser/x";
+
+    #[test]
+    fn legacy_unknown_kind_refused_before_handoff_prepare_and_proof_promotion() {
+        let mut fixture = physical_fixture();
+        fixture
+            .state
+            .browsers
+            .get_mut("session:proposal")
+            .unwrap()
+            .health = super::super::service_model::BrowserHealth::Ready;
+        for tab in fixture.state.tabs.values_mut() {
+            tab.lifecycle = TabLifecycle::Ready;
+        }
+        let handle = serde_json::to_value(fixture.state.service_tab_handle("target:tab2").unwrap())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        for kind in [
+            json!("unknown"),
+            json!("fresh_chain_bootstrap"),
+            Value::Null,
+        ] {
+            fixture
+                .state
+                .runtime_custody_receipts
+                .get_mut("proposal")
+                .unwrap()["kind"] = kind;
+            assert_eq!(
+                prepare(&fixture.state, "proposal", "tab2", ENDPOINT).unwrap_err(),
+                "attestation_legacy_receipt_kind_unsupported"
+            );
+            let proof = diagnostics(Some(&fixture.state), &handle, "proposal", Some("tab2"));
+            assert_eq!(proof["complete"], false);
+            assert_eq!(
+                proof["missingProofs"][0],
+                "attestation_legacy_receipt_kind_unsupported"
+            );
+            assert_eq!(
+                committed(&fixture.state.runtime_custody_receipts["proposal"]).unwrap_err(),
+                "attestation_legacy_receipt_kind_unsupported"
+            );
+        }
+        fixture
+            .state
+            .runtime_custody_receipts
+            .get_mut("proposal")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("kind");
+        prepare(&fixture.state, "proposal", "tab2", ENDPOINT).unwrap();
+        assert_eq!(
+            diagnostics(Some(&fixture.state), &handle, "proposal", Some("tab2"))["complete"],
+            true
+        );
+    }
 
     struct FixtureProfile(PathBuf);
 

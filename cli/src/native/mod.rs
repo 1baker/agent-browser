@@ -89,6 +89,10 @@ pub mod retained_browser_requirement;
 mod runtime_attach_proof;
 #[cfg(target_os = "linux")]
 mod runtime_attestation;
+// Internal unexposed source checkpoint: no entrypoint calls bootstrap yet.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+mod runtime_custody_bootstrap;
 #[cfg(target_os = "linux")]
 mod runtime_handoff_v2;
 #[allow(dead_code)]

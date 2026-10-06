@@ -1,5 +1,15 @@
 # Commands
 
+The Linux source contains an **INTERNAL UNEXPOSED** fresh-chain custody bootstrap
+API, not a command or operation entrypoint. Schema 5 starts an independent exact
+attachment with generation 1 and preserves the previous receipt verbatim under a
+canonical SHA-256 digest. The former owner is only observed absent, not an
+authenticated detach acknowledgment. Diagnostics report the separate
+`fresh_chain_exact_attach` basis; handoff resume refuses this receipt kind.
+The staged attachment enables no CDP domains and is not a ready runtime. No
+installation, detachment, live receipt change, or browser lifecycle permission
+follows from this source checkpoint.
+
 `service_profile_upsert` can create profile configuration before a daemon exists.
 Only a session without daemon metadata uses a short-lived worker, with background
 reconciliation and monitors disabled. Profile validation and job persistence

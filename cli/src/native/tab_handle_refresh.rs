@@ -552,4 +552,64 @@ pub(crate) mod tests {
             }
         }
     }
+
+    #[test]
+    fn exact_refresh_projection_preserves_opaque_v5_without_promoting_proof() {
+        let (_dir, repository) = repo();
+        let receipt = json!({"schemaVersion":5, "kind":"fresh_chain_bootstrap",
+            "chainId":"synthetic-invalid", "predecessor":{"body":{"unchanged":[1,2,3]}}});
+        repository
+            .mutate(|state| {
+                state
+                    .runtime_custody_receipts
+                    .insert("fixture".into(), receipt.clone());
+                Ok(())
+            })
+            .unwrap();
+        let before = repository.load_snapshot().unwrap();
+        let handle = handle(&before);
+        let fence = capture_exact_tab_refresh_fence(&before, &handle, "fixture").unwrap();
+        commit(&repository, &handle, &fence).unwrap();
+        let after = repository.load_snapshot().unwrap();
+        assert_eq!(
+            serde_json::to_vec(&after.runtime_custody_receipts["fixture"]).unwrap(),
+            serde_json::to_vec(&receipt).unwrap()
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            crate::native::runtime_attestation::diagnostics(
+                Some(&after),
+                &handle,
+                "fixture",
+                Some("tab")
+            )["complete"],
+            false
+        );
+    }
+
+    #[test]
+    fn exact_refresh_projection_fences_a_concurrent_v5_receipt_change() {
+        let (dir, repository) = repo();
+        repository.mutate(|state| {
+            state.runtime_custody_receipts.insert("fixture".into(), json!({"schemaVersion":5,
+                "kind":"fresh_chain_bootstrap", "chainId":"first", "predecessor":{"body":{"opaque":true}}}));
+            Ok(())
+        }).unwrap();
+        let before = repository.load_snapshot().unwrap();
+        let handle = handle(&before);
+        let fence = capture_exact_tab_refresh_fence(&before, &handle, "fixture").unwrap();
+        repository
+            .mutate(|state| {
+                state.runtime_custody_receipts.get_mut("fixture").unwrap()["chainId"] =
+                    json!("second");
+                Ok(())
+            })
+            .unwrap();
+        let bytes = std::fs::read(dir.path().join("state.json")).unwrap();
+        assert_eq!(
+            commit(&repository, &handle, &fence).unwrap_err(),
+            "tab_handle_refresh_concurrent_target_advance"
+        );
+        assert_eq!(std::fs::read(dir.path().join("state.json")).unwrap(), bytes);
+    }
 }

@@ -2244,7 +2244,7 @@ Set `AWS_PROFILE` to select a named AWS profile.
 
 ## Browser Engine Selection
 
-For retained Linux browser sessions, inspect service tab diagnostics `controlPlaneAttestation` before an ownership-sensitive action. `complete: true` requires a committed new-generation daemon handoff, the current owner process, exact Chrome process and physical profile lock, exclusive profile lease, and exact live tab. A legacy handoff leaves `complete: false`; migration requires another guarded handoff between new daemons. Diagnostics reject released, expired, foreign, missing, or malformed lease metadata before any tab selection or page read. `sessionName`, `leaseId`, and `ownerSessionId` must all match the current owning session. A shared lease label on an older handle is acceptable only when its exact lease, owner, tab, browser, session, and profile match the current exclusive persisted lease. Do not strip metadata or change a released handle's label to retry; refresh the service-owned handle instead.
+For retained Linux browser sessions, inspect service tab diagnostics `controlPlaneAttestation` before an ownership-sensitive action. `complete: true` requires committed owner custody, the current owner process, exact Chrome process and physical profile lock, exclusive profile lease, and exact live tab. The schema-4 handoff basis requires a committed new-generation daemon handoff. A legacy handoff leaves `complete: false`; its supported migration requires another guarded handoff between new daemons. The separate internal fresh-chain source checkpoint below is not an available migration command. Diagnostics reject released, expired, foreign, missing, or malformed lease metadata before any tab selection or page read. `sessionName`, `leaseId`, and `ownerSessionId` must all match the current owning session. A shared lease label on an older handle is acceptable only when its exact lease, owner, tab, browser, session, and profile match the current exclusive persisted lease. Do not strip metadata or change a released handle's label to retry; refresh the service-owned handle instead.
 
 Use `--engine` to choose a local browser engine. The default is `chrome`.
 
@@ -2265,6 +2265,18 @@ Supported engines:
 - `lightpanda`: Lightpanda headless browser via CDP (10x faster, 10x less memory than Chrome)
 
 Lightpanda does not support `--extension`, `--profile`, `--state`, or `--allow-file-access`. Install Lightpanda from https://lightpanda.io/docs/open-source/installation.
+
+## Fresh-chain source checkpoint (internal, unexposed)
+
+Linux source contains an INTERNAL UNEXPOSED schema-5 fresh-chain bootstrap API.
+It has no command or operation entrypoint. It starts an independent chain from
+an exact pinned browser attachment, current process/profile proof, exclusive
+persisted lease, and exact handle, preserving the old receipt verbatim and
+digest-bound. Former-owner absence is not an authenticated detach ACK or old-chain
+continuity. Diagnostics distinguish `fresh_chain_exact_attach`; handoff resume
+refuses this kind. The staged attachment holds a shared public privacy guard,
+not an ownership lease, enables no domains, and must not be given to ready-runtime
+consumers. Do not infer installation or live receipt-change permission.
 
 ## Observability Dashboard
 

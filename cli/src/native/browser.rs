@@ -437,6 +437,170 @@ fn page_resource_content_type(resource: &Value) -> Option<String> {
     })
 }
 
+/// Attachment-only manager for the internal fresh-chain checkpoint. CDP domains
+/// are NOT enabled, so this is never a ready runtime and is never handed to
+/// existing consumers. Not Clone; the required public lease is a SHARED privacy
+/// barrier (not exclusive browser ownership) and drops after the connection.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)] // Internal source checkpoint; deliberately no operation entrypoint.
+pub(super) struct StagedExactAttachment {
+    manager: BrowserManager,
+    _public_lease: crate::native::privacy_gate::PublicLease,
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+impl StagedExactAttachment {
+    pub(super) fn target_id(&self) -> &str {
+        &self.manager.pages[0].target_id
+    }
+
+    pub(super) fn session_id(&self) -> &str {
+        &self.manager.pages[0].session_id
+    }
+
+    pub(super) fn endpoint(&self) -> &str {
+        &self.manager.ws_url
+    }
+}
+
+/// Accept only an explicit loopback browser WebSocket, returned unchanged.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(super) fn pinned_loopback_browser_ws(url: &str) -> Result<String, String> {
+    let rest = url
+        .strip_prefix("ws://")
+        .ok_or("fresh_chain_endpoint_not_browser_ws")?;
+    if rest.contains(['?', '#', '@']) {
+        return Err("fresh_chain_endpoint_not_pinned".into());
+    }
+    let (authority, id) = rest
+        .split_once("/devtools/browser/")
+        .ok_or("fresh_chain_endpoint_not_browser_ws")?;
+    let port = authority
+        .strip_prefix("127.0.0.1:")
+        .ok_or("fresh_chain_endpoint_not_loopback")?;
+    if port.is_empty()
+        || !port.bytes().all(|byte| byte.is_ascii_digit())
+        || port.parse::<u16>().map_or(true, |port| port == 0)
+        || id.is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err("fresh_chain_endpoint_not_pinned".into());
+    }
+    Ok(url.to_string())
+}
+
+/// Exact-attach wire protocol: inventory, attach one page with flatten, then
+/// echo the target through the returned session without a targetId. Sends no
+/// domain enable, runtime resume, auto-attach, lifecycle or fallback command.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(super) async fn exact_attach_wire(
+    client: &CdpClient,
+    target_id: &str,
+) -> Result<PageInfo, String> {
+    if target_id.is_empty() {
+        return Err("fresh_chain_target_missing".into());
+    }
+    let inventory = client.send_command("Target.getTargets", None, None).await?;
+    let infos = inventory
+        .get("targetInfos")
+        .and_then(Value::as_array)
+        .ok_or("fresh_chain_target_inventory_invalid")?;
+    let matching: Vec<&Value> = infos
+        .iter()
+        .filter(|info| info.get("targetId").and_then(Value::as_str) == Some(target_id))
+        .collect();
+    let [target] = matching.as_slice() else {
+        return Err("fresh_chain_target_not_unique".into());
+    };
+    if target.get("type").and_then(Value::as_str) != Some("page") {
+        return Err("fresh_chain_target_not_page".into());
+    }
+    let attached = client
+        .send_command(
+            "Target.attachToTarget",
+            Some(json!({ "targetId": target_id, "flatten": true })),
+            None,
+        )
+        .await?;
+    let session_id = attached
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|session| !session.is_empty())
+        .ok_or("fresh_chain_session_missing")?
+        .to_string();
+    let echoed = client
+        .send_command("Target.getTargetInfo", None, Some(&session_id))
+        .await?;
+    let info = echoed
+        .get("targetInfo")
+        .ok_or("fresh_chain_session_substituted")?;
+    if info.get("targetId").and_then(Value::as_str) != Some(target_id)
+        || info.get("type").and_then(Value::as_str) != Some("page")
+    {
+        return Err("fresh_chain_session_substituted".into());
+    }
+    Ok(PageInfo {
+        target_id: target_id.to_string(),
+        session_id,
+        url: info
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        title: info
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        target_type: "page".to_string(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+impl BrowserManager {
+    /// Internal fresh-chain checkpoint only. Bypasses resolve_cdp_url, never
+    /// owns Chrome, and on any uncertainty drops the connection only.
+    pub(super) async fn attach_exact_unowned(
+        url: &str,
+        target_id: &str,
+    ) -> Result<StagedExactAttachment, String> {
+        let ws_url = pinned_loopback_browser_ws(url)?;
+        let client = tokio::time::timeout(Duration::from_secs(5), CdpClient::connect(&ws_url))
+            .await
+            .map_err(|_| "fresh_chain_connect_timeout")??;
+        let public_lease = client
+            .public_lease()
+            .map_err(str::to_string)?
+            .ok_or("fresh_chain_public_lease_required")?;
+        let page = tokio::time::timeout(
+            Duration::from_secs(10),
+            exact_attach_wire(&client, target_id),
+        )
+        .await
+        .map_err(|_| "fresh_chain_attach_timeout")??;
+        Ok(StagedExactAttachment {
+            manager: Self {
+                client: Arc::new(client),
+                browser_process: None,
+                ws_url,
+                pages: vec![page],
+                active_page_index: 0,
+                default_timeout_ms: 25_000,
+                download_path: None,
+                ignore_https_errors: false,
+                visited_origins: HashSet::new(),
+            },
+            _public_lease: public_lease,
+        })
+    }
+}
+
 impl BrowserManager {
     #[cfg(test)]
     pub(crate) fn private_journey_test_fixture(
