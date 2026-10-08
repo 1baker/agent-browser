@@ -1,5 +1,26 @@
 # Runbook
 
+## 2026-10-05 | Original proposal tab repair refuses Closed/absent target
+
+The user-authorized exact-tab custody repair fails its original target-exists
+and Ready-record prerequisites before any implementation or live mutation.
+Installed read-only status twice confirms the same original browser PID/start
+and endpoint, identical native inventory, and absence of the exact original
+target. The persisted tab record is Closed and absent from its owner's list.
+Two live native pages share the conversation URL; neither is a permitted
+substitute. The cause/actor is unknown. No reconnect, global reconciliation,
+reopen, registry edit, installation, provider Retry/Send or hold retirement.
+
+Codex accepts Claude Code's revision2 conditional plan and revision4 replan
+ending BLOCKED rather than inventing a repair for a gone target. Existing
+managed reconnect requires membership and does not persist it. Root rechecks
+unchanged failed runtime/journal/hold and native Word/PDF SHA-256 pins; no
+disposition receipts exist. Final closed-world engineering audit is complete
+at revision6: BLOCKED, original exact-tab repair physically unavailable.
+No application source or tests changed. The previous AuraCall 576-test run is
+historical source evidence, not a live custody pass. The detailed audit and
+protected document/runtime hash pins are retained locally as private evidence.
+
 ## 2026-09-13 | Healthy maintenance installed and live-verified
 
 Full partitioned Rust suite (`bash scripts/ci/rust-tests.sh`) passed after
