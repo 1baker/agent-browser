@@ -1,3 +1,7 @@
+> **Personal source fork:** [upstream source](https://github.com/CochranResearchGroup/agent-browser). Package downloads and release instructions below refer to their stated publishers; they do not prove this fork is installed. Start with [Installation](#installation) for distribution use, or inspect this checkout before source development. Fork divergence has not been assessed in this documentation review.
+
+---
+
 # agent-browser
 
 MCP profile creation works without a running default daemon. A metadata-free
